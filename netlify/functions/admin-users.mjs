@@ -1,7 +1,8 @@
 // จัดการผู้ใช้ด้วย Supabase service role (สร้าง user / เปลี่ยนรหัสผ่าน)
 // — ทำฝั่ง server เท่านั้น และอนุญาตเฉพาะผู้เรียกที่เป็นแผนก admin
-// ตั้ง env บน Netlify: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
-//   (SUPABASE_URL ใช้ค่าเดียวกับ VITE_SUPABASE_URL; service role key ห้ามใส่ VITE_ เด็ดขาด)
+// ตั้ง env บน Netlify: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, VITE_SUPABASE_ANON_KEY
+//   (VITE_SUPABASE_ANON_KEY ใช้ตรวจ token ของผู้เรียก — service key แบบใหม่ sb_secret_
+//    มีข้อจำกัดบน auth endpoint จึงไม่ใช้ตรวจ token)
 
 import { createClient } from '@supabase/supabase-js'
 
@@ -10,17 +11,25 @@ export default async (req) => {
 
   const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  const anonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY
   if (!url || !serviceKey) {
     return Response.json({ error: 'SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not configured' }, { status: 500 })
   }
-  const admin = createClient(url, serviceKey, { auth: { persistSession: false } })
 
-  // ตรวจตัวตนผู้เรียกจาก JWT แล้วเช็คว่าเป็น admin
+  // ตรวจตัวตนผู้เรียกจาก JWT ด้วย anon key (validate ถูกต้องกว่าใช้ secret key)
   const token = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '')
   if (!token) return Response.json({ error: 'กรุณาเข้าสู่ระบบก่อน' }, { status: 401 })
-  const { data: caller, error: authErr } = await admin.auth.getUser(token)
-  if (authErr || !caller?.user) return Response.json({ error: 'token ไม่ถูกต้อง' }, { status: 401 })
-  const { data: profile } = await admin.from('profiles').select('department, is_active').eq('id', caller.user.id).single()
+
+  const asCaller = createClient(url, anonKey || serviceKey, { auth: { persistSession: false } })
+  const { data: caller, error: authErr } = await asCaller.auth.getUser(token)
+  if (authErr || !caller?.user) {
+    return Response.json({ error: 'token ไม่ถูกต้อง: ' + (authErr?.message ?? 'no user') }, { status: 401 })
+  }
+
+  const admin = createClient(url, serviceKey, { auth: { persistSession: false } })
+  const { data: profile, error: profErr } = await admin
+    .from('profiles').select('department, is_active').eq('id', caller.user.id).single()
+  if (profErr) return Response.json({ error: 'อ่าน profile ไม่ได้ (service key อาจไม่ถูกต้อง): ' + profErr.message }, { status: 500 })
   if (!profile?.is_active || profile.department !== 'admin') {
     return Response.json({ error: 'เฉพาะผู้ดูแลระบบ (admin) เท่านั้น' }, { status: 403 })
   }
@@ -39,7 +48,6 @@ export default async (req) => {
         user_metadata: { full_name: fullName, department },
       })
       if (error) return Response.json({ error: error.message }, { status: 400 })
-      // trigger สร้าง profile ให้แล้ว — ยืนยันค่า department/full_name ตามที่ admin กรอก
       await admin.from('profiles').update({ full_name: fullName, department }).eq('id', data.user.id)
       await admin.from('audit_logs').insert({
         entity_type: 'user', entity_id: data.user.id, action: 'create_user',
