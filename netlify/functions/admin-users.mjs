@@ -1,0 +1,67 @@
+// จัดการผู้ใช้ด้วย Supabase service role (สร้าง user / เปลี่ยนรหัสผ่าน)
+// — ทำฝั่ง server เท่านั้น และอนุญาตเฉพาะผู้เรียกที่เป็นแผนก admin
+// ตั้ง env บน Netlify: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+//   (SUPABASE_URL ใช้ค่าเดียวกับ VITE_SUPABASE_URL; service role key ห้ามใส่ VITE_ เด็ดขาด)
+
+import { createClient } from '@supabase/supabase-js'
+
+export default async (req) => {
+  if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 })
+
+  const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !serviceKey) {
+    return Response.json({ error: 'SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not configured' }, { status: 500 })
+  }
+  const admin = createClient(url, serviceKey, { auth: { persistSession: false } })
+
+  // ตรวจตัวตนผู้เรียกจาก JWT แล้วเช็คว่าเป็น admin
+  const token = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '')
+  if (!token) return Response.json({ error: 'กรุณาเข้าสู่ระบบก่อน' }, { status: 401 })
+  const { data: caller, error: authErr } = await admin.auth.getUser(token)
+  if (authErr || !caller?.user) return Response.json({ error: 'token ไม่ถูกต้อง' }, { status: 401 })
+  const { data: profile } = await admin.from('profiles').select('department, is_active').eq('id', caller.user.id).single()
+  if (!profile?.is_active || profile.department !== 'admin') {
+    return Response.json({ error: 'เฉพาะผู้ดูแลระบบ (admin) เท่านั้น' }, { status: 403 })
+  }
+
+  let body
+  try { body = await req.json() } catch { return Response.json({ error: 'invalid JSON' }, { status: 400 }) }
+
+  try {
+    if (body.action === 'create') {
+      const { email, password, fullName, department } = body
+      if (!email || !password || !fullName || !department) {
+        return Response.json({ error: 'กรุณาระบุอีเมล รหัสผ่าน ชื่อ และแผนก' }, { status: 400 })
+      }
+      const { data, error } = await admin.auth.admin.createUser({
+        email, password, email_confirm: true,
+        user_metadata: { full_name: fullName, department },
+      })
+      if (error) return Response.json({ error: error.message }, { status: 400 })
+      // trigger สร้าง profile ให้แล้ว — ยืนยันค่า department/full_name ตามที่ admin กรอก
+      await admin.from('profiles').update({ full_name: fullName, department }).eq('id', data.user.id)
+      await admin.from('audit_logs').insert({
+        entity_type: 'user', entity_id: data.user.id, action: 'create_user',
+        actor_id: caller.user.id, detail: `เพิ่มผู้ใช้ ${fullName} (${email}) แผนก ${department}`,
+      })
+      return Response.json({ ok: true, userId: data.user.id })
+    }
+
+    if (body.action === 'set_password') {
+      const { userId, password } = body
+      if (!userId || !password) return Response.json({ error: 'กรุณาระบุผู้ใช้และรหัสผ่านใหม่' }, { status: 400 })
+      const { error } = await admin.auth.admin.updateUserById(userId, { password })
+      if (error) return Response.json({ error: error.message }, { status: 400 })
+      await admin.from('audit_logs').insert({
+        entity_type: 'user', entity_id: userId, action: 'set_password',
+        actor_id: caller.user.id, detail: 'เปลี่ยนรหัสผ่านผู้ใช้',
+      })
+      return Response.json({ ok: true })
+    }
+
+    return Response.json({ error: 'unknown action' }, { status: 400 })
+  } catch (e) {
+    return Response.json({ error: String(e?.message ?? e) }, { status: 500 })
+  }
+}
