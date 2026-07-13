@@ -1,4 +1,4 @@
-// LINE Webhook สำหรับตอบโต้ลูกค้า (Phase 2)
+// LINE Webhook สำหรับตอบโต้ลูกค้า + ช่วยหา Group ID (Phase 2)
 // ตั้งค่า Webhook URL ใน LINE Developers Console เป็น:
 //   https://<your-site>.netlify.app/.netlify/functions/line-webhook
 // ตั้ง env: LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET
@@ -34,12 +34,22 @@ export default async (req) => {
   for (const ev of events) {
     if (ev.type === 'message' && ev.message?.type === 'text') {
       const text = ev.message.text.trim()
-      // TODO Phase 2: ต่อ Supabase เพื่อตอบสถานะ Job จริง เช่นลูกค้าพิมพ์ "สถานะ JOB-2026-0001"
+      const src = ev.source ?? {}
+
+      // ช่วยตั้งค่า: พิมพ์ "id" ในกลุ่ม -> บอทตอบ Group ID (เอาไปใส่ LINE_GROUP_ID)
+      if (/^\/?(id|groupid|group id)$/i.test(text)) {
+        const id = src.groupId ?? src.roomId ?? src.userId ?? '(ไม่พบ)'
+        const label = src.groupId ? 'Group ID' : src.roomId ? 'Room ID' : 'User ID'
+        await reply(ev.replyToken, `${label}:\n${id}\n\nนำค่านี้ไปใส่ env LINE_GROUP_ID บน Netlify แล้ว redeploy`)
+        continue
+      }
+
+      // TODO Phase 2: ต่อ Supabase เพื่อตอบสถานะ Job จริง
       if (/^สถานะ\s+JOB-/i.test(text)) {
         await reply(ev.replyToken, `ระบบรับเรื่องตรวจสอบ "${text}" แล้ว เจ้าหน้าที่ Project จะติดต่อกลับโดยเร็วครับ`)
       } else {
         await reply(ev.replyToken,
-          'สวัสดีครับ 115kV LBS Platform 🙏\nพิมพ์ "สถานะ JOB-XXXX-XXXX" เพื่อสอบถามสถานะงาน หรือรอเจ้าหน้าที่ตอบกลับครับ')
+          'สวัสดีครับ 115kV LBS Platform 🙏\nพิมพ์ "id" เพื่อดู Group ID (สำหรับตั้งค่าแจ้งเตือน)\nพิมพ์ "สถานะ JOB-XXXX-XXXX" เพื่อสอบถามสถานะงาน')
       }
     }
   }
