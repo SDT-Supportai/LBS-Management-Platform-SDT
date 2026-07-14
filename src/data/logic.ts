@@ -243,6 +243,10 @@ export function updateJob(
   if (db.jobs.some(j => j.id !== p.jobId && j.jobNo.toLowerCase() === jobNo.toLowerCase()))
     throw new Error(`Job No. "${jobNo}" ซ้ำกับ Job อื่น`)
   if (!p.lbsQtyRequired || p.lbsQtyRequired < 1) throw new Error('จำนวน LBS ตาม Scope ต้องอย่างน้อย 1 เครื่อง')
+  // ห้ามลด Scope ต่ำกว่าจำนวนที่ถืออยู่ — ไม่งั้น cap การดึง LBS ถูก bypass ได้
+  const held = db.lbsUnits.filter(u => u.jobId === p.jobId && u.status === 'allocated').length
+  if (p.lbsQtyRequired < held)
+    throw new Error(`ลดจำนวนตาม Scope ต่ำกว่าที่ถืออยู่ (${held} เครื่อง) ไม่ได้ — คืน LBS กลับสต็อกก่อน`)
   const salePrice = normalizeBudget(p.budgetSalePrice)
   const cost = normalizeBudget(p.budgetCost)
   let next: DB = {
@@ -335,13 +339,14 @@ export function returnLbs(
 
 export function addAccessoryRequest(
   db: DB, actor: User,
-  p: { jobId: string; itemId: string; qty: number; source: 'central_stock' | 'purchasing'; unitPrice?: number },
+  p: { jobId: string; itemId: string; qty: number; source: 'central_stock' | 'purchasing'; unitPrice?: number; phaseBudget?: string },
 ): DB {
   const job = assertJobEditable(db, p.jobId)
   const item = db.items.find(i => i.id === p.itemId)
   if (!item) throw new Error('ไม่พบ Accessory')
   if (!p.qty || p.qty < 1) throw new Error('จำนวนต้องอย่างน้อย 1')
   const unitPrice = normalizeBudget(p.unitPrice)
+  const phaseBudget = p.phaseBudget?.trim() || undefined
 
   const reqId = uid()
   let next: DB
@@ -358,7 +363,7 @@ export function addAccessoryRequest(
         r.itemId === p.itemId ? { ...r, qtyOnHand: r.qtyOnHand - p.qty } : r),
       accessoryRequests: [...db.accessoryRequests, {
         id: reqId, jobId: p.jobId, itemId: p.itemId, qtyRequested: p.qty, qtyReceived: 0,
-        unitPrice, source: 'central_stock' as const, status: 'issued' as const, prId: null,
+        unitPrice, phaseBudget, source: 'central_stock' as const, status: 'issued' as const, prId: null,
         requestedBy: actor.id, createdAt: now(),
       }],
     }
@@ -371,7 +376,7 @@ export function addAccessoryRequest(
     ...db,
     accessoryRequests: [...db.accessoryRequests, {
       id: reqId, jobId: p.jobId, itemId: p.itemId, qtyRequested: p.qty, qtyReceived: 0,
-      unitPrice, source: 'purchasing' as const, status: 'pending' as const, prId: null,
+      unitPrice, phaseBudget, source: 'purchasing' as const, status: 'pending' as const, prId: null,
       requestedBy: actor.id, createdAt: now(),
     }],
   }

@@ -47,7 +47,7 @@ export default function StocksPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [addTo, setAddTo] = useState<string | null>(null)
   const [openStock, setOpenStock] = useState<string | null>(null)         // เริ่มต้นซ่อนรายการทุกคลัง
-  const [showAccessory, setShowAccessory] = useState(false)               // สต็อกกลาง Accessory เริ่มต้นซ่อน
+  const [showAccessory, setShowAccessory] = useState(false)               // คลังสินค้า (Ref.Job) เริ่มต้นซ่อน
   const [editStock, setEditStock] = useState<string | null>(null)
   const [editNotes, setEditNotes] = useState('')
   const [editStatus, setEditStatus] = useState<'open' | 'closed'>('open')
@@ -142,33 +142,70 @@ export default function StocksPage() {
 
       <div className="panel">
         <div className="panel-head">
-          <h3>สต็อกกลาง Accessory</h3>
+          <h3>คลังสินค้า (Ref.Job)</h3>
           <button className="small" onClick={() => setShowAccessory(!showAccessory)}>
             {showAccessory ? 'ซ่อนรายการ' : `แสดงรายการ (${db.items.filter(i => i.itemType === 'accessory').length})`}
           </button>
         </div>
-        {showAccessory && <div className="table-scroll">
-          <table>
-            <thead><tr><th>รหัส</th><th>รายการ</th><th>คงเหลือ</th><th>ประเภทการจัดหา</th></tr></thead>
-            <tbody>
-              {db.items.filter(i => i.itemType === 'accessory').map(i => {
-                const row = db.accessoryStock.find(r => r.itemId === i.id)
-                return (
-                  <tr key={i.id}>
-                    <td className="mono">{i.code}</td>
-                    <td>{i.name}</td>
-                    <td>{i.stockableCentrally ? `${row?.qtyOnHand ?? 0} ${i.uom}` : '-'}</td>
-                    <td>
-                      {i.stockableCentrally
-                        ? <span className="badge green">มีสต็อกกลาง เบิกได้เลย</span>
-                        : <span className="badge amber">ต้องสั่งซื้อผ่าน Purchasing</span>}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>}
+        {showAccessory && <>
+          <div className="table-scroll">
+            <table>
+              <thead><tr><th>รหัส</th><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>คงเหลือ</th><th>ประเภทการจัดหา</th></tr></thead>
+              <tbody>
+                {db.items.filter(i => i.itemType === 'accessory').map(i => {
+                  const row = db.accessoryStock.find(r => r.itemId === i.id)
+                  return (
+                    <tr key={i.id}>
+                      <td className="mono">{i.code}</td>
+                      <td className="mono">{i.epicorCode || '-'}</td>
+                      <td>{i.name}</td>
+                      <td>{i.stockableCentrally ? `${row?.qtyOnHand ?? 0} ${i.uom}` : '-'}</td>
+                      <td>
+                        {i.stockableCentrally
+                          ? <span className="badge green">มีในคลังสินค้า เบิกได้เลย</span>
+                          : <span className="badge amber">ต้องสั่งซื้อผ่าน Purchasing</span>}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          {/* วัสดุที่รับของครบจาก PO — อ้างอิง PO No. / Job No. */}
+          <div className="panel-head" style={{ borderTop: '1px solid var(--border, rgba(120,120,120,.25))' }}>
+            <h3>วัสดุรับครบจาก PO (Ref. PO No. / Job No.)</h3>
+          </div>
+          <div className="table-scroll">
+            <table>
+              <thead><tr><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>จำนวน</th><th>Ref. PO No.</th><th>Job No.</th><th>รับครบเมื่อ</th></tr></thead>
+              <tbody>
+                {(() => {
+                  const receivedPos = db.pos.filter(p => p.status === 'received')
+                  const lines = receivedPos.flatMap(po =>
+                    db.accessoryRequests
+                      .filter(r => r.prId === po.prId && r.status === 'received')
+                      .map(r => ({ po, r })))
+                  if (lines.length === 0)
+                    return <tr><td colSpan={6}><div className="empty">ยังไม่มี PO ที่รับของครบ</div></td></tr>
+                  return lines.map(({ po, r }) => {
+                    const item = db.items.find(i => i.id === r.itemId)!
+                    const job = db.jobs.find(j => j.id === po.jobId)
+                    return (
+                      <tr key={`${po.id}-${r.id}`}>
+                        <td className="mono">{item.epicorCode || '-'}</td>
+                        <td>{item.name} <span className="muted mono">{item.code}</span></td>
+                        <td>{r.qtyReceived} {item.uom}</td>
+                        <td className="mono"><b>{po.poNo}</b></td>
+                        <td>{job ? <Link to={`/jobs/${job.id}`}>{job.jobNo}</Link> : '-'}</td>
+                        <td className="muted">{fmtDate(po.receivedAt)}</td>
+                      </tr>
+                    )
+                  })
+                })()}
+              </tbody>
+            </table>
+          </div>
+        </>}
       </div>
 
       {editStock && (

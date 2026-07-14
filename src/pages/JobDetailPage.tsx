@@ -35,7 +35,7 @@ export default function JobDetailPage() {
   const [drawStock, setDrawStock] = useState('')
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [returnTarget, setReturnTarget] = useState('')
-  const [accForm, setAccForm] = useState({ itemId: '', qty: 1, source: 'central_stock' as 'central_stock' | 'purchasing', unitPrice: '' })
+  const [accForm, setAccForm] = useState({ itemId: '', qty: 1, source: 'central_stock' as 'central_stock' | 'purchasing', unitPrice: '', phaseBudget: '' })
   const [issueForm, setIssueForm] = useState({ startDate: '', endDate: '', location: '', note: '' })
   const [cancelReason, setCancelReason] = useState('')
   const [receivedToCentral, setReceivedToCentral] = useState(true)
@@ -202,7 +202,7 @@ export default function JobDetailPage() {
           <h3>Purchase Orders <span className="muted" style={{ fontWeight: 400 }}>· มูลค่าวัสดุ {fmtBaht(budget.materialValue)} · ต้นทุนคงเหลือ {fmtBaht(budget.remainingCost)}</span></h3>
           <div style={{ display: 'flex', gap: 8 }}>
             {canManage && !locked && (
-              <button className="small" onClick={() => { setAccForm({ itemId: accessoryItems[0]?.id ?? '', qty: 1, source: 'central_stock', unitPrice: '' }); openModal('accessory') }}>+ เพิ่มวัสดุ</button>
+              <button className="small" onClick={() => { setAccForm({ itemId: accessoryItems[0]?.id ?? '', qty: 1, source: 'central_stock', unitPrice: '', phaseBudget: '' }); openModal('accessory') }}>+ เพิ่มวัสดุ</button>
             )}
             {canManage && !locked && pendingReqs.length > 0 && (
               <button className="small primary" onClick={() =>
@@ -214,9 +214,9 @@ export default function JobDetailPage() {
         </div>
         <div className="table-scroll">
           <table>
-            <thead><tr><th>รายการ</th><th>จำนวน</th><th>ราคา/หน่วย</th><th>มูลค่า</th><th>แหล่ง</th><th>สถานะ</th><th>PR / PO</th><th></th></tr></thead>
+            <thead><tr><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>จำนวน</th><th>ราคา/หน่วย</th><th>มูลค่า</th><th>Phase Budget</th><th>แหล่ง</th><th>สถานะ</th><th>PR / PO</th><th></th></tr></thead>
             <tbody>
-              {accReqs.length === 0 && <tr><td colSpan={8}><div className="empty">ยังไม่มีรายการวัสดุ</div></td></tr>}
+              {accReqs.length === 0 && <tr><td colSpan={10}><div className="empty">ยังไม่มีรายการวัสดุ</div></td></tr>}
               {accReqs.map(r => {
                 const item = itemOf(r.itemId)!
                 const pr = db.prs.find(p => p.id === r.prId)
@@ -225,6 +225,7 @@ export default function JobDetailPage() {
                 const lineValue = active && r.unitPrice !== undefined ? r.unitPrice * r.qtyRequested : undefined
                 return (
                   <tr key={r.id}>
+                    <td className="mono">{item.epicorCode || '-'}</td>
                     <td>{item.name} <span className="muted mono">{item.code}</span></td>
                     <td>
                       {r.qtyRequested} {item.uom}
@@ -234,18 +235,23 @@ export default function JobDetailPage() {
                     </td>
                     <td>{fmtBaht(r.unitPrice)}</td>
                     <td>{fmtBaht(lineValue)}</td>
-                    <td>{r.source === 'central_stock' ? <span className="badge green">สต็อกกลาง</span> : <span className="badge amber">Purchasing</span>}</td>
+                    <td className="mono">{r.phaseBudget || '-'}</td>
+                    <td>{r.source === 'central_stock' ? <span className="badge green">คลังสินค้า</span> : <span className="badge amber">Purchasing</span>}</td>
                     <td><span className={`badge ${r.status === 'issued' || r.status === 'received' ? 'green' : r.status === 'cancelled' || r.status === 'returned' ? 'neutral' : 'amber'}`}>{ACC_STATUS_LABEL[r.status]}</span></td>
                     <td className="mono">{[pr?.prNo, po?.poNo].filter(Boolean).join(' / ') || '-'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       {canManage && !locked && active && (
                         <button className="small" onClick={() => {
                           const v = window.prompt(`ราคาต่อหน่วยของ ${item.name} (บาท/${item.uom})`, r.unitPrice !== undefined ? String(r.unitPrice) : '')
-                          if (v !== null) tryAction(() => act.updateAccessoryRequestPrice({ requestId: r.id, unitPrice: v.trim() === '' ? undefined : Number(v) }), 'แก้ราคาแล้ว')
+                          if (v === null) return
+                          const t = v.trim()
+                          if (t !== '' && Number.isNaN(Number(t)))
+                            return void tryAction(() => { throw new Error('กรุณากรอกราคาเป็นตัวเลข') })
+                          tryAction(() => act.updateAccessoryRequestPrice({ requestId: r.id, unitPrice: t === '' ? undefined : Number(t) }), 'แก้ราคาแล้ว')
                         }}>แก้ราคา</button>
                       )}{' '}
                       {canManage && !locked && r.source === 'central_stock' && r.status === 'issued' && (
-                        <button className="small" onClick={() => tryAction(() => act.returnAccessory({ requestId: r.id }), 'คืน Accessory กลับสต็อกกลางแล้ว')}>คืนสต็อก</button>
+                        <button className="small" onClick={() => tryAction(() => act.returnAccessory({ requestId: r.id }), 'คืน Accessory กลับคลังสินค้าแล้ว')}>คืนคลัง</button>
                       )}
                       {canManage && !locked && r.status === 'pending' && (
                         <>
@@ -342,12 +348,12 @@ export default function JobDetailPage() {
       )}
 
       {modal === 'accessory' && (
-        <Modal title="Purchase Orders — เพิ่มวัสดุให้ Job" onClose={close}
+        <Modal title="Purchase Requisition — เพิ่มวัสดุให้ Job" onClose={close}
           footer={<>
             <button onClick={close}>ยกเลิก</button>
             <button className="primary" disabled={!accForm.itemId}
-              onClick={async () => { if (await tryAction(() => act.addAccessoryRequest({ jobId: job.id, itemId: accForm.itemId, qty: accForm.qty, source: accForm.source, unitPrice: toBudgetNum(accForm.unitPrice) }), accForm.source === 'central_stock' ? 'เบิกจากสต็อกกลางเรียบร้อย' : 'เพิ่มรายการรอออก PR แล้ว')) close() }}>
-              {accForm.source === 'central_stock' ? 'เบิกจากสต็อกกลาง' : 'เพิ่มรายการ (รอออก PR)'}
+              onClick={async () => { if (await tryAction(() => act.addAccessoryRequest({ jobId: job.id, itemId: accForm.itemId, qty: accForm.qty, source: accForm.source, unitPrice: toBudgetNum(accForm.unitPrice), phaseBudget: accForm.phaseBudget }), accForm.source === 'central_stock' ? 'เบิกจากคลังสินค้าเรียบร้อย' : 'เพิ่มรายการรอออก PR แล้ว')) close() }}>
+              {accForm.source === 'central_stock' ? 'เบิกจากคลังสินค้า' : 'เพิ่มรายการ (รอออก PR)'}
             </button>
           </>}>
           <label className="field"><span>รายการวัสดุ (Accessory)</span>
@@ -358,12 +364,21 @@ export default function JobDetailPage() {
               {accessoryItems.map(i => <option key={i.id} value={i.id}>{i.name} ({i.code})</option>)}
             </select>
           </label>
+          {selAccItem && (
+            <div className="muted" style={{ marginBottom: 12 }}>
+              รหัส Epicor: <b className="mono">{selAccItem.epicorCode || '-'}</b> · ชื่ออุปกรณ์: <b>{selAccItem.name}</b> · หน่วย: <b>{selAccItem.uom}</b> <span className="mono">(อิงจาก Master Data)</span>
+            </div>
+          )}
           <div className="row">
             <label className="field"><span>จำนวน{selAccItem ? ` (${selAccItem.uom})` : ''}</span>
               <input type="number" min={1} value={accForm.qty} onChange={e => setAccForm({ ...accForm, qty: Number(e.target.value) })} />
             </label>
             <label className="field"><span>ราคาต่อหน่วย (บาท)</span>
               <input type="number" min={0} value={accForm.unitPrice} placeholder="0" onChange={e => setAccForm({ ...accForm, unitPrice: e.target.value })} />
+            </label>
+            <label className="field"><span>Phase Budget</span>
+              <input className="mono" value={accForm.phaseBudget} placeholder="เช่น PH1-INSTALL"
+                onChange={e => setAccForm({ ...accForm, phaseBudget: e.target.value })} />
             </label>
           </div>
           {toBudgetNum(accForm.unitPrice) !== undefined && (
@@ -374,13 +389,13 @@ export default function JobDetailPage() {
           <label className="field"><span>แหล่งที่มา</span>
             <select value={accForm.source} onChange={e => setAccForm({ ...accForm, source: e.target.value as typeof accForm.source })}>
               <option value="central_stock" disabled={!selAccItem?.stockableCentrally}>
-                เบิกจากสต็อกกลาง {selAccItem?.stockableCentrally ? `(คงเหลือ ${selAccStockQty} ${selAccItem.uom})` : '(item นี้ไม่มีสต็อกกลาง)'}
+                เบิกจากคลังสินค้า {selAccItem?.stockableCentrally ? `(คงเหลือ ${selAccStockQty} ${selAccItem.uom})` : '(item นี้ไม่มีในคลังสินค้า)'}
               </option>
               <option value="purchasing">สั่งซื้อผ่าน Purchasing (ออก PR → PO)</option>
             </select>
           </label>
           {accForm.source === 'central_stock' && selAccItem && selAccStockQty < accForm.qty && (
-            <div className="muted" style={{ color: 'var(--red)' }}>สต็อกกลางคงเหลือ {selAccStockQty} ไม่พอ — เปลี่ยนเป็นสั่งซื้อผ่าน Purchasing</div>
+            <div className="muted" style={{ color: 'var(--red)' }}>คลังสินค้าคงเหลือ {selAccStockQty} ไม่พอ — เปลี่ยนเป็นสั่งซื้อผ่าน Purchasing</div>
           )}
         </Modal>
       )}
@@ -390,6 +405,8 @@ export default function JobDetailPage() {
           footer={<>
             <button onClick={close}>ยกเลิก</button>
             <button className="success"
+              disabled={!issueForm.startDate || !issueForm.endDate || !issueForm.location.trim()}
+              title={!issueForm.startDate || !issueForm.endDate || !issueForm.location.trim() ? 'กรอกวันติดตั้ง Start–End และ Location ให้ครบก่อน' : ''}
               onClick={async () => { if (await tryAction(() => act.issueJob({ jobId: job.id, ...issueForm }), `เบิก ${job.jobNo} ให้ Service แล้ว`)) close() }}>
               ยืนยันการเบิก
             </button>

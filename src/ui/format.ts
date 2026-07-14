@@ -23,12 +23,12 @@ export const DEPT_LABEL: Record<Department, string> = {
   project: 'Project',
   purchasing: 'Purchasing',
   service: 'Service',
-  admin: 'Admin',
+  admin: 'Manager',   // ค่าใน DB ยังเป็น 'admin' — เปลี่ยนเฉพาะชื่อที่แสดง (CRUD ได้ทุกแผนก)
 }
 
 export const ACC_STATUS_LABEL: Record<AccReqStatus, string> = {
   pending: 'รอออก PR',
-  issued: 'เบิกจากสต็อกกลางแล้ว',
+  issued: 'เบิกจากคลังสินค้าแล้ว',
   pr_sent: 'ส่ง PR แล้ว',
   po_ordered: 'ออก PO แล้ว',
   received: 'รับของแล้ว',

@@ -65,6 +65,7 @@ function mapAccReq(r: Row): AccessoryRequest {
     id: r.id, jobId: r.job_id, itemId: r.item_id,
     qtyRequested: Number(r.qty_requested), qtyReceived: Number(r.qty_received),
     unitPrice: r.unit_price != null ? Number(r.unit_price) : undefined,
+    phaseBudget: r.phase_budget ?? undefined,
     source: r.source, status: r.status, prId: r.pr_id,
     requestedBy: r.requested_by ?? '', createdAt: r.created_at,
   }
@@ -176,8 +177,8 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_draw_lbs', { p_job_id: p.jobId, p_stock_id: p.stockId, p_unit_ids: p.unitIds }),
     returnLbs: (p: { jobId: string; unitIds: string[]; targetStockId: string; note?: string }) =>
       rpc(sb, 'rpc_return_lbs', { p_job_id: p.jobId, p_unit_ids: p.unitIds, p_target_stock_id: p.targetStockId, p_note: p.note ?? null }),
-    addAccessoryRequest: (p: { jobId: string; itemId: string; qty: number; source: 'central_stock' | 'purchasing'; unitPrice?: number }) =>
-      rpc(sb, 'rpc_add_accessory_request', { p_job_id: p.jobId, p_item_id: p.itemId, p_qty: p.qty, p_source: p.source, p_unit_price: p.unitPrice ?? null }),
+    addAccessoryRequest: (p: { jobId: string; itemId: string; qty: number; source: 'central_stock' | 'purchasing'; unitPrice?: number; phaseBudget?: string }) =>
+      rpc(sb, 'rpc_add_accessory_request', { p_job_id: p.jobId, p_item_id: p.itemId, p_qty: p.qty, p_source: p.source, p_unit_price: p.unitPrice ?? null, p_phase_budget: p.phaseBudget ?? null }),
     updateAccessoryRequestQty: (p: { requestId: string; qty: number }) =>
       rpc(sb, 'rpc_update_accessory_request_qty', { p_request_id: p.requestId, p_qty: p.qty }),
     updateAccessoryRequestPrice: (p: { requestId: string; unitPrice?: number }) =>
@@ -192,7 +193,7 @@ export function remoteActions(sb: SupabaseClient) {
     receivePOItems: (p: { poId: string; receipts: { requestId: string; qty: number }[] }) =>
       rpc(sb, 'rpc_receive_po_items', { p_po_id: p.poId, p_receipts: p.receipts.map(r => ({ request_id: r.requestId, qty: r.qty })) }),
     issueJob: (p: { jobId: string; startDate: string; endDate: string; location: string; note?: string }) =>
-      rpc(sb, 'rpc_issue_job', { p_job_id: p.jobId, p_start_date: p.startDate, p_end_date: p.endDate, p_location: p.location, p_note: p.note ?? null }),
+      rpc(sb, 'rpc_issue_job', { p_job_id: p.jobId, p_start_date: p.startDate || null, p_end_date: p.endDate || null, p_location: p.location, p_note: p.note ?? null }),
     confirmInstall: (p: { jobId: string; installedDate: string; note?: string }) =>
       rpc(sb, 'rpc_confirm_install', { p_job_id: p.jobId, p_installed_date: p.installedDate, p_note: p.note ?? null }),
     cancelJob: (p: { jobId: string; reason: string; receivedAccessoryToCentral: boolean }) =>

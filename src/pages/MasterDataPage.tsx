@@ -1,16 +1,58 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useStore, can } from '../data/StoreContext'
-import { Modal, useTryAction } from '../ui/components'
+import { Modal, useToast, useTryAction } from '../ui/components'
 import { DEPT_LABEL } from '../ui/format'
 import type { Department, Item, User } from '../types'
 
 const DEPTS: Department[] = ['sales', 'project', 'purchasing', 'service', 'admin']
 
+// ---------------- Excel import/export (Accessory Catalog) ----------------
+
+interface ImportRow {
+  code: string; epicorCode: string; name: string; uom: string
+  action: 'create' | 'update' | 'unchanged' | 'error'
+  error?: string
+  itemId?: string
+}
+
+// อ่านค่าจากหัวตารางหลายรูปแบบ (ไทยตามไฟล์ export / อังกฤษ)
+function cell(row: Record<string, unknown>, keys: string[]): string {
+  for (const [k, v] of Object.entries(row)) {
+    if (keys.some(key => k.trim().toLowerCase() === key.toLowerCase()))
+      return String(v ?? '').trim()
+  }
+  return ''
+}
+
+function parseImportRows(rows: Record<string, unknown>[], items: Item[]): ImportRow[] {
+  return rows.map(raw => {
+    const code = cell(raw, ['รหัส', 'code'])
+    const epicorCode = cell(raw, ['รหัส Epicor', 'epicor', 'epicor_code', 'epicor code'])
+    const name = cell(raw, ['ชื่ออุปกรณ์', 'ชื่อ', 'name'])
+    const uom = cell(raw, ['หน่วย', 'uom'])
+    const base: Omit<ImportRow, 'action'> = { code, epicorCode, name, uom }
+    if (!code) return { ...base, action: 'error' as const, error: 'ไม่มีรหัส' }
+    if (!name) return { ...base, action: 'error' as const, error: 'ไม่มีชื่ออุปกรณ์' }
+    const existing = items.find(i => i.code.toLowerCase() === code.toLowerCase())
+    if (!existing) return { ...base, action: 'create' as const }
+    if (existing.itemType === 'main_equipment')
+      return { ...base, action: 'error' as const, error: 'เป็น LBS หลัก แก้จากไฟล์ไม่ได้' }
+    const changed = (existing.epicorCode ?? '') !== epicorCode
+      || existing.name !== name
+      || (uom !== '' && existing.uom !== uom)
+    return { ...base, action: changed ? 'update' as const : 'unchanged' as const, itemId: existing.id }
+  })
+}
+
 export default function MasterDataPage() {
   const { db, user, act } = useStore()
   const tryAction = useTryAction()
+  const { show } = useToast()
   const canMaster = can(user, 'master.manage')
   const canStock = can(user, 'stock.manage')
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [importRows, setImportRows] = useState<ImportRow[] | null>(null)
+  const [importing, setImporting] = useState(false)
 
   // ---- item modal state ----
   const [itemModal, setItemModal] = useState<'create' | 'edit' | null>(null)
@@ -43,6 +85,70 @@ export default function MasterDataPage() {
     if (ok) setUserModal(null)
   }
 
+  // ---------------- Excel export / import ----------------
+
+  // โหลด xlsx แบบ dynamic — ไม่ให้ bundle หลักบวมจาก SheetJS (~430 kB)
+  const exportExcel = async () => {
+    const XLSX = await import('xlsx')
+    const rows = accessories.map(i => ({
+      'รหัส': i.code,
+      'รหัส Epicor': i.epicorCode ?? '',
+      'ชื่ออุปกรณ์': i.name,
+      'หน่วย': i.uom,
+      'การจัดหา': i.stockableCentrally ? 'คลังสินค้า' : 'Purchasing',
+      'คลังคงเหลือ': i.stockableCentrally ? stockQty(i.id) : '',
+    }))
+    const ws = XLSX.utils.json_to_sheet(rows)
+    ws['!cols'] = [{ wch: 14 }, { wch: 14 }, { wch: 32 }, { wch: 8 }, { wch: 12 }, { wch: 10 }]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Accessory Catalog')
+    XLSX.writeFile(wb, `accessory-catalog-${new Date().toISOString().slice(0, 10)}.xlsx`)
+  }
+
+  const onPickFile = async (file: File) => {
+    try {
+      const XLSX = await import('xlsx')
+      const wb = XLSX.read(await file.arrayBuffer())
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: '' })
+      if (raw.length === 0) return show('ไฟล์ไม่มีข้อมูล — ต้องมีหัวตาราง: รหัส, รหัส Epicor, ชื่ออุปกรณ์, หน่วย', true)
+      setImportRows(parseImportRows(raw, db.items))
+    } catch {
+      show('อ่านไฟล์ไม่ได้ — ต้องเป็นไฟล์ Excel (.xlsx)', true)
+    }
+  }
+
+  const runImport = async () => {
+    if (!importRows) return
+    setImporting(true)
+    let ok = 0
+    const fails: string[] = []
+    for (const row of importRows) {
+      if (row.action !== 'create' && row.action !== 'update') continue
+      try {
+        if (row.action === 'create') {
+          await act.createItem({
+            code: row.code, epicorCode: row.epicorCode || undefined, name: row.name,
+            uom: row.uom || 'ชิ้น', stockableCentrally: false, initialQty: 0,
+          })
+        } else {
+          const existing = db.items.find(i => i.id === row.itemId)!
+          await act.updateItem({
+            itemId: existing.id, code: row.code, epicorCode: row.epicorCode || undefined,
+            name: row.name, uom: row.uom || existing.uom, stockableCentrally: existing.stockableCentrally,
+          })
+        }
+        ok++
+      } catch (e) {
+        fails.push(`${row.code}: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    setImporting(false)
+    setImportRows(null)
+    if (fails.length) show(`นำเข้าสำเร็จ ${ok} รายการ · ล้มเหลว ${fails.length}: ${fails[0]}${fails.length > 1 ? ' …' : ''}`, true)
+    else show(`นำเข้า Accessory Catalog สำเร็จ ${ok} รายการ`)
+  }
+
   const adjustStock = (i: Item) => {
     const v = window.prompt(`ยอดคงเหลือใหม่ของ ${i.name} (ปัจจุบัน ${stockQty(i.id)} ${i.uom})`)
     if (v === null) return
@@ -54,18 +160,26 @@ export default function MasterDataPage() {
     <>
       <div className="page-title">ข้อมูลหลัก (Master Data)</div>
       <div className="page-sub">
-        จัดการ Accessory catalog, สต็อกกลาง และผู้ใช้งาน
-        {!canMaster && ' — การเพิ่ม/แก้/ลบเป็นสิทธิ์ของ Admin (ปรับยอดสต็อกกลาง: Sales/Admin)'}
+        จัดการ Accessory catalog, คลังสินค้า และผู้ใช้งาน
+        {!canMaster && ' — การเพิ่ม/แก้/ลบเป็นสิทธิ์ของ Manager (ปรับยอดคลังสินค้า: Sales/Manager)'}
       </div>
 
       <div className="panel">
         <div className="panel-head">
           <h3>Accessory Catalog ({accessories.length})</h3>
-          {canMaster && <button className="small primary" onClick={openCreateItem}>+ เพิ่ม Accessory</button>}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="small" onClick={exportExcel}>⬇ Export Excel</button>
+            {canMaster && <>
+              <button className="small" onClick={() => fileRef.current?.click()}>⬆ Import Excel</button>
+              <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }}
+                onChange={e => { const f = e.target.files?.[0]; if (f) onPickFile(f); e.target.value = '' }} />
+              <button className="small primary" onClick={openCreateItem}>+ เพิ่ม Accessory</button>
+            </>}
+          </div>
         </div>
         <div className="table-scroll">
           <table>
-            <thead><tr><th>รหัส</th><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>หน่วย</th><th>การจัดหา</th><th>สต็อกกลางคงเหลือ</th><th></th></tr></thead>
+            <thead><tr><th>รหัส</th><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>หน่วย</th><th>การจัดหา</th><th>คลังสินค้าคงเหลือ</th><th></th></tr></thead>
             <tbody>
               {accessories.map(i => (
                 <tr key={i.id}>
@@ -74,7 +188,7 @@ export default function MasterDataPage() {
                   <td>{i.name}</td>
                   <td>{i.uom}</td>
                   <td>{i.stockableCentrally
-                    ? <span className="badge green">มีสต็อกกลาง</span>
+                    ? <span className="badge green">มีในคลังสินค้า</span>
                     : <span className="badge amber">ผ่าน Purchasing เท่านั้น</span>}</td>
                   <td>{i.stockableCentrally ? `${stockQty(i.id)} ${i.uom}` : '-'}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>
@@ -139,14 +253,51 @@ export default function MasterDataPage() {
           <label className="field" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <input type="checkbox" style={{ width: 'auto' }} checked={itemForm.stockableCentrally}
               onChange={e => setItemForm({ ...itemForm, stockableCentrally: e.target.checked })} />
-            <span style={{ margin: 0 }}>เก็บในสต็อกกลาง (เบิกได้เลยไม่ต้องออก PR)</span>
+            <span style={{ margin: 0 }}>เก็บในคลังสินค้า (เบิกได้เลยไม่ต้องออก PR)</span>
           </label>
           {itemModal === 'create' && itemForm.stockableCentrally && (
-            <label className="field"><span>ยอดเริ่มต้นในสต็อกกลาง</span>
+            <label className="field"><span>ยอดเริ่มต้นในคลังสินค้า</span>
               <input type="number" min={0} value={itemForm.initialQty}
                 onChange={e => setItemForm({ ...itemForm, initialQty: Number(e.target.value) })} />
             </label>
           )}
+        </Modal>
+      )}
+
+      {importRows && (
+        <Modal title="Import Accessory Catalog — ตรวจสอบก่อนยืนยัน" onClose={() => setImportRows(null)}
+          footer={<>
+            <button onClick={() => setImportRows(null)} disabled={importing}>ยกเลิก</button>
+            <button className="primary" disabled={importing || importRows.every(r => r.action === 'unchanged' || r.action === 'error')}
+              onClick={runImport}>
+              {importing ? 'กำลังนำเข้า…' : `ยืนยันนำเข้า (ใหม่ ${importRows.filter(r => r.action === 'create').length} · อัปเดต ${importRows.filter(r => r.action === 'update').length})`}
+            </button>
+          </>}>
+          <div className="muted" style={{ marginBottom: 10 }}>
+            รหัสที่มีอยู่แล้ว = อัปเดตทับ (ชื่อ/Epicor/หน่วย) · รหัสใหม่ = เพิ่มรายการ (การจัดหาเริ่มต้น: Purchasing)
+            · ไม่แตะยอดคลังสินค้า
+          </div>
+          <div className="table-scroll" style={{ maxHeight: 320, overflowY: 'auto' }}>
+            <table>
+              <thead><tr><th>ผล</th><th>รหัส</th><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>หน่วย</th></tr></thead>
+              <tbody>
+                {importRows.map((r, i) => (
+                  <tr key={i}>
+                    <td>
+                      {r.action === 'create' && <span className="badge green">เพิ่มใหม่</span>}
+                      {r.action === 'update' && <span className="badge blue">อัปเดต</span>}
+                      {r.action === 'unchanged' && <span className="badge neutral">ไม่เปลี่ยน</span>}
+                      {r.action === 'error' && <span className="badge red" title={r.error}>ข้าม: {r.error}</span>}
+                    </td>
+                    <td className="mono">{r.code || '-'}</td>
+                    <td className="mono">{r.epicorCode || '-'}</td>
+                    <td>{r.name || '-'}</td>
+                    <td>{r.uom || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </Modal>
       )}
 

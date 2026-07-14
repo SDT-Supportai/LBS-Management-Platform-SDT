@@ -32,7 +32,8 @@ DELETE FROM accessory_stock
 --        WHERE email = 'e2e-runner@example.org';
 --    3.3 ลบ user ทดสอบที่ค้าง (ไม่มี profile ผูก job ใดๆ):
 --        DELETE FROM auth.users WHERE email IN
---          ('e2e.tester.lbs@gmail.com', 'e2e-admin@example.com', 'e2e-runner@example.org');
+--          ('e2e.tester.lbs@gmail.com', 'e2e-admin@example.com', 'e2e-runner@example.org',
+--           'fn-test-sales@example.org');
 --        (ลบ e2e-runner ได้เมื่อรัน cleanup ข้อ 1 แล้ว เพราะ audit/jobs ที่อ้างถึงถูกลบหมด)
 
 -- 4) (ถ้าต้องการ) เริ่มเลข Stock ใหม่: ลบคลังตัวอย่างแล้วให้ Sales สร้างเอง

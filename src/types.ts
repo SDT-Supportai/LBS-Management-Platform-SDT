@@ -111,6 +111,7 @@ export interface AccessoryRequest {
   qtyRequested: number
   qtyReceived: number          // สำหรับ partial receive ฝั่ง purchasing
   unitPrice?: number           // ราคาต่อหน่วย (บาท) → มูลค่าวัสดุ = unitPrice × qtyRequested
+  phaseBudget?: string         // รหัส Phase Budget (อ้างอิงงบประมาณภายใน) — กรอกตอนขอวัสดุ
   source: 'central_stock' | 'purchasing'
   status: AccReqStatus
   prId: string | null

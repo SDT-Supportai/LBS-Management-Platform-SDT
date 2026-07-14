@@ -73,9 +73,9 @@ export function buildSeedDb(): DB {
   const job2 = db.jobs[1].id
   db = L.drawLbs(db, project, { jobId: job2, stockId: stock1, unitIds: unitsOf(stock1).slice(0, 3).map(u => u.id) })
   db = L.drawLbs(db, project, { jobId: job2, stockId: stock2, unitIds: unitsOf(stock2).slice(0, 2).map(u => u.id) })
-  db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-ct', qty: 5, source: 'central_stock', unitPrice: 85000 })
-  db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-relay', qty: 5, source: 'purchasing', unitPrice: 120000 })
-  db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-cable', qty: 3, source: 'purchasing', unitPrice: 15000 })
+  db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-ct', qty: 5, source: 'central_stock', unitPrice: 85000, phaseBudget: 'PH1-SUPPLY' })
+  db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-relay', qty: 5, source: 'purchasing', unitPrice: 120000, phaseBudget: 'PH1-SUPPLY' })
+  db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-cable', qty: 3, source: 'purchasing', unitPrice: 15000, phaseBudget: 'PH2-INSTALL' })
   db = L.createPR(db, project, { jobId: job2, requestIds: L.pendingPurchasingReqs(db, job2).map(r => r.id) })
   db = L.createPO(db, purchasing, { prId: db.prs[0].id, poNo: 'PO-2026-0001', supplierName: 'บจก.สยามอิเล็คทริค', expectedDate: '2026-07-30' })
 
