@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { deriveJobStatus, pendingPurchasingReqs, stockSummary } from '../data/logic'
-import { JobStatusBadge, Modal, useTryAction } from '../ui/components'
-import { ACC_STATUS_LABEL, PR_STATUS_LABEL, fmtDate, fmtDateTime } from '../ui/format'
+import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary } from '../data/logic'
+import { BudgetFields, JobStatusBadge, Modal, toBudgetNum, useTryAction } from '../ui/components'
+import { ACC_STATUS_LABEL, PR_STATUS_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import type { LbsUnit } from '../types'
 
 function SerialPicker({ units, selected, toggle }: {
@@ -16,7 +16,7 @@ function SerialPicker({ units, selected, toggle }: {
       {units.map(u => (
         <div key={u.id} className={`serial-pick${selected.has(u.id) ? ' selected' : ''}`} onClick={() => toggle(u.id)}>
           <input type="checkbox" readOnly checked={selected.has(u.id)} />
-          <span className="mono">{u.serialNo}</span>
+          <span className="mono">{u.serialLvb}</span>
         </div>
       ))}
       {units.length === 0 && <div className="muted">ไม่มีเครื่องให้เลือก</div>}
@@ -35,11 +35,11 @@ export default function JobDetailPage() {
   const [drawStock, setDrawStock] = useState('')
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [returnTarget, setReturnTarget] = useState('')
-  const [accForm, setAccForm] = useState({ itemId: '', qty: 1, source: 'central_stock' as 'central_stock' | 'purchasing' })
+  const [accForm, setAccForm] = useState({ itemId: '', qty: 1, source: 'central_stock' as 'central_stock' | 'purchasing', unitPrice: '' })
   const [issueNote, setIssueNote] = useState('')
   const [cancelReason, setCancelReason] = useState('')
   const [receivedToCentral, setReceivedToCentral] = useState(true)
-  const [editForm, setEditForm] = useState({ customerName: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1 })
+  const [editForm, setEditForm] = useState({ customerName: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', cost: '' })
 
   const status = job ? deriveJobStatus(db, job) : 'draft'
   const canManage = can(user, 'job.manage')
@@ -52,11 +52,11 @@ export default function JobDetailPage() {
   const accReqs = db.accessoryRequests.filter(r => r.jobId === jobId)
   const pendingReqs = job ? pendingPurchasingReqs(db, job.id) : []
   const receivedFromPo = accReqs.filter(r => r.source === 'purchasing' && r.status === 'received')
-  const jobAudit = db.auditLogs.filter(a => a.entityId === jobId || (job && a.detail.includes(job.jobNo)))
   const jobPrs = db.prs.filter(p => p.jobId === jobId)
 
   if (!job) return <div className="empty">ไม่พบ Job นี้ <Link to="/jobs">กลับหน้า Jobs</Link></div>
 
+  const budget = jobBudgetSummary(db, job)
   const itemOf = (id: string) => db.items.find(i => i.id === id)
   const stockOf = (id: string) => db.projectStocks.find(s => s.id === id)
   const userOf = (id: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
@@ -110,13 +110,17 @@ export default function JobDetailPage() {
         <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
           <button className="primary" onClick={() => { setDrawStock(db.projectStocks.find(s => s.status === 'open')?.id ?? ''); openModal('draw') }}>+ ดึง LBS เข้า Job</button>
           <button onClick={() => { setReturnTarget(''); openModal('return') }} disabled={returnableUnits.length === 0}>คืน LBS กลับสต็อก</button>
-          <button onClick={() => { setAccForm({ itemId: accessoryItems[0]?.id ?? '', qty: 1, source: 'central_stock' }); openModal('accessory') }}>+ ขอ Accessory</button>
           <button className="success" onClick={() => openModal('issue')} disabled={status !== 'ready_to_issue'}
             title={status !== 'ready_to_issue' ? 'ต้องมี LBS ครบตาม Scope และ Accessory ครบทุกรายการ' : ''}>
             เบิกทั้งหมดให้ Service
           </button>
           <button onClick={() => {
-            setEditForm({ customerName: job.customerName, scope: job.scope, installLocation: job.installLocation, requiredDate: job.requiredDate, lbsQtyRequired: job.lbsQtyRequired })
+            setEditForm({
+              customerName: job.customerName, scope: job.scope, installLocation: job.installLocation,
+              requiredDate: job.requiredDate, lbsQtyRequired: job.lbsQtyRequired,
+              salePrice: job.budgetSalePrice !== undefined ? String(job.budgetSalePrice) : '',
+              cost: job.budgetCost !== undefined ? String(job.budgetCost) : '',
+            })
             openModal('edit')
           }}>แก้ไขข้อมูล Job</button>
           <button className="danger" onClick={() => { setCancelReason(''); setReceivedToCentral(true); openModal('cancel') }}>ยกเลิก Job</button>
@@ -129,6 +133,24 @@ export default function JobDetailPage() {
         </div>
       )}
 
+      {/* ---------------- Project Budget ---------------- */}
+      <div className="panel">
+        <div className="panel-head"><h3>Project Budget</h3>
+          <span className="muted">กำไร = ราคาขาย − ต้นทุน · ต้นทุนคงเหลือ = ต้นทุน − มูลค่าวัสดุ</span>
+        </div>
+        <div className="panel-body">
+          <div className="budget-grid">
+            <div className="budget-cell"><div className="b-label">ราคาขาย</div><div className="b-value">{fmtBaht(budget.salePrice)}</div></div>
+            <div className="budget-cell"><div className="b-label">ต้นทุน</div><div className="b-value">{fmtBaht(budget.cost)}</div></div>
+            <div className="budget-cell"><div className="b-label">กำไร{budget.margin !== undefined ? ` (${budget.margin.toFixed(1)}%)` : ''}</div>
+              <div className={`b-value ${budget.profit !== undefined && budget.profit < 0 ? 'neg' : 'pos'}`}>{fmtBaht(budget.profit)}</div></div>
+            <div className="budget-cell"><div className="b-label">มูลค่าวัสดุ (Purchase Orders)</div><div className="b-value">{fmtBaht(budget.materialValue)}</div></div>
+            <div className="budget-cell"><div className="b-label">ต้นทุนคงเหลือ</div>
+              <div className={`b-value ${budget.remainingCost !== undefined && budget.remainingCost < 0 ? 'neg' : 'pos'}`}>{fmtBaht(budget.remainingCost)}</div></div>
+          </div>
+        </div>
+      </div>
+
       {/* ---------------- LBS allocation ---------------- */}
       <div className="panel">
         <div className="panel-head">
@@ -139,12 +161,13 @@ export default function JobDetailPage() {
         </div>
         <div className="table-scroll">
           <table>
-            <thead><tr><th>Serial No.</th><th>มาจาก Stock</th><th>สถานะ</th></tr></thead>
+            <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th>มาจาก Stock</th><th>สถานะ</th></tr></thead>
             <tbody>
-              {allocatedUnits.length === 0 && <tr><td colSpan={3}><div className="empty">ยังไม่ได้ดึง LBS — Job อยู่สถานะ Draft</div></td></tr>}
+              {allocatedUnits.length === 0 && <tr><td colSpan={4}><div className="empty">ยังไม่ได้ดึง LBS — Job อยู่สถานะ Draft</div></td></tr>}
               {allocatedUnits.map(u => (
                 <tr key={u.id}>
-                  <td className="mono">{u.serialNo}</td>
+                  <td className="mono">{u.serialLvb}</td>
+                  <td className="mono">{u.serialOm}</td>
                   <td>{stockOf(u.projectStockId)?.stockNo}</td>
                   <td>{u.status === 'allocated' ? <span className="badge blue">Allocated</span> : <span className="badge neutral">Issued</span>}</td>
                 </tr>
@@ -154,26 +177,33 @@ export default function JobDetailPage() {
         </div>
       </div>
 
-      {/* ---------------- Accessory ---------------- */}
+      {/* ---------------- Purchase Orders (วัสดุของ Job) ---------------- */}
       <div className="panel">
         <div className="panel-head">
-          <h3>Accessory ของ Job</h3>
-          {canManage && !locked && pendingReqs.length > 0 && (
-            <button className="small primary" onClick={() =>
-              tryAction(() => act.createPR({ jobId: job.id, requestIds: pendingReqs.map(r => r.id) }),
-                'ออก PR ส่งให้ Purchasing แล้ว')
-            }>ออก PR ส่ง Purchasing ({pendingReqs.length} รายการ)</button>
-          )}
+          <h3>Purchase Orders <span className="muted" style={{ fontWeight: 400 }}>· มูลค่าวัสดุ {fmtBaht(budget.materialValue)} · ต้นทุนคงเหลือ {fmtBaht(budget.remainingCost)}</span></h3>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {canManage && !locked && (
+              <button className="small" onClick={() => { setAccForm({ itemId: accessoryItems[0]?.id ?? '', qty: 1, source: 'central_stock', unitPrice: '' }); openModal('accessory') }}>+ เพิ่มวัสดุ</button>
+            )}
+            {canManage && !locked && pendingReqs.length > 0 && (
+              <button className="small primary" onClick={() =>
+                tryAction(() => act.createPR({ jobId: job.id, requestIds: pendingReqs.map(r => r.id) }),
+                  'ออก PR ส่งให้ Purchasing แล้ว')
+              }>ออก PR ส่ง Purchasing ({pendingReqs.length} รายการ)</button>
+            )}
+          </div>
         </div>
         <div className="table-scroll">
           <table>
-            <thead><tr><th>รายการ</th><th>จำนวน</th><th>แหล่ง</th><th>สถานะ</th><th>PR / PO</th><th></th></tr></thead>
+            <thead><tr><th>รายการ</th><th>จำนวน</th><th>ราคา/หน่วย</th><th>มูลค่า</th><th>แหล่ง</th><th>สถานะ</th><th>PR / PO</th><th></th></tr></thead>
             <tbody>
-              {accReqs.length === 0 && <tr><td colSpan={6}><div className="empty">ยังไม่มีรายการ Accessory</div></td></tr>}
+              {accReqs.length === 0 && <tr><td colSpan={8}><div className="empty">ยังไม่มีรายการวัสดุ</div></td></tr>}
               {accReqs.map(r => {
                 const item = itemOf(r.itemId)!
                 const pr = db.prs.find(p => p.id === r.prId)
                 const po = db.pos.find(p => p.prId === r.prId && p.status !== 'cancelled')
+                const active = r.status !== 'cancelled' && r.status !== 'returned'
+                const lineValue = active && r.unitPrice !== undefined ? r.unitPrice * r.qtyRequested : undefined
                 return (
                   <tr key={r.id}>
                     <td>{item.name} <span className="muted mono">{item.code}</span></td>
@@ -183,10 +213,18 @@ export default function JobDetailPage() {
                         <div className="muted">รับแล้ว {r.qtyReceived}/{r.qtyRequested}</div>
                       )}
                     </td>
+                    <td>{fmtBaht(r.unitPrice)}</td>
+                    <td>{fmtBaht(lineValue)}</td>
                     <td>{r.source === 'central_stock' ? <span className="badge green">สต็อกกลาง</span> : <span className="badge amber">Purchasing</span>}</td>
                     <td><span className={`badge ${r.status === 'issued' || r.status === 'received' ? 'green' : r.status === 'cancelled' || r.status === 'returned' ? 'neutral' : 'amber'}`}>{ACC_STATUS_LABEL[r.status]}</span></td>
                     <td className="mono">{[pr?.prNo, po?.poNo].filter(Boolean).join(' / ') || '-'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
+                      {canManage && !locked && active && (
+                        <button className="small" onClick={() => {
+                          const v = window.prompt(`ราคาต่อหน่วยของ ${item.name} (บาท/${item.uom})`, r.unitPrice !== undefined ? String(r.unitPrice) : '')
+                          if (v !== null) tryAction(() => act.updateAccessoryRequestPrice({ requestId: r.id, unitPrice: v.trim() === '' ? undefined : Number(v) }), 'แก้ราคาแล้ว')
+                        }}>แก้ราคา</button>
+                      )}{' '}
                       {canManage && !locked && r.source === 'central_stock' && r.status === 'issued' && (
                         <button className="small" onClick={() => tryAction(() => act.returnAccessory({ requestId: r.id }), 'คืน Accessory กลับสต็อกกลางแล้ว')}>คืนสต็อก</button>
                       )}
@@ -230,24 +268,6 @@ export default function JobDetailPage() {
                   <td>{stockOf(a.projectStockId)?.stockNo}</td>
                   <td className="mono">{a.serialNos.join(', ')}</td>
                   <td>{userOf(a.performedBy)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="panel">
-        <div className="panel-head"><h3>Audit Trail ของ Job</h3></div>
-        <div className="table-scroll">
-          <table>
-            <thead><tr><th>เวลา</th><th>ผู้ทำรายการ</th><th>รายละเอียด</th></tr></thead>
-            <tbody>
-              {jobAudit.map(a => (
-                <tr key={a.id}>
-                  <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(a.createdAt)}</td>
-                  <td>{userOf(a.actorId)}</td>
-                  <td>{a.detail}</td>
                 </tr>
               ))}
             </tbody>
@@ -299,15 +319,15 @@ export default function JobDetailPage() {
       )}
 
       {modal === 'accessory' && (
-        <Modal title="ขอ Accessory สำหรับ Job" onClose={close}
+        <Modal title="Purchase Orders — เพิ่มวัสดุให้ Job" onClose={close}
           footer={<>
             <button onClick={close}>ยกเลิก</button>
             <button className="primary" disabled={!accForm.itemId}
-              onClick={async () => { if (await tryAction(() => act.addAccessoryRequest({ jobId: job.id, itemId: accForm.itemId, qty: accForm.qty, source: accForm.source }), accForm.source === 'central_stock' ? 'เบิกจากสต็อกกลางเรียบร้อย' : 'เพิ่มรายการรอออก PR แล้ว')) close() }}>
+              onClick={async () => { if (await tryAction(() => act.addAccessoryRequest({ jobId: job.id, itemId: accForm.itemId, qty: accForm.qty, source: accForm.source, unitPrice: toBudgetNum(accForm.unitPrice) }), accForm.source === 'central_stock' ? 'เบิกจากสต็อกกลางเรียบร้อย' : 'เพิ่มรายการรอออก PR แล้ว')) close() }}>
               {accForm.source === 'central_stock' ? 'เบิกจากสต็อกกลาง' : 'เพิ่มรายการ (รอออก PR)'}
             </button>
           </>}>
-          <label className="field"><span>รายการ Accessory</span>
+          <label className="field"><span>รายการวัสดุ (Accessory)</span>
             <select value={accForm.itemId} onChange={e => {
               const item = itemOf(e.target.value)
               setAccForm({ ...accForm, itemId: e.target.value, source: item?.stockableCentrally ? 'central_stock' : 'purchasing' })
@@ -315,9 +335,19 @@ export default function JobDetailPage() {
               {accessoryItems.map(i => <option key={i.id} value={i.id}>{i.name} ({i.code})</option>)}
             </select>
           </label>
-          <label className="field"><span>จำนวน{selAccItem ? ` (${selAccItem.uom})` : ''}</span>
-            <input type="number" min={1} value={accForm.qty} onChange={e => setAccForm({ ...accForm, qty: Number(e.target.value) })} />
-          </label>
+          <div className="row">
+            <label className="field"><span>จำนวน{selAccItem ? ` (${selAccItem.uom})` : ''}</span>
+              <input type="number" min={1} value={accForm.qty} onChange={e => setAccForm({ ...accForm, qty: Number(e.target.value) })} />
+            </label>
+            <label className="field"><span>ราคาต่อหน่วย (บาท)</span>
+              <input type="number" min={0} value={accForm.unitPrice} placeholder="0" onChange={e => setAccForm({ ...accForm, unitPrice: e.target.value })} />
+            </label>
+          </div>
+          {toBudgetNum(accForm.unitPrice) !== undefined && (
+            <div className="budget-profit" style={{ marginBottom: 12 }}>
+              <span>มูลค่ารายการนี้</span><b className="pos">{fmtBaht((toBudgetNum(accForm.unitPrice) ?? 0) * accForm.qty)}</b>
+            </div>
+          )}
           <label className="field"><span>แหล่งที่มา</span>
             <select value={accForm.source} onChange={e => setAccForm({ ...accForm, source: e.target.value as typeof accForm.source })}>
               <option value="central_stock" disabled={!selAccItem?.stockableCentrally}>
@@ -385,7 +415,10 @@ export default function JobDetailPage() {
           footer={<>
             <button onClick={close}>ยกเลิก</button>
             <button className="primary"
-              onClick={async () => { if (await tryAction(() => act.updateJob({ jobId: job.id, ...editForm }), 'บันทึกแล้ว')) close() }}>บันทึก</button>
+              onClick={async () => {
+                const { salePrice, cost, ...rest } = editForm
+                if (await tryAction(() => act.updateJob({ jobId: job.id, ...rest, budgetSalePrice: toBudgetNum(salePrice), budgetCost: toBudgetNum(cost) }), 'บันทึกแล้ว')) close()
+              }}>บันทึก</button>
           </>}>
           <label className="field"><span>ชื่อลูกค้า</span>
             <input value={editForm.customerName} onChange={e => setEditForm({ ...editForm, customerName: e.target.value })} />
@@ -404,6 +437,12 @@ export default function JobDetailPage() {
           <label className="field"><span>จำนวน LBS ตาม Scope (เครื่อง)</span>
             <input type="number" min={1} value={editForm.lbsQtyRequired} onChange={e => setEditForm({ ...editForm, lbsQtyRequired: Number(e.target.value) })} />
           </label>
+          <div className="budget-legend">Project Budget</div>
+          <BudgetFields
+            sale={editForm.salePrice} cost={editForm.cost}
+            onSale={v => setEditForm({ ...editForm, salePrice: v })}
+            onCost={v => setEditForm({ ...editForm, cost: v })}
+          />
         </Modal>
       )}
     </>

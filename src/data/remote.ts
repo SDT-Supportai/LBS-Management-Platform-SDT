@@ -22,7 +22,7 @@ function mapUser(r: Row): User {
 }
 function mapItem(r: Row): Item {
   return {
-    id: r.id, code: r.code, name: r.name, itemType: r.item_type,
+    id: r.id, code: r.code, epicorCode: r.epicor_code ?? undefined, name: r.name, itemType: r.item_type,
     uom: r.uom, stockableCentrally: r.is_stockable_centrally,
   }
 }
@@ -33,13 +33,15 @@ function mapStock(r: Row): ProjectStock {
   }
 }
 function mapUnit(r: Row): LbsUnit {
-  return { id: r.id, serialNo: r.serial_no, projectStockId: r.project_stock_id, status: r.status, jobId: r.job_id }
+  return { id: r.id, serialLvb: r.serial_lvb, serialOm: r.serial_om ?? '', projectStockId: r.project_stock_id, status: r.status, jobId: r.job_id }
 }
 function mapJob(r: Row): Job {
   return {
     id: r.id, jobNo: r.job_no, customerName: r.customer_name, scope: r.scope ?? '',
     installLocation: r.install_location ?? '', requiredDate: r.required_date ?? '',
     lbsQtyRequired: r.lbs_qty_required, terminalStatus: r.terminal_status,
+    budgetSalePrice: r.budget_sale_price != null ? Number(r.budget_sale_price) : undefined,
+    budgetCost: r.budget_cost != null ? Number(r.budget_cost) : undefined,
     openedBy: r.opened_by ?? '', createdAt: r.created_at,
     issuedAt: r.issued_at ?? undefined, issuedNote: r.issued_note ?? undefined,
     installedAt: r.installed_at ?? undefined, installNote: r.install_note ?? undefined,
@@ -59,6 +61,7 @@ function mapAccReq(r: Row): AccessoryRequest {
   return {
     id: r.id, jobId: r.job_id, itemId: r.item_id,
     qtyRequested: Number(r.qty_requested), qtyReceived: Number(r.qty_received),
+    unitPrice: r.unit_price != null ? Number(r.unit_price) : undefined,
     source: r.source, status: r.status, prId: r.pr_id,
     requestedBy: r.requested_by ?? '', createdAt: r.created_at,
   }
@@ -105,7 +108,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       q(sb, 'profiles'),
       q(sb, 'items'),
       q(sb, 'project_stocks', { col: 'created_at' }),
-      q(sb, 'lbs_units', { col: 'serial_no' }),
+      q(sb, 'lbs_units', { col: 'serial_lvb' }),
       q(sb, 'jobs', { col: 'created_at' }),
       q(sb, 'stock_allocations', { col: 'performed_at' }),
       q(sb, 'accessory_stock'),
@@ -155,25 +158,27 @@ async function rpc(sb: SupabaseClient, fn: string, params: Record<string, unknow
 // map action ชื่อเดียวกับ demo mode → RPC ฝั่ง server
 export function remoteActions(sb: SupabaseClient) {
   return {
-    createProjectStock: (p: { stockNo: string; itemId: string; serialNos: string[]; notes?: string }) =>
-      rpc(sb, 'rpc_create_project_stock', { p_stock_no: p.stockNo, p_item_id: p.itemId, p_serials: p.serialNos, p_notes: p.notes ?? null }),
-    addUnitsToStock: (p: { stockId: string; serialNos: string[] }) =>
-      rpc(sb, 'rpc_add_units_to_stock', { p_stock_id: p.stockId, p_serials: p.serialNos }),
+    createProjectStock: (p: { stockNo: string; itemId: string; units: { lvb: string; om: string }[]; notes?: string }) =>
+      rpc(sb, 'rpc_create_project_stock', { p_stock_no: p.stockNo, p_item_id: p.itemId, p_units: p.units, p_notes: p.notes ?? null }),
+    addUnitsToStock: (p: { stockId: string; units: { lvb: string; om: string }[] }) =>
+      rpc(sb, 'rpc_add_units_to_stock', { p_stock_id: p.stockId, p_units: p.units }),
     updateProjectStock: (p: { stockId: string; notes: string; status: 'open' | 'closed' }) =>
       rpc(sb, 'rpc_update_project_stock', { p_stock_id: p.stockId, p_notes: p.notes, p_status: p.status }),
-    createJob: (p: { customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number }) =>
-      rpc(sb, 'rpc_create_job', { p_customer: p.customerName, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired }),
-    updateJob: (p: { jobId: string; customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number }) =>
-      rpc(sb, 'rpc_update_job', { p_job_id: p.jobId, p_customer: p.customerName, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired }),
+    createJob: (p: { customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCost?: number }) =>
+      rpc(sb, 'rpc_create_job', { p_customer: p.customerName, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_cost: p.budgetCost ?? null }),
+    updateJob: (p: { jobId: string; customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCost?: number }) =>
+      rpc(sb, 'rpc_update_job', { p_job_id: p.jobId, p_customer: p.customerName, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_cost: p.budgetCost ?? null }),
     deleteDraftJob: (p: { jobId: string }) => rpc(sb, 'rpc_delete_draft_job', { p_job_id: p.jobId }),
     drawLbs: (p: { jobId: string; stockId: string; unitIds: string[] }) =>
       rpc(sb, 'rpc_draw_lbs', { p_job_id: p.jobId, p_stock_id: p.stockId, p_unit_ids: p.unitIds }),
     returnLbs: (p: { jobId: string; unitIds: string[]; targetStockId: string; note?: string }) =>
       rpc(sb, 'rpc_return_lbs', { p_job_id: p.jobId, p_unit_ids: p.unitIds, p_target_stock_id: p.targetStockId, p_note: p.note ?? null }),
-    addAccessoryRequest: (p: { jobId: string; itemId: string; qty: number; source: 'central_stock' | 'purchasing' }) =>
-      rpc(sb, 'rpc_add_accessory_request', { p_job_id: p.jobId, p_item_id: p.itemId, p_qty: p.qty, p_source: p.source }),
+    addAccessoryRequest: (p: { jobId: string; itemId: string; qty: number; source: 'central_stock' | 'purchasing'; unitPrice?: number }) =>
+      rpc(sb, 'rpc_add_accessory_request', { p_job_id: p.jobId, p_item_id: p.itemId, p_qty: p.qty, p_source: p.source, p_unit_price: p.unitPrice ?? null }),
     updateAccessoryRequestQty: (p: { requestId: string; qty: number }) =>
       rpc(sb, 'rpc_update_accessory_request_qty', { p_request_id: p.requestId, p_qty: p.qty }),
+    updateAccessoryRequestPrice: (p: { requestId: string; unitPrice?: number }) =>
+      rpc(sb, 'rpc_update_accessory_request_price', { p_request_id: p.requestId, p_unit_price: p.unitPrice ?? null }),
     returnAccessory: (p: { requestId: string }) => rpc(sb, 'rpc_return_accessory', { p_request_id: p.requestId }),
     cancelAccessoryRequest: (p: { requestId: string }) => rpc(sb, 'rpc_cancel_accessory_request', { p_request_id: p.requestId }),
     createPR: (p: { jobId: string; requestIds: string[] }) =>
@@ -188,10 +193,10 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_confirm_install', { p_job_id: p.jobId, p_installed_date: p.installedDate, p_note: p.note ?? null }),
     cancelJob: (p: { jobId: string; reason: string; receivedAccessoryToCentral: boolean }) =>
       rpc(sb, 'rpc_cancel_job', { p_job_id: p.jobId, p_reason: p.reason, p_received_to_central: p.receivedAccessoryToCentral }),
-    createItem: (p: { code: string; name: string; uom: string; stockableCentrally: boolean; initialQty?: number }) =>
-      rpc(sb, 'rpc_create_item', { p_code: p.code, p_name: p.name, p_uom: p.uom, p_stockable: p.stockableCentrally, p_initial_qty: p.initialQty ?? 0 }),
-    updateItem: (p: { itemId: string; code: string; name: string; uom: string; stockableCentrally: boolean }) =>
-      rpc(sb, 'rpc_update_item', { p_item_id: p.itemId, p_code: p.code, p_name: p.name, p_uom: p.uom, p_stockable: p.stockableCentrally }),
+    createItem: (p: { code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean; initialQty?: number }) =>
+      rpc(sb, 'rpc_create_item', { p_code: p.code, p_epicor_code: p.epicorCode ?? null, p_name: p.name, p_uom: p.uom, p_stockable: p.stockableCentrally, p_initial_qty: p.initialQty ?? 0 }),
+    updateItem: (p: { itemId: string; code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean }) =>
+      rpc(sb, 'rpc_update_item', { p_item_id: p.itemId, p_code: p.code, p_epicor_code: p.epicorCode ?? null, p_name: p.name, p_uom: p.uom, p_stockable: p.stockableCentrally }),
     deleteItem: (p: { itemId: string }) => rpc(sb, 'rpc_delete_item', { p_item_id: p.itemId }),
     adjustAccessoryStock: (p: { itemId: string; newQty: number; note: string }) =>
       rpc(sb, 'rpc_adjust_accessory_stock', { p_item_id: p.itemId, p_new_qty: p.newQty, p_note: p.note }),

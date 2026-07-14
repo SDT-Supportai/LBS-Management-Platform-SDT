@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from 'react'
 import type { JobStatus } from '../types'
-import { JOB_STATUS_LABEL } from './format'
+import { JOB_STATUS_LABEL, fmtBaht } from './format'
 
 // ---------------- Toast ----------------
 
@@ -71,4 +71,41 @@ export function Modal({ title, onClose, children, footer }: {
 
 export function JobStatusBadge({ status }: { status: JobStatus }) {
   return <span className={`badge ${status}`}>{JOB_STATUS_LABEL[status]}</span>
+}
+
+// ---------------- Project Budget fields ----------------
+
+export const toBudgetNum = (s: string): number | undefined => {
+  const t = s.trim()
+  if (!t) return undefined
+  const n = Number(t)
+  return Number.isNaN(n) ? undefined : n
+}
+
+/** ช่องกรอกงบประมาณ: ราคาขาย / ต้นทุน + กำไร auto (= ราคาขาย − ต้นทุน) */
+export function BudgetFields({ sale, cost, onSale, onCost }: {
+  sale: string; cost: string
+  onSale: (v: string) => void; onCost: (v: string) => void
+}) {
+  const s = toBudgetNum(sale), c = toBudgetNum(cost)
+  const profit = s !== undefined && c !== undefined ? s - c : undefined
+  const margin = profit !== undefined && s ? (profit / s) * 100 : undefined
+  return (
+    <>
+      <div className="row">
+        <label className="field"><span>ราคาขาย (บาท)</span>
+          <input type="number" min={0} value={sale} onChange={e => onSale(e.target.value)} placeholder="0" />
+        </label>
+        <label className="field"><span>ต้นทุน (บาท)</span>
+          <input type="number" min={0} value={cost} onChange={e => onCost(e.target.value)} placeholder="0" />
+        </label>
+      </div>
+      <div className="budget-profit">
+        <span>กำไร (auto)</span>
+        <b className={profit !== undefined && profit < 0 ? 'neg' : 'pos'}>
+          {fmtBaht(profit)}{margin !== undefined && <span className="muted"> · {margin.toFixed(1)}%</span>}
+        </b>
+      </div>
+    </>
+  )
 }

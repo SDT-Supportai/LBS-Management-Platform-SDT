@@ -12,6 +12,7 @@ export interface User {
 export interface Item {
   id: string
   code: string
+  epicorCode?: string          // รหัส Epicor (อ้างอิงระบบ ERP) — accessory catalog
   name: string
   itemType: 'main_equipment' | 'accessory'
   uom: string
@@ -32,7 +33,8 @@ export type LbsUnitStatus = 'in_stock' | 'allocated' | 'issued'
 
 export interface LbsUnit {
   id: string
-  serialNo: string
+  serialLvb: string            // Serial No. ของตัว LBS (บังคับ, unique)
+  serialOm: string             // Serial No. ของ OM (Operating Mechanism) (บังคับ, unique)
   projectStockId: string
   status: LbsUnitStatus
   jobId: string | null
@@ -55,6 +57,9 @@ export interface Job {
   installLocation: string
   requiredDate: string
   lbsQtyRequired: number
+  // Project Budget (บาท) — กำไร derive = ราคาขาย − ต้นทุน (ไม่เก็บซ้ำ)
+  budgetSalePrice?: number
+  budgetCost?: number
   // lifecycle marker: null = ยัง active (derive สถานะจากข้อมูล), issued = เบิกแล้วรอติดตั้ง,
   // installed / cancelled = terminal จริง
   terminalStatus: 'issued' | 'installed' | 'cancelled' | null
@@ -101,6 +106,7 @@ export interface AccessoryRequest {
   itemId: string
   qtyRequested: number
   qtyReceived: number          // สำหรับ partial receive ฝั่ง purchasing
+  unitPrice?: number           // ราคาต่อหน่วย (บาท) → มูลค่าวัสดุ = unitPrice × qtyRequested
   source: 'central_stock' | 'purchasing'
   status: AccReqStatus
   prId: string | null

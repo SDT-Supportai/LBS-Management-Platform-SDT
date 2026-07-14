@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import { deriveJobStatus, jobAllocatedQty } from '../data/logic'
-import { JobStatusBadge, Modal, useTryAction } from '../ui/components'
+import { BudgetFields, JobStatusBadge, Modal, toBudgetNum, useTryAction } from '../ui/components'
 import { fmtDate, JOB_STATUS_LABEL } from '../ui/format'
 import type { JobStatus } from '../types'
 
@@ -14,7 +14,7 @@ export default function JobsPage() {
   const tryAction = useTryAction()
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>('active')
   const [showCreate, setShowCreate] = useState(false)
-  const [form, setForm] = useState({ customerName: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1 })
+  const [form, setForm] = useState({ customerName: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', cost: '' })
 
   const canManage = can(user, 'job.manage')
   const jobs = db.jobs
@@ -26,9 +26,13 @@ export default function JobsPage() {
     .reverse()
 
   const submit = async () => {
-    if (await tryAction(() => act.createJob(form), 'เปิด Job ใหม่เรียบร้อย')) {
+    const { salePrice, cost, ...rest } = form
+    if (await tryAction(
+      () => act.createJob({ ...rest, budgetSalePrice: toBudgetNum(salePrice), budgetCost: toBudgetNum(cost) }),
+      'เปิด Job ใหม่เรียบร้อย',
+    )) {
       setShowCreate(false)
-      setForm({ customerName: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1 })
+      setForm({ customerName: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', cost: '' })
     }
   }
 
@@ -109,6 +113,12 @@ export default function JobsPage() {
             <input type="number" min={1} value={form.lbsQtyRequired}
               onChange={e => setForm({ ...form, lbsQtyRequired: Number(e.target.value) })} />
           </label>
+          <div className="budget-legend">Project Budget</div>
+          <BudgetFields
+            sale={form.salePrice} cost={form.cost}
+            onSale={v => setForm({ ...form, salePrice: v })}
+            onCost={v => setForm({ ...form, cost: v })}
+          />
         </Modal>
       )}
     </>

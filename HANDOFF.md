@@ -71,8 +71,10 @@ lbs-platform/
 | `0003_seed.sql` | master items (LBS + accessory) + คลังตัวอย่าง 40 เครื่อง |
 | `0004_fix_issue_job.sql` | **bug fix**: rpc_issue_job update units ก่อนตั้ง job=issued |
 | `0005_fix_notification_rls.sql` | **bug fix**: เพิ่ม RLS policy ให้ notifications อ่านได้ |
+| `0006_serial_budget_epicor.sql` | **ฟีเจอร์ใหม่ (2026-07-14)**: LBS serial คู่ (serial_lvb + serial_om), jobs.budget_sale_price/budget_cost, job_accessory_requests.unit_price, items.epicor_code + ปรับ RPC (create/add stock รับ jsonb units, create/update job + budget, add accessory + unit_price, create/update item + epicor) + `rpc_update_accessory_request_price` ใหม่ |
 
-> DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0005 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ)
+> DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0006 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ)
+> ⚠️ **production ที่รัน 0001–0005 ไปแล้ว ต้องรัน `0006` เพิ่มใน Supabase SQL Editor** (rename serial_no → serial_lvb + backfill serial_om, เพิ่มคอลัมน์ budget/unit_price/epicor, drop+recreate RPC ที่เปลี่ยน signature) — frontend build ใหม่จะเรียก RPC signature ใหม่ ต้องรัน 0006 ก่อน deploy
 
 ## 6. Environment variables (ตั้งใน Netlify → Site configuration → Environment variables)
 

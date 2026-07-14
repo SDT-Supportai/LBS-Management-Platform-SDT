@@ -38,9 +38,19 @@ const EMPTY_DB: DB = {
 // migrate ข้อมูล demo จาก schema เก่า (v1: issued_installed, ไม่มี qtyReceived/notifications)
 function migrateDb(raw: unknown): DB {
   const d = raw as DB
+  type LegacyUnit = DB['lbsUnits'][number] & { serialNo?: string }
   return {
     ...d,
     users: d.users.map(u => ({ ...u, isActive: u.isActive !== false })),
+    // v2→v3: serialNo เดี่ยว → serialLvb + serialOm (คู่)
+    lbsUnits: d.lbsUnits.map(u => {
+      const lu = u as LegacyUnit
+      return {
+        ...lu,
+        serialLvb: lu.serialLvb ?? lu.serialNo ?? '',
+        serialOm: lu.serialOm ?? (lu.serialNo ? `${lu.serialNo}·OM` : ''),
+      }
+    }),
     jobs: d.jobs.map(j => ({
       ...j,
       terminalStatus: ((j.terminalStatus as string) === 'issued_installed'
@@ -84,6 +94,7 @@ export interface StoreActions {
   returnLbs: (p: Parameters<typeof L.returnLbs>[2]) => MaybePromise
   addAccessoryRequest: (p: Parameters<typeof L.addAccessoryRequest>[2]) => MaybePromise
   updateAccessoryRequestQty: (p: Parameters<typeof L.updateAccessoryRequestQty>[2]) => MaybePromise
+  updateAccessoryRequestPrice: (p: Parameters<typeof L.updateAccessoryRequestPrice>[2]) => MaybePromise
   returnAccessory: (p: Parameters<typeof L.returnAccessory>[2]) => MaybePromise
   cancelAccessoryRequest: (p: Parameters<typeof L.cancelAccessoryRequest>[2]) => MaybePromise
   createPR: (p: Parameters<typeof L.createPR>[2]) => MaybePromise
@@ -113,6 +124,7 @@ interface StoreValue {
   updateSettings: (s: AppSettings) => void
   importDb: (json: string) => void
   markNotificationsRead: () => MaybePromise
+  refresh: () => MaybePromise
   act: StoreActions
 }
 
@@ -202,6 +214,7 @@ function DemoProvider({ children }: { children: ReactNode }) {
         const u = requireUser()
         applyDb(L.markAllNotificationsRead(dbRef.current, u, {}))
       },
+      refresh: () => applyDb(loadLocalDb()),
       act: {
         createProjectStock: run('stock.manage', L.createProjectStock),
         addUnitsToStock: run('stock.manage', L.addUnitsToStock),
@@ -213,6 +226,7 @@ function DemoProvider({ children }: { children: ReactNode }) {
         returnLbs: run('job.manage', L.returnLbs),
         addAccessoryRequest: run('job.manage', L.addAccessoryRequest),
         updateAccessoryRequestQty: run('job.manage', L.updateAccessoryRequestQty),
+        updateAccessoryRequestPrice: run('job.manage', L.updateAccessoryRequestPrice),
         returnAccessory: run('job.manage', L.returnAccessory),
         cancelAccessoryRequest: run('job.manage', L.cancelAccessoryRequest),
         createPR: run('job.manage', L.createPR),
@@ -354,6 +368,7 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
       updateSettings: (s) => setSettings(s),
       importDb: () => { throw new Error('Import ได้เฉพาะโหมด demo') },
       markNotificationsRead: async () => { await remoteMarkRead(sb); await reload() },
+      refresh: async () => { await reload() },
       act,
     }
   }, [sb, db, user, settings, loading, reload, dispatchLine])

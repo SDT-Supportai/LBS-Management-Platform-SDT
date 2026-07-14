@@ -36,6 +36,12 @@ export const ACC_STATUS_LABEL: Record<AccReqStatus, string> = {
   cancelled: 'ยกเลิก',
 }
 
+// จำนวนเงิน (บาท) — คืน '-' ถ้าไม่ได้ระบุ
+export function fmtBaht(n?: number): string {
+  if (n === undefined || n === null || Number.isNaN(n)) return '-'
+  return n.toLocaleString('th-TH', { maximumFractionDigits: 2 }) + ' ฿'
+}
+
 export function fmtDate(s?: string): string {
   if (!s) return '-'
   const d = new Date(s)

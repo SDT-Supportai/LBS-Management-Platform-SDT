@@ -1,7 +1,8 @@
-import { Navigate, NavLink, Route, Routes } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { Link, Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
 import { useStore } from './data/StoreContext'
-import { ToastProvider } from './ui/components'
-import { DEPT_LABEL } from './ui/format'
+import { ToastProvider, useTryAction } from './ui/components'
+import { DEPT_LABEL, fmtDateTime } from './ui/format'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import StocksPage from './pages/StocksPage'
@@ -22,15 +23,13 @@ function Sidebar() {
   const openPos = db.pos.filter(p => p.status === 'issued').length
   const readyJobs = db.jobs.filter(j => deriveJobStatus(db, j) === 'ready_to_issue').length
   const awaitingInstall = db.jobs.filter(j => j.terminalStatus === 'issued').length
-  const unread = unreadNotifications(db, user).length
 
   const MENU: { to: string; icon: string; label: string; badge?: { text: string; cls: string } }[] = [
-    { to: '/dashboard', icon: '📊', label: 'แดชบอร์ด' },
+    { to: '/dashboard', icon: '📊', label: 'Dashboard' },
     { to: '/stocks', icon: '📦', label: 'Project Stock (LBS)' },
     { to: '/jobs', icon: '🗂️', label: 'Jobs', badge: readyJobs > 0 ? { text: `${readyJobs} พร้อมเบิก`, cls: 'green' } : undefined },
     { to: '/purchasing', icon: '🛒', label: 'Purchasing (PR/PO)', badge: (pendingPrs + openPos) > 0 ? { text: `${pendingPrs + openPos}`, cls: 'amber' } : undefined },
     { to: '/service', icon: '🔧', label: 'งานติดตั้ง (Service)', badge: awaitingInstall > 0 ? { text: `${awaitingInstall} รอติดตั้ง`, cls: 'blue' } : undefined },
-    { to: '/notifications', icon: '🔔', label: 'การแจ้งเตือน', badge: unread > 0 ? { text: `${unread}`, cls: 'red' } : undefined },
     { to: '/master', icon: '🗄️', label: 'ข้อมูลหลัก (Master Data)' },
     { to: '/audit', icon: '📜', label: 'Audit Log' },
     { to: '/dev', icon: '⚙️', label: 'Dev Settings' },
@@ -42,7 +41,7 @@ function Sidebar() {
         <span className="brand-logo">⚡</span>
         <span>
           115kV LBS Platform
-          <small>Project Stock &amp; Job Workflow</small>
+          <small>Project management</small>
         </span>
       </div>
       <nav>
@@ -71,6 +70,79 @@ function Sidebar() {
   )
 }
 
+// การแจ้งเตือน + Refresh ย้ายมามุมบนขวา (bell dropdown)
+function TopBar() {
+  const { db, user, markNotificationsRead, refresh } = useStore()
+  const tryAction = useTryAction()
+  const navigate = useNavigate()
+  const [open, setOpen] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const wrapRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  if (!user) return null
+  const unread = unreadNotifications(db, user)
+  const recent = db.notifications
+    .filter(n => n.dept === 'all' || n.dept === user.department || user.department === 'admin')
+    .slice().reverse().slice(0, 8)
+
+  const doRefresh = async () => {
+    setRefreshing(true)
+    await tryAction(async () => { await refresh() }, 'อัปเดตข้อมูลล่าสุดแล้ว')
+    setRefreshing(false)
+  }
+
+  return (
+    <div className="topbar">
+      <button className="topbar-btn" onClick={doRefresh} disabled={refreshing} title="โหลดข้อมูลล่าสุด">
+        <span className={`tb-icon${refreshing ? ' spin' : ''}`}>↻</span> Refresh
+      </button>
+      <div className="notif-wrap" ref={wrapRef}>
+        <button className="topbar-btn bell" onClick={() => setOpen(o => !o)} title="การแจ้งเตือน">
+          🔔{unread.length > 0 && <span className="notif-count">{unread.length}</span>}
+        </button>
+        {open && (
+          <div className="notif-dropdown">
+            <div className="notif-dd-head">
+              <b>การแจ้งเตือน</b>
+              {unread.length > 0 && (
+                <button className="small" onClick={() => markNotificationsRead()}>อ่านทั้งหมด</button>
+              )}
+            </div>
+            <div className="notif-dd-list">
+              {recent.length === 0 && <div className="empty">ยังไม่มีการแจ้งเตือน</div>}
+              {recent.map(n => {
+                const isUnread = !n.readBy.includes(user.id)
+                return (
+                  <div
+                    key={n.id}
+                    className={`notif-item${isUnread ? ' unread' : ''}`}
+                    onClick={() => { setOpen(false); if (n.jobId) navigate(`/jobs/${n.jobId}`) }}
+                  >
+                    <div className="notif-msg">{n.message}</div>
+                    <div className="muted">{fmtDateTime(n.createdAt)}</div>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="notif-dd-foot">
+              <Link to="/notifications" onClick={() => setOpen(false)}>ดูทั้งหมด →</Link>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const { user, loading } = useStore()
 
@@ -93,6 +165,7 @@ export default function App() {
         <div className="app">
           <Sidebar />
           <main className="main">
+            <TopBar />
             <Routes>
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/stocks" element={<StocksPage />} />

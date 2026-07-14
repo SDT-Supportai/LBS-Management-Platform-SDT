@@ -5,8 +5,40 @@ import { stockSummary } from '../data/logic'
 import { Modal, useTryAction } from '../ui/components'
 import { fmtDate } from '../ui/format'
 
-function parseSerials(text: string): string[] {
-  return text.split(/[\n,]/).map(s => s.trim()).filter(Boolean)
+interface UnitRow { lvb: string; om: string }
+const emptyRow = (): UnitRow => ({ lvb: '', om: '' })
+
+// ตัวแก้ไขรายเครื่อง: กรอก Serial.LVB + Serial.OM ต่อแถว (บังคับทั้งคู่)
+function UnitRowsEditor({ rows, setRows }: { rows: UnitRow[]; setRows: (r: UnitRow[]) => void }) {
+  const update = (i: number, field: keyof UnitRow, v: string) =>
+    setRows(rows.map((r, idx) => idx === i ? { ...r, [field]: v } : r))
+  const remove = (i: number) => setRows(rows.length === 1 ? [emptyRow()] : rows.filter((_, idx) => idx !== i))
+  const filled = rows.filter(r => r.lvb.trim() && r.om.trim()).length
+
+  return (
+    <div>
+      <div className="unit-rows">
+        <div className="unit-row unit-row-head">
+          <span>#</span>
+          <span>Serial.LVB *</span>
+          <span>Serial.OM *</span>
+          <span />
+        </div>
+        {rows.map((r, i) => (
+          <div className="unit-row" key={i}>
+            <span className="muted">{i + 1}</span>
+            <input className="mono" value={r.lvb} placeholder="LBS26-001" onChange={e => update(i, 'lvb', e.target.value)} />
+            <input className="mono" value={r.om} placeholder="OM26-001" onChange={e => update(i, 'om', e.target.value)} />
+            <button className="small danger" type="button" onClick={() => remove(i)} title="ลบแถว">✕</button>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+        <button className="small" type="button" onClick={() => setRows([...rows, emptyRow()])}>+ เพิ่มเครื่อง</button>
+        <span className="muted">กรอกครบ {filled}/{rows.length} เครื่อง</span>
+      </div>
+    </div>
+  )
 }
 
 export default function StocksPage() {
@@ -21,28 +53,29 @@ export default function StocksPage() {
   const [editStatus, setEditStatus] = useState<'open' | 'closed'>('open')
 
   const [stockNo, setStockNo] = useState(`Project Stock No.${db.projectStocks.length + 1}`)
-  const [serialText, setSerialText] = useState('')
+  const [rows, setRows] = useState<UnitRow[]>([emptyRow()])
   const [notes, setNotes] = useState('')
 
   const lbsItem = db.items.find(i => i.itemType === 'main_equipment')!
   const canManage = can(user, 'stock.manage')
   const jobNo = (id: string | null) => db.jobs.find(j => j.id === id)?.jobNo
+  const filledRows = (rs: UnitRow[]) => rs.filter(r => r.lvb.trim() && r.om.trim()).length
 
   const submitCreate = async () => {
     if (await tryAction(
-      () => act.createProjectStock({ stockNo, itemId: lbsItem.id, serialNos: parseSerials(serialText), notes }),
+      () => act.createProjectStock({ stockNo, itemId: lbsItem.id, units: rows, notes }),
       `สร้าง ${stockNo} เรียบร้อย`,
     )) {
-      setShowCreate(false); setSerialText(''); setNotes('')
+      setShowCreate(false); setRows([emptyRow()]); setNotes('')
     }
   }
 
   const submitAdd = async () => {
     if (!addTo) return
     if (await tryAction(
-      () => act.addUnitsToStock({ stockId: addTo, serialNos: parseSerials(serialText) }),
+      () => act.addUnitsToStock({ stockId: addTo, units: rows }),
       'รับ LBS เข้าสต็อกเรียบร้อย',
-    )) { setAddTo(null); setSerialText('') }
+    )) { setAddTo(null); setRows([emptyRow()]) }
   }
 
   return (
@@ -55,7 +88,7 @@ export default function StocksPage() {
 
       {canManage && (
         <div style={{ marginBottom: 16 }}>
-          <button className="primary" onClick={() => { setSerialText(''); setStockNo(`Project Stock No.${db.projectStocks.length + 1}`); setShowCreate(true) }}>+ สร้าง Project Stock ใหม่ (สั่งซื้อ LBS เข้าคลัง)</button>
+          <button className="primary" onClick={() => { setRows([emptyRow()]); setStockNo(`Project Stock No.${db.projectStocks.length + 1}`); setShowCreate(true) }}>+ สร้าง Project Stock ใหม่ (สั่งซื้อ LBS เข้าคลัง)</button>
         </div>
       )}
 
@@ -74,7 +107,7 @@ export default function StocksPage() {
               </h3>
               <div style={{ display: 'flex', gap: 8 }}>
                 {s.status === 'closed' && <span className="badge red">ปิดคลัง</span>}
-                {canManage && <button className="small" onClick={() => { setSerialText(''); setAddTo(s.id) }}>+ รับ LBS เพิ่ม</button>}
+                {canManage && <button className="small" onClick={() => { setRows([emptyRow()]); setAddTo(s.id) }}>+ รับ LBS เพิ่ม</button>}
                 {canManage && <button className="small" onClick={() => { setEditNotes(s.notes ?? ''); setEditStatus(s.status); setEditStock(s.id) }}>แก้ไข</button>}
                 <button className="small" onClick={() => setOpenStock(expanded ? null : s.id)}>{expanded ? 'ซ่อนรายการ' : `ดูรายเครื่อง (${sum.total})`}</button>
               </div>
@@ -82,11 +115,12 @@ export default function StocksPage() {
             {expanded && (
               <div className="table-scroll">
                 <table>
-                  <thead><tr><th>Serial No.</th><th>สถานะ</th><th>Job No.</th></tr></thead>
+                  <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th>สถานะ</th><th>Job No.</th></tr></thead>
                   <tbody>
                     {units.map(u => (
                       <tr key={u.id}>
-                        <td className="mono">{u.serialNo}</td>
+                        <td className="mono">{u.serialLvb}</td>
+                        <td className="mono">{u.serialOm}</td>
                         <td>
                           {u.status === 'in_stock' && <span className="badge green">อยู่ในสต็อก</span>}
                           {u.status === 'allocated' && <span className="badge blue">ถูกดึงเข้า Job</span>}
@@ -167,16 +201,15 @@ export default function StocksPage() {
           onClose={() => setShowCreate(false)}
           footer={<>
             <button onClick={() => setShowCreate(false)}>ยกเลิก</button>
-            <button className="primary" onClick={submitCreate}>สร้างสต็อก ({parseSerials(serialText).length} เครื่อง)</button>
+            <button className="primary" onClick={submitCreate}>สร้างสต็อก ({filledRows(rows)} เครื่อง)</button>
           </>}
         >
           <label className="field"><span>Stock No.</span>
             <input value={stockNo} onChange={e => setStockNo(e.target.value)} />
           </label>
-          <label className="field"><span>Serial No. ของ LBS แต่ละเครื่อง (คั่นด้วยขึ้นบรรทัดใหม่หรือ ,)</span>
-            <textarea rows={6} value={serialText} onChange={e => setSerialText(e.target.value)} placeholder={'LBS26-001\nLBS26-002\nLBS26-003'} />
-          </label>
-          <label className="field"><span>บันทึก (อ้างอิงรอบสั่งซื้อ ฯลฯ)</span>
+          <label className="field"><span>Serial No. ของ LBS แต่ละเครื่อง (Serial.LVB + Serial.OM บังคับทั้งคู่)</span></label>
+          <UnitRowsEditor rows={rows} setRows={setRows} />
+          <label className="field" style={{ marginTop: 14 }}><span>บันทึก (อ้างอิงรอบสั่งซื้อ ฯลฯ)</span>
             <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="ล็อตสั่งซื้อรอบที่ 3" />
           </label>
         </Modal>
@@ -188,12 +221,11 @@ export default function StocksPage() {
           onClose={() => setAddTo(null)}
           footer={<>
             <button onClick={() => setAddTo(null)}>ยกเลิก</button>
-            <button className="primary" onClick={submitAdd}>รับเข้า ({parseSerials(serialText).length} เครื่อง)</button>
+            <button className="primary" onClick={submitAdd}>รับเข้า ({filledRows(rows)} เครื่อง)</button>
           </>}
         >
-          <label className="field"><span>Serial No. (คั่นด้วยขึ้นบรรทัดใหม่หรือ ,)</span>
-            <textarea rows={6} value={serialText} onChange={e => setSerialText(e.target.value)} />
-          </label>
+          <label className="field"><span>Serial No. ของ LBS แต่ละเครื่อง (Serial.LVB + Serial.OM บังคับทั้งคู่)</span></label>
+          <UnitRowsEditor rows={rows} setRows={setRows} />
         </Modal>
       )}
     </>

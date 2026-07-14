@@ -97,20 +97,45 @@ function notifyIfBecameReady(before: DB, after: DB, jobId: string): DB {
 
 // ---------------- Project Stock (Sales) ----------------
 
+// รับคู่ serial (LVB + OM) ต่อเครื่อง — ตรวจครบถ้วน + unique ทั้งสอง field
+export interface UnitSerialInput { lvb: string; om: string }
+
+function normalizeUnits(rows: UnitSerialInput[]): { lvb: string; om: string }[] {
+  return rows
+    .map(r => ({ lvb: r.lvb.trim(), om: r.om.trim() }))
+    .filter(r => r.lvb || r.om)
+}
+
+function assertUnitsValid(db: DB, units: { lvb: string; om: string }[]): void {
+  if (units.length === 0) throw new Error('กรุณาระบุ Serial No. อย่างน้อย 1 เครื่อง')
+  const missing = units.find(u => !u.lvb || !u.om)
+  if (missing) throw new Error('ต้องกรอกทั้ง Serial.LVB และ Serial.OM ให้ครบทุกเครื่อง')
+  const allSerials = db.lbsUnits.flatMap(u => [u.serialLvb, u.serialOm])
+  for (const field of ['lvb', 'om'] as const) {
+    const label = field === 'lvb' ? 'Serial.LVB' : 'Serial.OM'
+    const dupExisting = units.find(u => allSerials.includes(u[field]))
+    if (dupExisting) throw new Error(`${label} "${dupExisting[field]}" มีอยู่ในระบบแล้ว`)
+  }
+  // กันซ้ำภายในรายการที่กรอก (ข้าม field ด้วย — LVB ห้ามชนกับ OM)
+  const seen = new Set<string>()
+  for (const u of units) {
+    for (const v of [u.lvb, u.om]) {
+      if (seen.has(v)) throw new Error(`Serial No. "${v}" ซ้ำกันในรายการที่กรอก`)
+      seen.add(v)
+    }
+  }
+}
+
 export function createProjectStock(
   db: DB, actor: User,
-  p: { stockNo: string; itemId: string; serialNos: string[]; notes?: string },
+  p: { stockNo: string; itemId: string; units: UnitSerialInput[]; notes?: string },
 ): DB {
   const stockNo = p.stockNo.trim()
   if (!stockNo) throw new Error('กรุณาระบุ Stock No.')
   if (db.projectStocks.some(s => s.stockNo === stockNo))
     throw new Error(`Stock No. "${stockNo}" มีอยู่แล้ว`)
-  const serials = p.serialNos.map(s => s.trim()).filter(Boolean)
-  if (serials.length === 0) throw new Error('กรุณาระบุ Serial No. อย่างน้อย 1 เครื่อง')
-  const dup = serials.find(s => db.lbsUnits.some(u => u.serialNo === s))
-  if (dup) throw new Error(`Serial No. "${dup}" มีอยู่ในระบบแล้ว`)
-  const dupIn = serials.find((s, i) => serials.indexOf(s) !== i)
-  if (dupIn) throw new Error(`Serial No. "${dupIn}" ซ้ำกันในรายการที่กรอก`)
+  const units = normalizeUnits(p.units)
+  assertUnitsValid(db, units)
 
   const stockId = uid()
   let next: DB = {
@@ -121,39 +146,37 @@ export function createProjectStock(
     }],
     lbsUnits: [
       ...db.lbsUnits,
-      ...serials.map(sn => ({
-        id: uid(), serialNo: sn, projectStockId: stockId,
+      ...units.map(u => ({
+        id: uid(), serialLvb: u.lvb, serialOm: u.om, projectStockId: stockId,
         status: 'in_stock' as const, jobId: null,
       })),
     ],
   }
   next = notify(next, {
     type: 'stock_created', dept: 'project',
-    message: `📦 Sales รับ LBS เข้า ${stockNo} จำนวน ${serials.length} เครื่อง — พร้อมให้ดึงเข้า Job`,
+    message: `📦 Sales รับ LBS เข้า ${stockNo} จำนวน ${units.length} เครื่อง — พร้อมให้ดึงเข้า Job`,
   })
   return audit(next, actor, 'project_stock', stockId, 'create_stock',
-    `สร้าง ${stockNo} รับ LBS เข้า ${serials.length} เครื่อง`)
+    `สร้าง ${stockNo} รับ LBS เข้า ${units.length} เครื่อง`)
 }
 
-export function addUnitsToStock(db: DB, actor: User, p: { stockId: string; serialNos: string[] }): DB {
+export function addUnitsToStock(db: DB, actor: User, p: { stockId: string; units: UnitSerialInput[] }): DB {
   const stock = db.projectStocks.find(s => s.id === p.stockId)
   if (!stock) throw new Error('ไม่พบ Project Stock')
-  const serials = p.serialNos.map(s => s.trim()).filter(Boolean)
-  if (serials.length === 0) throw new Error('กรุณาระบุ Serial No.')
-  const dup = serials.find(s => db.lbsUnits.some(u => u.serialNo === s))
-  if (dup) throw new Error(`Serial No. "${dup}" มีอยู่ในระบบแล้ว`)
+  const units = normalizeUnits(p.units)
+  assertUnitsValid(db, units)
   let next: DB = {
     ...db,
     lbsUnits: [
       ...db.lbsUnits,
-      ...serials.map(sn => ({
-        id: uid(), serialNo: sn, projectStockId: p.stockId,
+      ...units.map(u => ({
+        id: uid(), serialLvb: u.lvb, serialOm: u.om, projectStockId: p.stockId,
         status: 'in_stock' as const, jobId: null,
       })),
     ],
   }
   return audit(next, actor, 'project_stock', p.stockId, 'add_units',
-    `รับ LBS เพิ่มเข้า ${stock.stockNo} จำนวน ${serials.length} เครื่อง`)
+    `รับ LBS เพิ่มเข้า ${stock.stockNo} จำนวน ${units.length} เครื่อง`)
 }
 
 export function updateProjectStock(
@@ -173,12 +196,23 @@ export function updateProjectStock(
 
 // ---------------- Job (Project Dept) ----------------
 
+// budget: undefined = ไม่ระบุ; ค่าติดลบไม่ยอมรับ
+function normalizeBudget(v: number | undefined): number | undefined {
+  if (v === undefined || v === null || Number.isNaN(v)) return undefined
+  if (v < 0) throw new Error('มูลค่างบประมาณติดลบไม่ได้')
+  return v
+}
+
+export interface JobBudgetInput { budgetSalePrice?: number; budgetCost?: number }
+
 export function createJob(
   db: DB, actor: User,
-  p: { customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number },
+  p: { customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number } & JobBudgetInput,
 ): DB {
   if (!p.customerName.trim()) throw new Error('กรุณาระบุชื่อลูกค้า')
   if (!p.lbsQtyRequired || p.lbsQtyRequired < 1) throw new Error('จำนวน LBS ตาม Scope ต้องอย่างน้อย 1 เครื่อง')
+  const salePrice = normalizeBudget(p.budgetSalePrice)
+  const cost = normalizeBudget(p.budgetCost)
   const jobNo = nextNo('JOB', db.jobs.map(j => j.jobNo))
   const jobId = uid()
   let next: DB = {
@@ -188,6 +222,7 @@ export function createJob(
       customerName: p.customerName.trim(), scope: p.scope,
       installLocation: p.installLocation, requiredDate: p.requiredDate,
       lbsQtyRequired: p.lbsQtyRequired,
+      budgetSalePrice: salePrice, budgetCost: cost,
       terminalStatus: null, openedBy: actor.id, createdAt: now(),
     }],
   }
@@ -197,16 +232,19 @@ export function createJob(
 
 export function updateJob(
   db: DB, actor: User,
-  p: { jobId: string; customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number },
+  p: { jobId: string; customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number } & JobBudgetInput,
 ): DB {
   const job = assertJobEditable(db, p.jobId)
   if (!p.lbsQtyRequired || p.lbsQtyRequired < 1) throw new Error('จำนวน LBS ตาม Scope ต้องอย่างน้อย 1 เครื่อง')
+  const salePrice = normalizeBudget(p.budgetSalePrice)
+  const cost = normalizeBudget(p.budgetCost)
   let next: DB = {
     ...db,
     jobs: db.jobs.map(j => j.id === p.jobId ? {
       ...j, customerName: p.customerName.trim(), scope: p.scope,
       installLocation: p.installLocation, requiredDate: p.requiredDate,
       lbsQtyRequired: p.lbsQtyRequired,
+      budgetSalePrice: salePrice, budgetCost: cost,
     } : j),
   }
   next = notifyIfBecameReady(db, next, p.jobId)
@@ -243,13 +281,13 @@ export function drawLbs(db: DB, actor: User, p: { jobId: string; stockId: string
       p.unitIds.includes(u.id) ? { ...u, status: 'allocated' as const, jobId: p.jobId } : u),
     allocations: [...db.allocations, {
       id: uid(), jobId: p.jobId, projectStockId: p.stockId, txnType: 'draw' as const,
-      serialNos: units.map(u => u.serialNo),
+      serialNos: units.map(u => u.serialLvb),
       performedBy: actor.id, performedAt: now(),
     }],
   }
   next = notifyIfBecameReady(db, next, p.jobId)
   return audit(next, actor, 'stock_allocation', p.jobId, 'draw_lbs',
-    `${job.jobNo} ดึง LBS ${units.length} เครื่องจาก ${stock.stockNo} (SN: ${units.map(u => u.serialNo).join(', ')})`)
+    `${job.jobNo} ดึง LBS ${units.length} เครื่องจาก ${stock.stockNo} (SN: ${units.map(u => u.serialLvb).join(', ')})`)
 }
 
 // คืน LBS: ผู้ใช้เลือกเองว่าคืนเข้า Stock No. ไหน (ไม่ auto FIFO)
@@ -273,24 +311,25 @@ export function returnLbs(
         : u),
     allocations: [...db.allocations, {
       id: uid(), jobId: p.jobId, projectStockId: p.targetStockId, txnType: 'return' as const,
-      serialNos: units.map(u => u.serialNo),
+      serialNos: units.map(u => u.serialLvb),
       performedBy: actor.id, performedAt: now(), note: p.note,
     }],
   }
   return audit(next, actor, 'stock_allocation', p.jobId, 'return_lbs',
-    `${job.jobNo} คืน LBS ${units.length} เครื่องเข้า ${target.stockNo} (SN: ${units.map(u => u.serialNo).join(', ')})`)
+    `${job.jobNo} คืน LBS ${units.length} เครื่องเข้า ${target.stockNo} (SN: ${units.map(u => u.serialLvb).join(', ')})`)
 }
 
 // ---------------- Accessory ----------------
 
 export function addAccessoryRequest(
   db: DB, actor: User,
-  p: { jobId: string; itemId: string; qty: number; source: 'central_stock' | 'purchasing' },
+  p: { jobId: string; itemId: string; qty: number; source: 'central_stock' | 'purchasing'; unitPrice?: number },
 ): DB {
   const job = assertJobEditable(db, p.jobId)
   const item = db.items.find(i => i.id === p.itemId)
   if (!item) throw new Error('ไม่พบ Accessory')
   if (!p.qty || p.qty < 1) throw new Error('จำนวนต้องอย่างน้อย 1')
+  const unitPrice = normalizeBudget(p.unitPrice)
 
   const reqId = uid()
   let next: DB
@@ -307,7 +346,7 @@ export function addAccessoryRequest(
         r.itemId === p.itemId ? { ...r, qtyOnHand: r.qtyOnHand - p.qty } : r),
       accessoryRequests: [...db.accessoryRequests, {
         id: reqId, jobId: p.jobId, itemId: p.itemId, qtyRequested: p.qty, qtyReceived: 0,
-        source: 'central_stock' as const, status: 'issued' as const, prId: null,
+        unitPrice, source: 'central_stock' as const, status: 'issued' as const, prId: null,
         requestedBy: actor.id, createdAt: now(),
       }],
     }
@@ -320,7 +359,7 @@ export function addAccessoryRequest(
     ...db,
     accessoryRequests: [...db.accessoryRequests, {
       id: reqId, jobId: p.jobId, itemId: p.itemId, qtyRequested: p.qty, qtyReceived: 0,
-      source: 'purchasing' as const, status: 'pending' as const, prId: null,
+      unitPrice, source: 'purchasing' as const, status: 'pending' as const, prId: null,
       requestedBy: actor.id, createdAt: now(),
     }],
   }
@@ -343,6 +382,24 @@ export function updateAccessoryRequestQty(db: DB, actor: User, p: { requestId: s
   }
   return audit(next, actor, 'job_accessory_request', p.requestId, 'update_accessory_qty',
     `${job.jobNo} แก้จำนวน ${item.name}: ${req.qtyRequested} → ${p.qty} ${item.uom}`)
+}
+
+// แก้ราคาต่อหน่วยของวัสดุ (ได้ทุกรายการที่ยัง active) — กระทบมูลค่าวัสดุ/ต้นทุนคงเหลือ
+export function updateAccessoryRequestPrice(db: DB, actor: User, p: { requestId: string; unitPrice?: number }): DB {
+  const req = db.accessoryRequests.find(r => r.id === p.requestId)
+  if (!req) throw new Error('ไม่พบรายการวัสดุ')
+  const job = assertJobEditable(db, req.jobId)
+  if (req.status === 'cancelled' || req.status === 'returned')
+    throw new Error('แก้ราคาได้เฉพาะรายการที่ยังใช้งานอยู่')
+  const unitPrice = normalizeBudget(p.unitPrice)
+  const item = db.items.find(i => i.id === req.itemId)!
+  let next: DB = {
+    ...db,
+    accessoryRequests: db.accessoryRequests.map(r =>
+      r.id === p.requestId ? { ...r, unitPrice } : r),
+  }
+  return audit(next, actor, 'job_accessory_request', p.requestId, 'update_accessory_price',
+    `${job.jobNo} แก้ราคา ${item.name} เป็น ${unitPrice ?? 0} บาท/${item.uom}`)
 }
 
 // คืน Accessory ที่เบิกจากสต็อกกลาง (ทำได้เหมือน LBS)
@@ -604,7 +661,7 @@ export function cancelJob(
       ...next.allocations,
       ...Array.from(byStock.entries()).map(([stockId, us]) => ({
         id: uid(), jobId: p.jobId, projectStockId: stockId, txnType: 'return' as const,
-        serialNos: us.map(u => u.serialNo),
+        serialNos: us.map(u => u.serialLvb),
         performedBy: actor.id, performedAt: ts, note: 'auto-return จากการยกเลิก Job',
       })),
     ],
@@ -663,17 +720,20 @@ export function cancelJob(
 
 export function createItem(
   db: DB, actor: User,
-  p: { code: string; name: string; uom: string; stockableCentrally: boolean; initialQty?: number },
+  p: { code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean; initialQty?: number },
 ): DB {
   const code = p.code.trim()
+  const epicorCode = p.epicorCode?.trim() || undefined
   if (!code || !p.name.trim()) throw new Error('กรุณาระบุรหัสและชื่อ Accessory')
   if (db.items.some(i => i.code.toLowerCase() === code.toLowerCase()))
     throw new Error(`รหัส "${code}" มีอยู่แล้ว`)
+  if (epicorCode && db.items.some(i => i.epicorCode?.toLowerCase() === epicorCode.toLowerCase()))
+    throw new Error(`รหัส Epicor "${epicorCode}" มีอยู่แล้ว`)
   const itemId = uid()
   let next: DB = {
     ...db,
     items: [...db.items, {
-      id: itemId, code, name: p.name.trim(), itemType: 'accessory' as const,
+      id: itemId, code, epicorCode, name: p.name.trim(), itemType: 'accessory' as const,
       uom: p.uom.trim() || 'ชิ้น', stockableCentrally: p.stockableCentrally,
     }],
     accessoryStock: p.stockableCentrally
@@ -686,21 +746,24 @@ export function createItem(
 
 export function updateItem(
   db: DB, actor: User,
-  p: { itemId: string; code: string; name: string; uom: string; stockableCentrally: boolean },
+  p: { itemId: string; code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean },
 ): DB {
   const item = db.items.find(i => i.id === p.itemId)
   if (!item) throw new Error('ไม่พบรายการ')
   if (item.itemType === 'main_equipment') throw new Error('แก้ไข LBS หลักไม่ได้จากหน้านี้')
   const code = p.code.trim()
+  const epicorCode = p.epicorCode?.trim() || undefined
   if (db.items.some(i => i.id !== p.itemId && i.code.toLowerCase() === code.toLowerCase()))
     throw new Error(`รหัส "${code}" ซ้ำกับรายการอื่น`)
+  if (epicorCode && db.items.some(i => i.id !== p.itemId && i.epicorCode?.toLowerCase() === epicorCode.toLowerCase()))
+    throw new Error(`รหัส Epicor "${epicorCode}" ซ้ำกับรายการอื่น`)
   const stockRow = db.accessoryStock.find(r => r.itemId === p.itemId)
   if (!p.stockableCentrally && (stockRow?.qtyOnHand ?? 0) > 0)
     throw new Error(`ยังมีของในสต็อกกลาง ${stockRow!.qtyOnHand} ${item.uom} — ปรับยอดเป็น 0 ก่อนจึงจะปิดการเก็บสต็อกกลางได้`)
   let next: DB = {
     ...db,
     items: db.items.map(i => i.id === p.itemId
-      ? { ...i, code, name: p.name.trim(), uom: p.uom.trim() || i.uom, stockableCentrally: p.stockableCentrally }
+      ? { ...i, code, epicorCode, name: p.name.trim(), uom: p.uom.trim() || i.uom, stockableCentrally: p.stockableCentrally }
       : i),
     accessoryStock: p.stockableCentrally && !stockRow
       ? [...db.accessoryStock, { itemId: p.itemId, qtyOnHand: 0 }]
@@ -820,6 +883,24 @@ export function stockSummary(db: DB, stockId: string) {
 
 export function pendingPurchasingReqs(db: DB, jobId: string): AccessoryRequest[] {
   return db.accessoryRequests.filter(r => r.jobId === jobId && r.source === 'purchasing' && r.status === 'pending')
+}
+
+// มูลค่าวัสดุของ Job = Σ(ราคาต่อหน่วย × จำนวน) เฉพาะรายการที่ยัง active (ไม่นับ cancelled/returned)
+export function jobMaterialValue(db: DB, jobId: string): number {
+  return db.accessoryRequests
+    .filter(r => r.jobId === jobId && r.status !== 'cancelled' && r.status !== 'returned')
+    .reduce((sum, r) => sum + (r.unitPrice ?? 0) * r.qtyRequested, 0)
+}
+
+// สรุปงบประมาณ Job: กำไร = ราคาขาย − ต้นทุน, ต้นทุนคงเหลือ = ต้นทุน − มูลค่าวัสดุ
+export function jobBudgetSummary(db: DB, job: Job) {
+  const salePrice = job.budgetSalePrice
+  const cost = job.budgetCost
+  const materialValue = jobMaterialValue(db, job.id)
+  const profit = salePrice !== undefined && cost !== undefined ? salePrice - cost : undefined
+  const margin = profit !== undefined && salePrice ? (profit / salePrice) * 100 : undefined
+  const remainingCost = cost !== undefined ? cost - materialValue : undefined
+  return { salePrice, cost, profit, margin, materialValue, remainingCost }
 }
 
 export function unreadNotifications(db: DB, user: User) {

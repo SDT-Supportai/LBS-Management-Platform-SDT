@@ -15,7 +15,7 @@ export default function MasterDataPage() {
   // ---- item modal state ----
   const [itemModal, setItemModal] = useState<'create' | 'edit' | null>(null)
   const [itemTarget, setItemTarget] = useState<Item | null>(null)
-  const [itemForm, setItemForm] = useState({ code: '', name: '', uom: 'ชิ้น', stockableCentrally: false, initialQty: 0 })
+  const [itemForm, setItemForm] = useState({ code: '', epicorCode: '', name: '', uom: 'ชิ้น', stockableCentrally: false, initialQty: 0 })
 
   // ---- user modal state ----
   const [userModal, setUserModal] = useState<'create' | 'edit' | null>(null)
@@ -25,8 +25,8 @@ export default function MasterDataPage() {
   const accessories = db.items.filter(i => i.itemType === 'accessory')
   const stockQty = (itemId: string) => db.accessoryStock.find(r => r.itemId === itemId)?.qtyOnHand ?? 0
 
-  const openCreateItem = () => { setItemForm({ code: '', name: '', uom: 'ชิ้น', stockableCentrally: false, initialQty: 0 }); setItemTarget(null); setItemModal('create') }
-  const openEditItem = (i: Item) => { setItemForm({ code: i.code, name: i.name, uom: i.uom, stockableCentrally: i.stockableCentrally, initialQty: 0 }); setItemTarget(i); setItemModal('edit') }
+  const openCreateItem = () => { setItemForm({ code: '', epicorCode: '', name: '', uom: 'ชิ้น', stockableCentrally: false, initialQty: 0 }); setItemTarget(null); setItemModal('create') }
+  const openEditItem = (i: Item) => { setItemForm({ code: i.code, epicorCode: i.epicorCode ?? '', name: i.name, uom: i.uom, stockableCentrally: i.stockableCentrally, initialQty: 0 }); setItemTarget(i); setItemModal('edit') }
   const submitItem = async () => {
     const ok = itemModal === 'create'
       ? await tryAction(() => act.createItem(itemForm), 'เพิ่ม Accessory แล้ว')
@@ -65,11 +65,12 @@ export default function MasterDataPage() {
         </div>
         <div className="table-scroll">
           <table>
-            <thead><tr><th>รหัส</th><th>ชื่อ</th><th>หน่วย</th><th>การจัดหา</th><th>สต็อกกลางคงเหลือ</th><th></th></tr></thead>
+            <thead><tr><th>รหัส</th><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>หน่วย</th><th>การจัดหา</th><th>สต็อกกลางคงเหลือ</th><th></th></tr></thead>
             <tbody>
               {accessories.map(i => (
                 <tr key={i.id}>
                   <td className="mono">{i.code}</td>
+                  <td className="mono">{i.epicorCode || '-'}</td>
                   <td>{i.name}</td>
                   <td>{i.uom}</td>
                   <td>{i.stockableCentrally
@@ -125,11 +126,14 @@ export default function MasterDataPage() {
             <label className="field"><span>รหัส *</span>
               <input value={itemForm.code} onChange={e => setItemForm({ ...itemForm, code: e.target.value })} placeholder="ACC-XXX-01" />
             </label>
+            <label className="field"><span>รหัส Epicor</span>
+              <input value={itemForm.epicorCode} onChange={e => setItemForm({ ...itemForm, epicorCode: e.target.value })} placeholder="EPC-XXX-01" />
+            </label>
             <label className="field"><span>หน่วยนับ</span>
               <input value={itemForm.uom} onChange={e => setItemForm({ ...itemForm, uom: e.target.value })} />
             </label>
           </div>
-          <label className="field"><span>ชื่อ *</span>
+          <label className="field"><span>ชื่ออุปกรณ์ *</span>
             <input value={itemForm.name} onChange={e => setItemForm({ ...itemForm, name: e.target.value })} />
           </label>
           <label className="field" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>

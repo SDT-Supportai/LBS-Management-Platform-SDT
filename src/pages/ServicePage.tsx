@@ -70,7 +70,7 @@ export default function ServicePage() {
                   <td>{j.customerName}<div className="muted">{j.installLocation} · กำหนด {fmtDate(j.requiredDate)}</div>
                     {j.issuedNote && <div className="muted">📝 {j.issuedNote}</div>}</td>
                   <td>
-                    <div>LBS {unitsOf(j.id).length} เครื่อง <span className="muted mono">({unitsOf(j.id).map(u => u.serialNo).join(', ')})</span></div>
+                    <div>LBS {unitsOf(j.id).length} เครื่อง <span className="muted mono">({unitsOf(j.id).map(u => u.serialLvb).join(', ')})</span></div>
                     {accOf(j.id).map(r => {
                       const it = itemOf(r.itemId)!
                       return <div key={r.id} className="muted">{it.name} × {r.qtyRequested} {it.uom}</div>
