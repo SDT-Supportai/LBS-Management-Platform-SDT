@@ -67,6 +67,10 @@ export interface Job {
   createdAt: string
   issuedAt?: string
   issuedNote?: string
+  // นัดหมายติดตั้งจริง — กรอกตอนเบิกให้ Service (แยกจาก requiredDate/installLocation ที่เป็นแผนตอนเปิด Job)
+  installStartDate?: string
+  installEndDate?: string
+  issueLocation?: string
   installedAt?: string        // วันที่ติดตั้งจริง (Service ยืนยัน)
   installNote?: string
   installConfirmedBy?: string

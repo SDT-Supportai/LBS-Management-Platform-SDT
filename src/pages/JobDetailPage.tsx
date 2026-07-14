@@ -36,10 +36,10 @@ export default function JobDetailPage() {
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [returnTarget, setReturnTarget] = useState('')
   const [accForm, setAccForm] = useState({ itemId: '', qty: 1, source: 'central_stock' as 'central_stock' | 'purchasing', unitPrice: '' })
-  const [issueNote, setIssueNote] = useState('')
+  const [issueForm, setIssueForm] = useState({ startDate: '', endDate: '', location: '', note: '' })
   const [cancelReason, setCancelReason] = useState('')
   const [receivedToCentral, setReceivedToCentral] = useState(true)
-  const [editForm, setEditForm] = useState({ customerName: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', cost: '' })
+  const [editForm, setEditForm] = useState({ jobNo: '', customerName: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', cost: '' })
 
   const status = job ? deriveJobStatus(db, job) : 'draft'
   const canManage = can(user, 'job.manage')
@@ -70,6 +70,14 @@ export default function JobDetailPage() {
 
   const drawableUnits = db.lbsUnits.filter(u => u.projectStockId === drawStock && u.status === 'in_stock')
   const returnableUnits = db.lbsUnits.filter(u => u.jobId === jobId && u.status === 'allocated')
+  // cap ตาม Scope: ดึงรวมได้ไม่เกินจำนวนตอนเปิด Job
+  const drawCap = Math.max(0, job.lbsQtyRequired - returnableUnits.length)
+  const toggleDraw = (id: string) => setPicked(prev => {
+    const next = new Set(prev)
+    if (next.has(id)) next.delete(id)
+    else if (next.size < drawCap) next.add(id)
+    return next
+  })
 
   const accessoryItems = db.items.filter(i => i.itemType === 'accessory')
   const selAccItem = itemOf(accForm.itemId)
@@ -89,6 +97,9 @@ export default function JobDetailPage() {
       {job.terminalStatus === 'issued' && (
         <div className="panel"><div className="panel-body">
           <b>เบิกให้ Service แล้ว — รอติดตั้ง</b> เบิกเมื่อ {fmtDateTime(job.issuedAt)} — {job.issuedNote || 'ไม่มีบันทึกเพิ่มเติม'}
+          {job.installStartDate && (
+            <div>📅 นัดติดตั้ง <b>{fmtDate(job.installStartDate)} – {fmtDate(job.installEndDate)}</b> ที่ <b>{job.issueLocation || job.installLocation || '-'}</b></div>
+          )}
           <div className="muted">Job ถูกล็อก แก้ไข allocation หรือคืนของไม่ได้อีก · Service จะกดยืนยันเมื่อติดตั้งเสร็จ</div>
         </div></div>
       )}
@@ -96,7 +107,11 @@ export default function JobDetailPage() {
         <div className="panel"><div className="panel-body">
           <b style={{ color: 'var(--green)' }}>ติดตั้งเสร็จแล้ว</b> วันที่จริง {fmtDate(job.installedAt)} ยืนยันโดย {userOf(job.installConfirmedBy ?? '')}
           {job.installNote && <> — {job.installNote}</>}
-          <div className="muted">เบิกเมื่อ {fmtDateTime(job.issuedAt)} · {job.issuedNote || ''}</div>
+          <div className="muted">
+            เบิกเมื่อ {fmtDateTime(job.issuedAt)}
+            {job.installStartDate && <> · นัดติดตั้ง {fmtDate(job.installStartDate)} – {fmtDate(job.installEndDate)} ที่ {job.issueLocation || '-'}</>}
+            {job.issuedNote && <> · {job.issuedNote}</>}
+          </div>
         </div></div>
       )}
       {job.terminalStatus === 'cancelled' && (
@@ -110,12 +125,16 @@ export default function JobDetailPage() {
         <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
           <button className="primary" onClick={() => { setDrawStock(db.projectStocks.find(s => s.status === 'open')?.id ?? ''); openModal('draw') }}>+ ดึง LBS เข้า Job</button>
           <button onClick={() => { setReturnTarget(''); openModal('return') }} disabled={returnableUnits.length === 0}>คืน LBS กลับสต็อก</button>
-          <button className="success" onClick={() => openModal('issue')} disabled={status !== 'ready_to_issue'}
+          <button className="success" onClick={() => {
+            setIssueForm({ startDate: job.requiredDate || '', endDate: job.requiredDate || '', location: job.installLocation || '', note: '' })
+            openModal('issue')
+          }} disabled={status !== 'ready_to_issue'}
             title={status !== 'ready_to_issue' ? 'ต้องมี LBS ครบตาม Scope และ Accessory ครบทุกรายการ' : ''}>
             เบิกทั้งหมดให้ Service
           </button>
           <button onClick={() => {
             setEditForm({
+              jobNo: job.jobNo,
               customerName: job.customerName, scope: job.scope, installLocation: job.installLocation,
               requiredDate: job.requiredDate, lbsQtyRequired: job.lbsQtyRequired,
               salePrice: job.budgetSalePrice !== undefined ? String(job.budgetSalePrice) : '',
@@ -293,8 +312,12 @@ export default function JobDetailPage() {
               })}
             </select>
           </label>
-          <div className="muted" style={{ marginBottom: 8 }}>เลือก Serial No. ที่จะดึง (ห้ามดึงเกินยอดคงเหลือ — ระบบแสดงเฉพาะเครื่องที่ว่าง):</div>
-          <SerialPicker units={drawableUnits} selected={picked} toggle={togglePick} />
+          <div className="muted" style={{ marginBottom: 8 }}>
+            เลือก Serial No. ที่จะดึง — ตาม Scope ดึงได้อีก <b>{drawCap - picked.size}</b> เครื่อง
+            (Scope {job.lbsQtyRequired} · ถืออยู่ {returnableUnits.length}{picked.size > 0 ? ` · เลือกแล้ว ${picked.size}` : ''})
+          </div>
+          {drawCap === 0 && <div className="muted" style={{ color: 'var(--red)', marginBottom: 8 }}>ดึงครบตาม Scope แล้ว — เพิ่มจำนวนใน "แก้ไขข้อมูล Job" ก่อนถ้า Scope เปลี่ยน</div>}
+          <SerialPicker units={drawableUnits} selected={picked} toggle={toggleDraw} />
         </Modal>
       )}
 
@@ -367,17 +390,30 @@ export default function JobDetailPage() {
           footer={<>
             <button onClick={close}>ยกเลิก</button>
             <button className="success"
-              onClick={async () => { if (await tryAction(() => act.issueJob({ jobId: job.id, note: issueNote }), `เบิก ${job.jobNo} ให้ Service แล้ว`)) close() }}>
+              onClick={async () => { if (await tryAction(() => act.issueJob({ jobId: job.id, ...issueForm }), `เบิก ${job.jobNo} ให้ Service แล้ว`)) close() }}>
               ยืนยันการเบิก
             </button>
           </>}>
           <p style={{ marginBottom: 10 }}>
             เบิก <b>LBS {allocatedUnits.length} เครื่อง</b> + Accessory ทั้งหมดของ <b>{job.jobNo}</b> ให้ Service
-            ไปติดตั้งที่ <b>{job.installLocation || '-'}</b> กำหนด {fmtDate(job.requiredDate)}
+            — กำหนดนัดหมายติดตั้งจริงด้านล่าง (แผนเดิม: {job.installLocation || '-'} · {fmtDate(job.requiredDate)})
           </p>
           <p className="muted" style={{ marginBottom: 12 }}>หลังยืนยัน Job จะล็อก แก้ไข allocation หรือคืนของไม่ได้อีก</p>
+          <div className="row">
+            <label className="field"><span>วันเริ่มติดตั้ง (Start) *</span>
+              <input type="date" value={issueForm.startDate}
+                onChange={e => setIssueForm({ ...issueForm, startDate: e.target.value, endDate: issueForm.endDate && issueForm.endDate >= e.target.value ? issueForm.endDate : e.target.value })} />
+            </label>
+            <label className="field"><span>วันสิ้นสุด (End) *</span>
+              <input type="date" min={issueForm.startDate || undefined} value={issueForm.endDate}
+                onChange={e => setIssueForm({ ...issueForm, endDate: e.target.value })} />
+            </label>
+          </div>
+          <label className="field"><span>Location (สถานที่ติดตั้งจริง) *</span>
+            <input value={issueForm.location} onChange={e => setIssueForm({ ...issueForm, location: e.target.value })} placeholder="สถานีไฟฟ้า..." />
+          </label>
           <label className="field"><span>บันทึกถึงทีม Service (ทีม/นัดหมาย)</span>
-            <textarea rows={2} value={issueNote} onChange={e => setIssueNote(e.target.value)} placeholder="ทีม Service A นัดเข้าไซต์ ..." />
+            <textarea rows={2} value={issueForm.note} onChange={e => setIssueForm({ ...issueForm, note: e.target.value })} placeholder="ทีม Service A นัดเข้าไซต์ ..." />
           </label>
         </Modal>
       )}
@@ -420,6 +456,9 @@ export default function JobDetailPage() {
                 if (await tryAction(() => act.updateJob({ jobId: job.id, ...rest, budgetSalePrice: toBudgetNum(salePrice), budgetCost: toBudgetNum(cost) }), 'บันทึกแล้ว')) close()
               }}>บันทึก</button>
           </>}>
+          <label className="field"><span>Job No. * (แก้ได้ก่อนเบิก — ห้ามซ้ำ)</span>
+            <input className="mono" value={editForm.jobNo} onChange={e => setEditForm({ ...editForm, jobNo: e.target.value })} />
+          </label>
           <label className="field"><span>ชื่อลูกค้า</span>
             <input value={editForm.customerName} onChange={e => setEditForm({ ...editForm, customerName: e.target.value })} />
           </label>

@@ -14,7 +14,7 @@ export default function JobsPage() {
   const tryAction = useTryAction()
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>('active')
   const [showCreate, setShowCreate] = useState(false)
-  const [form, setForm] = useState({ customerName: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', cost: '' })
+  const [form, setForm] = useState({ jobNo: '', customerName: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', cost: '' })
 
   const canManage = can(user, 'job.manage')
   const jobs = db.jobs
@@ -32,7 +32,7 @@ export default function JobsPage() {
       'เปิด Job ใหม่เรียบร้อย',
     )) {
       setShowCreate(false)
-      setForm({ customerName: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', cost: '' })
+      setForm({ jobNo: '', customerName: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', cost: '' })
     }
   }
 
@@ -95,6 +95,9 @@ export default function JobsPage() {
             <button className="primary" onClick={submit}>เปิด Job</button>
           </>}
         >
+          <label className="field"><span>Job No. * (กรอกเลขงานเอง — ห้ามซ้ำ)</span>
+            <input className="mono" value={form.jobNo} onChange={e => setForm({ ...form, jobNo: e.target.value })} placeholder="เช่น JOB-2026-0005" />
+          </label>
           <label className="field"><span>ชื่อลูกค้า *</span>
             <input value={form.customerName} onChange={e => setForm({ ...form, customerName: e.target.value })} placeholder="PEA เชียงใหม่" />
           </label>

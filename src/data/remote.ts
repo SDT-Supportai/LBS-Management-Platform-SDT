@@ -44,6 +44,9 @@ function mapJob(r: Row): Job {
     budgetCost: r.budget_cost != null ? Number(r.budget_cost) : undefined,
     openedBy: r.opened_by ?? '', createdAt: r.created_at,
     issuedAt: r.issued_at ?? undefined, issuedNote: r.issued_note ?? undefined,
+    installStartDate: r.install_start_date ?? undefined,
+    installEndDate: r.install_end_date ?? undefined,
+    issueLocation: r.issue_location ?? undefined,
     installedAt: r.installed_at ?? undefined, installNote: r.install_note ?? undefined,
     installConfirmedBy: r.install_confirmed_by ?? undefined,
     cancelledAt: r.cancelled_at ?? undefined, cancelledBy: r.cancelled_by ?? undefined,
@@ -164,10 +167,10 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_add_units_to_stock', { p_stock_id: p.stockId, p_units: p.units }),
     updateProjectStock: (p: { stockId: string; notes: string; status: 'open' | 'closed' }) =>
       rpc(sb, 'rpc_update_project_stock', { p_stock_id: p.stockId, p_notes: p.notes, p_status: p.status }),
-    createJob: (p: { customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCost?: number }) =>
-      rpc(sb, 'rpc_create_job', { p_customer: p.customerName, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_cost: p.budgetCost ?? null }),
-    updateJob: (p: { jobId: string; customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCost?: number }) =>
-      rpc(sb, 'rpc_update_job', { p_job_id: p.jobId, p_customer: p.customerName, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_cost: p.budgetCost ?? null }),
+    createJob: (p: { jobNo: string; customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCost?: number }) =>
+      rpc(sb, 'rpc_create_job', { p_job_no: p.jobNo, p_customer: p.customerName, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_cost: p.budgetCost ?? null }),
+    updateJob: (p: { jobId: string; jobNo: string; customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCost?: number }) =>
+      rpc(sb, 'rpc_update_job', { p_job_id: p.jobId, p_job_no: p.jobNo, p_customer: p.customerName, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_cost: p.budgetCost ?? null }),
     deleteDraftJob: (p: { jobId: string }) => rpc(sb, 'rpc_delete_draft_job', { p_job_id: p.jobId }),
     drawLbs: (p: { jobId: string; stockId: string; unitIds: string[] }) =>
       rpc(sb, 'rpc_draw_lbs', { p_job_id: p.jobId, p_stock_id: p.stockId, p_unit_ids: p.unitIds }),
@@ -184,11 +187,12 @@ export function remoteActions(sb: SupabaseClient) {
     createPR: (p: { jobId: string; requestIds: string[] }) =>
       rpc(sb, 'rpc_create_pr', { p_job_id: p.jobId, p_request_ids: p.requestIds }),
     rejectPR: (p: { prId: string; reason: string }) => rpc(sb, 'rpc_reject_pr', { p_pr_id: p.prId, p_reason: p.reason }),
-    createPO: (p: { prId: string; supplierName: string; expectedDate: string }) =>
-      rpc(sb, 'rpc_create_po', { p_pr_id: p.prId, p_supplier: p.supplierName, p_expected_date: p.expectedDate || null }),
+    createPO: (p: { prId: string; poNo: string; supplierName: string; expectedDate: string }) =>
+      rpc(sb, 'rpc_create_po', { p_pr_id: p.prId, p_po_no: p.poNo, p_supplier: p.supplierName, p_expected_date: p.expectedDate || null }),
     receivePOItems: (p: { poId: string; receipts: { requestId: string; qty: number }[] }) =>
       rpc(sb, 'rpc_receive_po_items', { p_po_id: p.poId, p_receipts: p.receipts.map(r => ({ request_id: r.requestId, qty: r.qty })) }),
-    issueJob: (p: { jobId: string; note?: string }) => rpc(sb, 'rpc_issue_job', { p_job_id: p.jobId, p_note: p.note ?? null }),
+    issueJob: (p: { jobId: string; startDate: string; endDate: string; location: string; note?: string }) =>
+      rpc(sb, 'rpc_issue_job', { p_job_id: p.jobId, p_start_date: p.startDate, p_end_date: p.endDate, p_location: p.location, p_note: p.note ?? null }),
     confirmInstall: (p: { jobId: string; installedDate: string; note?: string }) =>
       rpc(sb, 'rpc_confirm_install', { p_job_id: p.jobId, p_installed_date: p.installedDate, p_note: p.note ?? null }),
     cancelJob: (p: { jobId: string; reason: string; receivedAccessoryToCentral: boolean }) =>

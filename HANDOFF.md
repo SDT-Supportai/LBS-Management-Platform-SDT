@@ -71,10 +71,11 @@ lbs-platform/
 | `0003_seed.sql` | master items (LBS + accessory) + คลังตัวอย่าง 40 เครื่อง |
 | `0004_fix_issue_job.sql` | **bug fix**: rpc_issue_job update units ก่อนตั้ง job=issued |
 | `0005_fix_notification_rls.sql` | **bug fix**: เพิ่ม RLS policy ให้ notifications อ่านได้ |
-| `0006_serial_budget_epicor.sql` | **ฟีเจอร์ใหม่ (2026-07-14)**: LBS serial คู่ (serial_lvb + serial_om), jobs.budget_sale_price/budget_cost, job_accessory_requests.unit_price, items.epicor_code + ปรับ RPC (create/add stock รับ jsonb units, create/update job + budget, add accessory + unit_price, create/update item + epicor) + `rpc_update_accessory_request_price` ใหม่ |
+| `0006_serial_budget_epicor.sql` | **ฟีเจอร์ (2026-07-14)**: LBS serial คู่ (serial_lvb + serial_om), jobs.budget_sale_price/budget_cost, job_accessory_requests.unit_price, items.epicor_code + ปรับ RPC (create/add stock รับ jsonb units, create/update job + budget, add accessory + unit_price, create/update item + epicor) + `rpc_update_accessory_request_price` ใหม่ · backfill serial_om ต้อง disable trigger `trg_block_issued_edit` ชั่วคราว |
+| `0007_manual_no_install_schedule.sql` | **ฟีเจอร์ (2026-07-14)**: Job No./PO No. กรอกเอง (unique, Job No. แก้ได้ก่อนเบิก), cap ดึง LBS ≤ lbs_qty_required, jobs.install_start_date/install_end_date/issue_location (นัดติดตั้งจริงตอนเบิก) — drop+recreate rpc_create_job/rpc_update_job/rpc_create_po/rpc_issue_job/rpc_draw_lbs (เปลี่ยน signature) |
 
-> DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0006 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ)
-> ⚠️ **production ที่รัน 0001–0005 ไปแล้ว ต้องรัน `0006` เพิ่มใน Supabase SQL Editor** (rename serial_no → serial_lvb + backfill serial_om, เพิ่มคอลัมน์ budget/unit_price/epicor, drop+recreate RPC ที่เปลี่ยน signature) — frontend build ใหม่จะเรียก RPC signature ใหม่ ต้องรัน 0006 ก่อน deploy
+> DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0007 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ)
+> ⚠️ **production ที่รัน 0001–0005 ไปแล้ว ต้องรัน `0006` แล้วตามด้วย `0007` ใน Supabase SQL Editor ก่อน push frontend** — frontend build ใหม่เรียก RPC signature ใหม่ ถ้ายังไม่รัน migration หน้าเว็บจะ error
 
 ## 6. Environment variables (ตั้งใน Netlify → Site configuration → Environment variables)
 

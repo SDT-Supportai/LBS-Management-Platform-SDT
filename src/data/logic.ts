@@ -207,13 +207,16 @@ export interface JobBudgetInput { budgetSalePrice?: number; budgetCost?: number 
 
 export function createJob(
   db: DB, actor: User,
-  p: { customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number } & JobBudgetInput,
+  p: { jobNo: string; customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number } & JobBudgetInput,
 ): DB {
+  const jobNo = p.jobNo.trim()
+  if (!jobNo) throw new Error('กรุณาระบุ Job No.')
+  if (db.jobs.some(j => j.jobNo.toLowerCase() === jobNo.toLowerCase()))
+    throw new Error(`Job No. "${jobNo}" มีอยู่แล้ว`)
   if (!p.customerName.trim()) throw new Error('กรุณาระบุชื่อลูกค้า')
   if (!p.lbsQtyRequired || p.lbsQtyRequired < 1) throw new Error('จำนวน LBS ตาม Scope ต้องอย่างน้อย 1 เครื่อง')
   const salePrice = normalizeBudget(p.budgetSalePrice)
   const cost = normalizeBudget(p.budgetCost)
-  const jobNo = nextNo('JOB', db.jobs.map(j => j.jobNo))
   const jobId = uid()
   let next: DB = {
     ...db,
@@ -232,23 +235,28 @@ export function createJob(
 
 export function updateJob(
   db: DB, actor: User,
-  p: { jobId: string; customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number } & JobBudgetInput,
+  p: { jobId: string; jobNo: string; customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number } & JobBudgetInput,
 ): DB {
-  const job = assertJobEditable(db, p.jobId)
+  const job = assertJobEditable(db, p.jobId)   // แก้ Job No. ได้ก่อนเบิกเท่านั้น (issued/installed/cancelled ล็อกอยู่แล้ว)
+  const jobNo = p.jobNo.trim()
+  if (!jobNo) throw new Error('กรุณาระบุ Job No.')
+  if (db.jobs.some(j => j.id !== p.jobId && j.jobNo.toLowerCase() === jobNo.toLowerCase()))
+    throw new Error(`Job No. "${jobNo}" ซ้ำกับ Job อื่น`)
   if (!p.lbsQtyRequired || p.lbsQtyRequired < 1) throw new Error('จำนวน LBS ตาม Scope ต้องอย่างน้อย 1 เครื่อง')
   const salePrice = normalizeBudget(p.budgetSalePrice)
   const cost = normalizeBudget(p.budgetCost)
   let next: DB = {
     ...db,
     jobs: db.jobs.map(j => j.id === p.jobId ? {
-      ...j, customerName: p.customerName.trim(), scope: p.scope,
+      ...j, jobNo, customerName: p.customerName.trim(), scope: p.scope,
       installLocation: p.installLocation, requiredDate: p.requiredDate,
       lbsQtyRequired: p.lbsQtyRequired,
       budgetSalePrice: salePrice, budgetCost: cost,
     } : j),
   }
   next = notifyIfBecameReady(db, next, p.jobId)
-  return audit(next, actor, 'job', p.jobId, 'update_job', `แก้ไขข้อมูล ${job.jobNo}`)
+  return audit(next, actor, 'job', p.jobId, 'update_job',
+    `แก้ไขข้อมูล ${job.jobNo}${jobNo !== job.jobNo ? ` (เปลี่ยนเลขเป็น ${jobNo})` : ''}`)
 }
 
 // ลบได้เฉพาะ Job เปล่า (Draft ที่ยังไม่เคยมี transaction ใดๆ)
@@ -270,6 +278,10 @@ export function drawLbs(db: DB, actor: User, p: { jobId: string; stockId: string
   if (!stock) throw new Error('ไม่พบ Project Stock')
   if (stock.status === 'closed') throw new Error(`${stock.stockNo} ถูกปิดคลังแล้ว ดึงเพิ่มไม่ได้`)
   if (p.unitIds.length === 0) throw new Error('กรุณาเลือก Serial No. ที่จะดึง')
+  // cap ตาม Scope: ดึงรวมแล้วห้ามเกินจำนวนที่ระบุตอนเปิด Job (คืนแล้วดึงใหม่ได้)
+  const held = db.lbsUnits.filter(u => u.jobId === p.jobId && u.status === 'allocated').length
+  if (held + p.unitIds.length > job.lbsQtyRequired)
+    throw new Error(`ดึงเกินจำนวนตาม Scope ไม่ได้ — Scope ${job.lbsQtyRequired} เครื่อง ถืออยู่ ${held} เครื่อง (ดึงได้อีก ${job.lbsQtyRequired - held})`)
   const units = db.lbsUnits.filter(u => p.unitIds.includes(u.id))
   const bad = units.find(u => u.projectStockId !== p.stockId || u.status !== 'in_stock')
   if (bad || units.length !== p.unitIds.length)
@@ -493,15 +505,18 @@ export function rejectPR(db: DB, actor: User, p: { prId: string; reason: string 
 
 export function createPO(
   db: DB, actor: User,
-  p: { prId: string; supplierName: string; expectedDate: string },
+  p: { prId: string; poNo: string; supplierName: string; expectedDate: string },
 ): DB {
   const pr = db.prs.find(x => x.id === p.prId)
   if (!pr) throw new Error('ไม่พบ PR')
   if (pr.status !== 'pending') throw new Error(`${pr.prNo} ออก PO ไปแล้ว ถูกตีกลับ หรือถูกยกเลิก`)
+  const poNo = p.poNo.trim()
+  if (!poNo) throw new Error('กรุณาระบุ PO No.')
+  if (db.pos.some(x => x.poNo.toLowerCase() === poNo.toLowerCase()))
+    throw new Error(`PO No. "${poNo}" มีอยู่แล้ว`)
   if (!p.supplierName.trim()) throw new Error('กรุณาระบุ Supplier')
   const job = db.jobs.find(j => j.id === pr.jobId)!
 
-  const poNo = nextNo('PO', db.pos.map(x => x.poNo))
   const poId = uid()
   let next: DB = {
     ...db,
@@ -584,26 +599,36 @@ export function receivePOItems(
 
 // ---------------- Issue / Install / Cancel ----------------
 
-export function issueJob(db: DB, actor: User, p: { jobId: string; note?: string }): DB {
+export function issueJob(
+  db: DB, actor: User,
+  p: { jobId: string; startDate: string; endDate: string; location: string; note?: string },
+): DB {
   const job = assertJobEditable(db, p.jobId)
   const status = deriveJobStatus(db, job)
   if (status !== 'ready_to_issue')
     throw new Error(`${job.jobNo} ยังไม่พร้อมเบิก — ต้องมี LBS ครบตาม Scope และ Accessory ครบทุกรายการ`)
+  if (!p.startDate || !p.endDate) throw new Error('กรุณาระบุกำหนดวันติดตั้ง (Start–End)')
+  if (p.endDate < p.startDate) throw new Error('วันสิ้นสุดต้องไม่ก่อนวันเริ่มติดตั้ง')
+  if (!p.location.trim()) throw new Error('กรุณาระบุสถานที่ติดตั้ง (Location)')
   const units = db.lbsUnits.filter(u => u.jobId === p.jobId && u.status === 'allocated')
+  const range = p.startDate === p.endDate ? p.startDate : `${p.startDate} – ${p.endDate}`
   let next: DB = {
     ...db,
     jobs: db.jobs.map(j => j.id === p.jobId
-      ? { ...j, terminalStatus: 'issued' as const, issuedAt: now(), issuedNote: p.note }
+      ? {
+          ...j, terminalStatus: 'issued' as const, issuedAt: now(), issuedNote: p.note,
+          installStartDate: p.startDate, installEndDate: p.endDate, issueLocation: p.location.trim(),
+        }
       : j),
     lbsUnits: db.lbsUnits.map(u =>
       u.jobId === p.jobId && u.status === 'allocated' ? { ...u, status: 'issued' as const } : u),
   }
   next = notify(next, {
     type: 'job_issued', dept: 'service', jobId: p.jobId,
-    message: `🚚 ${job.jobNo} (${job.customerName}) เบิกของครบแล้ว — Service เข้าติดตั้งที่ ${job.installLocation || '-'} กำหนด ${job.requiredDate || '-'}`,
+    message: `🚚 ${job.jobNo} (${job.customerName}) เบิกของครบแล้ว — Service เข้าติดตั้งที่ ${p.location.trim()} กำหนด ${range}`,
   })
   return audit(next, actor, 'job', p.jobId, 'issue_to_service',
-    `เบิก ${job.jobNo} ให้ Service ติดตั้ง (LBS ${units.length} เครื่อง) สถานที่: ${job.installLocation || '-'}`)
+    `เบิก ${job.jobNo} ให้ Service ติดตั้ง (LBS ${units.length} เครื่อง) นัดติดตั้ง ${range} ที่ ${p.location.trim()}`)
 }
 
 // Service ยืนยันติดตั้งเสร็จ พร้อมวันที่จริง → Installed (terminal)

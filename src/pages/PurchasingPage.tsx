@@ -11,17 +11,22 @@ export default function PurchasingPage() {
   const [poFor, setPoFor] = useState<string | null>(null)
   const [rejectFor, setRejectFor] = useState<string | null>(null)
   const [receiveFor, setReceiveFor] = useState<string | null>(null)
+  const [poNo, setPoNo] = useState('')
   const [supplier, setSupplier] = useState('')
   const [expectedDate, setExpectedDate] = useState('')
   const [rejectReason, setRejectReason] = useState('')
   const [receiveQty, setReceiveQty] = useState<Record<string, number>>({})
 
-  const jobOf = (id: string) => db.jobs.find(j => j.id === id)
   const itemOf = (id: string) => db.items.find(i => i.id === id)
   const prLines = (prId: string) => db.accessoryRequests.filter(r => r.prId === prId)
 
-  const pendingPrs = db.prs.filter(p => p.status === 'pending')
-  const otherPrs = db.prs.filter(p => p.status !== 'pending')
+  // บันทึกแยกตาม Job No. — แสดงเฉพาะ Job ที่มี PR/PO แล้ว (ใหม่สุดขึ้นก่อน)
+  const jobsWithDocs = [...db.jobs]
+    .filter(j => db.prs.some(p => p.jobId === j.id) || db.pos.some(p => p.jobId === j.id))
+    .reverse()
+  const totalPendingPr = db.prs.filter(p => p.status === 'pending').length
+  const totalOpenPo = db.pos.filter(p => p.status === 'issued').length
+
   const receivePo = receiveFor ? db.pos.find(p => p.id === receiveFor) : null
   const receiveLines = receivePo
     ? prLines(receivePo.prId).filter(r => r.status === 'po_ordered' && r.qtyReceived < r.qtyRequested)
@@ -29,9 +34,9 @@ export default function PurchasingPage() {
 
   const submitPo = async () => {
     if (!poFor) return
-    if (await tryAction(() => act.createPO({ prId: poFor, supplierName: supplier, expectedDate }),
+    if (await tryAction(() => act.createPO({ prId: poFor, poNo, supplierName: supplier, expectedDate }),
       'ออก PO และแจ้งกลับ Project Dept แล้ว')) {
-      setPoFor(null); setSupplier(''); setExpectedDate('')
+      setPoFor(null); setPoNo(''); setSupplier(''); setExpectedDate('')
     }
   }
 
@@ -69,109 +74,111 @@ export default function PurchasingPage() {
     <>
       <div className="page-title">Purchasing — PR / PO</div>
       <div className="page-sub">
-        รับ PR จาก Project Dept → ออก PO (หรือตีกลับพร้อมเหตุผล) → รับของได้ทีละรายการ/ทีละจำนวน
+        บันทึกแยกตาม Job No. — รับ PR จาก Project Dept → ออก PO (หรือตีกลับพร้อมเหตุผล) → รับของได้ทีละรายการ/ทีละจำนวน
         {!canManage && ' (แผนกของคุณดูได้อย่างเดียว)'}
+        {' · '}<span className="badge amber">PR รอออก PO {totalPendingPr}</span>{' '}
+        <span className="badge blue">PO รอรับของ {totalOpenPo}</span>
       </div>
 
-      <div className="panel">
-        <div className="panel-head"><h3>PR รอออก PO ({pendingPrs.length})</h3></div>
-        <div className="table-scroll">
-          <table>
-            <thead><tr><th>PR No.</th><th>Job No.</th><th>รายการ</th><th>ส่งเมื่อ</th><th></th></tr></thead>
-            <tbody>
-              {pendingPrs.length === 0 && <tr><td colSpan={5}><div className="empty">ไม่มี PR ค้าง</div></td></tr>}
-              {pendingPrs.map(pr => {
-                const job = jobOf(pr.jobId)!
-                return (
-                  <tr key={pr.id}>
-                    <td className="mono"><b>{pr.prNo}</b></td>
-                    <td><Link to={`/jobs/${job.id}`}>{job.jobNo}</Link><div className="muted">{job.customerName}</div></td>
-                    <td>{prLines(pr.id).map(r => {
-                      const it = itemOf(r.itemId)!
-                      return <div key={r.id}>{it.name} × {r.qtyRequested} {it.uom}</div>
-                    })}</td>
-                    <td className="muted">{fmtDateTime(pr.createdAt)}</td>
-                    <td style={{ whiteSpace: 'nowrap' }}>
-                      {canManage && <>
-                        <button className="small primary" onClick={() => setPoFor(pr.id)}>ออก PO</button>{' '}
-                        <button className="small danger" onClick={() => { setRejectReason(''); setRejectFor(pr.id) }}>ตีกลับ</button>
-                      </>}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="panel">
-        <div className="panel-head"><h3>Purchase Orders</h3></div>
-        <div className="table-scroll">
-          <table>
-            <thead><tr><th>PO No.</th><th>PR / Job</th><th>Supplier</th><th>กำหนดส่ง</th><th>รับของ</th><th>สถานะ</th><th></th></tr></thead>
-            <tbody>
-              {db.pos.length === 0 && <tr><td colSpan={7}><div className="empty">ยังไม่มี PO</div></td></tr>}
-              {[...db.pos].reverse().map(po => {
-                const pr = db.prs.find(p => p.id === po.prId)
-                const job = jobOf(po.jobId)
-                const lines = prLines(po.prId)
-                const totalOrdered = lines.reduce((s, r) => s + r.qtyRequested, 0)
-                const totalReceived = lines.reduce((s, r) => s + r.qtyReceived, 0)
-                return (
-                  <tr key={po.id}>
-                    <td className="mono"><b>{po.poNo}</b></td>
-                    <td className="mono">{pr?.prNo} / {job && <Link to={`/jobs/${job.id}`}>{job.jobNo}</Link>}</td>
-                    <td>{po.supplierName}</td>
-                    <td>{fmtDate(po.expectedDate)}</td>
-                    <td>
-                      {totalReceived}/{totalOrdered}
-                      <div className="progress"><div style={{ width: `${totalOrdered ? (totalReceived / totalOrdered) * 100 : 0}%` }} /></div>
-                    </td>
-                    <td>
-                      {po.status === 'issued' && (totalReceived > 0
-                        ? <span className="badge blue">รับบางส่วน</span>
-                        : <span className="badge amber">รอรับของ</span>)}
-                      {po.status === 'received' && <span className="badge green">รับของครบ {fmtDate(po.receivedAt)}</span>}
-                      {po.status === 'cancelled' && <span className="badge red">ยกเลิก</span>}
-                    </td>
-                    <td>
-                      {canManage && po.status === 'issued' && (
-                        <button className="small success" onClick={() => openReceive(po.id)}>รับของ</button>
-                      )}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {otherPrs.length > 0 && (
-        <div className="panel">
-          <div className="panel-head"><h3>ประวัติ PR</h3></div>
-          <div className="table-scroll">
-            <table>
-              <thead><tr><th>PR No.</th><th>Job</th><th>สถานะ</th></tr></thead>
-              <tbody>
-                {[...otherPrs].reverse().map(pr => (
-                  <tr key={pr.id}>
-                    <td className="mono">{pr.prNo}</td>
-                    <td className="mono">{jobOf(pr.jobId)?.jobNo}</td>
-                    <td>
-                      <span className={`badge ${pr.status === 'received' ? 'green' : pr.status === 'po_issued' ? 'blue' : 'red'}`}>
-                        {PR_STATUS_LABEL[pr.status]}
-                      </span>
-                      {pr.status === 'rejected' && <div className="muted">เหตุผล: {pr.rejectReason}</div>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+      {jobsWithDocs.length === 0 && (
+        <div className="panel"><div className="empty">ยังไม่มี PR/PO — Project Dept ออก PR จากหน้า Job ก่อน</div></div>
       )}
+
+      {jobsWithDocs.map(job => {
+        const jobPrs = db.prs.filter(p => p.jobId === job.id)
+        const pendingPrs = jobPrs.filter(p => p.status === 'pending')
+        const historyPrs = jobPrs.filter(p => p.status !== 'pending' && p.status !== 'po_issued')
+        const jobPos = db.pos.filter(p => p.jobId === job.id)
+        return (
+          <div className="panel" key={job.id}>
+            <div className="panel-head">
+              <h3>
+                <Link to={`/jobs/${job.id}`}>{job.jobNo}</Link>{' '}
+                <span className="muted" style={{ fontWeight: 400 }}>{job.customerName}</span>{' '}
+                {pendingPrs.length > 0 && <span className="badge amber">PR รอออก PO {pendingPrs.length}</span>}{' '}
+                {jobPos.filter(p => p.status === 'issued').length > 0 && <span className="badge blue">PO รอรับของ {jobPos.filter(p => p.status === 'issued').length}</span>}
+              </h3>
+            </div>
+
+            {pendingPrs.length > 0 && (
+              <div className="table-scroll">
+                <table>
+                  <thead><tr><th>PR No.</th><th>รายการ</th><th>ส่งเมื่อ</th><th></th></tr></thead>
+                  <tbody>
+                    {pendingPrs.map(pr => (
+                      <tr key={pr.id}>
+                        <td className="mono"><b>{pr.prNo}</b></td>
+                        <td>{prLines(pr.id).map(r => {
+                          const it = itemOf(r.itemId)!
+                          return <div key={r.id}>{it.name} × {r.qtyRequested} {it.uom}</div>
+                        })}</td>
+                        <td className="muted">{fmtDateTime(pr.createdAt)}</td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          {canManage && <>
+                            <button className="small primary" onClick={() => { setPoNo(''); setSupplier(''); setExpectedDate(''); setPoFor(pr.id) }}>ออก PO</button>{' '}
+                            <button className="small danger" onClick={() => { setRejectReason(''); setRejectFor(pr.id) }}>ตีกลับ</button>
+                          </>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {jobPos.length > 0 && (
+              <div className="table-scroll">
+                <table>
+                  <thead><tr><th>PO No.</th><th>จาก PR</th><th>Supplier</th><th>กำหนดส่ง</th><th>รับของ</th><th>สถานะ</th><th></th></tr></thead>
+                  <tbody>
+                    {[...jobPos].reverse().map(po => {
+                      const pr = db.prs.find(p => p.id === po.prId)
+                      const lines = prLines(po.prId)
+                      const totalOrdered = lines.reduce((s, r) => s + r.qtyRequested, 0)
+                      const totalReceived = lines.reduce((s, r) => s + r.qtyReceived, 0)
+                      return (
+                        <tr key={po.id}>
+                          <td className="mono"><b>{po.poNo}</b></td>
+                          <td className="mono">{pr?.prNo}</td>
+                          <td>{po.supplierName}</td>
+                          <td>{fmtDate(po.expectedDate)}</td>
+                          <td>
+                            {totalReceived}/{totalOrdered}
+                            <div className="progress"><div style={{ width: `${totalOrdered ? (totalReceived / totalOrdered) * 100 : 0}%` }} /></div>
+                          </td>
+                          <td>
+                            {po.status === 'issued' && (totalReceived > 0
+                              ? <span className="badge blue">รับบางส่วน</span>
+                              : <span className="badge amber">รอรับของ</span>)}
+                            {po.status === 'received' && <span className="badge green">รับของครบ {fmtDate(po.receivedAt)}</span>}
+                            {po.status === 'cancelled' && <span className="badge red">ยกเลิก</span>}
+                          </td>
+                          <td>
+                            {canManage && po.status === 'issued' && (
+                              <button className="small success" onClick={() => openReceive(po.id)}>รับของ</button>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {pendingPrs.length === 0 && jobPos.length === 0 && (
+              <div className="empty">ไม่มีรายการค้างของ Job นี้</div>
+            )}
+
+            {historyPrs.length > 0 && (
+              <div className="panel-body muted">
+                ประวัติ PR: {historyPrs.map(pr =>
+                  `${pr.prNo} (${PR_STATUS_LABEL[pr.status]}${pr.status === 'rejected' ? `: ${pr.rejectReason}` : ''})`).join(' · ')}
+              </div>
+            )}
+          </div>
+        )
+      })}
 
       {poFor && (
         <Modal title={`ออก PO จาก ${db.prs.find(p => p.id === poFor)?.prNo}`} onClose={() => setPoFor(null)}
@@ -179,13 +186,16 @@ export default function PurchasingPage() {
             <button onClick={() => setPoFor(null)}>ยกเลิก</button>
             <button className="primary" onClick={submitPo}>ออก PO</button>
           </>}>
+          <label className="field"><span>PO No. * (กรอกเลขเอง — ห้ามซ้ำ)</span>
+            <input className="mono" value={poNo} onChange={e => setPoNo(e.target.value)} placeholder="เช่น PO-2026-0002" />
+          </label>
           <label className="field"><span>Supplier *</span>
             <input value={supplier} onChange={e => setSupplier(e.target.value)} placeholder="บจก.สยามอิเล็คทริค" />
           </label>
           <label className="field"><span>กำหนดส่งของ</span>
             <input type="date" value={expectedDate} onChange={e => setExpectedDate(e.target.value)} />
           </label>
-          <div className="muted">PO No. จะออกอัตโนมัติ และแจ้งสถานะกลับ Project Dept ทันที</div>
+          <div className="muted">ระบบจะแจ้งสถานะกลับ Project Dept ทันทีหลังออก PO</div>
         </Modal>
       )}
 

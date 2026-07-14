@@ -67,7 +67,11 @@ export default function ServicePage() {
               {issued.map(j => (
                 <tr key={j.id}>
                   <td><Link to={`/jobs/${j.id}`}><b>{j.jobNo}</b></Link></td>
-                  <td>{j.customerName}<div className="muted">{j.installLocation} · กำหนด {fmtDate(j.requiredDate)}</div>
+                  <td>{j.customerName}
+                    <div className="muted">
+                      📍 {j.issueLocation || j.installLocation || '-'}
+                      {j.installStartDate && <> · 📅 นัดติดตั้ง <b>{fmtDate(j.installStartDate)} – {fmtDate(j.installEndDate)}</b></>}
+                    </div>
                     {j.issuedNote && <div className="muted">📝 {j.issuedNote}</div>}</td>
                   <td>
                     <div>LBS {unitsOf(j.id).length} เครื่อง <span className="muted mono">({unitsOf(j.id).map(u => u.serialLvb).join(', ')})</span></div>

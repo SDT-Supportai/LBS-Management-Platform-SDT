@@ -55,6 +55,7 @@ export function buildSeedDb(): DB {
 
   // JOB-0001: PEA เชียงใหม่ — ดึงแล้ว 3/4 → Allocated
   db = L.createJob(db, project, {
+    jobNo: 'JOB-2026-0001',
     customerName: 'PEA เชียงใหม่', scope: 'ติดตั้ง LBS สถานีย่อยสันทราย 4 จุด',
     installLocation: 'สถานีไฟฟ้าสันทราย จ.เชียงใหม่', requiredDate: '2026-08-20', lbsQtyRequired: 4,
     budgetSalePrice: 4800000, budgetCost: 3600000,
@@ -64,6 +65,7 @@ export function buildSeedDb(): DB {
 
   // JOB-0002: กฟภ.ขอนแก่น — LBS ครบ แต่รอ Accessory จาก PO → Procuring Accessory
   db = L.createJob(db, project, {
+    jobNo: 'JOB-2026-0002',
     customerName: 'PEA ขอนแก่น', scope: 'เปลี่ยน LBS สายส่ง 115kV ช่วงบ้านไผ่ 5 จุด',
     installLocation: 'อ.บ้านไผ่ จ.ขอนแก่น', requiredDate: '2026-09-10', lbsQtyRequired: 5,
     budgetSalePrice: 6200000, budgetCost: 4700000,
@@ -75,10 +77,11 @@ export function buildSeedDb(): DB {
   db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-relay', qty: 5, source: 'purchasing', unitPrice: 120000 })
   db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-cable', qty: 3, source: 'purchasing', unitPrice: 15000 })
   db = L.createPR(db, project, { jobId: job2, requestIds: L.pendingPurchasingReqs(db, job2).map(r => r.id) })
-  db = L.createPO(db, purchasing, { prId: db.prs[0].id, supplierName: 'บจก.สยามอิเล็คทริค', expectedDate: '2026-07-30' })
+  db = L.createPO(db, purchasing, { prId: db.prs[0].id, poNo: 'PO-2026-0001', supplierName: 'บจก.สยามอิเล็คทริค', expectedDate: '2026-07-30' })
 
   // JOB-0003: EGAT — ครบทุกอย่าง → Ready to Issue
   db = L.createJob(db, project, {
+    jobNo: 'JOB-2026-0003',
     customerName: 'EGAT บางปะกง', scope: 'ติดตั้ง LBS จุดเชื่อมโยงโรงไฟฟ้า 2 จุด',
     installLocation: 'โรงไฟฟ้าบางปะกง จ.ฉะเชิงเทรา', requiredDate: '2026-07-25', lbsQtyRequired: 2,
     budgetSalePrice: 2500000, budgetCost: 1900000,
@@ -89,6 +92,7 @@ export function buildSeedDb(): DB {
 
   // JOB-0004: อมตะซิตี้ — เบิกให้ Service แล้ว → Issued/Installed
   db = L.createJob(db, project, {
+    jobNo: 'JOB-2026-0004',
     customerName: 'นิคมอุตสาหกรรมอมตะซิตี้', scope: 'ติดตั้ง LBS วงจรสำรองโรงงาน 1 จุด',
     installLocation: 'อมตะซิตี้ จ.ระยอง', requiredDate: '2026-07-05', lbsQtyRequired: 1,
     budgetSalePrice: 1400000, budgetCost: 1050000,
@@ -96,7 +100,10 @@ export function buildSeedDb(): DB {
   const job4 = db.jobs[3].id
   db = L.drawLbs(db, project, { jobId: job4, stockId: stock2, unitIds: unitsOf(stock2).slice(0, 1).map(u => u.id) })
   db = L.addAccessoryRequest(db, project, { jobId: job4, itemId: 'i-ct', qty: 1, source: 'central_stock', unitPrice: 85000 })
-  db = L.issueJob(db, project, { jobId: job4, note: 'ทีม Service A นัดติดตั้ง 5 ก.ค. 2026' })
+  db = L.issueJob(db, project, {
+    jobId: job4, startDate: '2026-07-05', endDate: '2026-07-06',
+    location: 'อมตะซิตี้ จ.ระยอง', note: 'ทีม Service A นัดติดตั้ง 5 ก.ค. 2026',
+  })
 
   return db
 }
