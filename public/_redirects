@@ -1,0 +1,3 @@
+# SPA fallback สำหรับ Cloudflare Pages — เสิร์ฟ index.html ทุก path ที่ไม่ใช่ static/function
+# (Cloudflare จับ route ของ functions/* ก่อน rule นี้อยู่แล้ว จึงไม่ชนกับ /admin-users, /line-notify, /line-webhook)
+/*  /index.html  200

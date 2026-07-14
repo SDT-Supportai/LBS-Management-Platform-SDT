@@ -1,23 +1,24 @@
-// จัดการผู้ใช้ด้วย Supabase service role (สร้าง user / เปลี่ยนรหัสผ่าน)
-// — ทำฝั่ง server เท่านั้น และอนุญาตเฉพาะผู้เรียกที่เป็นแผนก admin
-// ตั้ง env บน Netlify: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, VITE_SUPABASE_ANON_KEY
+// Cloudflare Pages Function — จัดการผู้ใช้ด้วย Supabase service role (สร้าง user / เปลี่ยนรหัสผ่าน)
+// route: POST /admin-users  (frontend เรียกที่ remote.ts → callAdminFn)
+// ทำฝั่ง server เท่านั้น + อนุญาตเฉพาะผู้เรียกที่เป็นแผนก admin
+// ตั้ง env ใน Cloudflare Pages → Settings → Environment variables:
+//   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, VITE_SUPABASE_ANON_KEY
 //   (VITE_SUPABASE_ANON_KEY ใช้ตรวจ token ของผู้เรียก — service key แบบใหม่ sb_secret_
 //    มีข้อจำกัดบน auth endpoint จึงไม่ใช้ตรวจ token)
-
 import { createClient } from '@supabase/supabase-js'
 
-export default async (req) => {
-  if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 })
+export async function onRequestPost(context) {
+  const { request, env } = context
 
-  const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-  const anonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY
+  const url = env.SUPABASE_URL || env.VITE_SUPABASE_URL
+  const serviceKey = env.SUPABASE_SERVICE_ROLE_KEY
+  const anonKey = env.VITE_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KEY
   if (!url || !serviceKey) {
     return Response.json({ error: 'SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not configured' }, { status: 500 })
   }
 
   // ตรวจตัวตนผู้เรียกจาก JWT ด้วย anon key (validate ถูกต้องกว่าใช้ secret key)
-  const token = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '')
+  const token = (request.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '')
   if (!token) return Response.json({ error: 'กรุณาเข้าสู่ระบบก่อน' }, { status: 401 })
 
   const asCaller = createClient(url, anonKey || serviceKey, { auth: { persistSession: false } })
@@ -35,7 +36,7 @@ export default async (req) => {
   }
 
   let body
-  try { body = await req.json() } catch { return Response.json({ error: 'invalid JSON' }, { status: 400 }) }
+  try { body = await request.json() } catch { return Response.json({ error: 'invalid JSON' }, { status: 400 }) }
 
   try {
     if (body.action === 'create') {

@@ -1,19 +1,18 @@
-// ส่งข้อความแจ้งเตือนเข้า LINE group ผ่าน Messaging API (push message)
-// ตั้ง env บน Netlify: LINE_CHANNEL_ACCESS_TOKEN, LINE_GROUP_ID
-// Frontend เรียก POST /.netlify/functions/line-notify {"message": "..."}
+// Cloudflare Pages Function — ส่งข้อความแจ้งเตือนเข้า LINE group ผ่าน Messaging API (push)
+// route: POST /line-notify   Frontend เรียกที่ StoreContext (settings.lineEndpoint)
+// ตั้ง env ใน Cloudflare Pages: LINE_CHANNEL_ACCESS_TOKEN, LINE_GROUP_ID
+export async function onRequestPost(context) {
+  const { request, env } = context
 
-export default async (req) => {
-  if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 })
-
-  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN
-  const to = process.env.LINE_GROUP_ID
+  const token = env.LINE_CHANNEL_ACCESS_TOKEN
+  const to = env.LINE_GROUP_ID
   if (!token || !to) {
     return Response.json({ ok: false, error: 'LINE_CHANNEL_ACCESS_TOKEN / LINE_GROUP_ID not configured' }, { status: 500 })
   }
 
   let message
   try {
-    ({ message } = await req.json())
+    ({ message } = await request.json())
   } catch {
     return Response.json({ ok: false, error: 'invalid JSON body' }, { status: 400 })
   }

@@ -223,13 +223,13 @@ async function callAdminFn(sb: SupabaseClient, body: Record<string, unknown>): P
   if (!session) throw new Error('กรุณาเข้าสู่ระบบก่อน')
   let res: Response
   try {
-    res = await fetch('/.netlify/functions/admin-users', {
+    res = await fetch('/admin-users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
       body: JSON.stringify(body),
     })
   } catch {
-    throw new Error('เรียก admin function ไม่ได้ — ฟีเจอร์นี้ใช้ได้เมื่อ deploy บน Netlify (หรือรัน netlify dev)')
+    throw new Error('เรียก admin function ไม่ได้ — ฟีเจอร์นี้ใช้ได้เมื่อ deploy บน Cloudflare Pages (หรือรัน wrangler pages dev)')
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))

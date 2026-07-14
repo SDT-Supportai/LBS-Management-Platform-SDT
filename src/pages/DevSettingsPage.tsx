@@ -59,9 +59,9 @@ export default function DevSettingsPage() {
         <div className="panel-head"><h3>LINE Messaging API — แจ้งเตือนเข้ากลุ่ม</h3></div>
         <div className="panel-body">
           <p className="muted" style={{ marginBottom: 12 }}>
-            Browser เรียก LINE API ตรงไม่ได้ (CORS + token ต้องเป็นความลับ) — ระบบจึงส่งผ่าน Netlify Function
-            <span className="mono"> netlify/functions/line-notify</span> ที่เตรียมไว้ใน repo แล้ว
-            ตอน deploy ให้ตั้ง env <span className="mono">LINE_CHANNEL_ACCESS_TOKEN</span> และ <span className="mono">LINE_GROUP_ID</span> บน Netlify
+            Browser เรียก LINE API ตรงไม่ได้ (CORS + token ต้องเป็นความลับ) — ระบบจึงส่งผ่าน Cloudflare Pages Function
+            <span className="mono"> functions/line-notify.js</span> ที่เตรียมไว้ใน repo แล้ว (route <span className="mono">/line-notify</span>)
+            ตอน deploy ให้ตั้ง env <span className="mono">LINE_CHANNEL_ACCESS_TOKEN</span> และ <span className="mono">LINE_GROUP_ID</span> บน Cloudflare Pages
           </p>
           <label className="field" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <input type="checkbox" style={{ width: 'auto' }} checked={form.lineEnabled}
@@ -110,8 +110,8 @@ export default function DevSettingsPage() {
         <div className="panel-head"><h3>Roadmap เชื่อมระบบจริง</h3></div>
         <div className="panel-body muted">
           <div>1. Supabase: รัน <span className="mono">supabase/migrations/0001_schema.sql</span> + เปิด Auth แล้วสลับ data layer</div>
-          <div>2. LINE แจ้งเตือนกลุ่ม: deploy Netlify + ตั้ง env 2 ตัว → เปิดสวิตช์ด้านบน</div>
-          <div>3. LINE ตอบโต้ลูกค้า (webhook bot): template อยู่ที่ <span className="mono">netlify/functions/line-webhook.mjs</span> — ตั้ง Webhook URL ใน LINE Developers Console</div>
+          <div>2. LINE แจ้งเตือนกลุ่ม: deploy Cloudflare Pages + ตั้ง env 2 ตัว → เปิดสวิตช์ด้านบน</div>
+          <div>3. LINE ตอบโต้ลูกค้า (webhook bot): template อยู่ที่ <span className="mono">functions/line-webhook.js</span> — ตั้ง Webhook URL <span className="mono">https://&lt;project&gt;.pages.dev/line-webhook</span> ใน LINE Developers Console</div>
         </div>
       </div>
     </>

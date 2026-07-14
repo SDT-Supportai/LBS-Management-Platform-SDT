@@ -26,7 +26,7 @@ export function can(user: User | null, perm: keyof typeof PERMISSIONS): boolean 
 
 const DEFAULT_SETTINGS: AppSettings = {
   lineEnabled: false,
-  lineEndpoint: '/.netlify/functions/line-notify',
+  lineEndpoint: '/line-notify',
   lineGroupNote: '',
 }
 
@@ -76,7 +76,13 @@ function loadLocalDb(): DB {
 function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY)
-    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) }
+    if (raw) {
+      const s = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) }
+      // migrate: ย้าย hosting Netlify → Cloudflare Pages (endpoint เดิม /.netlify/functions/*)
+      if (s.lineEndpoint?.startsWith('/.netlify/functions/'))
+        s.lineEndpoint = s.lineEndpoint.replace('/.netlify/functions/', '/')
+      return s
+    }
   } catch { /* ignore */ }
   return DEFAULT_SETTINGS
 }
