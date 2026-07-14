@@ -194,6 +194,25 @@ export function updateProjectStock(
     `แก้ไข ${stock.stockNo}${stock.status !== p.status ? ` (${p.status === 'closed' ? 'ปิดคลัง — ห้ามดึงเพิ่ม' : 'เปิดคลังอีกครั้ง'})` : ''}`)
 }
 
+// ลบ Project Stock ได้เฉพาะคลัง "เปล่า" (ทุกเครื่องยัง in_stock + ไม่เคยมีประวัติดึง/คืน)
+export function deleteProjectStock(db: DB, actor: User, p: { stockId: string }): DB {
+  const stock = db.projectStocks.find(s => s.id === p.stockId)
+  if (!stock) throw new Error('ไม่พบ Project Stock')
+  const units = db.lbsUnits.filter(u => u.projectStockId === p.stockId)
+  const bad = units.filter(u => u.status !== 'in_stock').length
+  if (bad > 0)
+    throw new Error(`${stock.stockNo} มีเครื่องที่ถูกดึงเข้า Job/เบิกแล้ว ${bad} เครื่อง ลบไม่ได้ — ใช้ "ปิดคลัง" แทน`)
+  if (db.allocations.some(a => a.projectStockId === p.stockId))
+    throw new Error(`${stock.stockNo} มีประวัติดึง/คืนแล้ว ลบไม่ได้ — ใช้ "ปิดคลัง" แทนเพื่อคง audit trail`)
+  const next: DB = {
+    ...db,
+    projectStocks: db.projectStocks.filter(s => s.id !== p.stockId),
+    lbsUnits: db.lbsUnits.filter(u => u.projectStockId !== p.stockId),
+  }
+  return audit(next, actor, 'project_stock', p.stockId, 'delete_stock',
+    `ลบ ${stock.stockNo} (LBS ในคลัง ${units.length} เครื่อง ไม่เคยมีประวัติดึง/คืน)`)
+}
+
 // ---------------- Job (Project Dept) ----------------
 
 // budget: undefined = ไม่ระบุ; ค่าติดลบไม่ยอมรับ

@@ -89,6 +89,7 @@ export interface StoreActions {
   updateProjectStock: (p: Parameters<typeof L.updateProjectStock>[2]) => MaybePromise
   createJob: (p: Parameters<typeof L.createJob>[2]) => MaybePromise
   updateJob: (p: Parameters<typeof L.updateJob>[2]) => MaybePromise
+  deleteProjectStock: (p: Parameters<typeof L.deleteProjectStock>[2]) => MaybePromise
   deleteDraftJob: (p: Parameters<typeof L.deleteDraftJob>[2]) => MaybePromise
   drawLbs: (p: Parameters<typeof L.drawLbs>[2]) => MaybePromise
   returnLbs: (p: Parameters<typeof L.returnLbs>[2]) => MaybePromise
@@ -221,6 +222,7 @@ function DemoProvider({ children }: { children: ReactNode }) {
         updateProjectStock: run('stock.manage', L.updateProjectStock),
         createJob: run('job.manage', L.createJob),
         updateJob: run('job.manage', L.updateJob),
+        deleteProjectStock: run('stock.manage', L.deleteProjectStock),
         deleteDraftJob: run('job.manage', L.deleteDraftJob),
         drawLbs: run('job.manage', L.drawLbs),
         returnLbs: run('job.manage', L.returnLbs),

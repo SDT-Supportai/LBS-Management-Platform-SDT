@@ -109,6 +109,12 @@ export default function StocksPage() {
                 {s.status === 'closed' && <span className="badge red">ปิดคลัง</span>}
                 {canManage && <button className="small" onClick={() => { setRows([emptyRow()]); setAddTo(s.id) }}>+ รับ LBS เพิ่ม</button>}
                 {canManage && <button className="small" onClick={() => { setEditNotes(s.notes ?? ''); setEditStatus(s.status); setEditStock(s.id) }}>แก้ไข</button>}
+                {canManage && (
+                  <button className="small danger" onClick={() => {
+                    if (confirm(`ลบ ${s.stockNo}? (ลบได้เฉพาะคลังที่ไม่เคยมีประวัติดึง/คืน — Serial ในคลังจะถูกลบด้วย)`))
+                      tryAction(() => act.deleteProjectStock({ stockId: s.id }), `ลบ ${s.stockNo} แล้ว`)
+                  }}>ลบ</button>
+                )}
                 <button className="small" onClick={() => setOpenStock(expanded ? null : s.id)}>{expanded ? 'ซ่อนรายการ' : `ดูรายเครื่อง (${sum.total})`}</button>
               </div>
             </div>
