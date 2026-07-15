@@ -159,15 +159,15 @@ export default function MasterDataPage() {
 
   return (
     <>
-      <div className="page-title">ข้อมูลหลัก (Master Data)</div>
+      <div className="page-title">Material Database</div>
       <div className="page-sub">
-        จัดการ Accessory catalog, คลังสินค้า และผู้ใช้งาน
-        {!canMaster && ' — การเพิ่ม/แก้/ลบเป็นสิทธิ์ของ Manager (ปรับยอดคลังสินค้า: Sales/Manager)'}
+        ฐานข้อมูลวัสดุ (ใช้ตอนออก PR) และผู้ใช้งาน
+        {!canMaster && ' — การเพิ่ม/แก้/ลบเป็นสิทธิ์ของ Manager'}
       </div>
 
       <div className="panel">
         <div className="panel-head">
-          <h3>Accessory Catalog ({accessories.length})</h3>
+          <h3>ฐานข้อมูลวัสดุ ({accessories.length})</h3>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="small" onClick={() => setShowCatalog(v => !v)}>
               {showCatalog ? 'ซ่อนรายการ' : `แสดงรายการ (${accessories.length})`}
@@ -184,19 +184,15 @@ export default function MasterDataPage() {
         {showCatalog && (
           <div className="table-scroll">
             <table>
-              <thead><tr><th>รหัส</th><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>หน่วย</th><th>การจัดหา</th><th>คลังสินค้าคงเหลือ</th><th></th></tr></thead>
+              <thead><tr><th>รหัส</th><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>หน่วย</th><th></th></tr></thead>
               <tbody>
-                {accessories.length === 0 && <tr><td colSpan={7}><div className="empty">ยังไม่มี Accessory ในระบบ</div></td></tr>}
+                {accessories.length === 0 && <tr><td colSpan={5}><div className="empty">ยังไม่มีวัสดุในระบบ</div></td></tr>}
                 {accessories.map(i => (
                   <tr key={i.id}>
                     <td className="mono">{i.code}</td>
                     <td className="mono">{i.epicorCode || '-'}</td>
                     <td>{i.name}</td>
                     <td>{i.uom}</td>
-                    <td>{i.stockableCentrally
-                      ? <span className="badge green">มีในคลังสินค้า</span>
-                      : <span className="badge amber">ผ่าน Purchasing เท่านั้น</span>}</td>
-                    <td>{i.stockableCentrally ? `${stockQty(i.id)} ${i.uom}` : '-'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       {i.stockableCentrally && canStock && <button className="small" onClick={() => adjustStock(i)}>ปรับยอด</button>}{' '}
                       {canMaster && <>

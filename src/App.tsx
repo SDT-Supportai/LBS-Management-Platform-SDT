@@ -18,6 +18,7 @@ import { deriveJobStatus, unreadNotifications } from './data/logic'
 
 function Sidebar() {
   const { db, user, logout, resetDemo, mode } = useStore()
+  const navigate = useNavigate()
   if (!user) return null
   const pendingPrs = db.prs.filter(p => p.status === 'pending').length
   const openPos = db.pos.filter(p => p.status === 'issued').length
@@ -30,8 +31,7 @@ function Sidebar() {
     { to: '/jobs', icon: '🗂️', label: 'Jobs', badge: readyJobs > 0 ? { text: `${readyJobs} พร้อมเบิก`, cls: 'green' } : undefined },
     { to: '/purchasing', icon: '🛒', label: 'Purchasing (PR/PO)', badge: (pendingPrs + openPos) > 0 ? { text: `${pendingPrs + openPos}`, cls: 'amber' } : undefined },
     { to: '/service', icon: '🔧', label: 'งานติดตั้ง (Service)', badge: awaitingInstall > 0 ? { text: `${awaitingInstall} รอติดตั้ง`, cls: 'blue' } : undefined },
-    { to: '/master', icon: '🗄️', label: 'ข้อมูลหลัก (Master Data)' },
-    { to: '/audit', icon: '📜', label: 'Audit Log' },
+    { to: '/master', icon: '🗄️', label: 'Material Database' },
     { to: '/dev', icon: '⚙️', label: 'Dev Settings' },
   ]
 
@@ -59,7 +59,8 @@ function Sidebar() {
       <div className="userbox">
         <div className="name">{user.fullName} {mode === 'demo' ? <span className="badge amber">DEMO</span> : <span className="badge green">LIVE</span>}</div>
         <div className="dept">แผนก {DEPT_LABEL[user.department]} · {user.email}</div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="small" onClick={() => navigate('/audit')}>📜 Audit Log</button>
           <button className="small" onClick={() => logout()}>ออกจากระบบ</button>
           {mode === 'demo' && (
             <button className="small" onClick={() => { if (confirm('รีเซ็ตข้อมูล demo ทั้งหมด?')) resetDemo() }}>รีเซ็ต demo</button>

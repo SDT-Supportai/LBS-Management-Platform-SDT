@@ -213,6 +213,25 @@ export function deleteProjectStock(db: DB, actor: User, p: { stockId: string }):
     `ลบ ${stock.stockNo} (LBS ในคลัง ${units.length} เครื่อง ไม่เคยมีประวัติดึง/คืน)`)
 }
 
+// แก้ Serial.LVB/OM ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก (in_stock) — กัน snapshot serial ใน allocation/audit เพี้ยน
+export function updateUnitSerials(db: DB, actor: User, p: { unitId: string; serialLvb: string; serialOm: string }): DB {
+  const unit = db.lbsUnits.find(u => u.id === p.unitId)
+  if (!unit) throw new Error('ไม่พบเครื่อง LBS')
+  if (unit.status !== 'in_stock')
+    throw new Error('แก้ Serial ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก (ยังไม่ถูกดึงเข้า Job)')
+  const lvb = p.serialLvb.trim(), om = p.serialOm.trim()
+  if (!lvb || !om) throw new Error('ต้องกรอกทั้ง Serial.LVB และ Serial.OM')
+  if (lvb === om) throw new Error('Serial.LVB และ Serial.OM ห้ามเป็นเลขเดียวกัน')
+  const clash = db.lbsUnits.find(u => u.id !== p.unitId && [u.serialLvb, u.serialOm].some(s => s === lvb || s === om))
+  if (clash) throw new Error(`Serial No. "${lvb}" / "${om}" ซ้ำกับเครื่องอื่นในระบบ`)
+  const next: DB = {
+    ...db,
+    lbsUnits: db.lbsUnits.map(u => u.id === p.unitId ? { ...u, serialLvb: lvb, serialOm: om } : u),
+  }
+  return audit(next, actor, 'lbs_unit', p.unitId, 'update_serials',
+    `แก้ Serial: ${unit.serialLvb}/${unit.serialOm} → ${lvb}/${om}`)
+}
+
 // ---------------- Job (Project Dept) ----------------
 
 // budget: undefined = ไม่ระบุ; ค่าติดลบไม่ยอมรับ

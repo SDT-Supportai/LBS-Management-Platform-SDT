@@ -170,6 +170,8 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_update_project_stock', { p_stock_id: p.stockId, p_notes: p.notes, p_status: p.status }),
     deleteProjectStock: (p: { stockId: string }) =>
       rpc(sb, 'rpc_delete_project_stock', { p_stock_id: p.stockId }),
+    updateUnitSerials: (p: { unitId: string; serialLvb: string; serialOm: string }) =>
+      rpc(sb, 'rpc_update_lbs_serials', { p_unit_id: p.unitId, p_serial_lvb: p.serialLvb, p_serial_om: p.serialOm }),
     createJob: (p: { jobNo: string; customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCost?: number }) =>
       rpc(sb, 'rpc_create_job', { p_job_no: p.jobNo, p_customer: p.customerName, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_cost: p.budgetCost ?? null }),
     updateJob: (p: { jobId: string; jobNo: string; customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCost?: number }) =>
