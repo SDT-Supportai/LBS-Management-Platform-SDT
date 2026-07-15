@@ -16,10 +16,10 @@
 
 | ส่วน | ค่า / สถานะ |
 |---|---|
-| Hosting | **กำลังย้าย Netlify → Cloudflare Pages** (Netlify เครดิตหมด — ดูขั้นตอนหัวข้อ 6.1) |
+| Hosting | **Cloudflare Pages — LIVE แล้ว** https://lbs-platform-sdt.pages.dev (ย้ายจาก Netlify 2026-07-15, auto-deploy จาก `main`) |
 | GitHub repo | https://github.com/SDT-Supportai/LBS-Management-Platform-SDT (root = โฟลเดอร์นี้) |
 | Supabase project ref | `mrdnxajwnvkgvfyaclwv` (region: ตามที่สร้าง) |
-| Migrations ที่รันแล้ว | 0001–0005 (ครบ) · ⚠️ ต้องรัน **0006, 0007, 0008, 0009** เพิ่ม |
+| Migrations ที่รันแล้ว | **0001–0010 ครบ** (ยืนยันด้วย query เช็ค column/function 2026-07-15) |
 | E2E บน DB จริง | ✅ ผ่านทั้ง flow + ฟีเจอร์เพิ่มผู้ใช้ |
 | Admin จริง | `siradanai.s@precise.co.th` (department = admin, แสดงเป็น "Manager") |
 
@@ -109,7 +109,7 @@ lbs-platform/
 ## 7. Cloudflare Pages Functions (route = ชื่อไฟล์ใน `functions/`)
 
 - `POST /line-notify` — `{message}` → push เข้ากลุ่ม LINE (frontend เรียกอัตโนมัติเมื่อเปิดสวิตช์ใน Dev Settings)
-- `POST /line-webhook` — ตั้งเป็น Webhook URL ใน LINE Developers; พิมพ์ `id` ในกลุ่มเพื่อดู Group ID (ตรวจ signature ด้วย Web Crypto)
+- `POST /line-webhook` — ตั้งเป็น Webhook URL ใน LINE Developers; พิมพ์ `id` ในกลุ่มเพื่อดู Group ID, พิมพ์ `สถานะ <Job No.>` เพื่อดูสถานะงานจริงจาก Supabase (ตอบเฉพาะกลุ่มที่ตรง LINE_GROUP_ID; ตรวจ signature ด้วย Web Crypto)
 - `POST /admin-users` — ต้องมี JWT admin, action `create`/`set_password`; ใช้ service role สร้าง user + auto-confirm email
 - รูปแบบ: `export async function onRequestPost({ request, env })` · อ่าน env ผ่าน `env.XXX` (ไม่ใช่ `process.env`)
 - ทดสอบ functions ในเครื่อง: `npx wrangler pages dev dist` (build ก่อน) — Vite `npm run dev` ไม่รัน functions
@@ -148,9 +148,11 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 - [ ] **Custom domain** — แนะนำ subdomain บริษัท `lbs.precise.co.th` (ฟรี, ขอ IT เพิ่ม CNAME → `<project>.pages.dev`) แล้ว Add ใน Cloudflare Pages → Custom domains (ออก SSL อัตโนมัติ)
 
 ### 🟢 พัฒนาต่อ (ไอเดีย)
-- หน้า forgot-password / เปลี่ยนรหัสตัวเอง (ตอนนี้ต้องให้ admin reset ที่ Master Data)
-- LINE bot ตอบสถานะ Job จริง (ต่อ Supabase ใน `line-webhook.mjs` — ตอนนี้เป็น placeholder)
+- หน้า forgot-password / เปลี่ยนรหัสตัวเอง (ตอนนี้ต้องให้ Manager reset ที่ Material Database)
+- ยกเลิก/แก้ไข PO เดี่ยวๆ (ตอนนี้ PO ผิดต้องยกเลิกทั้ง Job — ควรมี rpc_cancel_po คืนสถานะ PR เป็น pending)
 - รายงาน/analytics (stock movement, lead time ต่อ Job)
+
+> ✅ LINE bot ตอบสถานะ Job จริงแล้ว (2026-07-15) — `functions/line-webhook.js` ต่อ Supabase, คำสั่ง `สถานะ <Job No.>`
 
 ## 11. Workflow การพัฒนา
 
