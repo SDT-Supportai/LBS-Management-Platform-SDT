@@ -110,7 +110,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
   const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, audits, notifs, reads] =
     await Promise.all([
       q(sb, 'profiles'),
-      q(sb, 'items'),
+      q(sb, 'items', { col: 'code', limit: 10000 }),
       q(sb, 'project_stocks', { col: 'created_at' }),
       q(sb, 'lbs_units', { col: 'serial_lvb' }),
       q(sb, 'jobs', { col: 'created_at' }),

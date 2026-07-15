@@ -53,6 +53,7 @@ export default function MasterDataPage() {
   const fileRef = useRef<HTMLInputElement>(null)
   const [importRows, setImportRows] = useState<ImportRow[] | null>(null)
   const [importing, setImporting] = useState(false)
+  const [showCatalog, setShowCatalog] = useState(false)   // เริ่มต้นซ่อนตาราง (กดแสดงเอง)
 
   // ---- item modal state ----
   const [itemModal, setItemModal] = useState<'create' | 'edit' | null>(null)
@@ -168,6 +169,9 @@ export default function MasterDataPage() {
         <div className="panel-head">
           <h3>Accessory Catalog ({accessories.length})</h3>
           <div style={{ display: 'flex', gap: 8 }}>
+            <button className="small" onClick={() => setShowCatalog(v => !v)}>
+              {showCatalog ? 'ซ่อนรายการ' : `แสดงรายการ (${accessories.length})`}
+            </button>
             <button className="small" onClick={exportExcel}>⬇ Export Excel</button>
             {canMaster && <>
               <button className="small" onClick={() => fileRef.current?.click()}>⬆ Import Excel</button>
@@ -177,34 +181,37 @@ export default function MasterDataPage() {
             </>}
           </div>
         </div>
-        <div className="table-scroll">
-          <table>
-            <thead><tr><th>รหัส</th><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>หน่วย</th><th>การจัดหา</th><th>คลังสินค้าคงเหลือ</th><th></th></tr></thead>
-            <tbody>
-              {accessories.map(i => (
-                <tr key={i.id}>
-                  <td className="mono">{i.code}</td>
-                  <td className="mono">{i.epicorCode || '-'}</td>
-                  <td>{i.name}</td>
-                  <td>{i.uom}</td>
-                  <td>{i.stockableCentrally
-                    ? <span className="badge green">มีในคลังสินค้า</span>
-                    : <span className="badge amber">ผ่าน Purchasing เท่านั้น</span>}</td>
-                  <td>{i.stockableCentrally ? `${stockQty(i.id)} ${i.uom}` : '-'}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    {i.stockableCentrally && canStock && <button className="small" onClick={() => adjustStock(i)}>ปรับยอด</button>}{' '}
-                    {canMaster && <>
-                      <button className="small" onClick={() => openEditItem(i)}>แก้ไข</button>{' '}
-                      <button className="small danger" onClick={() => {
-                        if (confirm(`ลบ ${i.name}?`)) tryAction(() => act.deleteItem({ itemId: i.id }), 'ลบแล้ว')
-                      }}>ลบ</button>
-                    </>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {showCatalog && (
+          <div className="table-scroll">
+            <table>
+              <thead><tr><th>รหัส</th><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>หน่วย</th><th>การจัดหา</th><th>คลังสินค้าคงเหลือ</th><th></th></tr></thead>
+              <tbody>
+                {accessories.length === 0 && <tr><td colSpan={7}><div className="empty">ยังไม่มี Accessory ในระบบ</div></td></tr>}
+                {accessories.map(i => (
+                  <tr key={i.id}>
+                    <td className="mono">{i.code}</td>
+                    <td className="mono">{i.epicorCode || '-'}</td>
+                    <td>{i.name}</td>
+                    <td>{i.uom}</td>
+                    <td>{i.stockableCentrally
+                      ? <span className="badge green">มีในคลังสินค้า</span>
+                      : <span className="badge amber">ผ่าน Purchasing เท่านั้น</span>}</td>
+                    <td>{i.stockableCentrally ? `${stockQty(i.id)} ${i.uom}` : '-'}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {i.stockableCentrally && canStock && <button className="small" onClick={() => adjustStock(i)}>ปรับยอด</button>}{' '}
+                      {canMaster && <>
+                        <button className="small" onClick={() => openEditItem(i)}>แก้ไข</button>{' '}
+                        <button className="small danger" onClick={() => {
+                          if (confirm(`ลบ ${i.name}?`)) tryAction(() => act.deleteItem({ itemId: i.id }), 'ลบแล้ว')
+                        }}>ลบ</button>
+                      </>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <div className="panel">
