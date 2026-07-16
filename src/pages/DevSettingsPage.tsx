@@ -1,13 +1,32 @@
 import { useState } from 'react'
-import { useStore } from '../data/StoreContext'
-import { useToast, useTryAction } from '../ui/components'
+import { useStore, can } from '../data/StoreContext'
+import { Modal, useToast, useTryAction } from '../ui/components'
+import { DEPT_LABEL } from '../ui/format'
+import type { Department, User } from '../types'
+
+const DEPTS: Department[] = ['sales', 'project', 'purchasing', 'service', 'admin']
 
 export default function DevSettingsPage() {
-  const { db, settings, updateSettings, resetDemo, importDb, mode } = useStore()
+  const { db, user, act, settings, updateSettings, resetDemo, importDb, mode } = useStore()
   const { show } = useToast()
   const tryAction = useTryAction()
+  const canMaster = can(user, 'master.manage')
   const [form, setForm] = useState(settings)
   const [testing, setTesting] = useState(false)
+
+  // ---- จัดการผู้ใช้งาน (ย้ายมาจาก Material Database) ----
+  const [userModal, setUserModal] = useState<'create' | 'edit' | null>(null)
+  const [userTarget, setUserTarget] = useState<User | null>(null)
+  const [userForm, setUserForm] = useState({ email: '', fullName: '', department: 'project' as Department, password: '', isActive: true })
+
+  const openCreateUser = () => { setUserForm({ email: '', fullName: '', department: 'project', password: '', isActive: true }); setUserTarget(null); setUserModal('create') }
+  const openEditUser = (u: User) => { setUserForm({ email: u.email, fullName: u.fullName, department: u.department, password: '', isActive: u.isActive }); setUserTarget(u); setUserModal('edit') }
+  const submitUser = async () => {
+    const ok = userModal === 'create'
+      ? await tryAction(() => act.createUser(userForm), 'เพิ่มผู้ใช้แล้ว')
+      : await tryAction(() => act.updateUser({ userId: userTarget!.id, fullName: userForm.fullName, department: userForm.department, password: userForm.password || undefined, isActive: userForm.isActive }), 'บันทึกแล้ว')
+    if (ok) setUserModal(null)
+  }
 
   const save = () => { updateSettings(form); show('บันทึกการตั้งค่าแล้ว') }
 
@@ -53,6 +72,29 @@ export default function DevSettingsPage() {
         {mode === 'demo'
           ? <span className="badge amber">Demo (localStorage) — ตั้ง VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY เพื่อสลับเป็นโหมดจริง</span>
           : <span className="badge green">Supabase (LIVE) — ข้อมูลอยู่บนฐานข้อมูลจริง</span>}
+      </div>
+
+      <div className="panel">
+        <div className="panel-head">
+          <h3>ผู้ใช้งาน ({db.users.length})</h3>
+          {canMaster && <button className="small primary" onClick={openCreateUser}>+ เพิ่มผู้ใช้</button>}
+        </div>
+        <div className="table-scroll">
+          <table>
+            <thead><tr><th>ชื่อ</th><th>อีเมล</th><th>แผนก</th><th>สถานะ</th><th></th></tr></thead>
+            <tbody>
+              {db.users.map(u => (
+                <tr key={u.id}>
+                  <td>{u.fullName}</td>
+                  <td>{u.email}</td>
+                  <td><span className="badge blue">{DEPT_LABEL[u.department]}</span></td>
+                  <td>{u.isActive ? <span className="badge green">ใช้งานได้</span> : <span className="badge red">ปิดการใช้งาน</span>}</td>
+                  <td>{canMaster && <button className="small" onClick={() => openEditUser(u)}>แก้ไข</button>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="panel">
@@ -114,6 +156,39 @@ export default function DevSettingsPage() {
           <div>3. LINE ตอบโต้ลูกค้า (webhook bot): template อยู่ที่ <span className="mono">functions/line-webhook.js</span> — ตั้ง Webhook URL <span className="mono">https://&lt;project&gt;.pages.dev/line-webhook</span> ใน LINE Developers Console</div>
         </div>
       </div>
+
+      {userModal && (
+        <Modal title={userModal === 'create' ? 'เพิ่มผู้ใช้' : `แก้ไข ${userTarget?.fullName}`} onClose={() => setUserModal(null)}
+          footer={<>
+            <button onClick={() => setUserModal(null)}>ยกเลิก</button>
+            <button className="primary" onClick={submitUser}>บันทึก</button>
+          </>}>
+          <label className="field"><span>ชื่อ-นามสกุล *</span>
+            <input value={userForm.fullName} onChange={e => setUserForm({ ...userForm, fullName: e.target.value })} />
+          </label>
+          <label className="field"><span>อีเมล *{userModal === 'edit' ? ' (แก้ไม่ได้)' : ''}</span>
+            <input value={userForm.email} disabled={userModal === 'edit'}
+              onChange={e => setUserForm({ ...userForm, email: e.target.value })} />
+          </label>
+          <div className="row">
+            <label className="field"><span>แผนก</span>
+              <select value={userForm.department} onChange={e => setUserForm({ ...userForm, department: e.target.value as Department })}>
+                {DEPTS.map(d => <option key={d} value={d}>{DEPT_LABEL[d]}</option>)}
+              </select>
+            </label>
+            <label className="field"><span>{userModal === 'create' ? 'รหัสผ่าน *' : 'รหัสผ่านใหม่ (เว้นว่าง = ไม่เปลี่ยน)'}</span>
+              <input type="password" value={userForm.password} onChange={e => setUserForm({ ...userForm, password: e.target.value })} />
+            </label>
+          </div>
+          {userModal === 'edit' && (
+            <label className="field" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input type="checkbox" style={{ width: 'auto' }} checked={userForm.isActive}
+                onChange={e => setUserForm({ ...userForm, isActive: e.target.checked })} />
+              <span style={{ margin: 0 }}>เปิดใช้งานบัญชี</span>
+            </label>
+          )}
+        </Modal>
+      )}
     </>
   )
 }

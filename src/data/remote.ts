@@ -194,6 +194,8 @@ export function remoteActions(sb: SupabaseClient) {
     rejectPR: (p: { prId: string; reason: string }) => rpc(sb, 'rpc_reject_pr', { p_pr_id: p.prId, p_reason: p.reason }),
     createPO: (p: { prId: string; poNo: string; supplierName: string; expectedDate: string }) =>
       rpc(sb, 'rpc_create_po', { p_pr_id: p.prId, p_po_no: p.poNo, p_supplier: p.supplierName, p_expected_date: p.expectedDate || null }),
+    cancelPO: (p: { poId: string; reason: string }) =>
+      rpc(sb, 'rpc_cancel_po', { p_po_id: p.poId, p_reason: p.reason }),
     receivePOItems: (p: { poId: string; receipts: { requestId: string; qty: number }[] }) =>
       rpc(sb, 'rpc_receive_po_items', { p_po_id: p.poId, p_receipts: p.receipts.map(r => ({ request_id: r.requestId, qty: r.qty })) }),
     issueJob: (p: { jobId: string; startDate: string; endDate: string; location: string; note?: string }) =>

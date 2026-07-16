@@ -153,9 +153,16 @@ export default function PurchasingPage() {
                             {po.status === 'received' && <span className="badge green">รับของครบ {fmtDate(po.receivedAt)}</span>}
                             {po.status === 'cancelled' && <span className="badge red">ยกเลิก</span>}
                           </td>
-                          <td>
+                          <td style={{ whiteSpace: 'nowrap' }}>
                             {canManage && po.status === 'issued' && (
                               <button className="small success" onClick={() => openReceive(po.id)}>รับของ</button>
+                            )}{' '}
+                            {canManage && po.status === 'issued' && totalReceived === 0 && (
+                              <button className="small danger" onClick={() => {
+                                const reason = window.prompt(`เหตุผลที่ยกเลิก ${po.poNo} (${pr?.prNo} จะกลับมารอออก PO ใหม่)`)
+                                if (reason !== null)
+                                  tryAction(() => act.cancelPO({ poId: po.id, reason }), `ยกเลิก ${po.poNo} แล้ว — ${pr?.prNo} รอออก PO ใหม่`)
+                              }}>ยกเลิก PO</button>
                             )}
                           </td>
                         </tr>

@@ -580,6 +580,35 @@ export function createPO(
     `ออก ${poNo} จาก ${pr.prNo} (${job.jobNo}) Supplier: ${p.supplierName} — แจ้งสถานะกลับ Project Dept แล้ว`)
 }
 
+// ยกเลิก PO เดี่ยว (ยังไม่รับของเลย): PO → cancelled, PR คืน pending ให้ออก PO ใหม่
+export function cancelPO(db: DB, actor: User, p: { poId: string; reason: string }): DB {
+  const po = db.pos.find(x => x.id === p.poId)
+  if (!po) throw new Error('ไม่พบ PO')
+  if (po.status !== 'issued') throw new Error(`${po.poNo} รับของครบแล้วหรือถูกยกเลิกไปแล้ว`)
+  if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผลที่ยกเลิก PO')
+  const got = db.accessoryRequests
+    .filter(r => r.prId === po.prId)
+    .reduce((s, r) => s + r.qtyReceived, 0)
+  if (got > 0)
+    throw new Error(`${po.poNo} รับของเข้าระบบแล้ว ${got} หน่วย ยกเลิกไม่ได้ — รับส่วนที่เหลือให้จบ หรือติดต่อ Manager`)
+  const pr = db.prs.find(x => x.id === po.prId)!
+  const job = db.jobs.find(j => j.id === po.jobId)!
+
+  let next: DB = {
+    ...db,
+    pos: db.pos.map(x => x.id === p.poId ? { ...x, status: 'cancelled' as const } : x),
+    prs: db.prs.map(x => x.id === po.prId ? { ...x, status: 'pending' as const } : x),
+    accessoryRequests: db.accessoryRequests.map(r =>
+      r.prId === po.prId && r.status === 'po_ordered' ? { ...r, status: 'pr_sent' as const } : r),
+  }
+  next = notify(next, {
+    type: 'po_cancelled', dept: 'project', jobId: po.jobId,
+    message: `🗑️ ยกเลิก ${po.poNo} (${job.jobNo}) เหตุผล: ${p.reason.trim()} — ${pr.prNo} กลับมารอออก PO ใหม่`,
+  })
+  return audit(next, actor, 'purchase_order', p.poId, 'cancel_po',
+    `ยกเลิก ${po.poNo} (${job.jobNo}) เหตุผล: ${p.reason.trim()} — คืน ${pr.prNo} เป็นรอออก PO`)
+}
+
 // Partial receive: รับของทีละรายการ/ทีละจำนวนได้
 export function receivePOItems(
   db: DB, actor: User,

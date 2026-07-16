@@ -108,6 +108,7 @@ export interface StoreActions {
   createPR: (p: Parameters<typeof L.createPR>[2]) => MaybePromise
   rejectPR: (p: Parameters<typeof L.rejectPR>[2]) => MaybePromise
   createPO: (p: Parameters<typeof L.createPO>[2]) => MaybePromise
+  cancelPO: (p: Parameters<typeof L.cancelPO>[2]) => MaybePromise
   receivePOItems: (p: Parameters<typeof L.receivePOItems>[2]) => MaybePromise
   issueJob: (p: Parameters<typeof L.issueJob>[2]) => MaybePromise
   confirmInstall: (p: Parameters<typeof L.confirmInstall>[2]) => MaybePromise
@@ -242,6 +243,7 @@ function DemoProvider({ children }: { children: ReactNode }) {
         createPR: run('job.manage', L.createPR),
         rejectPR: run('purchasing.manage', L.rejectPR),
         createPO: run('purchasing.manage', L.createPO),
+        cancelPO: run('purchasing.manage', L.cancelPO),
         receivePOItems: run('purchasing.manage', L.receivePOItems),
         issueJob: run('job.manage', L.issueJob),
         confirmInstall: run('service.confirm', L.confirmInstall),

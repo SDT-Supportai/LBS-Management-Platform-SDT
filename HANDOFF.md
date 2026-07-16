@@ -76,6 +76,7 @@ lbs-platform/
 | `0008_review_fixes_phase_budget.sql` | **fix จาก code review + ฟีเจอร์ (2026-07-14)**: (1) rpc_update_job ห้ามลด Scope ต่ำกว่า LBS ที่ถืออยู่ (กัน cap bypass) (2) rpc_draw_lbs lock แถว job FOR UPDATE กัน race (3) ห้าม Serial.LVB = Serial.OM ในเครื่องเดียวกัน (4) job_accessory_requests.phase_budget + rpc_add_accessory_request รับ p_phase_budget (เปลี่ยน signature) |
 | `0009_delete_project_stock.sql` | **ฟีเจอร์ (2026-07-14)**: `rpc_delete_project_stock` — ลบ Project Stock ได้เฉพาะคลัง "เปล่า" (ทุกเครื่อง in_stock + ไม่เคยมีประวัติดึง/คืน) คลังที่ใช้แล้วให้ "ปิดคลัง" แทน |
 | `0010_edit_lbs_serials.sql` | **ฟีเจอร์ (2026-07-15)**: `rpc_update_lbs_serials` — แก้ Serial.LVB/OM ได้เฉพาะเครื่องที่ยัง in_stock (unique, lvb≠om) กัน snapshot serial ใน allocation/audit เพี้ยน |
+| `0011_cancel_po.sql` | **ฟีเจอร์ (2026-07-15)**: `rpc_cancel_po` — ยกเลิก PO เดี่ยว (เฉพาะยังไม่รับของเลย): PO → cancelled, PR คืน pending ให้ออก PO ใหม่, รายการวัสดุกลับ pr_sent |
 
 > DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0009 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ)
 > ⚠️ **production ต้องรัน migration ล่าสุดใน Supabase SQL Editor ก่อน push frontend เสมอ** — frontend build ใหม่เรียก RPC signature ใหม่ ถ้ายังไม่รัน migration หน้าเว็บจะ error (ล่าสุด: `0008` — rpc_add_accessory_request เปลี่ยน signature)
@@ -148,9 +149,10 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 - [ ] **Custom domain** — แนะนำ subdomain บริษัท `lbs.precise.co.th` (ฟรี, ขอ IT เพิ่ม CNAME → `<project>.pages.dev`) แล้ว Add ใน Cloudflare Pages → Custom domains (ออก SSL อัตโนมัติ)
 
 ### 🟢 พัฒนาต่อ (ไอเดีย)
-- หน้า forgot-password / เปลี่ยนรหัสตัวเอง (ตอนนี้ต้องให้ Manager reset ที่ Material Database)
-- ยกเลิก/แก้ไข PO เดี่ยวๆ (ตอนนี้ PO ผิดต้องยกเลิกทั้ง Job — ควรมี rpc_cancel_po คืนสถานะ PR เป็น pending)
+- หน้า forgot-password / เปลี่ยนรหัสตัวเอง (ตอนนี้ต้องให้ Manager reset ที่ Dev Settings → ผู้ใช้งาน)
 - รายงาน/analytics (stock movement, lead time ต่อ Job)
+
+> ✅ ยกเลิก PO เดี่ยวได้แล้ว (0011, 2026-07-15) · จัดการผู้ใช้งานย้ายจาก Material Database → Dev Settings
 
 > ✅ LINE bot ตอบสถานะ Job จริงแล้ว (2026-07-15) — `functions/line-webhook.js` ต่อ Supabase, คำสั่ง `สถานะ <Job No.>`
 
