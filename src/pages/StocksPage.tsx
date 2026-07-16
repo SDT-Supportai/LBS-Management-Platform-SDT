@@ -1,15 +1,31 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import { stockSummary } from '../data/logic'
-import { Modal, useTryAction } from '../ui/components'
+import { Modal, useToast, useTryAction } from '../ui/components'
 import { fmtDate } from '../ui/format'
 
 interface UnitRow { lvb: string; om: string }
 const emptyRow = (): UnitRow => ({ lvb: '', om: '' })
 
+// แถวจากไฟล์ Excel: serial คู่ + ข้อมูลลูกค้ารายเครื่อง (optional)
+interface UnitRowFull { lvb: string; om: string; customerName?: string; contactPhone?: string; installLocation?: string }
+
 // สเปกคงที่ของ LBS ที่รับเข้าคลัง (แสดงเป็น Description ทุกคลัง)
 const LBS_DESCRIPTION = '115 kV Load Break Switch with SF6 Gas Interrupters, 2000A'
+
+const UNIT_STATUS_LABEL: Record<string, string> = {
+  in_stock: 'อยู่ในสต็อก', allocated: 'ถูกดึงเข้า Job', issued: 'เบิกติดตั้งแล้ว',
+}
+
+// อ่านค่าจากหัวตารางหลายรูปแบบ (ไทยตามไฟล์ export / อังกฤษ)
+function cell(row: Record<string, unknown>, keys: string[]): string {
+  for (const [k, v] of Object.entries(row)) {
+    if (keys.some(key => k.trim().toLowerCase() === key.toLowerCase()))
+      return String(v ?? '').trim()
+  }
+  return ''
+}
 
 // ตัวแก้ไขรายเครื่อง: กรอก Serial.LVB + Serial.OM ต่อแถว (บังคับทั้งคู่)
 function UnitRowsEditor({ rows, setRows }: { rows: UnitRow[]; setRows: (r: UnitRow[]) => void }) {
@@ -47,6 +63,7 @@ function UnitRowsEditor({ rows, setRows }: { rows: UnitRow[]; setRows: (r: UnitR
 export default function StocksPage() {
   const { db, user, act } = useStore()
   const tryAction = useTryAction()
+  const { show } = useToast()
   const [showCreate, setShowCreate] = useState(false)
   const [addTo, setAddTo] = useState<string | null>(null)
   const [openStock, setOpenStock] = useState<string | null>(null)         // เริ่มต้นซ่อนรายการทุกคลัง
@@ -56,7 +73,11 @@ export default function StocksPage() {
   const [editStatus, setEditStatus] = useState<'open' | 'closed'>('open')
   // ข้อมูลลูกค้า (แก้ไขภายหลังได้) — ใช้ร่วมทั้งฟอร์มสร้างและฟอร์มแก้ไข
   const [editCustomer, setEditCustomer] = useState({ customerName: '', contactPhone: '', installLocation: '' })
-  const [editUnit, setEditUnit] = useState<{ id: string; lvb: string; om: string } | null>(null)
+  const [editUnit, setEditUnit] = useState<{ id: string; status: string; lvb: string; om: string; customerName: string; contactPhone: string; installLocation: string } | null>(null)
+  const [importPreview, setImportPreview] = useState<{ stockId: string; stockNo: string; units: UnitRowFull[]; errors: string[] } | null>(null)
+  const [importing, setImporting] = useState(false)
+  const importFileRef = useRef<HTMLInputElement>(null)
+  const importToRef = useRef<{ id: string; no: string } | null>(null)
 
   const [stockNo, setStockNo] = useState(`Project Stock No.${db.projectStocks.length + 1}`)
   const [rows, setRows] = useState<UnitRow[]>([emptyRow()])
@@ -93,6 +114,75 @@ export default function StocksPage() {
     )) { setAddTo(null); setRows([emptyRow()]) }
   }
 
+  // ---------------- Excel export / import (ต่อคลัง) ----------------
+
+  // xlsx โหลดแบบ dynamic — ไม่ให้ bundle หลักบวม
+  const exportStock = async (stockId: string) => {
+    const XLSX = await import('xlsx')
+    const s = db.projectStocks.find(x => x.id === stockId)!
+    const units = db.lbsUnits.filter(u => u.projectStockId === stockId)
+    const rows = units.map(u => ({
+      'Serial.LVB': u.serialLvb,
+      'Serial.OM': u.serialOm,
+      'สถานะ': UNIT_STATUS_LABEL[u.status] ?? u.status,
+      'Job No.': u.jobId ? (db.jobs.find(j => j.id === u.jobId)?.jobNo ?? '') : '',
+      'ชื่อลูกค้า': u.customerName ?? s.customerName ?? '',
+      'เบอร์ติดต่อ': u.contactPhone ?? s.contactPhone ?? '',
+      'สถานที่ติดตั้ง': u.installLocation ?? s.installLocation ?? '',
+    }))
+    const ws = XLSX.utils.json_to_sheet(rows)
+    ws['!cols'] = [{ wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 24 }, { wch: 14 }, { wch: 28 }]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, s.stockNo.slice(0, 31))
+    XLSX.writeFile(wb, `${s.stockNo.replace(/[\\/:*?"<>|]/g, '-')}-${new Date().toISOString().slice(0, 10)}.xlsx`)
+  }
+
+  const onPickImportFile = async (file: File) => {
+    const target = importToRef.current
+    if (!target) return
+    try {
+      const XLSX = await import('xlsx')
+      const wb = XLSX.read(await file.arrayBuffer())
+      const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[wb.SheetNames[0]], { defval: '' })
+      if (raw.length === 0) return show('ไฟล์ไม่มีข้อมูล — ต้องมีหัวตาราง Serial.LVB, Serial.OM (+ ชื่อลูกค้า/เบอร์ติดต่อ/สถานที่ติดตั้ง ถ้ามี)', true)
+
+      const units: UnitRowFull[] = []
+      const errors: string[] = []
+      const seen = new Set(db.lbsUnits.flatMap(u => [u.serialLvb, u.serialOm]))
+      raw.forEach((row, i) => {
+        const lvb = cell(row, ['Serial.LVB', 'serial.lvb', 'serial_lvb', 'lvb'])
+        const om = cell(row, ['Serial.OM', 'serial.om', 'serial_om', 'om'])
+        if (!lvb && !om) return                       // ข้ามแถวว่าง
+        const no = `แถว ${i + 2}`
+        if (!lvb || !om) return void errors.push(`${no}: ต้องมีทั้ง Serial.LVB และ Serial.OM`)
+        if (lvb === om) return void errors.push(`${no}: LVB กับ OM ห้ามเป็นเลขเดียวกัน (${lvb})`)
+        if (seen.has(lvb) || seen.has(om)) return void errors.push(`${no}: "${lvb}" / "${om}" ซ้ำกับที่มีในระบบ/ในไฟล์`)
+        seen.add(lvb); seen.add(om)
+        units.push({
+          lvb, om,
+          customerName: cell(row, ['ชื่อลูกค้า', 'ลูกค้า', 'customer']) || undefined,
+          contactPhone: cell(row, ['เบอร์ติดต่อ', 'เบอร์', 'phone']) || undefined,
+          installLocation: cell(row, ['สถานที่ติดตั้ง', 'สถานที่', 'location']) || undefined,
+        })
+      })
+      if (units.length === 0 && errors.length === 0) return show('ไม่พบแถวที่กรอก Serial ในไฟล์', true)
+      setImportPreview({ stockId: target.id, stockNo: target.no, units, errors })
+    } catch {
+      show('อ่านไฟล์ไม่ได้ — ต้องเป็นไฟล์ Excel (.xlsx)', true)
+    }
+  }
+
+  const runImport = async () => {
+    if (!importPreview) return
+    setImporting(true)
+    const ok = await tryAction(
+      () => act.addUnitsToStock({ stockId: importPreview.stockId, units: importPreview.units }),
+      `รับเข้า ${importPreview.units.length} เครื่อง เข้า ${importPreview.stockNo} แล้ว`,
+    )
+    setImporting(false)
+    if (ok) setImportPreview(null)
+  }
+
   return (
     <>
       <div className="page-title">115kV LBS Project Stock</div>
@@ -126,6 +216,10 @@ export default function StocksPage() {
               </h3>
               <div style={{ display: 'flex', gap: 8 }}>
                 {s.status === 'closed' && <span className="badge red">ปิดคลัง</span>}
+                <button className="small" onClick={() => exportStock(s.id)}>⬇ Export</button>
+                {canManage && (
+                  <button className="small" onClick={() => { importToRef.current = { id: s.id, no: s.stockNo }; importFileRef.current?.click() }}>⬆ Import</button>
+                )}
                 {canManage && <button className="small" onClick={() => { setRows([emptyRow()]); setAddTo(s.id) }}>+ รับ LBS เพิ่ม</button>}
                 {canManage && <button className="small" onClick={() => {
                   setEditNotes(s.notes ?? ''); setEditStatus(s.status)
@@ -154,7 +248,7 @@ export default function StocksPage() {
             {expanded && (
               <div className="table-scroll">
                 <table>
-                  <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th>สถานะ</th><th>Job No.</th>{canManage && <th></th>}</tr></thead>
+                  <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th>สถานะ</th><th>ชื่อลูกค้า</th><th>เบอร์ติดต่อ</th><th>สถานที่ติดตั้ง</th><th>Job No.</th>{canManage && <th></th>}</tr></thead>
                   <tbody>
                     {units.map(u => (
                       <tr key={u.id}>
@@ -165,12 +259,19 @@ export default function StocksPage() {
                           {u.status === 'allocated' && <span className="badge blue">ถูกดึงเข้า Job</span>}
                           {u.status === 'issued' && <span className="badge neutral">เบิกติดตั้งแล้ว</span>}
                         </td>
+                        {/* เว้นว่างรายเครื่อง = ใช้ค่าของคลัง (fallback) */}
+                        <td>{u.customerName ?? s.customerName ?? '-'}</td>
+                        <td>{u.contactPhone ?? s.contactPhone ?? '-'}</td>
+                        <td>{u.installLocation ?? s.installLocation ?? '-'}</td>
                         <td>{u.jobId ? <Link to={`/jobs/${u.jobId}`}>{jobNo(u.jobId)}</Link> : '-'}</td>
                         {canManage && (
                           <td style={{ whiteSpace: 'nowrap' }}>
-                            {u.status === 'in_stock'
-                              ? <button className="small" onClick={() => setEditUnit({ id: u.id, lvb: u.serialLvb, om: u.serialOm })}>แก้ Serial</button>
-                              : <span className="muted" title="แก้ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก">🔒</span>}
+                            {u.status !== 'issued'
+                              ? <button className="small" onClick={() => setEditUnit({
+                                  id: u.id, status: u.status, lvb: u.serialLvb, om: u.serialOm,
+                                  customerName: u.customerName ?? '', contactPhone: u.contactPhone ?? '', installLocation: u.installLocation ?? '',
+                                })}>แก้ไข</button>
+                              : <span className="muted" title="เครื่องถูกเบิกแล้ว แก้ไขไม่ได้">🔒</span>}
                           </td>
                         )}
                       </tr>
@@ -303,27 +404,84 @@ export default function StocksPage() {
 
       {editUnit && (
         <Modal
-          title="แก้ Serial No. ของเครื่อง"
+          title="แก้ไขเครื่อง (Serial + ข้อมูลลูกค้า)"
           onClose={() => setEditUnit(null)}
           footer={<>
             <button onClick={() => setEditUnit(null)}>ยกเลิก</button>
             <button className="primary" disabled={!editUnit.lvb.trim() || !editUnit.om.trim()}
               onClick={async () => {
                 if (await tryAction(
-                  () => act.updateUnitSerials({ unitId: editUnit.id, serialLvb: editUnit.lvb, serialOm: editUnit.om }),
-                  'แก้ Serial แล้ว',
+                  () => act.updateUnitInfo({
+                    unitId: editUnit.id, serialLvb: editUnit.lvb, serialOm: editUnit.om,
+                    customerName: editUnit.customerName, contactPhone: editUnit.contactPhone, installLocation: editUnit.installLocation,
+                  }),
+                  'บันทึกแล้ว',
                 )) setEditUnit(null)
               }}>บันทึก</button>
           </>}
         >
-          <div className="muted" style={{ marginBottom: 12 }}>แก้ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก · Serial ห้ามซ้ำกับเครื่องอื่น</div>
+          <div className="muted" style={{ marginBottom: 12 }}>
+            Serial แก้ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก (ห้ามซ้ำ) · ข้อมูลลูกค้าแก้ได้จนกว่าเครื่องถูกเบิก · เว้นว่าง = ใช้ค่าของคลัง
+          </div>
           <div className="row">
             <label className="field"><span>Serial.LVB *</span>
-              <input className="mono" value={editUnit.lvb} onChange={e => setEditUnit({ ...editUnit, lvb: e.target.value })} />
+              <input className="mono" value={editUnit.lvb} disabled={editUnit.status !== 'in_stock'}
+                onChange={e => setEditUnit({ ...editUnit, lvb: e.target.value })} />
             </label>
             <label className="field"><span>Serial.OM *</span>
-              <input className="mono" value={editUnit.om} onChange={e => setEditUnit({ ...editUnit, om: e.target.value })} />
+              <input className="mono" value={editUnit.om} disabled={editUnit.status !== 'in_stock'}
+                onChange={e => setEditUnit({ ...editUnit, om: e.target.value })} />
             </label>
+          </div>
+          <label className="field"><span>ชื่อลูกค้า</span>
+            <input value={editUnit.customerName} onChange={e => setEditUnit({ ...editUnit, customerName: e.target.value })} placeholder="PEA เชียงใหม่" />
+          </label>
+          <div className="row">
+            <label className="field"><span>เบอร์ติดต่อ</span>
+              <input value={editUnit.contactPhone} onChange={e => setEditUnit({ ...editUnit, contactPhone: e.target.value })} placeholder="08x-xxx-xxxx" />
+            </label>
+            <label className="field"><span>สถานที่ติดตั้ง</span>
+              <input value={editUnit.installLocation} onChange={e => setEditUnit({ ...editUnit, installLocation: e.target.value })} placeholder="สถานีไฟฟ้า..." />
+            </label>
+          </div>
+        </Modal>
+      )}
+
+      {/* ไฟล์ import ต่อคลัง (ปุ่ม ⬆ Import บนการ์ดเป็นคนกด) */}
+      <input ref={importFileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }}
+        onChange={e => { const f = e.target.files?.[0]; if (f) onPickImportFile(f); e.target.value = '' }} />
+
+      {importPreview && (
+        <Modal title={`Import Serial เข้า ${importPreview.stockNo} — ตรวจสอบก่อนยืนยัน`} onClose={() => setImportPreview(null)}
+          footer={<>
+            <button onClick={() => setImportPreview(null)} disabled={importing}>ยกเลิก</button>
+            <button className="primary" disabled={importing || importPreview.units.length === 0 || importPreview.errors.length > 0}
+              onClick={runImport}>
+              {importing ? 'กำลังนำเข้า…' : `ยืนยันรับเข้า ${importPreview.units.length} เครื่อง`}
+            </button>
+          </>}>
+          {importPreview.errors.length > 0 && (
+            <div className="muted" style={{ color: 'var(--red)', marginBottom: 10 }}>
+              พบปัญหา {importPreview.errors.length} แถว — แก้ไฟล์แล้ว import ใหม่:<br />
+              {importPreview.errors.slice(0, 5).map((e, i) => <span key={i}>• {e}<br /></span>)}
+              {importPreview.errors.length > 5 && <span>… และอีก {importPreview.errors.length - 5} แถว</span>}
+            </div>
+          )}
+          <div className="table-scroll" style={{ maxHeight: 320, overflowY: 'auto' }}>
+            <table>
+              <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th>ชื่อลูกค้า</th><th>เบอร์</th><th>สถานที่</th></tr></thead>
+              <tbody>
+                {importPreview.units.map((u, i) => (
+                  <tr key={i}>
+                    <td className="mono">{u.lvb}</td>
+                    <td className="mono">{u.om}</td>
+                    <td>{u.customerName || '-'}</td>
+                    <td>{u.contactPhone || '-'}</td>
+                    <td>{u.installLocation || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </Modal>
       )}

@@ -42,6 +42,10 @@ export interface LbsUnit {
   projectStockId: string
   status: LbsUnitStatus
   jobId: string | null
+  // ข้อมูลลูกค้ารายเครื่อง (optional) — เว้นว่าง = ใช้ค่าของคลัง (fallback), แก้ได้จนกว่าเครื่องถูกเบิก
+  customerName?: string
+  contactPhone?: string
+  installLocation?: string
 }
 
 export type JobStatus =
