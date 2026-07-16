@@ -25,6 +25,10 @@ export interface ProjectStock {
   itemId: string
   status: 'open' | 'closed'
   notes?: string
+  // ข้อมูลลูกค้า (optional — เว้นว่าง = คลังกลางยังไม่ผูกลูกค้า) แก้ไขภายหลังได้
+  customerName?: string
+  contactPhone?: string
+  installLocation?: string
   createdBy: string
   createdAt: string
 }

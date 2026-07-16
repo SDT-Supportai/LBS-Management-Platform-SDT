@@ -29,7 +29,11 @@ function mapItem(r: Row): Item {
 function mapStock(r: Row): ProjectStock {
   return {
     id: r.id, stockNo: r.stock_no, itemId: r.item_id, status: r.status,
-    notes: r.notes ?? undefined, createdBy: r.created_by ?? '', createdAt: r.created_at,
+    notes: r.notes ?? undefined,
+    customerName: r.customer_name ?? undefined,
+    contactPhone: r.contact_phone ?? undefined,
+    installLocation: r.install_location ?? undefined,
+    createdBy: r.created_by ?? '', createdAt: r.created_at,
   }
 }
 function mapUnit(r: Row): LbsUnit {
@@ -162,12 +166,12 @@ async function rpc(sb: SupabaseClient, fn: string, params: Record<string, unknow
 // map action ชื่อเดียวกับ demo mode → RPC ฝั่ง server
 export function remoteActions(sb: SupabaseClient) {
   return {
-    createProjectStock: (p: { stockNo: string; itemId: string; units: { lvb: string; om: string }[]; notes?: string }) =>
-      rpc(sb, 'rpc_create_project_stock', { p_stock_no: p.stockNo, p_item_id: p.itemId, p_units: p.units, p_notes: p.notes ?? null }),
+    createProjectStock: (p: { stockNo: string; itemId: string; units: { lvb: string; om: string }[]; notes?: string; customerName?: string; contactPhone?: string; installLocation?: string }) =>
+      rpc(sb, 'rpc_create_project_stock', { p_stock_no: p.stockNo, p_item_id: p.itemId, p_units: p.units, p_notes: p.notes ?? null, p_customer: p.customerName ?? null, p_phone: p.contactPhone ?? null, p_location: p.installLocation ?? null }),
     addUnitsToStock: (p: { stockId: string; units: { lvb: string; om: string }[] }) =>
       rpc(sb, 'rpc_add_units_to_stock', { p_stock_id: p.stockId, p_units: p.units }),
-    updateProjectStock: (p: { stockId: string; notes: string; status: 'open' | 'closed' }) =>
-      rpc(sb, 'rpc_update_project_stock', { p_stock_id: p.stockId, p_notes: p.notes, p_status: p.status }),
+    updateProjectStock: (p: { stockId: string; notes: string; status: 'open' | 'closed'; customerName?: string; contactPhone?: string; installLocation?: string }) =>
+      rpc(sb, 'rpc_update_project_stock', { p_stock_id: p.stockId, p_notes: p.notes, p_status: p.status, p_customer: p.customerName ?? null, p_phone: p.contactPhone ?? null, p_location: p.installLocation ?? null }),
     deleteProjectStock: (p: { stockId: string }) =>
       rpc(sb, 'rpc_delete_project_stock', { p_stock_id: p.stockId }),
     updateUnitSerials: (p: { unitId: string; serialLvb: string; serialOm: string }) =>

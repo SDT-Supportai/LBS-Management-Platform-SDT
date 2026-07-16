@@ -128,7 +128,7 @@ function assertUnitsValid(db: DB, units: { lvb: string; om: string }[]): void {
 
 export function createProjectStock(
   db: DB, actor: User,
-  p: { stockNo: string; itemId: string; units: UnitSerialInput[]; notes?: string },
+  p: { stockNo: string; itemId: string; units: UnitSerialInput[]; notes?: string; customerName?: string; contactPhone?: string; installLocation?: string },
 ): DB {
   const stockNo = p.stockNo.trim()
   if (!stockNo) throw new Error('กรุณาระบุ Stock No.')
@@ -136,13 +136,17 @@ export function createProjectStock(
     throw new Error(`Stock No. "${stockNo}" มีอยู่แล้ว`)
   const units = normalizeUnits(p.units)
   assertUnitsValid(db, units)
+  const customerName = p.customerName?.trim() || undefined
 
   const stockId = uid()
   let next: DB = {
     ...db,
     projectStocks: [...db.projectStocks, {
       id: stockId, stockNo, itemId: p.itemId, status: 'open',
-      notes: p.notes, createdBy: actor.id, createdAt: now(),
+      notes: p.notes, customerName,
+      contactPhone: p.contactPhone?.trim() || undefined,
+      installLocation: p.installLocation?.trim() || undefined,
+      createdBy: actor.id, createdAt: now(),
     }],
     lbsUnits: [
       ...db.lbsUnits,
@@ -154,10 +158,10 @@ export function createProjectStock(
   }
   next = notify(next, {
     type: 'stock_created', dept: 'project',
-    message: `📦 Sales รับ LBS เข้า ${stockNo} จำนวน ${units.length} เครื่อง — พร้อมให้ดึงเข้า Job`,
+    message: `📦 Sales รับ LBS เข้า ${stockNo} จำนวน ${units.length} เครื่อง${customerName ? ` (ลูกค้า ${customerName})` : ''} — พร้อมให้ดึงเข้า Job`,
   })
   return audit(next, actor, 'project_stock', stockId, 'create_stock',
-    `สร้าง ${stockNo} รับ LBS เข้า ${units.length} เครื่อง`)
+    `สร้าง ${stockNo} รับ LBS เข้า ${units.length} เครื่อง${customerName ? ` ลูกค้า ${customerName}` : ''}`)
 }
 
 export function addUnitsToStock(db: DB, actor: User, p: { stockId: string; units: UnitSerialInput[] }): DB {
@@ -181,14 +185,19 @@ export function addUnitsToStock(db: DB, actor: User, p: { stockId: string; units
 
 export function updateProjectStock(
   db: DB, actor: User,
-  p: { stockId: string; notes: string; status: 'open' | 'closed' },
+  p: { stockId: string; notes: string; status: 'open' | 'closed'; customerName?: string; contactPhone?: string; installLocation?: string },
 ): DB {
   const stock = db.projectStocks.find(s => s.id === p.stockId)
   if (!stock) throw new Error('ไม่พบ Project Stock')
   let next: DB = {
     ...db,
     projectStocks: db.projectStocks.map(s =>
-      s.id === p.stockId ? { ...s, notes: p.notes, status: p.status } : s),
+      s.id === p.stockId ? {
+        ...s, notes: p.notes, status: p.status,
+        customerName: p.customerName?.trim() || undefined,
+        contactPhone: p.contactPhone?.trim() || undefined,
+        installLocation: p.installLocation?.trim() || undefined,
+      } : s),
   }
   return audit(next, actor, 'project_stock', p.stockId, 'update_stock',
     `แก้ไข ${stock.stockNo}${stock.status !== p.status ? ` (${p.status === 'closed' ? 'ปิดคลัง — ห้ามดึงเพิ่ม' : 'เปิดคลังอีกครั้ง'})` : ''}`)
