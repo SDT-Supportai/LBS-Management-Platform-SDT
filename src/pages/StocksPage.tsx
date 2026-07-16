@@ -8,9 +8,6 @@ import { fmtDate } from '../ui/format'
 interface UnitRow { lvb: string; om: string }
 const emptyRow = (): UnitRow => ({ lvb: '', om: '' })
 
-// แถวจากไฟล์ Excel: serial คู่ + ข้อมูลลูกค้ารายเครื่อง (optional)
-interface UnitRowFull { lvb: string; om: string; customerName?: string; contactPhone?: string; installLocation?: string }
-
 // สเปกคงที่ของ LBS ที่รับเข้าคลัง (แสดงเป็น Description ทุกคลัง)
 const LBS_DESCRIPTION = '115 kV Load Break Switch with SF6 Gas Interrupters, 2000A'
 
@@ -71,10 +68,8 @@ export default function StocksPage() {
   const [editStock, setEditStock] = useState<string | null>(null)
   const [editNotes, setEditNotes] = useState('')
   const [editStatus, setEditStatus] = useState<'open' | 'closed'>('open')
-  // ข้อมูลลูกค้า (แก้ไขภายหลังได้) — ใช้ร่วมทั้งฟอร์มสร้างและฟอร์มแก้ไข
-  const [editCustomer, setEditCustomer] = useState({ customerName: '', contactPhone: '', installLocation: '' })
-  const [editUnit, setEditUnit] = useState<{ id: string; status: string; lvb: string; om: string; customerName: string; contactPhone: string; installLocation: string } | null>(null)
-  const [importPreview, setImportPreview] = useState<{ stockId: string; stockNo: string; units: UnitRowFull[]; errors: string[] } | null>(null)
+  const [editUnit, setEditUnit] = useState<{ id: string; lvb: string; om: string } | null>(null)
+  const [importPreview, setImportPreview] = useState<{ stockId: string; stockNo: string; units: UnitRow[]; errors: string[] } | null>(null)
   const [importing, setImporting] = useState(false)
   const importFileRef = useRef<HTMLInputElement>(null)
   const importToRef = useRef<{ id: string; no: string } | null>(null)
@@ -82,7 +77,6 @@ export default function StocksPage() {
   const [stockNo, setStockNo] = useState(`Project Stock No.${db.projectStocks.length + 1}`)
   const [rows, setRows] = useState<UnitRow[]>([emptyRow()])
   const [notes, setNotes] = useState('')
-  const [customer, setCustomer] = useState({ customerName: '', contactPhone: '', installLocation: '' })
 
   const lbsItem = db.items.find(i => i.itemType === 'main_equipment')!
   const canManage = can(user, 'stock.manage')
@@ -98,11 +92,10 @@ export default function StocksPage() {
 
   const submitCreate = async () => {
     if (await tryAction(
-      () => act.createProjectStock({ stockNo, itemId: lbsItem.id, units: rows, notes, ...customer }),
+      () => act.createProjectStock({ stockNo, itemId: lbsItem.id, units: rows, notes }),
       `สร้าง ${stockNo} เรียบร้อย`,
     )) {
       setShowCreate(false); setRows([emptyRow()]); setNotes('')
-      setCustomer({ customerName: '', contactPhone: '', installLocation: '' })
     }
   }
 
@@ -121,15 +114,19 @@ export default function StocksPage() {
     const XLSX = await import('xlsx')
     const s = db.projectStocks.find(x => x.id === stockId)!
     const units = db.lbsUnits.filter(u => u.projectStockId === stockId)
-    const rows = units.map(u => ({
-      'Serial.LVB': u.serialLvb,
-      'Serial.OM': u.serialOm,
-      'สถานะ': UNIT_STATUS_LABEL[u.status] ?? u.status,
-      'Job No.': u.jobId ? (db.jobs.find(j => j.id === u.jobId)?.jobNo ?? '') : '',
-      'ชื่อลูกค้า': u.customerName ?? s.customerName ?? '',
-      'เบอร์ติดต่อ': u.contactPhone ?? s.contactPhone ?? '',
-      'สถานที่ติดตั้ง': u.installLocation ?? s.installLocation ?? '',
-    }))
+    // ข้อมูลลูกค้า ref จาก Job ที่เครื่องถูกดึงเข้า (single source of truth)
+    const rows = units.map(u => {
+      const job = u.jobId ? db.jobs.find(j => j.id === u.jobId) : undefined
+      return {
+        'Serial.LVB': u.serialLvb,
+        'Serial.OM': u.serialOm,
+        'สถานะ': UNIT_STATUS_LABEL[u.status] ?? u.status,
+        'Job No.': job?.jobNo ?? '',
+        'ชื่อลูกค้า': job?.customerName ?? '',
+        'เบอร์ติดต่อ': job?.contactPhone ?? '',
+        'สถานที่ติดตั้ง': job?.installLocation ?? '',
+      }
+    })
     const ws = XLSX.utils.json_to_sheet(rows)
     ws['!cols'] = [{ wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 24 }, { wch: 14 }, { wch: 28 }]
     const wb = XLSX.utils.book_new()
@@ -144,9 +141,9 @@ export default function StocksPage() {
       const XLSX = await import('xlsx')
       const wb = XLSX.read(await file.arrayBuffer())
       const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[wb.SheetNames[0]], { defval: '' })
-      if (raw.length === 0) return show('ไฟล์ไม่มีข้อมูล — ต้องมีหัวตาราง Serial.LVB, Serial.OM (+ ชื่อลูกค้า/เบอร์ติดต่อ/สถานที่ติดตั้ง ถ้ามี)', true)
+      if (raw.length === 0) return show('ไฟล์ไม่มีข้อมูล — ต้องมีหัวตาราง Serial.LVB, Serial.OM', true)
 
-      const units: UnitRowFull[] = []
+      const units: UnitRow[] = []
       const errors: string[] = []
       const seen = new Set(db.lbsUnits.flatMap(u => [u.serialLvb, u.serialOm]))
       raw.forEach((row, i) => {
@@ -158,12 +155,7 @@ export default function StocksPage() {
         if (lvb === om) return void errors.push(`${no}: LVB กับ OM ห้ามเป็นเลขเดียวกัน (${lvb})`)
         if (seen.has(lvb) || seen.has(om)) return void errors.push(`${no}: "${lvb}" / "${om}" ซ้ำกับที่มีในระบบ/ในไฟล์`)
         seen.add(lvb); seen.add(om)
-        units.push({
-          lvb, om,
-          customerName: cell(row, ['ชื่อลูกค้า', 'ลูกค้า', 'customer']) || undefined,
-          contactPhone: cell(row, ['เบอร์ติดต่อ', 'เบอร์', 'phone']) || undefined,
-          installLocation: cell(row, ['สถานที่ติดตั้ง', 'สถานที่', 'location']) || undefined,
-        })
+        units.push({ lvb, om })
       })
       if (units.length === 0 && errors.length === 0) return show('ไม่พบแถวที่กรอก Serial ในไฟล์', true)
       setImportPreview({ stockId: target.id, stockNo: target.no, units, errors })
@@ -193,11 +185,7 @@ export default function StocksPage() {
 
       {canManage && (
         <div style={{ marginBottom: 16 }}>
-          <button className="primary" onClick={() => {
-            setRows([emptyRow()]); setStockNo(`Project Stock No.${db.projectStocks.length + 1}`)
-            setCustomer({ customerName: '', contactPhone: '', installLocation: '' })
-            setShowCreate(true)
-          }}>+ สร้าง Project Stock ใหม่ (สั่งซื้อ LBS เข้าคลัง)</button>
+          <button className="primary" onClick={() => { setRows([emptyRow()]); setStockNo(`Project Stock No.${db.projectStocks.length + 1}`); setShowCreate(true) }}>+ สร้าง Project Stock ใหม่ (สั่งซื้อ LBS เข้าคลัง)</button>
         </div>
       )}
 
@@ -221,11 +209,7 @@ export default function StocksPage() {
                   <button className="small" onClick={() => { importToRef.current = { id: s.id, no: s.stockNo }; importFileRef.current?.click() }}>⬆ Import</button>
                 )}
                 {canManage && <button className="small" onClick={() => { setRows([emptyRow()]); setAddTo(s.id) }}>+ รับ LBS เพิ่ม</button>}
-                {canManage && <button className="small" onClick={() => {
-                  setEditNotes(s.notes ?? ''); setEditStatus(s.status)
-                  setEditCustomer({ customerName: s.customerName ?? '', contactPhone: s.contactPhone ?? '', installLocation: s.installLocation ?? '' })
-                  setEditStock(s.id)
-                }}>แก้ไข</button>}
+                {canManage && <button className="small" onClick={() => { setEditNotes(s.notes ?? ''); setEditStatus(s.status); setEditStock(s.id) }}>แก้ไข</button>}
                 {canManage && (
                   <button className="small danger" onClick={() => {
                     if (confirm(`ลบ ${s.stockNo}? (ลบได้เฉพาะคลังที่ไม่เคยมีประวัติดึง/คืน — Serial ในคลังจะถูกลบด้วย)`))
@@ -237,45 +221,38 @@ export default function StocksPage() {
             </div>
             <div className="panel-body muted" style={{ paddingBottom: 0 }}>
               <b>Description:</b> {LBS_DESCRIPTION}
-              {(s.customerName || s.contactPhone || s.installLocation) && (
-                <div>
-                  👤 ลูกค้า: <b>{s.customerName || '-'}</b>
-                  {s.contactPhone && <> · 📞 {s.contactPhone}</>}
-                  {s.installLocation && <> · 📍 {s.installLocation}</>}
-                </div>
-              )}
             </div>
             {expanded && (
               <div className="table-scroll">
                 <table>
                   <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th>สถานะ</th><th>ชื่อลูกค้า</th><th>เบอร์ติดต่อ</th><th>สถานที่ติดตั้ง</th><th>Job No.</th>{canManage && <th></th>}</tr></thead>
                   <tbody>
-                    {units.map(u => (
-                      <tr key={u.id}>
-                        <td className="mono">{u.serialLvb}</td>
-                        <td className="mono">{u.serialOm}</td>
-                        <td>
-                          {u.status === 'in_stock' && <span className="badge green">อยู่ในสต็อก</span>}
-                          {u.status === 'allocated' && <span className="badge blue">ถูกดึงเข้า Job</span>}
-                          {u.status === 'issued' && <span className="badge neutral">เบิกติดตั้งแล้ว</span>}
-                        </td>
-                        {/* เว้นว่างรายเครื่อง = ใช้ค่าของคลัง (fallback) */}
-                        <td>{u.customerName ?? s.customerName ?? '-'}</td>
-                        <td>{u.contactPhone ?? s.contactPhone ?? '-'}</td>
-                        <td>{u.installLocation ?? s.installLocation ?? '-'}</td>
-                        <td>{u.jobId ? <Link to={`/jobs/${u.jobId}`}>{jobNo(u.jobId)}</Link> : '-'}</td>
-                        {canManage && (
-                          <td style={{ whiteSpace: 'nowrap' }}>
-                            {u.status !== 'issued'
-                              ? <button className="small" onClick={() => setEditUnit({
-                                  id: u.id, status: u.status, lvb: u.serialLvb, om: u.serialOm,
-                                  customerName: u.customerName ?? '', contactPhone: u.contactPhone ?? '', installLocation: u.installLocation ?? '',
-                                })}>แก้ไข</button>
-                              : <span className="muted" title="เครื่องถูกเบิกแล้ว แก้ไขไม่ได้">🔒</span>}
+                    {units.map(u => {
+                      // ข้อมูลลูกค้า ref จาก Job ที่เครื่องถูกดึงเข้า — เครื่องยังไม่เข้า Job = '-'
+                      const job = u.jobId ? db.jobs.find(j => j.id === u.jobId) : undefined
+                      return (
+                        <tr key={u.id}>
+                          <td className="mono">{u.serialLvb}</td>
+                          <td className="mono">{u.serialOm}</td>
+                          <td>
+                            {u.status === 'in_stock' && <span className="badge green">อยู่ในสต็อก</span>}
+                            {u.status === 'allocated' && <span className="badge blue">ถูกดึงเข้า Job</span>}
+                            {u.status === 'issued' && <span className="badge neutral">เบิกติดตั้งแล้ว</span>}
                           </td>
-                        )}
-                      </tr>
-                    ))}
+                          <td>{job?.customerName ?? '-'}</td>
+                          <td>{job?.contactPhone ?? '-'}</td>
+                          <td>{job?.installLocation || '-'}</td>
+                          <td>{u.jobId ? <Link to={`/jobs/${u.jobId}`}>{jobNo(u.jobId)}</Link> : '-'}</td>
+                          {canManage && (
+                            <td style={{ whiteSpace: 'nowrap' }}>
+                              {u.status === 'in_stock'
+                                ? <button className="small" onClick={() => setEditUnit({ id: u.id, lvb: u.serialLvb, om: u.serialOm })}>แก้ Serial</button>
+                                : <span className="muted" title="แก้ Serial ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก">🔒</span>}
+                            </td>
+                          )}
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -328,22 +305,11 @@ export default function StocksPage() {
           footer={<>
             <button onClick={() => setEditStock(null)}>ยกเลิก</button>
             <button className="primary" onClick={async () => {
-              if (await tryAction(() => act.updateProjectStock({ stockId: editStock, notes: editNotes, status: editStatus, ...editCustomer }), 'บันทึกแล้ว'))
+              if (await tryAction(() => act.updateProjectStock({ stockId: editStock, notes: editNotes, status: editStatus }), 'บันทึกแล้ว'))
                 setEditStock(null)
             }}>บันทึก</button>
           </>}
         >
-          <label className="field"><span>ชื่อลูกค้า</span>
-            <input value={editCustomer.customerName} onChange={e => setEditCustomer({ ...editCustomer, customerName: e.target.value })} placeholder="PEA เชียงใหม่" />
-          </label>
-          <div className="row">
-            <label className="field"><span>เบอร์ติดต่อ</span>
-              <input value={editCustomer.contactPhone} onChange={e => setEditCustomer({ ...editCustomer, contactPhone: e.target.value })} placeholder="08x-xxx-xxxx" />
-            </label>
-            <label className="field"><span>สถานที่ติดตั้ง</span>
-              <input value={editCustomer.installLocation} onChange={e => setEditCustomer({ ...editCustomer, installLocation: e.target.value })} placeholder="สถานีไฟฟ้า..." />
-            </label>
-          </div>
           <label className="field"><span>บันทึก</span>
             <input value={editNotes} onChange={e => setEditNotes(e.target.value)} />
           </label>
@@ -368,17 +334,9 @@ export default function StocksPage() {
           <label className="field"><span>Stock No.</span>
             <input value={stockNo} onChange={e => setStockNo(e.target.value)} />
           </label>
-          <div className="muted" style={{ marginBottom: 12 }}><b>Description:</b> {LBS_DESCRIPTION}</div>
-          <label className="field"><span>ชื่อลูกค้า (เว้นว่างได้ — แก้ไขภายหลังได้)</span>
-            <input value={customer.customerName} onChange={e => setCustomer({ ...customer, customerName: e.target.value })} placeholder="PEA เชียงใหม่" />
-          </label>
-          <div className="row">
-            <label className="field"><span>เบอร์ติดต่อ</span>
-              <input value={customer.contactPhone} onChange={e => setCustomer({ ...customer, contactPhone: e.target.value })} placeholder="08x-xxx-xxxx" />
-            </label>
-            <label className="field"><span>สถานที่ติดตั้ง</span>
-              <input value={customer.installLocation} onChange={e => setCustomer({ ...customer, installLocation: e.target.value })} placeholder="สถานีไฟฟ้า..." />
-            </label>
+          <div className="muted" style={{ marginBottom: 12 }}>
+            <b>Description:</b> {LBS_DESCRIPTION}<br />
+            ข้อมูลลูกค้า/สถานที่ติดตั้งไม่ต้องกรอกที่คลัง — ระบบอ้างอิงจาก Job ที่เครื่องถูกดึงเข้า
           </div>
           <label className="field"><span>Serial No. ของ LBS แต่ละเครื่อง (Serial.LVB + Serial.OM บังคับทั้งคู่)</span></label>
           <UnitRowsEditor rows={rows} setRows={setRows} />
@@ -404,44 +362,26 @@ export default function StocksPage() {
 
       {editUnit && (
         <Modal
-          title="แก้ไขเครื่อง (Serial + ข้อมูลลูกค้า)"
+          title="แก้ Serial No. ของเครื่อง"
           onClose={() => setEditUnit(null)}
           footer={<>
             <button onClick={() => setEditUnit(null)}>ยกเลิก</button>
             <button className="primary" disabled={!editUnit.lvb.trim() || !editUnit.om.trim()}
               onClick={async () => {
                 if (await tryAction(
-                  () => act.updateUnitInfo({
-                    unitId: editUnit.id, serialLvb: editUnit.lvb, serialOm: editUnit.om,
-                    customerName: editUnit.customerName, contactPhone: editUnit.contactPhone, installLocation: editUnit.installLocation,
-                  }),
-                  'บันทึกแล้ว',
+                  () => act.updateUnitInfo({ unitId: editUnit.id, serialLvb: editUnit.lvb, serialOm: editUnit.om }),
+                  'แก้ Serial แล้ว',
                 )) setEditUnit(null)
               }}>บันทึก</button>
           </>}
         >
-          <div className="muted" style={{ marginBottom: 12 }}>
-            Serial แก้ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก (ห้ามซ้ำ) · ข้อมูลลูกค้าแก้ได้จนกว่าเครื่องถูกเบิก · เว้นว่าง = ใช้ค่าของคลัง
-          </div>
+          <div className="muted" style={{ marginBottom: 12 }}>แก้ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก · Serial ห้ามซ้ำกับเครื่องอื่น</div>
           <div className="row">
             <label className="field"><span>Serial.LVB *</span>
-              <input className="mono" value={editUnit.lvb} disabled={editUnit.status !== 'in_stock'}
-                onChange={e => setEditUnit({ ...editUnit, lvb: e.target.value })} />
+              <input className="mono" value={editUnit.lvb} onChange={e => setEditUnit({ ...editUnit, lvb: e.target.value })} />
             </label>
             <label className="field"><span>Serial.OM *</span>
-              <input className="mono" value={editUnit.om} disabled={editUnit.status !== 'in_stock'}
-                onChange={e => setEditUnit({ ...editUnit, om: e.target.value })} />
-            </label>
-          </div>
-          <label className="field"><span>ชื่อลูกค้า</span>
-            <input value={editUnit.customerName} onChange={e => setEditUnit({ ...editUnit, customerName: e.target.value })} placeholder="PEA เชียงใหม่" />
-          </label>
-          <div className="row">
-            <label className="field"><span>เบอร์ติดต่อ</span>
-              <input value={editUnit.contactPhone} onChange={e => setEditUnit({ ...editUnit, contactPhone: e.target.value })} placeholder="08x-xxx-xxxx" />
-            </label>
-            <label className="field"><span>สถานที่ติดตั้ง</span>
-              <input value={editUnit.installLocation} onChange={e => setEditUnit({ ...editUnit, installLocation: e.target.value })} placeholder="สถานีไฟฟ้า..." />
+              <input className="mono" value={editUnit.om} onChange={e => setEditUnit({ ...editUnit, om: e.target.value })} />
             </label>
           </div>
         </Modal>
@@ -469,15 +409,13 @@ export default function StocksPage() {
           )}
           <div className="table-scroll" style={{ maxHeight: 320, overflowY: 'auto' }}>
             <table>
-              <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th>ชื่อลูกค้า</th><th>เบอร์</th><th>สถานที่</th></tr></thead>
+              <thead><tr><th>#</th><th>Serial.LVB</th><th>Serial.OM</th></tr></thead>
               <tbody>
                 {importPreview.units.map((u, i) => (
                   <tr key={i}>
+                    <td className="muted">{i + 1}</td>
                     <td className="mono">{u.lvb}</td>
                     <td className="mono">{u.om}</td>
-                    <td>{u.customerName || '-'}</td>
-                    <td>{u.contactPhone || '-'}</td>
-                    <td>{u.installLocation || '-'}</td>
                   </tr>
                 ))}
               </tbody>

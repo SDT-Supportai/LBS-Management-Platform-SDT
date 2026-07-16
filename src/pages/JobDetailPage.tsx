@@ -39,7 +39,7 @@ export default function JobDetailPage() {
   const [issueForm, setIssueForm] = useState({ startDate: '', endDate: '', location: '', note: '' })
   const [cancelReason, setCancelReason] = useState('')
   const [receivedToCentral, setReceivedToCentral] = useState(true)
-  const [editForm, setEditForm] = useState({ jobNo: '', customerName: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', cost: '' })
+  const [editForm, setEditForm] = useState({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', cost: '' })
 
   const status = job ? deriveJobStatus(db, job) : 'draft'
   const canManage = can(user, 'job.manage')
@@ -91,7 +91,7 @@ export default function JobDetailPage() {
         <JobStatusBadge status={status} />
       </div>
       <div className="page-sub">
-        {job.customerName} · {job.scope || 'ไม่ระบุ scope'} · ติดตั้งที่ {job.installLocation || '-'} · กำหนด {fmtDate(job.requiredDate)}
+        {job.customerName}{job.contactPhone && <> · 📞 {job.contactPhone}</>} · {job.scope || 'ไม่ระบุ scope'} · ติดตั้งที่ {job.installLocation || '-'} · กำหนด {fmtDate(job.requiredDate)}
       </div>
 
       {job.terminalStatus === 'issued' && (
@@ -135,7 +135,8 @@ export default function JobDetailPage() {
           <button onClick={() => {
             setEditForm({
               jobNo: job.jobNo,
-              customerName: job.customerName, scope: job.scope, installLocation: job.installLocation,
+              customerName: job.customerName, contactPhone: job.contactPhone ?? '',
+              scope: job.scope, installLocation: job.installLocation,
               requiredDate: job.requiredDate, lbsQtyRequired: job.lbsQtyRequired,
               salePrice: job.budgetSalePrice !== undefined ? String(job.budgetSalePrice) : '',
               cost: job.budgetCost !== undefined ? String(job.budgetCost) : '',
@@ -476,9 +477,14 @@ export default function JobDetailPage() {
           <label className="field"><span>Job No. * (แก้ได้ก่อนเบิก — ห้ามซ้ำ)</span>
             <input className="mono" value={editForm.jobNo} onChange={e => setEditForm({ ...editForm, jobNo: e.target.value })} />
           </label>
-          <label className="field"><span>ชื่อลูกค้า</span>
-            <input value={editForm.customerName} onChange={e => setEditForm({ ...editForm, customerName: e.target.value })} />
-          </label>
+          <div className="row">
+            <label className="field"><span>ชื่อลูกค้า</span>
+              <input value={editForm.customerName} onChange={e => setEditForm({ ...editForm, customerName: e.target.value })} />
+            </label>
+            <label className="field"><span>เบอร์ติดต่อ</span>
+              <input value={editForm.contactPhone} onChange={e => setEditForm({ ...editForm, contactPhone: e.target.value })} placeholder="08x-xxx-xxxx" />
+            </label>
+          </div>
           <label className="field"><span>Scope</span>
             <textarea rows={2} value={editForm.scope} onChange={e => setEditForm({ ...editForm, scope: e.target.value })} />
           </label>

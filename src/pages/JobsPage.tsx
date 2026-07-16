@@ -14,7 +14,7 @@ export default function JobsPage() {
   const tryAction = useTryAction()
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>('active')
   const [showCreate, setShowCreate] = useState(false)
-  const [form, setForm] = useState({ jobNo: '', customerName: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', cost: '' })
+  const [form, setForm] = useState({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', cost: '' })
 
   const canManage = can(user, 'job.manage')
   const jobs = db.jobs
@@ -32,7 +32,7 @@ export default function JobsPage() {
       'เปิด Job ใหม่เรียบร้อย',
     )) {
       setShowCreate(false)
-      setForm({ jobNo: '', customerName: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', cost: '' })
+      setForm({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', cost: '' })
     }
   }
 
@@ -98,9 +98,14 @@ export default function JobsPage() {
           <label className="field"><span>Job No. * (กรอกเลขงานเอง — ห้ามซ้ำ)</span>
             <input className="mono" value={form.jobNo} onChange={e => setForm({ ...form, jobNo: e.target.value })} placeholder="เช่น JOB-2026-0005" />
           </label>
-          <label className="field"><span>ชื่อลูกค้า *</span>
-            <input value={form.customerName} onChange={e => setForm({ ...form, customerName: e.target.value })} placeholder="PEA เชียงใหม่" />
-          </label>
+          <div className="row">
+            <label className="field"><span>ชื่อลูกค้า *</span>
+              <input value={form.customerName} onChange={e => setForm({ ...form, customerName: e.target.value })} placeholder="PEA เชียงใหม่" />
+            </label>
+            <label className="field"><span>เบอร์ติดต่อ</span>
+              <input value={form.contactPhone} onChange={e => setForm({ ...form, contactPhone: e.target.value })} placeholder="08x-xxx-xxxx" />
+            </label>
+          </div>
           <label className="field"><span>Scope งาน</span>
             <textarea rows={2} value={form.scope} onChange={e => setForm({ ...form, scope: e.target.value })} placeholder="ติดตั้ง LBS สถานีย่อย 4 จุด" />
           </label>

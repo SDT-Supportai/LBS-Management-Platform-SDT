@@ -25,10 +25,6 @@ export interface ProjectStock {
   itemId: string
   status: 'open' | 'closed'
   notes?: string
-  // ข้อมูลลูกค้า (optional — เว้นว่าง = คลังกลางยังไม่ผูกลูกค้า) แก้ไขภายหลังได้
-  customerName?: string
-  contactPhone?: string
-  installLocation?: string
   createdBy: string
   createdAt: string
 }
@@ -42,10 +38,7 @@ export interface LbsUnit {
   projectStockId: string
   status: LbsUnitStatus
   jobId: string | null
-  // ข้อมูลลูกค้ารายเครื่อง (optional) — เว้นว่าง = ใช้ค่าของคลัง (fallback), แก้ได้จนกว่าเครื่องถูกเบิก
-  customerName?: string
-  contactPhone?: string
-  installLocation?: string
+  // ข้อมูลลูกค้า/สถานที่ ref จาก Job ที่เครื่องถูกดึงเข้า (single source of truth — ไม่เก็บซ้ำที่นี่)
 }
 
 export type JobStatus =
@@ -65,6 +58,7 @@ export interface Job {
   installLocation: string
   requiredDate: string
   lbsQtyRequired: number
+  contactPhone?: string        // เบอร์ติดต่อลูกค้า — ตารางรายเครื่องใน Project Stock ref ค่านี้
   // Project Budget (บาท) — กำไร derive = ราคาขาย − ต้นทุน (ไม่เก็บซ้ำ)
   budgetSalePrice?: number
   budgetCost?: number

@@ -97,20 +97,12 @@ function notifyIfBecameReady(before: DB, after: DB, jobId: string): DB {
 
 // ---------------- Project Stock (Sales) ----------------
 
-// รับคู่ serial (LVB + OM) ต่อเครื่อง + ข้อมูลลูกค้ารายเครื่อง (optional) — ตรวจครบถ้วน + unique ทั้งสอง field
-export interface UnitSerialInput {
-  lvb: string; om: string
-  customerName?: string; contactPhone?: string; installLocation?: string
-}
+// รับคู่ serial (LVB + OM) ต่อเครื่อง — ตรวจครบถ้วน + unique ทั้งสอง field
+export interface UnitSerialInput { lvb: string; om: string }
 
 function normalizeUnits(rows: UnitSerialInput[]): UnitSerialInput[] {
   return rows
-    .map(r => ({
-      lvb: r.lvb.trim(), om: r.om.trim(),
-      customerName: r.customerName?.trim() || undefined,
-      contactPhone: r.contactPhone?.trim() || undefined,
-      installLocation: r.installLocation?.trim() || undefined,
-    }))
+    .map(r => ({ lvb: r.lvb.trim(), om: r.om.trim() }))
     .filter(r => r.lvb || r.om)
 }
 
@@ -136,7 +128,7 @@ function assertUnitsValid(db: DB, units: { lvb: string; om: string }[]): void {
 
 export function createProjectStock(
   db: DB, actor: User,
-  p: { stockNo: string; itemId: string; units: UnitSerialInput[]; notes?: string; customerName?: string; contactPhone?: string; installLocation?: string },
+  p: { stockNo: string; itemId: string; units: UnitSerialInput[]; notes?: string },
 ): DB {
   const stockNo = p.stockNo.trim()
   if (!stockNo) throw new Error('กรุณาระบุ Stock No.')
@@ -144,33 +136,28 @@ export function createProjectStock(
     throw new Error(`Stock No. "${stockNo}" มีอยู่แล้ว`)
   const units = normalizeUnits(p.units)
   assertUnitsValid(db, units)
-  const customerName = p.customerName?.trim() || undefined
 
   const stockId = uid()
   let next: DB = {
     ...db,
     projectStocks: [...db.projectStocks, {
       id: stockId, stockNo, itemId: p.itemId, status: 'open',
-      notes: p.notes, customerName,
-      contactPhone: p.contactPhone?.trim() || undefined,
-      installLocation: p.installLocation?.trim() || undefined,
-      createdBy: actor.id, createdAt: now(),
+      notes: p.notes, createdBy: actor.id, createdAt: now(),
     }],
     lbsUnits: [
       ...db.lbsUnits,
       ...units.map(u => ({
         id: uid(), serialLvb: u.lvb, serialOm: u.om, projectStockId: stockId,
         status: 'in_stock' as const, jobId: null,
-        customerName: u.customerName, contactPhone: u.contactPhone, installLocation: u.installLocation,
       })),
     ],
   }
   next = notify(next, {
     type: 'stock_created', dept: 'project',
-    message: `📦 Sales รับ LBS เข้า ${stockNo} จำนวน ${units.length} เครื่อง${customerName ? ` (ลูกค้า ${customerName})` : ''} — พร้อมให้ดึงเข้า Job`,
+    message: `📦 Sales รับ LBS เข้า ${stockNo} จำนวน ${units.length} เครื่อง — พร้อมให้ดึงเข้า Job`,
   })
   return audit(next, actor, 'project_stock', stockId, 'create_stock',
-    `สร้าง ${stockNo} รับ LBS เข้า ${units.length} เครื่อง${customerName ? ` ลูกค้า ${customerName}` : ''}`)
+    `สร้าง ${stockNo} รับ LBS เข้า ${units.length} เครื่อง`)
 }
 
 export function addUnitsToStock(db: DB, actor: User, p: { stockId: string; units: UnitSerialInput[] }): DB {
@@ -185,7 +172,6 @@ export function addUnitsToStock(db: DB, actor: User, p: { stockId: string; units
       ...units.map(u => ({
         id: uid(), serialLvb: u.lvb, serialOm: u.om, projectStockId: p.stockId,
         status: 'in_stock' as const, jobId: null,
-        customerName: u.customerName, contactPhone: u.contactPhone, installLocation: u.installLocation,
       })),
     ],
   }
@@ -195,19 +181,14 @@ export function addUnitsToStock(db: DB, actor: User, p: { stockId: string; units
 
 export function updateProjectStock(
   db: DB, actor: User,
-  p: { stockId: string; notes: string; status: 'open' | 'closed'; customerName?: string; contactPhone?: string; installLocation?: string },
+  p: { stockId: string; notes: string; status: 'open' | 'closed' },
 ): DB {
   const stock = db.projectStocks.find(s => s.id === p.stockId)
   if (!stock) throw new Error('ไม่พบ Project Stock')
   let next: DB = {
     ...db,
     projectStocks: db.projectStocks.map(s =>
-      s.id === p.stockId ? {
-        ...s, notes: p.notes, status: p.status,
-        customerName: p.customerName?.trim() || undefined,
-        contactPhone: p.contactPhone?.trim() || undefined,
-        installLocation: p.installLocation?.trim() || undefined,
-      } : s),
+      s.id === p.stockId ? { ...s, notes: p.notes, status: p.status } : s),
   }
   return audit(next, actor, 'project_stock', p.stockId, 'update_stock',
     `แก้ไข ${stock.stockNo}${stock.status !== p.status ? ` (${p.status === 'closed' ? 'ปิดคลัง — ห้ามดึงเพิ่ม' : 'เปิดคลังอีกครั้ง'})` : ''}`)
@@ -232,34 +213,26 @@ export function deleteProjectStock(db: DB, actor: User, p: { stockId: string }):
     `ลบ ${stock.stockNo} (LBS ในคลัง ${units.length} เครื่อง ไม่เคยมีประวัติดึง/คืน)`)
 }
 
-// แก้ไขรายเครื่อง: Serial แก้ได้เฉพาะ in_stock (กัน snapshot serial ใน allocation/audit เพี้ยน)
-// ข้อมูลลูกค้ารายเครื่องแก้ได้จนกว่าเครื่องถูกเบิก (issued)
+// แก้ Serial รายเครื่อง — เฉพาะเครื่องที่ยังอยู่ในสต็อก (กัน snapshot serial ใน allocation/audit เพี้ยน)
 export function updateUnitInfo(
   db: DB, actor: User,
-  p: { unitId: string; serialLvb: string; serialOm: string; customerName?: string; contactPhone?: string; installLocation?: string },
+  p: { unitId: string; serialLvb: string; serialOm: string },
 ): DB {
   const unit = db.lbsUnits.find(u => u.id === p.unitId)
   if (!unit) throw new Error('ไม่พบเครื่อง LBS')
-  if (unit.status === 'issued') throw new Error('เครื่องนี้ถูกเบิกให้ Service แล้ว แก้ไขไม่ได้')
+  if (unit.status !== 'in_stock')
+    throw new Error('แก้ Serial ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก (ยังไม่ถูกดึงเข้า Job)')
   const lvb = p.serialLvb.trim(), om = p.serialOm.trim()
   if (!lvb || !om) throw new Error('ต้องกรอกทั้ง Serial.LVB และ Serial.OM')
-  if ((lvb !== unit.serialLvb || om !== unit.serialOm) && unit.status !== 'in_stock')
-    throw new Error('แก้ Serial ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก (ยังไม่ถูกดึงเข้า Job)')
   if (lvb === om) throw new Error('Serial.LVB และ Serial.OM ห้ามเป็นเลขเดียวกัน')
   const clash = db.lbsUnits.find(u => u.id !== p.unitId && [u.serialLvb, u.serialOm].some(s => s === lvb || s === om))
   if (clash) throw new Error(`Serial No. "${lvb}" / "${om}" ซ้ำกับเครื่องอื่นในระบบ`)
-  const customerName = p.customerName?.trim() || undefined
   const next: DB = {
     ...db,
-    lbsUnits: db.lbsUnits.map(u => u.id === p.unitId ? {
-      ...u, serialLvb: lvb, serialOm: om,
-      customerName,
-      contactPhone: p.contactPhone?.trim() || undefined,
-      installLocation: p.installLocation?.trim() || undefined,
-    } : u),
+    lbsUnits: db.lbsUnits.map(u => u.id === p.unitId ? { ...u, serialLvb: lvb, serialOm: om } : u),
   }
-  return audit(next, actor, 'lbs_unit', p.unitId, 'update_unit_info',
-    `แก้ไขเครื่อง ${unit.serialLvb}${lvb !== unit.serialLvb || om !== unit.serialOm ? ` (Serial → ${lvb}/${om})` : ''}${customerName ? ` ลูกค้า ${customerName}` : ''}`)
+  return audit(next, actor, 'lbs_unit', p.unitId, 'update_serials',
+    `แก้ Serial: ${unit.serialLvb}/${unit.serialOm} → ${lvb}/${om}`)
 }
 
 // ---------------- Job (Project Dept) ----------------
@@ -275,7 +248,7 @@ export interface JobBudgetInput { budgetSalePrice?: number; budgetCost?: number 
 
 export function createJob(
   db: DB, actor: User,
-  p: { jobNo: string; customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number } & JobBudgetInput,
+  p: { jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number } & JobBudgetInput,
 ): DB {
   const jobNo = p.jobNo.trim()
   if (!jobNo) throw new Error('กรุณาระบุ Job No.')
@@ -290,7 +263,8 @@ export function createJob(
     ...db,
     jobs: [...db.jobs, {
       id: jobId, jobNo,
-      customerName: p.customerName.trim(), scope: p.scope,
+      customerName: p.customerName.trim(), contactPhone: p.contactPhone?.trim() || undefined,
+      scope: p.scope,
       installLocation: p.installLocation, requiredDate: p.requiredDate,
       lbsQtyRequired: p.lbsQtyRequired,
       budgetSalePrice: salePrice, budgetCost: cost,
@@ -303,7 +277,7 @@ export function createJob(
 
 export function updateJob(
   db: DB, actor: User,
-  p: { jobId: string; jobNo: string; customerName: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number } & JobBudgetInput,
+  p: { jobId: string; jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number } & JobBudgetInput,
 ): DB {
   const job = assertJobEditable(db, p.jobId)   // แก้ Job No. ได้ก่อนเบิกเท่านั้น (issued/installed/cancelled ล็อกอยู่แล้ว)
   const jobNo = p.jobNo.trim()
@@ -320,7 +294,8 @@ export function updateJob(
   let next: DB = {
     ...db,
     jobs: db.jobs.map(j => j.id === p.jobId ? {
-      ...j, jobNo, customerName: p.customerName.trim(), scope: p.scope,
+      ...j, jobNo, customerName: p.customerName.trim(), contactPhone: p.contactPhone?.trim() || undefined,
+      scope: p.scope,
       installLocation: p.installLocation, requiredDate: p.requiredDate,
       lbsQtyRequired: p.lbsQtyRequired,
       budgetSalePrice: salePrice, budgetCost: cost,
