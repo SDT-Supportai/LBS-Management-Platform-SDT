@@ -1,6 +1,6 @@
 # HANDOFF — 115kV LBS Project Management Platform
 
-เอกสารส่งมอบ/สรุปสถานะระบบ (อัปเดต 2026-07-14) — อ่านไฟล์นี้ก่อนดูแลระบบต่อ
+เอกสารส่งมอบ/สรุปสถานะระบบ (อัปเดต 2026-07-16) — อ่านไฟล์นี้ก่อนดูแลระบบต่อ
 ประกอบกับ [README.md](README.md) (ภาพรวม), [SETUP.md](SETUP.md) (คู่มือ deploy), และ
 `../lbs-stock-project-instructions (1).md` (business rules = source of truth ห้ามเปลี่ยนโดยไม่ยืนยัน)
 
@@ -10,7 +10,14 @@
 
 ระบบจัดการ 115kV LBS (Load Break Switch) แบบครบวงจร 4 แผนก:
 **Sales → Project → Purchasing → Service** ตั้งแต่รับ LBS เข้าคลังกลาง จนติดตั้งหน้างานเสร็จ
-ทุกเครื่อง track ด้วย Serial No. รายเครื่อง มี audit log + แจ้งเตือนข้ามแผนกทุก transaction
+ทุกเครื่อง track ด้วย Serial คู่ (LVB + OM) รายเครื่อง มี audit log + แจ้งเตือนข้ามแผนกทุก transaction
+
+**แผนที่เมนู UI ปัจจุบัน** (ชื่อหน้าถูก rename หลายรอบ — ชื่อไฟล์ใน `src/pages/` ยังเป็นชื่อเดิม):
+- **115kV LBS Project Stock** (`StocksPage`) — คลัง LBS + ดูรายเครื่อง (ข้อมูลลูกค้า ref จาก Job) + Export/Import Excel ต่อคลัง + คลังสินค้า (Ref.Job) = วัสดุรับครบจาก PO
+- **Jobs / Job Detail** — เปิด Job (ลูกค้า+เบอร์ติดต่อ+สถานที่ = source of truth), Project Budget, Purchase Requisition (วัสดุ + Phase Budget)
+- **Purchasing (PR/PO)** — จัดกลุ่มตาม Job No., ออก/ยกเลิก PO, ตีกลับ PR, รับของ partial
+- **Material Database** (`MasterDataPage`) — ฐานข้อมูลวัสดุ (ใช้ตอนออก PR) + Export/Import Excel
+- **Dev Settings** — จัดการผู้ใช้งาน (ย้ายมาจาก Master Data), LINE, backup — **Audit Log** อยู่ปุ่มล่าง sidebar ติดปุ่มออกจากระบบ
 
 ## 2. สถานะปัจจุบัน — 🟢 LIVE บน production
 
@@ -19,7 +26,7 @@
 | Hosting | **Cloudflare Pages — LIVE แล้ว** https://lbs-platform-sdt.pages.dev (ย้ายจาก Netlify 2026-07-15, auto-deploy จาก `main`) |
 | GitHub repo | https://github.com/SDT-Supportai/LBS-Management-Platform-SDT (root = โฟลเดอร์นี้) |
 | Supabase project ref | `mrdnxajwnvkgvfyaclwv` (region: ตามที่สร้าง) |
-| Migrations ที่รันแล้ว | **0001–0010 ครบ** (ยืนยันด้วย query เช็ค column/function 2026-07-15) |
+| Migrations ที่รันแล้ว | **0001–0010 ครบ** (ยืนยัน 2026-07-15) · ⚠️ **0011–0014 รอรันใน SQL Editor** — ถ้ายังไม่รัน หน้าเปิด/แก้ Job, ยกเลิก PO, แก้ Serial จะ error |
 | E2E บน DB จริง | ✅ ผ่านทั้ง flow + ฟีเจอร์เพิ่มผู้ใช้ |
 | Admin จริง | `siradanai.s@precise.co.th` (department = admin, แสดงเป็น "Manager") |
 
@@ -57,7 +64,7 @@ lbs-platform/
   public/
     _redirects               SPA fallback (/* → /index.html 200)
   supabase/
-    migrations/0001..0009    schema, RPC, seed, bug fixes, ฟีเจอร์
+    migrations/0001..0014    schema, RPC, seed, bug fixes, ฟีเจอร์
     cleanup_e2e.sql          ล้างข้อมูลทดสอบก่อนใช้จริง
   .env.example               รายการ env (คัดลอกเป็น .env สำหรับ local LIVE)
 ```
@@ -81,8 +88,8 @@ lbs-platform/
 | `0013_unit_customer_info.sql` | ~~ฟีเจอร์ (2026-07-16)~~ **ถูกแทนด้วย 0014** — ยังต้องรันเรียงลำดับอยู่ |
 | `0014_customer_ref_from_job.sql` | **refactor (2026-07-16)**: ข้อมูลลูกค้า = **ref จาก Job เท่านั้น** (single source of truth) — jobs + `contact_phone` (rpc_create/update_job เปลี่ยน signature), drop คอลัมน์ลูกค้าที่ project_stocks/lbs_units (0012/0013), revert stock RPC, `rpc_update_unit_info` เหลือแก้ Serial (in_stock) |
 
-> DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0009 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ)
-> ⚠️ **production ต้องรัน migration ล่าสุดใน Supabase SQL Editor ก่อน push frontend เสมอ** — frontend build ใหม่เรียก RPC signature ใหม่ ถ้ายังไม่รัน migration หน้าเว็บจะ error (ล่าสุด: `0008` — rpc_add_accessory_request เปลี่ยน signature)
+> DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0014 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
+> ⚠️ **production ต้องรัน migration ล่าสุดใน Supabase SQL Editor ก่อน push frontend เสมอ** — frontend build ใหม่เรียก RPC signature ใหม่ ถ้ายังไม่รัน migration หน้าเว็บจะ error (ล่าสุด: `0014` — rpc_create_job/rpc_update_job เปลี่ยน signature รับ p_phone)
 
 ## 6. Environment variables (ตั้งใน Cloudflare Pages → Settings → Environment variables · Production)
 
@@ -92,8 +99,8 @@ lbs-platform/
 | `VITE_SUPABASE_ANON_KEY` | build + functions | anon/publishable key (เปิดเผยได้) — functions ใช้ตรวจ token ด้วย |
 | `SUPABASE_URL` | functions | เท่ากับ VITE_SUPABASE_URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | functions | **ความลับ** — admin-users function เท่านั้น |
-| `LINE_CHANNEL_ACCESS_TOKEN` | functions | (optional) แจ้งเตือน LINE |
-| `LINE_GROUP_ID` | functions | (optional) กลุ่มปลายทาง |
+| `LINE_CHANNEL_ACCESS_TOKEN` | functions | (optional) แจ้งเตือน LINE — จาก LINE Developers → Messaging API |
+| `LINE_GROUP_ID` | functions | (optional) กลุ่มปลายทาง — กลุ่มทีมจริง = `C30dde10e5b1d4ce984a85016b79204cd` (ได้จากพิมพ์ `id` ในกลุ่ม 2026-07-16) |
 | `LINE_CHANNEL_SECRET` | functions | (optional) ตรวจ signature webhook |
 
 ⚠️ Cloudflare Pages ทำ env ทั้งหมดให้ทั้งตอน **build** (VITE_* baked เข้า bundle) และให้ **Functions** ตอน runtime (`context.env`)
@@ -122,11 +129,11 @@ lbs-platform/
 
 | แผนก | ทำอะไรได้ |
 |---|---|
-| `sales` | สร้าง/แก้ Project Stock, รับ LBS เข้า, ปรับยอดสต็อกกลาง accessory |
-| `project` | เปิด/แก้/ลบ Job, ดึง-คืน LBS, ขอ accessory, ออก PR, เบิกให้ Service, ยกเลิก Job |
-| `purchasing` | ออก PO / ตีกลับ PR / รับของ (partial ได้) |
+| `sales` | สร้าง/แก้/ลบ Project Stock, รับ LBS เข้า (กรอกเอง/Import Excel), แก้ Serial รายเครื่อง, ปรับยอดคลังสินค้า accessory |
+| `project` | เปิด/แก้/ลบ Job (ลูกค้า+เบอร์+สถานที่+Budget), ดึง-คืน LBS, ขอวัสดุ (+Phase Budget), ออก PR, เบิกให้ Service (นัดติดตั้ง), ยกเลิก Job |
+| `purchasing` | ออก PO / ยกเลิก PO (ยังไม่รับของ) / ตีกลับ PR / รับของ (partial ได้) |
 | `service` | ยืนยันติดตั้งเสร็จ (+วันที่จริง) |
-| `admin` | แสดงชื่อเป็น **"Manager"** ใน UI (ค่าใน DB ยังเป็น `admin`) — ทำได้ทุกอย่าง + จัดการ Master Data (items/users) + Import/Export Excel |
+| `admin` | แสดงชื่อเป็น **"Manager"** ใน UI (ค่าใน DB ยังเป็น `admin`) — ทำได้ทุกอย่าง + จัดการ Material Database (items) + ผู้ใช้งาน (ที่ Dev Settings) + Import/Export Excel |
 
 Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Accessory → Ready to Issue → Issued → Installed` (+ `Cancelled` ได้ทุกสถานะก่อน Issued)
 
@@ -147,17 +154,19 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 - [ ] **รัน `supabase/cleanup_e2e.sql`** — ล้าง job/LBS/notification ทดสอบ + คืนยอดสต็อก
 - [ ] ตรวจว่า **service_role key ถูก rotate แล้ว** (ระหว่าง setup key เก่าเคยเปิดเผย — ถ้ายังไม่ rotate ให้ทำ แล้วอัปเดต Cloudflare Pages env + redeploy)
 
-### 🟡 ฟีเจอร์เสริม (ยังไม่ตั้งค่า)
-- [ ] **LINE แจ้งเตือน** — โค้ด+deploy พร้อม เหลือตั้ง LINE Developers channel + Cloudflare Pages env (`LINE_*`) → เปิดสวิตช์ใน Dev Settings
-- [ ] **Custom domain** — แนะนำ subdomain บริษัท `lbs.precise.co.th` (ฟรี, ขอ IT เพิ่ม CNAME → `<project>.pages.dev`) แล้ว Add ใน Cloudflare Pages → Custom domains (ออก SSL อัตโนมัติ)
+### 🟠 Migrations รอรันบน production (ทำก่อนใช้ฟีเจอร์ใหม่)
+- [ ] รัน **0011 → 0012 → 0013 → 0014** เรียงลำดับใน Supabase SQL Editor (รันซ้ำได้ปลอดภัย)
+
+### 🟡 ฟีเจอร์เสริม (ตั้งค่าค้างอยู่)
+- [ ] **LINE แจ้งเตือน** — โค้ด+deploy+channel พร้อม, ได้ Group ID แล้ว (`C30dde10...204cd`) เหลือ: ใส่ env `LINE_GROUP_ID` บน Cloudflare → Retry deployment → เปิดสวิตช์ใน Dev Settings → ส่งทดสอบ · จากนั้นพิมพ์ `สถานะ <Job No.>` ในกลุ่มได้เลย
+- [ ] **Custom domain** — แนะนำ subdomain บริษัท `lbs.precise.co.th` (ฟรี, ขอ IT เพิ่ม CNAME → `lbs-platform-sdt.pages.dev`) แล้ว Add ใน Cloudflare Pages → Custom domains (ออก SSL อัตโนมัติ)
 
 ### 🟢 พัฒนาต่อ (ไอเดีย)
 - หน้า forgot-password / เปลี่ยนรหัสตัวเอง (ตอนนี้ต้องให้ Manager reset ที่ Dev Settings → ผู้ใช้งาน)
 - รายงาน/analytics (stock movement, lead time ต่อ Job)
 
-> ✅ ยกเลิก PO เดี่ยวได้แล้ว (0011, 2026-07-15) · จัดการผู้ใช้งานย้ายจาก Material Database → Dev Settings
-
-> ✅ LINE bot ตอบสถานะ Job จริงแล้ว (2026-07-15) — `functions/line-webhook.js` ต่อ Supabase, คำสั่ง `สถานะ <Job No.>`
+> ✅ เสร็จแล้วรอบล่าสุด: ยกเลิก PO เดี่ยว (0011) · ผู้ใช้งานย้ายไป Dev Settings · LINE bot ตอบสถานะ Job จริง (`สถานะ <Job No.>`) ·
+> Job เพิ่มเบอร์ติดต่อ + ข้อมูลลูกค้า ref จาก Job ทั้งระบบ (0014) · Export/Import Excel ต่อคลัง (Serial) + Material Database (วัสดุ)
 
 ## 11. Workflow การพัฒนา
 
