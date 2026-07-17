@@ -26,7 +26,7 @@
 | Hosting | **Cloudflare Pages — LIVE แล้ว** https://lbs-platform-sdt.pages.dev (ย้ายจาก Netlify 2026-07-15, auto-deploy จาก `main`) |
 | GitHub repo | https://github.com/SDT-Supportai/LBS-Management-Platform-SDT (root = โฟลเดอร์นี้) |
 | Supabase project ref | `mrdnxajwnvkgvfyaclwv` (region: ตามที่สร้าง) |
-| Migrations ที่รันแล้ว | **0001–0010 ครบ** (ยืนยัน 2026-07-15) · ⚠️ **0011–0014 รอรันใน SQL Editor** — ถ้ายังไม่รัน หน้าเปิด/แก้ Job, ยกเลิก PO, แก้ Serial จะ error |
+| Migrations ที่รันแล้ว | **0001–0010 ครบ** (ยืนยัน 2026-07-15) · ⚠️ **0011–0015 รอรันใน SQL Editor** — ถ้ายังไม่รัน หน้าเปิด/แก้ Job, ยกเลิก PO, แก้ Serial จะ error **และ "ยกเลิก Job" จะ error ทุกครั้ง** (0015 แก้บั๊ก serial_no ค้างจาก 0006) |
 | E2E บน DB จริง | ✅ ผ่านทั้ง flow + ฟีเจอร์เพิ่มผู้ใช้ |
 | Admin จริง | `siradanai.s@precise.co.th` (department = admin, แสดงเป็น "Manager") |
 
@@ -87,9 +87,10 @@ lbs-platform/
 | `0012_stock_customer_info.sql` | **ฟีเจอร์ (2026-07-16)**: project_stocks + customer_name/contact_phone/install_location (optional, แก้ภายหลังได้) — drop+recreate rpc_create_project_stock/rpc_update_project_stock (เปลี่ยน signature) |
 | `0013_unit_customer_info.sql` | ~~ฟีเจอร์ (2026-07-16)~~ **ถูกแทนด้วย 0014** — ยังต้องรันเรียงลำดับอยู่ |
 | `0014_customer_ref_from_job.sql` | **refactor (2026-07-16)**: ข้อมูลลูกค้า = **ref จาก Job เท่านั้น** (single source of truth) — jobs + `contact_phone` (rpc_create/update_job เปลี่ยน signature), drop คอลัมน์ลูกค้าที่ project_stocks/lbs_units (0012/0013), revert stock RPC, `rpc_update_unit_info` เหลือแก้ Serial (in_stock) |
+| `0015_cancel_job_fixes.sql` | **bug fix จาก code review (2026-07-17)**: (1) rpc_cancel_job อ้าง `serial_no` ที่ถูก rename ใน 0006 → ยกเลิก Job บน LIVE error ทุกครั้ง (2) วัสดุรับจาก PO บางส่วน (po_ordered + qty_received > 0) เดิมถูก cancel เงียบๆ ของหาย → ปฏิบัติเหมือน received (คืนสต็อกกลาง/ปิดยอดตามจริง) (3) `app_assert_job_editable` ล็อกแถว job FOR UPDATE — serialize ทุก transition กัน race issue↔เพิ่มวัสดุ/คืน LBS · demo sync ที่ `logic.ts` cancelJob |
 
-> DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0014 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
-> ⚠️ **production ต้องรัน migration ล่าสุดใน Supabase SQL Editor ก่อน push frontend เสมอ** — frontend build ใหม่เรียก RPC signature ใหม่ ถ้ายังไม่รัน migration หน้าเว็บจะ error (ล่าสุด: `0014` — rpc_create_job/rpc_update_job เปลี่ยน signature รับ p_phone)
+> DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0015 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
+> ⚠️ **production ต้องรัน migration ล่าสุดใน Supabase SQL Editor ก่อน push frontend เสมอ** — frontend build ใหม่เรียก RPC signature ใหม่ ถ้ายังไม่รัน migration หน้าเว็บจะ error (ล่าสุด: `0015` — แก้ rpc_cancel_job พัง + กัน race, ไม่เปลี่ยน signature)
 
 ## 6. Environment variables (ตั้งใน Cloudflare Pages → Settings → Environment variables · Production)
 
@@ -142,8 +143,9 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 1. **rpc_issue_job บล็อกตัวเอง** — ตั้ง job=issued ก่อน update units → trigger `trg_block_issued_edit` กันแก้ allocation ของ job ที่ issued แล้ว → แก้: update units ก่อน แล้วค่อยตั้ง job (0004)
 2. **notifications อ่านไม่เห็น** — ลืมใส่ RLS SELECT policy → app_notify insert ลงแต่ role authenticated อ่านไม่ได้ → แก้: เพิ่ม policy (0005)
 3. **admin-users token invalid** — Supabase secret key แบบใหม่ (`sb_secret_`) ถูกจำกัดบน GoTrue auth endpoint → validate token ของผู้เรียกด้วย **anon key** แทน service key (commit `ab6e8e6`)
+4. **rpc_cancel_job พังเงียบหลัง rename คอลัมน์** — 0006 rename `serial_no` → `serial_lvb` แต่ plpgsql ไม่ validate คอลัมน์ตอน CREATE FUNCTION → rpc_cancel_job (สร้างใน 0002) ยังอ้าง serial_no แล้วมา error ตอน "รัน" เท่านั้น (แก้: 0015) — **บทเรียน: rename คอลัมน์ต้อง grep หาทุก RPC ที่อ้างถึง แล้ว recreate ให้ครบ** (พังแบบเงียบ ไม่โผล่ตอนรัน migration)
 
-> demo mode ไม่มี trigger/RLS/functions จึงไม่เจอ 3 บั๊กนี้ — ต้องทดสอบบน DB จริงเท่านั้น
+> demo mode ไม่มี trigger/RLS/functions/plpgsql จึงไม่เจอบั๊กพวกนี้ — ต้องทดสอบบน DB จริงเท่านั้น
 
 ## 10. งานค้าง (TODO)
 
@@ -155,7 +157,7 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 - [ ] ตรวจว่า **service_role key ถูก rotate แล้ว** (ระหว่าง setup key เก่าเคยเปิดเผย — ถ้ายังไม่ rotate ให้ทำ แล้วอัปเดต Cloudflare Pages env + redeploy)
 
 ### 🟠 Migrations รอรันบน production (ทำก่อนใช้ฟีเจอร์ใหม่)
-- [ ] รัน **0011 → 0012 → 0013 → 0014** เรียงลำดับใน Supabase SQL Editor (รันซ้ำได้ปลอดภัย)
+- [ ] รัน **0011 → 0012 → 0013 → 0014 → 0015** เรียงลำดับใน Supabase SQL Editor (รันซ้ำได้ปลอดภัย) — 0015 สำคัญ: ตอนนี้ "ยกเลิก Job" บน production error ทุกครั้ง (บั๊ก serial_no ค้างจาก 0006)
 
 ### 🟡 ฟีเจอร์เสริม (ตั้งค่าค้างอยู่)
 - [ ] **LINE แจ้งเตือน** — โค้ด+deploy+channel พร้อม, ได้ Group ID แล้ว (`C30dde10...204cd`) เหลือ: ใส่ env `LINE_GROUP_ID` บน Cloudflare → Retry deployment → เปิดสวิตช์ใน Dev Settings → ส่งทดสอบ · จากนั้นพิมพ์ `สถานะ <Job No.>` ในกลุ่มได้เลย

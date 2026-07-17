@@ -777,6 +777,14 @@ export function cancelJob(
       restock.set(r.itemId, (restock.get(r.itemId) ?? 0) + r.qtyRequested)
       return { ...r, status: 'returned' as const }
     }
+    // รับของจาก PO มาแล้วบางส่วน (po_ordered + qtyReceived > 0) — ห้ามทิ้งเงียบ ปฏิบัติเหมือน received (sync 0015)
+    if (r.status === 'po_ordered' && r.qtyReceived > 0) {
+      if (p.receivedAccessoryToCentral) {
+        restock.set(r.itemId, (restock.get(r.itemId) ?? 0) + r.qtyReceived)
+        return { ...r, status: 'returned' as const }
+      }
+      return { ...r, status: 'received' as const }   // ปิดยอดตามที่รับจริง (ส่วนค้างรับยกเลิกไปกับ PO) พิจารณาเป็นเคสไป
+    }
     if (r.status === 'pending' || r.status === 'pr_sent' || r.status === 'po_ordered')
       return { ...r, status: 'cancelled' as const }
     if (r.status === 'received' && p.receivedAccessoryToCentral) {
@@ -808,7 +816,8 @@ export function cancelJob(
     type: 'job_cancelled', dept: 'all', jobId: p.jobId,
     message: `❌ ยกเลิก ${job.jobNo} (${job.customerName}) เหตุผล: ${p.reason.trim()} — คืน LBS ${units.length} เครื่อง + Accessory กลับสต็อกอัตโนมัติ`,
   })
-  const receivedCount = reqs.filter(r => r.status === 'received').length
+  // นับทั้งรับครบ (received) และรับบางส่วน (po_ordered + qtyReceived > 0) — สถานะ ณ ก่อนยกเลิก
+  const receivedCount = reqs.filter(r => r.status === 'received' || (r.status === 'po_ordered' && r.qtyReceived > 0)).length
   return audit(next, actor, 'job', p.jobId, 'cancel_job',
     `ยกเลิก ${job.jobNo} (${p.reason}) — คืน LBS ${units.length} เครื่องกลับสต็อกเดิม` +
     (receivedCount > 0
