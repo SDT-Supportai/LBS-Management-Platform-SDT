@@ -9,6 +9,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
+  const [logoErr, setLogoErr] = useState(false)   // ยังไม่มีไฟล์ /logo.png → fallback ⚡
 
   const doLogin = async (em: string, pw: string) => {
     setBusy(true)
@@ -23,8 +24,18 @@ export default function LoginPage() {
   return (
     <div className="login-wrap">
       <div className="login-card">
-        <h1>115kV LBS Project Management Platform</h1>
-        <div className="sub">Project Stock &amp; Job Workflow — Sales · Project · Purchasing · Service</div>
+        <div className="login-head">
+          {!logoErr ? (
+            <img
+              src="/logo.png" alt="115kV LBS Platform logo" className="login-logo"
+              onError={() => setLogoErr(true)}
+            />
+          ) : (
+            <span className="login-logo login-logo-fallback" aria-hidden="true">⚡</span>
+          )}
+          <h1>115kV LBS Project Management Platform</h1>
+          <div className="sub">Dev. Mr. Siradanai Sirisunthorn</div>
+        </div>
         <form onSubmit={e => { e.preventDefault(); doLogin(email, password) }}>
           <label className="field">
             <span>อีเมล</span>

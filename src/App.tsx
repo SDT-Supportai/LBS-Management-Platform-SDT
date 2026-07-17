@@ -16,7 +16,14 @@ import MasterDataPage from './pages/MasterDataPage'
 import DevSettingsPage from './pages/DevSettingsPage'
 import { deriveJobStatus, unreadNotifications } from './data/logic'
 
-function Sidebar() {
+// Logo จริง (/logo.png) + fallback ⚡ ถ้ายังไม่มีไฟล์
+function BrandLogo() {
+  const [err, setErr] = useState(false)
+  if (err) return <>⚡</>
+  return <img src="/logo.png" alt="" onError={() => setErr(true)} />
+}
+
+function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { db, user, logout, resetDemo, mode } = useStore()
   const navigate = useNavigate()
   if (!user) return null
@@ -36,17 +43,18 @@ function Sidebar() {
   ]
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar${open ? ' open' : ''}`}>
       <div className="brand">
-        <span className="brand-logo">⚡</span>
+        <span className="brand-logo"><BrandLogo /></span>
         <span>
           115kV LBS Platform
           <small>Project management</small>
         </span>
+        <button className="drawer-close" onClick={onClose} aria-label="ปิดเมนู">✕</button>
       </div>
       <nav>
         {MENU.map(m => (
-          <NavLink key={m.to} to={m.to}>
+          <NavLink key={m.to} to={m.to} onClick={onClose}>
             <span className="nav-main">
               <span className="nav-icon">{m.icon}</span>
               <span>{m.label}</span>
@@ -60,7 +68,7 @@ function Sidebar() {
         <div className="name">{user.fullName} {mode === 'demo' ? <span className="badge amber">DEMO</span> : <span className="badge green">LIVE</span>}</div>
         <div className="dept">แผนก {DEPT_LABEL[user.department]} · {user.email}</div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button className="small" onClick={() => navigate('/audit')}>📜 Audit Log</button>
+          <button className="small" onClick={() => { navigate('/audit'); onClose() }}>📜 Audit Log</button>
           <button className="small" onClick={() => logout()}>ออกจากระบบ</button>
           {mode === 'demo' && (
             <button className="small" onClick={() => { if (confirm('รีเซ็ตข้อมูล demo ทั้งหมด?')) resetDemo() }}>รีเซ็ต demo</button>
@@ -146,6 +154,7 @@ function TopBar() {
 
 export default function App() {
   const { user, loading } = useStore()
+  const [navOpen, setNavOpen] = useState(false)   // mobile drawer
 
   if (loading) {
     return (
@@ -164,7 +173,14 @@ export default function App() {
         <LoginPage />
       ) : (
         <div className="app">
-          <Sidebar />
+          {/* mobile header: hamburger + brand (แสดงเฉพาะจอเล็ก) */}
+          <header className="mobile-header">
+            <button className="hamburger" onClick={() => setNavOpen(true)} aria-label="เปิดเมนู">☰</button>
+            <span className="brand-logo"><BrandLogo /></span>
+            <b>115kV LBS Platform</b>
+          </header>
+          {navOpen && <div className="nav-backdrop" onClick={() => setNavOpen(false)} />}
+          <Sidebar open={navOpen} onClose={() => setNavOpen(false)} />
           <main className="main">
             <TopBar />
             <Routes>

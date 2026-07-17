@@ -20,7 +20,8 @@
 }
 
 body {
-  font-family: 'Segoe UI', 'Leelawadee UI', Tahoma, sans-serif;
+  /* IBM Plex Sans Thai (Google Fonts ใน index.html) — offline ตกลง Segoe UI/Leelawadee UI */
+  font-family: 'IBM Plex Sans Thai', 'Segoe UI', 'Leelawadee UI', Tahoma, sans-serif;
   background: var(--bg);
   color: var(--text);
   font-size: 14px;
@@ -41,12 +42,17 @@ body {
   border-bottom: 1px solid #2e3a52; line-height: 1.35;
   display: flex; align-items: center; gap: 10px;
 }
-.sidebar .brand-logo {
-  width: 34px; height: 34px; flex-shrink: 0; border-radius: 10px;
-  background: linear-gradient(135deg, #3b5fb8, #6ec6a8);
+/* logo จริงบน badge ขาวมน (Modern Corporate) — รูปพื้นขาวเลยกลืนกับ badge พอดี */
+.sidebar .brand-logo, .mobile-header .brand-logo {
+  width: 38px; height: 38px; flex-shrink: 0; border-radius: 10px;
+  background: #fff; padding: 3px; overflow: hidden;
   display: flex; align-items: center; justify-content: center; font-size: 17px;
   box-shadow: 0 4px 14px rgba(59, 95, 184, .45);
 }
+.sidebar .brand-logo img, .mobile-header .brand-logo img {
+  width: 100%; height: 100%; object-fit: contain; display: block;
+}
+.sidebar .brand .drawer-close { display: none; }
 .sidebar .brand small { display: block; font-weight: 400; color: #8f9bb3; font-size: 11px; margin-top: 2px; }
 .sidebar nav { flex: 1; padding: 12px 10px; display: flex; flex-direction: column; gap: 4px; }
 .sidebar nav a {
@@ -284,20 +290,80 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary-sof
 .muted { color: var(--muted); font-size: 12.5px; }
 .mono { font-family: Consolas, monospace; font-size: 12.5px; }
 
-/* ---------- login ---------- */
-.login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #1c2537; padding: 20px; }
-.login-card { background: #fff; border-radius: 14px; padding: 32px; width: 100%; max-width: 420px; }
+/* ---------- login (Modern Corporate — gradient น้ำเงิน–ฟ้า + logo glow) ---------- */
+.login-wrap {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;
+  background: linear-gradient(135deg, #0a3d91 0%, #1e6fd9 48%, #38bdf8 100%);
+  position: relative; overflow: hidden;
+}
+/* แสงนุ่มลอยพื้นหลังให้ดูมีมิติ */
+.login-wrap::before, .login-wrap::after {
+  content: ''; position: absolute; border-radius: 50%; filter: blur(80px); pointer-events: none;
+}
+.login-wrap::before { width: 480px; height: 480px; background: rgba(125, 211, 252, .45); top: -140px; right: -100px; }
+.login-wrap::after  { width: 420px; height: 420px; background: rgba(37, 99, 235, .5);  bottom: -160px; left: -110px; }
+.login-card {
+  background: #fff; border-radius: 18px; padding: 34px 32px 28px; width: 100%; max-width: 440px;
+  box-shadow: 0 24px 70px rgba(6, 30, 80, .38);
+  position: relative; z-index: 1;
+}
+.login-head { text-align: center; margin-bottom: 22px; }
+.login-logo {
+  width: 138px; max-width: 60%; height: auto; margin-bottom: 10px;
+  animation: logo-in .8s ease both;
+}
+.login-logo-fallback { display: inline-block; font-size: 64px; line-height: 1.2; }
+@keyframes logo-in {
+  from { opacity: 0; transform: translateY(-14px) scale(.9); }
+  to   { opacity: 1; transform: none; }
+}
 .login-card h1 { font-size: 18px; margin-bottom: 4px; }
-.login-card .sub { color: var(--muted); font-size: 13px; margin-bottom: 22px; }
+.login-card .sub { color: var(--muted); font-size: 13px; }
 .demo-users { margin-top: 20px; border-top: 1px dashed var(--border); padding-top: 14px; }
 .demo-users button {
   width: 100%; text-align: left; margin-bottom: 6px; display: flex; justify-content: space-between; font-weight: 400;
 }
 
+/* ---------- responsive ---------- */
+.mobile-header { display: none; }
+
+/* Tablet: sidebar แคบลงเล็กน้อย ให้พื้นที่เนื้อหา */
+@media (max-width: 1100px) {
+  .sidebar { width: 212px; }
+  .main { padding: 20px 22px; }
+}
+
+/* Mobile: sidebar เป็น drawer เลื่อนเข้า + header ติดบนพร้อม hamburger */
 @media (max-width: 860px) {
   .app { flex-direction: column; }
-  .sidebar { width: 100%; height: auto; position: static; }
-  .sidebar nav { flex-direction: row; flex-wrap: wrap; }
+  .mobile-header {
+    display: flex; align-items: center; gap: 10px;
+    position: sticky; top: 0; z-index: 40;
+    background: linear-gradient(90deg, #1a2436, #131c2e);
+    color: #fff; padding: 10px 14px; font-size: 15px;
+  }
+  .mobile-header .hamburger {
+    background: transparent; border: none; color: #fff; font-size: 22px;
+    padding: 4px 8px; line-height: 1; cursor: pointer;
+  }
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0; height: 100dvh;
+    width: 280px; max-width: 84vw; z-index: 60;
+    transform: translateX(-100%); transition: transform .28s ease;
+  }
+  .sidebar.open { transform: translateX(0); box-shadow: 12px 0 40px rgba(6, 15, 35, .5); }
+  .sidebar .brand .drawer-close {
+    display: block; margin-left: auto; background: transparent; border: none;
+    color: #8f9bb3; font-size: 16px; padding: 4px 6px; cursor: pointer;
+  }
+  .nav-backdrop { position: fixed; inset: 0; background: rgba(10, 18, 35, .55); z-index: 55; }
   .main { padding: 16px; }
   .row { flex-direction: column; }
+  .login-card { padding: 26px 20px 22px; }
+  .login-logo { width: 112px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-logo { animation: none; }
+  .sidebar { transition: none; }
 }
