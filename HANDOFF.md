@@ -14,7 +14,8 @@
 
 **แผนที่เมนู UI ปัจจุบัน** (ชื่อหน้าถูก rename หลายรอบ — ชื่อไฟล์ใน `src/pages/` ยังเป็นชื่อเดิม):
 - **115kV LBS Project Stock** (`StocksPage`) — คลัง LBS + ดูรายเครื่อง (ข้อมูลลูกค้า ref จาก Job) + Export/Import Excel ต่อคลัง + คลังสินค้า (Ref.Job) = วัสดุรับครบจาก PO
-- **Jobs / Job Detail** — เปิด Job (ลูกค้า+เบอร์ติดต่อ+สถานที่ = source of truth), Project Budget, Purchase Requisition (วัสดุ + Phase Budget)
+- **Jobs / Job Detail** — เปิด Job (ลูกค้า+เบอร์ติดต่อ+สถานที่ = source of truth), Project Budget, Purchase Requisition (วัสดุ + Phase Budget) — ปุ่มออก PR/เบิก/ยกเลิกของ project เป็น "ขออนุมัติ" (admin ทำตรงได้)
+- **รออนุมัติ (Approvals)** (`ApprovalsPage`) — คิวคำขอจาก project ให้ Division ตัดสิน + ประวัติ (เพิ่ม 2026-07-19, มี badge จำนวนค้าง)
 - **Purchasing (PR/PO)** — จัดกลุ่มตาม Job No., ออก/ยกเลิก PO, ตีกลับ PR, รับของ partial
 - **Material Database** (`MasterDataPage`) — ฐานข้อมูลวัสดุ (ใช้ตอนออก PR) + Export/Import Excel
 - **Dev Settings** — จัดการผู้ใช้งาน (ย้ายมาจาก Master Data), LINE, backup — **Audit Log** อยู่ปุ่มล่าง sidebar ติดปุ่มออกจากระบบ
@@ -88,8 +89,9 @@ lbs-platform/
 | `0013_unit_customer_info.sql` | ~~ฟีเจอร์ (2026-07-16)~~ **ถูกแทนด้วย 0014** — ยังต้องรันเรียงลำดับอยู่ |
 | `0014_customer_ref_from_job.sql` | **refactor (2026-07-16)**: ข้อมูลลูกค้า = **ref จาก Job เท่านั้น** (single source of truth) — jobs + `contact_phone` (rpc_create/update_job เปลี่ยน signature), drop คอลัมน์ลูกค้าที่ project_stocks/lbs_units (0012/0013), revert stock RPC, `rpc_update_unit_info` เหลือแก้ Serial (in_stock) |
 | `0015_cancel_job_fixes.sql` | **bug fix จาก code review (2026-07-17)**: (1) rpc_cancel_job อ้าง `serial_no` ที่ถูก rename ใน 0006 → ยกเลิก Job บน LIVE error ทุกครั้ง (2) วัสดุรับจาก PO บางส่วน (po_ordered + qty_received > 0) เดิมถูก cancel เงียบๆ ของหาย → ปฏิบัติเหมือน received (คืนสต็อกกลาง/ปิดยอดตามจริง) (3) `app_assert_job_editable` ล็อกแถว job FOR UPDATE — serialize ทุก transition กัน race issue↔เพิ่มวัสดุ/คืน LBS · demo sync ที่ `logic.ts` cancelJob |
+| `0016_division_approval.sql` | **ฟีเจอร์ (2026-07-19)**: Division approval flow — project ออก PR / เบิก / ยกเลิก Job ต้องให้ Division (dept `sales`) อนุมัติก่อน: ตาราง `approval_requests` + แยก core เป็น `app_exec_create_pr/issue_job/cancel_job` + `rpc_create_pr/rpc_issue_job/rpc_cancel_job` เหลือ **admin เท่านั้น** (กันยิงตรงข้ามขั้นอนุมัติ) + `rpc_request_approval` (project) / `rpc_approve_request`+`rpc_reject_request` (sales+admin, อนุมัติ = execute ใน txn เดียว) · demo sync ครบที่ `logic.ts` + หน้า "รออนุมัติ" ใหม่ |
 
-> DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0015 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
+> DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0016 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
 > ⚠️ **production ต้องรัน migration ล่าสุดใน Supabase SQL Editor ก่อน push frontend เสมอ** — frontend build ใหม่เรียก RPC signature ใหม่ ถ้ายังไม่รัน migration หน้าเว็บจะ error (ล่าสุด: `0015` — แก้ rpc_cancel_job พัง + กัน race, ไม่เปลี่ยน signature)
 
 ## 6. Environment variables (ตั้งใน Cloudflare Pages → Settings → Environment variables · Production)
@@ -126,15 +128,19 @@ lbs-platform/
 - รูปแบบ: `export async function onRequestPost({ request, env })` · อ่าน env ผ่าน `env.XXX` (ไม่ใช่ `process.env`)
 - ทดสอบ functions ในเครื่อง: `npx wrangler pages dev dist` (build ก่อน) — Vite `npm run dev` ไม่รัน functions
 
-## 8. แผนก + สิทธิ์ (RLS + app_assert_dept)
+## 8. แผนก + สิทธิ์ (RLS + app_assert_dept) — อัปเดต 2026-07-19
 
-| แผนก | ทำอะไรได้ |
-|---|---|
-| `sales` | สร้าง/แก้/ลบ Project Stock, รับ LBS เข้า (กรอกเอง/Import Excel), แก้ Serial รายเครื่อง, ปรับยอดคลังสินค้า accessory |
-| `project` | เปิด/แก้/ลบ Job (ลูกค้า+เบอร์+สถานที่+Budget), ดึง-คืน LBS, ขอวัสดุ (+Phase Budget), ออก PR, เบิกให้ Service (นัดติดตั้ง), ยกเลิก Job |
-| `purchasing` | ออก PO / ยกเลิก PO (ยังไม่รับของ) / ตีกลับ PR / รับของ (partial ได้) |
-| `service` | ยืนยันติดตั้งเสร็จ (+วันที่จริง) |
-| `admin` | แสดงชื่อเป็น **"Manager"** ใน UI (ค่าใน DB ยังเป็น `admin`) — ทำได้ทุกอย่าง + จัดการ Material Database (items) + ผู้ใช้งาน (ที่ Dev Settings) + Import/Export Excel |
+ชื่อแสดงผลเปลี่ยน (มติ 2026-07-19): `sales` → **"Division"**, `admin` → **"Manage"** (ค่าใน DB คงเดิม — แก้ที่ `DEPT_LABEL` ใน format.ts)
+
+| แผนก (DB) | แสดงผล | ทำอะไรได้ |
+|---|---|---|
+| `sales` | **Division** | สร้าง/แก้/ลบ Project Stock, รับ LBS เข้า, แก้ Serial, ปรับยอดคลังสินค้า accessory + **อนุมัติ/ตีกลับคำขอจาก project** (หน้า "รออนุมัติ") |
+| `project` | Project | เปิด/แก้/ลบ Job, ดึง-คืน LBS, ขอวัสดุ (+Phase Budget) — ส่วน **ออก PR / เบิกให้ Service / ยกเลิก Job ต้องส่งคำขอให้ Division อนุมัติ** (`rpc_request_approval`) |
+| `purchasing` | Purchasing | ออก PO / ยกเลิก PO (ยังไม่รับของ) / ตีกลับ PR / รับของ (partial ได้) |
+| `service` | Service | ยืนยันติดตั้งเสร็จ (+วันที่จริง) |
+| `admin` | **Manage** | ทำได้ทุกอย่าง + **ข้ามขั้นอนุมัติ** (เรียก rpc_create_pr/issue/cancel ตรงได้) + อนุมัติแทน Division ได้ + Material Database + ผู้ใช้งาน + **Dev Settings (แผนกเดียวที่เห็น** — เมนูซ่อน + route redirect สำหรับแผนกอื่น) |
+
+**Approval flow (0016)**: project ขอ → แจ้งเตือน Division → division/admin อนุมัติที่หน้า "รออนุมัติ" = **execute ทันทีใน transaction เดียว** (fail = rollback ทั้งคำขอ) หรือตีกลับพร้อมเหตุผล (แจ้งกลับ project) · คำขอ pending ซ้ำ type เดียวกันต่อ Job ไม่ได้ (unique partial index) · `rpc_create_pr`/`rpc_issue_job`/`rpc_cancel_job` เช็ค admin-only แล้ว — project ยิง RPC ตรงจะโดนปฏิเสธ
 
 Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Accessory → Ready to Issue → Issued → Installed` (+ `Cancelled` ได้ทุกสถานะก่อน Issued)
 
@@ -157,7 +163,7 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 - [ ] ตรวจว่า **service_role key ถูก rotate แล้ว** (ระหว่าง setup key เก่าเคยเปิดเผย — ถ้ายังไม่ rotate ให้ทำ แล้วอัปเดต Cloudflare Pages env + redeploy)
 
 ### 🟠 Migrations รอรันบน production (ทำก่อนใช้ฟีเจอร์ใหม่)
-- [ ] รัน **0011 → 0012 → 0013 → 0014 → 0015** เรียงลำดับใน Supabase SQL Editor (รันซ้ำได้ปลอดภัย) — 0015 สำคัญ: ตอนนี้ "ยกเลิก Job" บน production error ทุกครั้ง (บั๊ก serial_no ค้างจาก 0006)
+- [ ] รัน **0011 → 0012 → 0013 → 0014 → 0015 → 0016** เรียงลำดับใน Supabase SQL Editor (รันซ้ำได้ปลอดภัย) — 0015 สำคัญ: ตอนนี้ "ยกเลิก Job" บน production error ทุกครั้ง (บั๊ก serial_no ค้างจาก 0006) · **0016 ต้องรันก่อน push frontend รอบนี้** — หน้าใหม่โหลดตาราง `approval_requests` ถ้าไม่มีจะ error ทั้งแอป
 
 ### 🟡 ฟีเจอร์เสริม (ตั้งค่าค้างอยู่)
 - [ ] **LINE แจ้งเตือน** — โค้ด+deploy+channel พร้อม, ได้ Group ID แล้ว (`C30dde10...204cd`) เหลือ: ใส่ env `LINE_GROUP_ID` บน Cloudflare → Retry deployment → เปิดสวิตช์ใน Dev Settings → ส่งทดสอบ · จากนั้นพิมพ์ `สถานะ <Job No.>` ในกลุ่มได้เลย

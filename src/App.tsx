@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
-import { useStore } from './data/StoreContext'
+import { useStore, can } from './data/StoreContext'
 import { ToastProvider, useTryAction } from './ui/components'
 import { DEPT_LABEL, fmtDateTime } from './ui/format'
 import LoginPage from './pages/LoginPage'
@@ -14,6 +14,7 @@ import AuditPage from './pages/AuditPage'
 import NotificationsPage from './pages/NotificationsPage'
 import MasterDataPage from './pages/MasterDataPage'
 import DevSettingsPage from './pages/DevSettingsPage'
+import ApprovalsPage from './pages/ApprovalsPage'
 import { deriveJobStatus, unreadNotifications } from './data/logic'
 
 // Logo จริง (/logo.png) + fallback ⚡ ถ้ายังไม่มีไฟล์
@@ -31,15 +32,18 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const openPos = db.pos.filter(p => p.status === 'issued').length
   const readyJobs = db.jobs.filter(j => deriveJobStatus(db, j) === 'ready_to_issue').length
   const awaitingInstall = db.jobs.filter(j => j.terminalStatus === 'issued').length
+  const pendingApprovals = db.approvalRequests.filter(r => r.status === 'pending').length
 
   const MENU: { to: string; icon: string; label: string; badge?: { text: string; cls: string } }[] = [
     { to: '/dashboard', icon: '📊', label: 'Dashboard' },
     { to: '/stocks', icon: '📦', label: 'Project Stock (LBS)' },
     { to: '/jobs', icon: '🗂️', label: 'Jobs', badge: readyJobs > 0 ? { text: `${readyJobs} พร้อมเบิก`, cls: 'green' } : undefined },
+    { to: '/approvals', icon: '✅', label: 'รออนุมัติ (Approvals)', badge: pendingApprovals > 0 ? { text: `${pendingApprovals}`, cls: 'amber' } : undefined },
     { to: '/purchasing', icon: '🛒', label: 'Purchasing (PR/PO)', badge: (pendingPrs + openPos) > 0 ? { text: `${pendingPrs + openPos}`, cls: 'amber' } : undefined },
     { to: '/service', icon: '🔧', label: 'งานติดตั้ง (Service)', badge: awaitingInstall > 0 ? { text: `${awaitingInstall} รอติดตั้ง`, cls: 'blue' } : undefined },
     { to: '/master', icon: '🗄️', label: 'Material Database' },
-    { to: '/dev', icon: '⚙️', label: 'Dev Settings' },
+    // Dev Settings เฉพาะ Manage (admin) — แผนกอื่น "not can DevSettings"
+    ...(can(user, 'master.manage') ? [{ to: '/dev', icon: '⚙️', label: 'Dev Settings' }] : []),
   ]
 
   return (
@@ -155,6 +159,7 @@ function TopBar() {
 export default function App() {
   const { user, loading } = useStore()
   const [navOpen, setNavOpen] = useState(false)   // mobile drawer
+  const isManage = can(user, 'master.manage')     // Dev Settings เฉพาะ Manage (admin)
 
   if (loading) {
     return (
@@ -190,10 +195,11 @@ export default function App() {
               <Route path="/jobs/:jobId" element={<JobDetailPage />} />
               <Route path="/purchasing" element={<PurchasingPage />} />
               <Route path="/service" element={<ServicePage />} />
+              <Route path="/approvals" element={<ApprovalsPage />} />
               <Route path="/notifications" element={<NotificationsPage />} />
               <Route path="/master" element={<MasterDataPage />} />
               <Route path="/audit" element={<AuditPage />} />
-              <Route path="/dev" element={<DevSettingsPage />} />
+              <Route path="/dev" element={isManage ? <DevSettingsPage /> : <Navigate to="/dashboard" replace />} />
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>
           </main>

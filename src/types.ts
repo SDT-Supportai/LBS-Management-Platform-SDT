@@ -146,6 +146,33 @@ export interface PurchaseOrder {
   receivedAt?: string
 }
 
+// คำขออนุมัติจาก Division (dept ใน DB = 'sales', แสดงผลเป็น "Division")
+// project ขอ → division/admin อนุมัติ (execute ทันที) หรือตีกลับพร้อมเหตุผล
+export type ApprovalType = 'create_pr' | 'issue_job' | 'cancel_job'
+
+export interface ApprovalPayload {
+  requestIds?: string[]            // create_pr
+  startDate?: string               // issue_job
+  endDate?: string
+  location?: string
+  note?: string
+  reason?: string                  // cancel_job
+  receivedToCentral?: boolean
+}
+
+export interface ApprovalRequest {
+  id: string
+  type: ApprovalType
+  jobId: string
+  payload: ApprovalPayload
+  status: 'pending' | 'approved' | 'rejected'
+  requestedBy: string
+  requestedAt: string
+  decidedBy?: string
+  decidedAt?: string
+  rejectReason?: string
+}
+
 export interface AuditLog {
   id: string
   entityType: string
@@ -180,6 +207,7 @@ export interface DB {
   accessoryRequests: AccessoryRequest[]
   prs: PurchaseRequisition[]
   pos: PurchaseOrder[]
+  approvalRequests: ApprovalRequest[]
   auditLogs: AuditLog[]
   notifications: AppNotification[]
 }

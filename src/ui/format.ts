@@ -18,12 +18,25 @@ export const PR_STATUS_LABEL: Record<string, string> = {
   cancelled: 'ยกเลิก',
 }
 
+// ค่าใน DB ยังเป็น 'sales'/'admin' — เปลี่ยนเฉพาะชื่อที่แสดง (มติ 2026-07-19)
 export const DEPT_LABEL: Record<Department, string> = {
-  sales: 'Sales',
+  sales: 'Division',      // ผู้อนุมัติ: ออก PR / เบิก / ยกเลิก Job ของ project
   project: 'Project',
   purchasing: 'Purchasing',
   service: 'Service',
-  admin: 'Manager',   // ค่าใน DB ยังเป็น 'admin' — เปลี่ยนเฉพาะชื่อที่แสดง (CRUD ได้ทุกแผนก)
+  admin: 'Manage',        // ทำได้ทุกอย่าง + ข้ามขั้นอนุมัติ
+}
+
+export const APPROVAL_TYPE_LABEL: Record<string, string> = {
+  create_pr: 'ออก PR',
+  issue_job: 'เบิกให้ Service',
+  cancel_job: 'ยกเลิก Job',
+}
+
+export const APPROVAL_STATUS_LABEL: Record<string, string> = {
+  pending: 'รออนุมัติ',
+  approved: 'อนุมัติแล้ว',
+  rejected: 'ตีกลับ',
 }
 
 export const ACC_STATUS_LABEL: Record<AccReqStatus, string> = {

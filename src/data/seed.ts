@@ -35,7 +35,7 @@ export function buildSeedDb(): DB {
       { itemId: 'i-ct', qtyOnHand: 20 },
       { itemId: 'i-bracket', qtyOnHand: 15 },
     ],
-    accessoryRequests: [], prs: [], pos: [], auditLogs: [], notifications: [],
+    accessoryRequests: [], prs: [], pos: [], approvalRequests: [], auditLogs: [], notifications: [],
   }
 
   const sales = USERS[0], project = USERS[1], purchasing = USERS[2]

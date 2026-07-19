@@ -43,7 +43,11 @@ export default function JobDetailPage() {
 
   const status = job ? deriveJobStatus(db, job) : 'draft'
   const canManage = can(user, 'job.manage')
+  // Manage (admin) ข้ามขั้นอนุมัติได้ — project ต้องส่งคำขอให้ Division ก่อน (0016)
+  const isManage = can(user, 'master.manage')
   const locked = !job || job.terminalStatus !== null
+  const pendingApprovalOf = (type: 'create_pr' | 'issue_job' | 'cancel_job') =>
+    db.approvalRequests.some(r => r.jobId === jobId && r.type === type && r.status === 'pending')
 
   const allocatedUnits = useMemo(
     () => db.lbsUnits.filter(u => u.jobId === jobId && (u.status === 'allocated' || u.status === 'issued')),
@@ -121,6 +125,17 @@ export default function JobDetailPage() {
         </div></div>
       )}
 
+      {/* คำขอที่รอ Division อนุมัติของ Job นี้ */}
+      {db.approvalRequests.some(r => r.jobId === jobId && r.status === 'pending') && (
+        <div className="panel"><div className="panel-body">
+          ⏳ <b>รอ Division อนุมัติ:</b>{' '}
+          {db.approvalRequests.filter(r => r.jobId === jobId && r.status === 'pending')
+            .map(r => r.type === 'create_pr' ? 'ออก PR' : r.type === 'issue_job' ? 'เบิกให้ Service' : 'ยกเลิก Job')
+            .join(' · ')}
+          {' '}— <Link to="/approvals">ดูสถานะที่หน้ารออนุมัติ →</Link>
+        </div></div>
+      )}
+
       {canManage && !locked && (
         <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
           <button className="primary" onClick={() => { setDrawStock(db.projectStocks.find(s => s.status === 'open')?.id ?? ''); openModal('draw') }}>+ ดึง LBS เข้า Job</button>
@@ -128,9 +143,10 @@ export default function JobDetailPage() {
           <button className="success" onClick={() => {
             setIssueForm({ startDate: job.requiredDate || '', endDate: job.requiredDate || '', location: job.installLocation || '', note: '' })
             openModal('issue')
-          }} disabled={status !== 'ready_to_issue'}
-            title={status !== 'ready_to_issue' ? 'ต้องมี LBS ครบตาม Scope และ Accessory ครบทุกรายการ' : ''}>
-            เบิกทั้งหมดให้ Service
+          }} disabled={status !== 'ready_to_issue' || pendingApprovalOf('issue_job')}
+            title={status !== 'ready_to_issue' ? 'ต้องมี LBS ครบตาม Scope และ Accessory ครบทุกรายการ'
+              : pendingApprovalOf('issue_job') ? 'มีคำขอเบิกรอ Division อนุมัติอยู่แล้ว' : ''}>
+            {isManage ? 'เบิกทั้งหมดให้ Service' : 'ขออนุมัติเบิกให้ Service'}
           </button>
           <button onClick={() => {
             setEditForm({
@@ -143,7 +159,11 @@ export default function JobDetailPage() {
             })
             openModal('edit')
           }}>แก้ไขข้อมูล Job</button>
-          <button className="danger" onClick={() => { setCancelReason(''); setReceivedToCentral(true); openModal('cancel') }}>ยกเลิก Job</button>
+          <button className="danger" disabled={pendingApprovalOf('cancel_job')}
+            title={pendingApprovalOf('cancel_job') ? 'มีคำขอยกเลิกรอ Division อนุมัติอยู่แล้ว' : ''}
+            onClick={() => { setCancelReason(''); setReceivedToCentral(true); openModal('cancel') }}>
+            {isManage ? 'ยกเลิก Job' : 'ขออนุมัติยกเลิก Job'}
+          </button>
           {db.allocations.every(a => a.jobId !== job.id) && accReqs.length === 0 && (
             <button className="danger" onClick={() => {
               if (confirm(`ลบ ${job.jobNo}? (ลบได้เฉพาะ Draft ที่ไม่มี transaction)`))
@@ -206,10 +226,18 @@ export default function JobDetailPage() {
               <button className="small" onClick={() => { setAccForm({ itemId: accessoryItems[0]?.id ?? '', qty: 1, source: 'central_stock', unitPrice: '', phaseBudget: '' }); openModal('accessory') }}>+ เพิ่มวัสดุ</button>
             )}
             {canManage && !locked && pendingReqs.length > 0 && (
-              <button className="small primary" onClick={() =>
-                tryAction(() => act.createPR({ jobId: job.id, requestIds: pendingReqs.map(r => r.id) }),
-                  'ออก PR ส่งให้ Purchasing แล้ว')
-              }>ออก PR ส่ง Purchasing ({pendingReqs.length} รายการ)</button>
+              <button className="small primary" disabled={pendingApprovalOf('create_pr')}
+                title={pendingApprovalOf('create_pr') ? 'มีคำขอออก PR รอ Division อนุมัติอยู่แล้ว' : ''}
+                onClick={() => isManage
+                  ? tryAction(() => act.createPR({ jobId: job.id, requestIds: pendingReqs.map(r => r.id) }),
+                      'ออก PR ส่งให้ Purchasing แล้ว')
+                  : tryAction(() => act.requestApproval({
+                      type: 'create_pr', jobId: job.id,
+                      payload: { requestIds: pendingReqs.map(r => r.id) },
+                    }), 'ส่งคำขอออก PR ให้ Division อนุมัติแล้ว')
+                }>
+                {isManage ? `ออก PR ส่ง Purchasing (${pendingReqs.length} รายการ)` : `ขออนุมัติออก PR (${pendingReqs.length} รายการ)`}
+              </button>
             )}
           </div>
         </div>
@@ -402,21 +430,31 @@ export default function JobDetailPage() {
       )}
 
       {modal === 'issue' && (
-        <Modal title="เบิกทั้งหมดให้ Service ติดตั้ง" onClose={close}
+        <Modal title={isManage ? 'เบิกทั้งหมดให้ Service ติดตั้ง' : 'ขออนุมัติเบิกให้ Service (Division)'} onClose={close}
           footer={<>
             <button onClick={close}>ยกเลิก</button>
             <button className="success"
               disabled={!issueForm.startDate || !issueForm.endDate || !issueForm.location.trim()}
               title={!issueForm.startDate || !issueForm.endDate || !issueForm.location.trim() ? 'กรอกวันติดตั้ง Start–End และ Location ให้ครบก่อน' : ''}
-              onClick={async () => { if (await tryAction(() => act.issueJob({ jobId: job.id, ...issueForm }), `เบิก ${job.jobNo} ให้ Service แล้ว`)) close() }}>
-              ยืนยันการเบิก
+              onClick={async () => {
+                const ok = isManage
+                  ? await tryAction(() => act.issueJob({ jobId: job.id, ...issueForm }), `เบิก ${job.jobNo} ให้ Service แล้ว`)
+                  : await tryAction(() => act.requestApproval({ type: 'issue_job', jobId: job.id, payload: { ...issueForm } }),
+                      `ส่งคำขอเบิก ${job.jobNo} ให้ Division อนุมัติแล้ว`)
+                if (ok) close()
+              }}>
+              {isManage ? 'ยืนยันการเบิก' : 'ส่งคำขออนุมัติ'}
             </button>
           </>}>
           <p style={{ marginBottom: 10 }}>
             เบิก <b>LBS {allocatedUnits.length} เครื่อง</b> + Accessory ทั้งหมดของ <b>{job.jobNo}</b> ให้ Service
             — กำหนดนัดหมายติดตั้งจริงด้านล่าง (แผนเดิม: {job.installLocation || '-'} · {fmtDate(job.requiredDate)})
           </p>
-          <p className="muted" style={{ marginBottom: 12 }}>หลังยืนยัน Job จะล็อก แก้ไข allocation หรือคืนของไม่ได้อีก</p>
+          <p className="muted" style={{ marginBottom: 12 }}>
+            {isManage
+              ? 'หลังยืนยัน Job จะล็อก แก้ไข allocation หรือคืนของไม่ได้อีก'
+              : 'คำขอจะส่งให้ Division ตรวจ — เมื่ออนุมัติระบบเบิกให้ทันที แล้ว Job จะล็อก แก้ไข allocation ไม่ได้อีก'}
+          </p>
           <div className="row">
             <label className="field"><span>วันเริ่มติดตั้ง (Start) *</span>
               <input type="date" value={issueForm.startDate}
@@ -437,12 +475,21 @@ export default function JobDetailPage() {
       )}
 
       {modal === 'cancel' && (
-        <Modal title={`ยกเลิก ${job.jobNo}`} onClose={close}
+        <Modal title={isManage ? `ยกเลิก ${job.jobNo}` : `ขออนุมัติยกเลิก ${job.jobNo} (Division)`} onClose={close}
           footer={<>
             <button onClick={close}>กลับ</button>
             <button className="danger"
-              onClick={async () => { if (await tryAction(() => act.cancelJob({ jobId: job.id, reason: cancelReason, receivedAccessoryToCentral: receivedToCentral }), `ยกเลิก ${job.jobNo} และคืนของกลับสต็อกแล้ว`)) { close(); navigate('/jobs') } }}>
-              ยืนยันยกเลิก Job
+              onClick={async () => {
+                if (isManage) {
+                  if (await tryAction(() => act.cancelJob({ jobId: job.id, reason: cancelReason, receivedAccessoryToCentral: receivedToCentral }), `ยกเลิก ${job.jobNo} และคืนของกลับสต็อกแล้ว`)) { close(); navigate('/jobs') }
+                } else {
+                  if (await tryAction(() => act.requestApproval({
+                    type: 'cancel_job', jobId: job.id,
+                    payload: { reason: cancelReason, receivedToCentral },
+                  }), `ส่งคำขอยกเลิก ${job.jobNo} ให้ Division อนุมัติแล้ว`)) close()
+                }
+              }}>
+              {isManage ? 'ยืนยันยกเลิก Job' : 'ส่งคำขออนุมัติ'}
             </button>
           </>}>
           <p style={{ marginBottom: 10 }}>

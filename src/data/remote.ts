@@ -2,7 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type {
   DB, User, Item, ProjectStock, LbsUnit, Job, AllocationTxn,
   AccessoryRequest, PurchaseRequisition, PurchaseOrder, AuditLog, AppNotification,
-  Department,
+  Department, ApprovalRequest, ApprovalType, ApprovalPayload,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -85,6 +85,22 @@ function mapPo(r: Row): PurchaseOrder {
     receivedAt: r.received_at ?? undefined,
   }
 }
+function mapApproval(r: Row): ApprovalRequest {
+  const pl = (r.payload ?? {}) as Row
+  return {
+    id: r.id, type: r.req_type as ApprovalType, jobId: r.job_id,
+    payload: {
+      requestIds: pl.request_ids ?? undefined,
+      startDate: pl.start_date ?? undefined, endDate: pl.end_date ?? undefined,
+      location: pl.location ?? undefined, note: pl.note ?? undefined,
+      reason: pl.reason ?? undefined,
+      receivedToCentral: pl.received_to_central ?? undefined,
+    },
+    status: r.status, requestedBy: r.requested_by ?? '', requestedAt: r.requested_at,
+    decidedBy: r.decided_by ?? undefined, decidedAt: r.decided_at ?? undefined,
+    rejectReason: r.reject_reason ?? undefined,
+  }
+}
 function mapAudit(r: Row): AuditLog {
   return {
     id: r.id, entityType: r.entity_type, entityId: r.entity_id, action: r.action,
@@ -107,7 +123,7 @@ async function q(sb: SupabaseClient, table: string, order?: { col: string; asc?:
 }
 
 export async function loadAll(sb: SupabaseClient): Promise<DB> {
-  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, audits, notifs, reads] =
+  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, audits, notifs, reads] =
     await Promise.all([
       q(sb, 'profiles'),
       q(sb, 'items', { col: 'code', limit: 10000 }),
@@ -119,6 +135,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       q(sb, 'job_accessory_requests', { col: 'created_at' }),
       q(sb, 'purchase_requisitions', { col: 'created_at' }),
       q(sb, 'purchase_orders', { col: 'created_at' }),
+      q(sb, 'approval_requests', { col: 'requested_at' }),
       q(sb, 'audit_logs', { col: 'created_at', asc: false, limit: 500 }),
       q(sb, 'notifications', { col: 'created_at', asc: true, limit: 300 }),
       q(sb, 'notification_reads'),
@@ -149,6 +166,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     accessoryRequests: accReqs.map(mapAccReq),
     prs: prs.map(r => mapPr(r, reqIdsByPr.get(r.id) ?? [])),
     pos: pos.map(mapPo),
+    approvalRequests: approvals.map(mapApproval),
     auditLogs: audits.map(mapAudit),
     notifications: notifs.map(r => mapNotif(r, readsByNotif.get(r.id) ?? [])),
   }
@@ -204,6 +222,24 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_confirm_install', { p_job_id: p.jobId, p_installed_date: p.installedDate, p_note: p.note ?? null }),
     cancelJob: (p: { jobId: string; reason: string; receivedAccessoryToCentral: boolean }) =>
       rpc(sb, 'rpc_cancel_job', { p_job_id: p.jobId, p_reason: p.reason, p_received_to_central: p.receivedAccessoryToCentral }),
+    // Division approval flow (0016) — payload camelCase → snake_case ให้ตรง SQL
+    requestApproval: (p: { type: ApprovalType; jobId: string; payload: ApprovalPayload }) =>
+      rpc(sb, 'rpc_request_approval', {
+        p_type: p.type, p_job_id: p.jobId,
+        p_payload: {
+          ...(p.payload.requestIds !== undefined ? { request_ids: p.payload.requestIds } : {}),
+          ...(p.payload.startDate !== undefined ? { start_date: p.payload.startDate } : {}),
+          ...(p.payload.endDate !== undefined ? { end_date: p.payload.endDate } : {}),
+          ...(p.payload.location !== undefined ? { location: p.payload.location } : {}),
+          ...(p.payload.note !== undefined ? { note: p.payload.note } : {}),
+          ...(p.payload.reason !== undefined ? { reason: p.payload.reason } : {}),
+          ...(p.payload.receivedToCentral !== undefined ? { received_to_central: p.payload.receivedToCentral } : {}),
+        },
+      }),
+    approveRequest: (p: { requestId: string }) =>
+      rpc(sb, 'rpc_approve_request', { p_request_id: p.requestId }),
+    rejectApprovalRequest: (p: { requestId: string; reason: string }) =>
+      rpc(sb, 'rpc_reject_request', { p_request_id: p.requestId, p_reason: p.reason }),
     createItem: (p: { code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean; initialQty?: number }) =>
       rpc(sb, 'rpc_create_item', { p_code: p.code, p_epicor_code: p.epicorCode ?? null, p_name: p.name, p_uom: p.uom, p_stockable: p.stockableCentrally, p_initial_qty: p.initialQty ?? 0 }),
     updateItem: (p: { itemId: string; code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean }) =>

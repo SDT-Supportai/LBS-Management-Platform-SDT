@@ -1,5 +1,6 @@
 import type {
   DB, Job, JobStatus, User, AccessoryRequest, Department,
+  ApprovalType, ApprovalPayload,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -825,6 +826,112 @@ export function cancelJob(
         ? ` + Accessory ที่รับจาก PO แล้วเข้าสต็อกกลาง`
         : ` (Accessory ที่รับจาก PO แล้วพิจารณาเป็นเคสไป)`
       : ''))
+}
+
+// ---------------- Division approval (sync 0016) ----------------
+// project ขออนุมัติ 3 action → division (dept 'sales') / admin อนุมัติ = execute ทันที
+// admin ข้ามขั้นอนุมัติได้โดยเรียก createPR/issueJob/cancelJob ตรง (StoreContext คุมสิทธิ์)
+
+const APPROVAL_TYPE_LABEL: Record<ApprovalType, string> = {
+  create_pr: 'ออก PR', issue_job: 'เบิกให้ Service', cancel_job: 'ยกเลิก Job',
+}
+
+export function requestApproval(
+  db: DB, actor: User,
+  p: { type: ApprovalType; jobId: string; payload: ApprovalPayload },
+): DB {
+  const job = assertJobEditable(db, p.jobId)
+  if (db.approvalRequests.some(r => r.jobId === p.jobId && r.type === p.type && r.status === 'pending'))
+    throw new Error(`${job.jobNo} มีคำขอประเภทนี้รอ Division อนุมัติอยู่แล้ว`)
+
+  // validate ล่วงหน้าตาม type (validate เต็มอีกรอบตอน execute)
+  let typeLabel: string = APPROVAL_TYPE_LABEL[p.type]
+  if (p.type === 'create_pr') {
+    const ids = p.payload.requestIds ?? []
+    if (ids.length === 0) throw new Error('กรุณาเลือกรายการที่จะออก PR')
+    const reqs = db.accessoryRequests.filter(r => ids.includes(r.id))
+    if (reqs.length !== ids.length || reqs.some(r => r.jobId !== p.jobId || r.source !== 'purchasing' || r.status !== 'pending'))
+      throw new Error('เลือกได้เฉพาะรายการสั่งซื้อที่ยังไม่ออก PR')
+    typeLabel = `ออก PR (${ids.length} รายการ)`
+  } else if (p.type === 'issue_job') {
+    if (deriveJobStatus(db, job) !== 'ready_to_issue')
+      throw new Error(`${job.jobNo} ยังไม่พร้อมเบิก — ต้องมี LBS ครบตาม Scope และ Accessory ครบทุกรายการ`)
+    if (!p.payload.startDate || !p.payload.endDate) throw new Error('กรุณาระบุกำหนดวันติดตั้ง (Start–End)')
+    if (p.payload.endDate < p.payload.startDate) throw new Error('วันสิ้นสุดต้องไม่ก่อนวันเริ่มติดตั้ง')
+    if (!p.payload.location?.trim()) throw new Error('กรุณาระบุสถานที่ติดตั้ง (Location)')
+  } else {
+    if (!p.payload.reason?.trim()) throw new Error('กรุณาระบุเหตุผลการยกเลิก')
+  }
+
+  const reqId = uid()
+  let next: DB = {
+    ...db,
+    approvalRequests: [...db.approvalRequests, {
+      id: reqId, type: p.type, jobId: p.jobId, payload: p.payload,
+      status: 'pending' as const, requestedBy: actor.id, requestedAt: now(),
+    }],
+  }
+  next = notify(next, {
+    type: 'approval_requested', dept: 'sales', jobId: p.jobId,
+    message: `🔔 ${job.jobNo} (${job.customerName}) ขออนุมัติ${typeLabel} โดย ${actor.fullName}`,
+  })
+  return audit(next, actor, 'approval_request', reqId, 'request_approval',
+    `${job.jobNo} ขออนุมัติ${typeLabel}`)
+}
+
+export function approveRequest(db: DB, actor: User, p: { requestId: string }): DB {
+  const req = db.approvalRequests.find(r => r.id === p.requestId)
+  if (!req) throw new Error('ไม่พบคำขออนุมัติ')
+  if (req.status !== 'pending') throw new Error('คำขอนี้ถูกตัดสินไปแล้ว')
+  const job = db.jobs.find(j => j.id === req.jobId)!
+
+  let next: DB = {
+    ...db,
+    approvalRequests: db.approvalRequests.map(r =>
+      r.id === p.requestId ? { ...r, status: 'approved' as const, decidedBy: actor.id, decidedAt: now() } : r),
+  }
+  // execute ทันที — ถ้า throw ระหว่างนี้ state ทั้งหมดไม่ถูก apply (StoreContext apply ตอนจบเท่านั้น)
+  if (req.type === 'create_pr') {
+    next = createPR(next, actor, { jobId: req.jobId, requestIds: req.payload.requestIds ?? [] })
+  } else if (req.type === 'issue_job') {
+    next = issueJob(next, actor, {
+      jobId: req.jobId, startDate: req.payload.startDate ?? '', endDate: req.payload.endDate ?? '',
+      location: req.payload.location ?? '', note: req.payload.note,
+    })
+  } else {
+    next = cancelJob(next, actor, {
+      jobId: req.jobId, reason: req.payload.reason ?? '',
+      receivedAccessoryToCentral: req.payload.receivedToCentral ?? true,
+    })
+  }
+  next = notify(next, {
+    type: 'approval_approved', dept: 'project', jobId: req.jobId,
+    message: `✅ Division อนุมัติ${APPROVAL_TYPE_LABEL[req.type]} ของ ${job.jobNo} แล้ว (โดย ${actor.fullName})`,
+  })
+  return audit(next, actor, 'approval_request', p.requestId, 'approve_request',
+    `อนุมัติ${APPROVAL_TYPE_LABEL[req.type]} ของ ${job.jobNo}`)
+}
+
+export function rejectApprovalRequest(db: DB, actor: User, p: { requestId: string; reason: string }): DB {
+  const req = db.approvalRequests.find(r => r.id === p.requestId)
+  if (!req) throw new Error('ไม่พบคำขออนุมัติ')
+  if (req.status !== 'pending') throw new Error('คำขอนี้ถูกตัดสินไปแล้ว')
+  if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผลที่ตีกลับ')
+  const job = db.jobs.find(j => j.id === req.jobId)!
+
+  let next: DB = {
+    ...db,
+    approvalRequests: db.approvalRequests.map(r =>
+      r.id === p.requestId
+        ? { ...r, status: 'rejected' as const, decidedBy: actor.id, decidedAt: now(), rejectReason: p.reason.trim() }
+        : r),
+  }
+  next = notify(next, {
+    type: 'approval_rejected', dept: 'project', jobId: req.jobId,
+    message: `⛔ Division ตีกลับคำขอ${APPROVAL_TYPE_LABEL[req.type]} ของ ${job.jobNo} — เหตุผล: ${p.reason.trim()}`,
+  })
+  return audit(next, actor, 'approval_request', p.requestId, 'reject_request',
+    `ตีกลับคำขอ${APPROVAL_TYPE_LABEL[req.type]} ของ ${job.jobNo} เหตุผล: ${p.reason.trim()}`)
 }
 
 // ---------------- Master Data: Items / Central stock ----------------

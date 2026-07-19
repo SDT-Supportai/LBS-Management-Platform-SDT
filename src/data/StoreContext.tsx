@@ -11,12 +11,14 @@ const SESSION_KEY = 'lbs-platform-session-v1'
 const SETTINGS_KEY = 'lbs-platform-settings-v1'
 
 // สิทธิ์ตามแผนก — ฝั่ง UI ใช้ซ่อน/แสดงปุ่ม; โหมด Supabase ตัวจริงคือ RPC ฝั่ง server
+// (ชื่อแสดงผล: sales = "Division", admin = "Manage" — ค่าใน DB คงเดิม)
 export const PERMISSIONS: Record<string, Department[]> = {
   'stock.manage': ['sales', 'admin'],
   'job.manage': ['project', 'admin'],
   'purchasing.manage': ['purchasing', 'admin'],
   'service.confirm': ['service', 'admin'],
   'master.manage': ['admin'],
+  'approval.decide': ['sales', 'admin'],   // Division อนุมัติ/ตีกลับคำขอจาก project
 }
 
 export function can(user: User | null, perm: keyof typeof PERMISSIONS): boolean {
@@ -32,7 +34,8 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 const EMPTY_DB: DB = {
   users: [], items: [], projectStocks: [], lbsUnits: [], jobs: [], allocations: [],
-  accessoryStock: [], accessoryRequests: [], prs: [], pos: [], auditLogs: [], notifications: [],
+  accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [],
+  auditLogs: [], notifications: [],
 }
 
 // migrate ข้อมูล demo จาก schema เก่า (v1: issued_installed, ไม่มี qtyReceived/notifications)
@@ -61,6 +64,7 @@ function migrateDb(raw: unknown): DB {
       ...r,
       qtyReceived: r.qtyReceived ?? (r.status === 'received' ? r.qtyRequested : 0),
     })),
+    approvalRequests: d.approvalRequests ?? [],
     notifications: d.notifications ?? [],
   }
 }
@@ -113,6 +117,9 @@ export interface StoreActions {
   issueJob: (p: Parameters<typeof L.issueJob>[2]) => MaybePromise
   confirmInstall: (p: Parameters<typeof L.confirmInstall>[2]) => MaybePromise
   cancelJob: (p: Parameters<typeof L.cancelJob>[2]) => MaybePromise
+  requestApproval: (p: Parameters<typeof L.requestApproval>[2]) => MaybePromise
+  approveRequest: (p: Parameters<typeof L.approveRequest>[2]) => MaybePromise
+  rejectApprovalRequest: (p: Parameters<typeof L.rejectApprovalRequest>[2]) => MaybePromise
   createItem: (p: Parameters<typeof L.createItem>[2]) => MaybePromise
   updateItem: (p: Parameters<typeof L.updateItem>[2]) => MaybePromise
   deleteItem: (p: Parameters<typeof L.deleteItem>[2]) => MaybePromise
@@ -240,14 +247,18 @@ function DemoProvider({ children }: { children: ReactNode }) {
         updateAccessoryRequestPrice: run('job.manage', L.updateAccessoryRequestPrice),
         returnAccessory: run('job.manage', L.returnAccessory),
         cancelAccessoryRequest: run('job.manage', L.cancelAccessoryRequest),
-        createPR: run('job.manage', L.createPR),
+        // 3 action นี้ต้องผ่านการอนุมัติจาก Division — เรียกตรงได้เฉพาะ admin (ข้ามขั้นอนุมัติ)
+        createPR: run('master.manage', L.createPR),
         rejectPR: run('purchasing.manage', L.rejectPR),
         createPO: run('purchasing.manage', L.createPO),
         cancelPO: run('purchasing.manage', L.cancelPO),
         receivePOItems: run('purchasing.manage', L.receivePOItems),
-        issueJob: run('job.manage', L.issueJob),
+        issueJob: run('master.manage', L.issueJob),
         confirmInstall: run('service.confirm', L.confirmInstall),
-        cancelJob: run('job.manage', L.cancelJob),
+        cancelJob: run('master.manage', L.cancelJob),
+        requestApproval: run('job.manage', L.requestApproval),
+        approveRequest: run('approval.decide', L.approveRequest),
+        rejectApprovalRequest: run('approval.decide', L.rejectApprovalRequest),
         createItem: run('master.manage', L.createItem),
         updateItem: run('master.manage', L.updateItem),
         deleteItem: run('master.manage', L.deleteItem),
