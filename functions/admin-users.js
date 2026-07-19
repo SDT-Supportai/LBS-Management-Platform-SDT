@@ -57,6 +57,25 @@ export async function onRequestPost(context) {
       return Response.json({ ok: true, userId: data.user.id })
     }
 
+    // เปลี่ยนอีเมล (= อีเมลที่ใช้ login) — อัปเดตทั้ง auth.users และ profiles ให้ตรงกัน
+    if (body.action === 'set_email') {
+      const { userId, email } = body
+      const em = String(email ?? '').trim().toLowerCase()
+      if (!userId || !em) return Response.json({ error: 'กรุณาระบุผู้ใช้และอีเมลใหม่' }, { status: 400 })
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) return Response.json({ error: 'รูปแบบอีเมลไม่ถูกต้อง' }, { status: 400 })
+      const { data: dup } = await admin.from('profiles').select('id').eq('email', em).neq('id', userId).maybeSingle()
+      if (dup) return Response.json({ error: `อีเมล ${em} มีผู้ใช้อยู่แล้ว` }, { status: 400 })
+      const { error } = await admin.auth.admin.updateUserById(userId, { email: em, email_confirm: true })
+      if (error) return Response.json({ error: error.message }, { status: 400 })
+      const { error: profErr2 } = await admin.from('profiles').update({ email: em }).eq('id', userId)
+      if (profErr2) return Response.json({ error: 'อัปเดต profile ไม่สำเร็จ: ' + profErr2.message }, { status: 500 })
+      await admin.from('audit_logs').insert({
+        entity_type: 'user', entity_id: userId, action: 'set_email',
+        actor_id: caller.user.id, detail: `เปลี่ยนอีเมลผู้ใช้เป็น ${em}`,
+      })
+      return Response.json({ ok: true })
+    }
+
     if (body.action === 'set_password') {
       const { userId, password } = body
       if (!userId || !password) return Response.json({ error: 'กรุณาระบุผู้ใช้และรหัสผ่านใหม่' }, { status: 400 })

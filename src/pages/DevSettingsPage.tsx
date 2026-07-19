@@ -22,9 +22,15 @@ export default function DevSettingsPage() {
   const openCreateUser = () => { setUserForm({ email: '', fullName: '', department: 'project', password: '', isActive: true }); setUserTarget(null); setUserModal('create') }
   const openEditUser = (u: User) => { setUserForm({ email: u.email, fullName: u.fullName, department: u.department, password: '', isActive: u.isActive }); setUserTarget(u); setUserModal('edit') }
   const submitUser = async () => {
+    const emailChanged = userForm.email.trim().toLowerCase() !== userTarget?.email.toLowerCase()
     const ok = userModal === 'create'
       ? await tryAction(() => act.createUser(userForm), 'เพิ่มผู้ใช้แล้ว')
-      : await tryAction(() => act.updateUser({ userId: userTarget!.id, fullName: userForm.fullName, department: userForm.department, password: userForm.password || undefined, isActive: userForm.isActive }), 'บันทึกแล้ว')
+      : await tryAction(() => act.updateUser({
+          userId: userTarget!.id,
+          email: emailChanged ? userForm.email : undefined,   // ส่งเฉพาะตอนเปลี่ยนจริง
+          fullName: userForm.fullName, department: userForm.department,
+          password: userForm.password || undefined, isActive: userForm.isActive,
+        }), emailChanged ? 'บันทึกแล้ว — อีเมลใหม่ใช้ login ได้ทันที' : 'บันทึกแล้ว')
     if (ok) setUserModal(null)
   }
 
@@ -166,8 +172,8 @@ export default function DevSettingsPage() {
           <label className="field"><span>ชื่อ-นามสกุล *</span>
             <input value={userForm.fullName} onChange={e => setUserForm({ ...userForm, fullName: e.target.value })} />
           </label>
-          <label className="field"><span>อีเมล *{userModal === 'edit' ? ' (แก้ไม่ได้)' : ''}</span>
-            <input value={userForm.email} disabled={userModal === 'edit'}
+          <label className="field"><span>อีเมล * (ใช้เข้าสู่ระบบ{userModal === 'edit' ? ' — เปลี่ยนแล้วมีผลทันที' : ''})</span>
+            <input value={userForm.email}
               onChange={e => setUserForm({ ...userForm, email: e.target.value })} />
           </label>
           <div className="row">

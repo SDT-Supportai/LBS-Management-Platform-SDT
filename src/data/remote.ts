@@ -251,8 +251,10 @@ export function remoteActions(sb: SupabaseClient) {
     createUser: async (p: { email: string; fullName: string; department: Department; password: string }) => {
       await callAdminFn(sb, { action: 'create', ...p })
     },
-    updateUser: async (p: { userId: string; fullName: string; department: Department; password?: string; isActive: boolean }) => {
+    updateUser: async (p: { userId: string; email?: string; fullName: string; department: Department; password?: string; isActive: boolean }) => {
       await rpc(sb, 'rpc_update_profile', { p_user_id: p.userId, p_full_name: p.fullName, p_department: p.department, p_is_active: p.isActive })
+      // เปลี่ยนอีเมล (login) ต้องใช้ service role → ผ่าน admin function (UI ส่ง email มาเฉพาะตอนเปลี่ยนจริง)
+      if (p.email) await callAdminFn(sb, { action: 'set_email', userId: p.userId, email: p.email })
       if (p.password) await callAdminFn(sb, { action: 'set_password', userId: p.userId, password: p.password })
     },
   }

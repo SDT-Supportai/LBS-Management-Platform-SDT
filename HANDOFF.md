@@ -156,11 +156,11 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 ## 10. งานค้าง (TODO)
 
 ### 🔴 ความปลอดภัย (ทำก่อนใช้จริงจัง)
-- [ ] **ลบบัญชีทดสอบ** ใน Supabase → Authentication → Users:
-      `e2e-runner@example.org` (เคยเป็น admin, รหัสผ่านเคยเปิดเผยระหว่าง setup),
-      `e2e.tester.lbs@gmail.com`, `e2e-admin@example.com`, `fn-test-sales@example.org`
-- [ ] **รัน `supabase/cleanup_e2e.sql`** — ล้าง job/LBS/notification ทดสอบ + คืนยอดสต็อก
-- [ ] ตรวจว่า **service_role key ถูก rotate แล้ว** (ระหว่าง setup key เก่าเคยเปิดเผย — ถ้ายังไม่ rotate ให้ทำ แล้วอัปเดต Cloudflare Pages env + redeploy)
+- [ ] **ลบ/ปิดบัญชีทดสอบ** — รัน **`supabase/cleanup_e2e_accounts.sql`** ใน SQL Editor (ปลอดภัยแม้มีข้อมูลจริงแล้ว:
+      ปิดใช้งานทุกบัญชีทดสอบทันที + ลบตัวที่ลบได้ ตัวที่ยังถูกอ้างใน audit/jobs จะถูกข้าม)
+      บัญชี: `e2e-runner@example.org` (เคยเป็น admin, รหัสผ่านเคยเปิดเผย), `e2e.tester.lbs@gmail.com`, `e2e-admin@example.com`, `fn-test-sales@example.org`
+- [ ] **รัน `supabase/cleanup_e2e.sql`** เฉพาะถ้ายังไม่มีข้อมูลจริง (⚠️ ลบ transaction ทั้งหมด) — ล้าง job/LBS/notification ทดสอบ + คืนยอดสต็อก แล้วค่อยลบบัญชีที่ถูกข้ามจากข้อบน
+- [ ] ตรวจว่า **service_role key ถูก rotate แล้ว** (ระหว่าง setup key เก่าเคยเปิดเผย — ตรวจ repo แล้ว 2026-07-19: **key ไม่เคยหลุดลง git** หลุดเฉพาะนอก repo) — Dashboard → Settings → API → สร้าง/roll secret key ใหม่ → อัปเดต `SUPABASE_SERVICE_ROLE_KEY` บน Cloudflare Pages env → Retry deployment
 
 ### 🟠 Migrations รอรันบน production (ทำก่อนใช้ฟีเจอร์ใหม่)
 - [ ] รัน **0011 → 0012 → 0013 → 0014 → 0015 → 0016** เรียงลำดับใน Supabase SQL Editor (รันซ้ำได้ปลอดภัย) — 0015 สำคัญ: ตอนนี้ "ยกเลิก Job" บน production error ทุกครั้ง (บั๊ก serial_no ค้างจาก 0006) · **0016 ต้องรันก่อน push frontend รอบนี้** — หน้าใหม่โหลดตาราง `approval_requests` ถ้าไม่มีจะ error ทั้งแอป
@@ -174,7 +174,8 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 - รายงาน/analytics (stock movement, lead time ต่อ Job)
 
 > ✅ เสร็จแล้วรอบล่าสุด: ยกเลิก PO เดี่ยว (0011) · ผู้ใช้งานย้ายไป Dev Settings · LINE bot ตอบสถานะ Job จริง (`สถานะ <Job No.>`) ·
-> Job เพิ่มเบอร์ติดต่อ + ข้อมูลลูกค้า ref จาก Job ทั้งระบบ (0014) · Export/Import Excel ต่อคลัง (Serial) + Material Database (วัสดุ)
+> Job เพิ่มเบอร์ติดต่อ + ข้อมูลลูกค้า ref จาก Job ทั้งระบบ (0014) · Export/Import Excel ต่อคลัง (Serial) + Material Database (วัสดุ) ·
+> Division approval flow (0016) + หน้ารออนุมัติ · **Manage แก้อีเมลผู้ใช้ได้** (Dev Settings → แก้ไข — ผ่าน admin function `set_email`, อัปเดตทั้ง auth.users + profiles, อีเมลใหม่ login ได้ทันที) · topbar gradient ใหม่
 
 ## 11. Workflow การพัฒนา
 

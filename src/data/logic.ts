@@ -1050,22 +1050,32 @@ export function createUser(
 
 export function updateUser(
   db: DB, actor: User,
-  p: { userId: string; fullName: string; department: Department; password?: string; isActive: boolean },
+  p: { userId: string; email?: string; fullName: string; department: Department; password?: string; isActive: boolean },
 ): DB {
   const target = db.users.find(u => u.id === p.userId)
   if (!target) throw new Error('ไม่พบผู้ใช้')
   if (p.userId === actor.id && !p.isActive) throw new Error('ปิดการใช้งานบัญชีตัวเองไม่ได้')
+  // แก้อีเมลได้ (= อีเมลที่ใช้ login) — เว้น undefined = ไม่เปลี่ยน (ฟีเจอร์ 2026-07-19, Manage เท่านั้น)
+  const email = p.email?.trim().toLowerCase()
+  if (email !== undefined) {
+    if (!email) throw new Error('อีเมลว่างไม่ได้')
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('รูปแบบอีเมลไม่ถูกต้อง')
+    if (db.users.some(u => u.id !== p.userId && u.email.toLowerCase() === email))
+      throw new Error(`อีเมล ${email} มีผู้ใช้อยู่แล้ว`)
+  }
   let next: DB = {
     ...db,
     users: db.users.map(u => u.id === p.userId
       ? {
-          ...u, fullName: p.fullName.trim() || u.fullName, department: p.department,
+          ...u, email: email ?? u.email,
+          fullName: p.fullName.trim() || u.fullName, department: p.department,
           password: p.password ? p.password : u.password, isActive: p.isActive,
         }
       : u),
   }
   return audit(next, actor, 'user', p.userId, 'update_user',
-    `แก้ไขผู้ใช้ ${target.fullName} (แผนก ${p.department}${!p.isActive ? ', ปิดการใช้งาน' : ''})`)
+    `แก้ไขผู้ใช้ ${target.fullName} (แผนก ${p.department}` +
+    `${email && email !== target.email.toLowerCase() ? `, เปลี่ยนอีเมลเป็น ${email}` : ''}${!p.isActive ? ', ปิดการใช้งาน' : ''})`)
 }
 
 // ---------------- Notifications ----------------

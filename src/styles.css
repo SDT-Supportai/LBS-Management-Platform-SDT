@@ -100,16 +100,28 @@ body {
 
 .main { flex: 1; padding: 24px 28px; min-width: 0; position: relative; }
 
-/* ---------- topbar (Refresh + notification bell, มุมบนขวา) ---------- */
+/* ---------- topbar (Refresh + notification bell) — แถบ gradient เข้าธีม sidebar/login ---------- */
 .topbar {
   position: relative; z-index: 20;
   display: flex; justify-content: flex-end; align-items: center; gap: 10px;
-  margin-bottom: 16px;
+  /* bleed เต็มความกว้าง .main (ลบ padding ของ .main ออก) */
+  margin: -24px -28px 20px;
+  padding: 10px 24px;
+  background: linear-gradient(90deg, #131c2e 0%, #1e3a6d 55%, #2b6cb0 100%);
+  box-shadow: 0 6px 20px rgba(15, 25, 50, .22);
+}
+/* เส้นแสงฟ้าบางๆ ใต้แถบ ให้รับกับ glow-dot ใน sidebar */
+.topbar::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(142, 231, 255, .65), transparent);
+  pointer-events: none;
 }
 .topbar-btn {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 7px 12px; font-size: 13px;
+  background: rgba(255, 255, 255, .1); border: 1px solid rgba(255, 255, 255, .22); color: #eaf1ff;
 }
+.topbar-btn:hover { background: rgba(255, 255, 255, .2); }
 .topbar-btn .tb-icon { font-size: 15px; line-height: 1; display: inline-block; }
 .topbar-btn .tb-icon.spin { animation: tb-spin .7s linear infinite; }
 @keyframes tb-spin { to { transform: rotate(360deg); } }
@@ -331,6 +343,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary-sof
 @media (max-width: 1100px) {
   .sidebar { width: 212px; }
   .main { padding: 20px 22px; }
+  .topbar { margin: -20px -22px 18px; padding: 9px 18px; }
 }
 
 /* Mobile: sidebar เป็น drawer เลื่อนเข้า + header ติดบนพร้อม hamburger */
@@ -358,6 +371,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary-sof
   }
   .nav-backdrop { position: fixed; inset: 0; background: rgba(10, 18, 35, .55); z-index: 55; }
   .main { padding: 16px; }
+  .topbar { margin: -16px -16px 14px; padding: 8px 14px; }
   .row { flex-direction: column; }
   .login-card { padding: 26px 20px 22px; }
   .login-logo { width: 112px; }
