@@ -176,6 +176,11 @@ export function addUnitsToStock(db: DB, actor: User, p: { stockId: string; units
       })),
     ],
   }
+  // แจ้งเข้า LINE ว่ามี LBS เพิ่มเข้าคลัง (sync 0018 — เดิมเงียบ ทั้งรับเข้าคลังเดิมและ Excel import)
+  next = notify(next, {
+    type: 'stock_received', dept: 'project',
+    message: `📦 Division รับ LBS เพิ่มเข้า ${stock.stockNo} จำนวน ${units.length} เครื่อง — พร้อมให้ดึงเข้า Job`,
+  })
   return audit(next, actor, 'project_stock', p.stockId, 'add_units',
     `รับ LBS เพิ่มเข้า ${stock.stockNo} จำนวน ${units.length} เครื่อง`)
 }
