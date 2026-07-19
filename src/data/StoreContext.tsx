@@ -137,7 +137,7 @@ interface StoreValue {
   login: (email: string, password: string) => MaybePromise
   logout: () => MaybePromise
   resetDemo: () => void
-  updateSettings: (s: AppSettings) => void
+  updateSettings: (s: AppSettings) => MaybePromise
   importDb: (json: string) => void
   markNotificationsRead: () => MaybePromise
   refresh: () => MaybePromise
@@ -291,38 +291,49 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
     const data = await loadAll(sb)
     setDb(data)
     if (userIdRef.current) setUser(data.users.find(u => u.id === userIdRef.current) ?? null)
+    // สวิตช์ LINE เป็น global ใน DB (0017) — ถ้าตารางยังไม่มี (ยังไม่รัน migration) คงค่า local เดิม
+    try {
+      const { data: ls } = await sb.from('app_settings').select('value').eq('key', 'line_enabled').maybeSingle()
+      if (ls) {
+        const enabled = ls.value === true
+        setSettings(prev => prev.lineEnabled === enabled ? prev : { ...prev, lineEnabled: enabled })
+      }
+    } catch { /* ยังไม่รัน 0017 */ }
     return data
   }, [sb])
 
-  // ส่ง notification ที่ค้างสถานะ pending เข้า LINE (ผ่าน netlify function)
+  // ส่ง notification ค้างเข้า LINE — ผ่าน rpc_claim_line_pending (0017):
+  // server เป็นคนตัดสินจากสวิตช์ global + atomic claim กันหลายเครื่องส่งซ้ำ
+  // เครื่องนี้ส่งเฉพาะรายการที่ claim ได้ / ส่ง fail ค่อย mark 'failed'
   const dispatchLine = useCallback(async (data: DB) => {
-    const pending = data.notifications.filter(n => n.lineStatus === 'pending')
-    if (pending.length === 0) return
-    const s = settingsRef.current
-    if (!s.lineEnabled) {
-      await remoteSetLine(sb, pending.map(n => n.id), 'off').catch(() => undefined)
-      setDb(prev => ({
-        ...prev,
-        notifications: prev.notifications.map(n => n.lineStatus === 'pending' ? { ...n, lineStatus: 'off' } : n),
-      }))
-      return
-    }
-    for (const n of pending) {
+    if (!data.notifications.some(n => n.lineStatus === 'pending')) return
+    const { data: claimed, error } = await sb.rpc('rpc_claim_line_pending')
+    if (error || !claimed || claimed.length === 0) return   // สวิตช์ปิด (server mark off เอง) / เครื่องอื่น claim ไปแล้ว / ยังไม่รัน 0017
+    const { data: { session } } = await sb.auth.getSession()
+    const failed: string[] = []
+    for (const n of claimed as { id: string; message: string }[]) {
       let ok = false
       try {
-        const r = await fetch(s.lineEndpoint, {
+        const r = await fetch(settingsRef.current.lineEndpoint, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}),   // /line-notify ต้องมี JWT แล้ว
+          },
           body: JSON.stringify({ message: n.message }),
         })
         ok = r.ok
       } catch { ok = false }
-      await remoteSetLine(sb, [n.id], ok ? 'sent' : 'failed').catch(() => undefined)
-      setDb(prev => ({
-        ...prev,
-        notifications: prev.notifications.map(x => x.id === n.id ? { ...x, lineStatus: ok ? 'sent' : 'failed' } : x),
-      }))
+      if (!ok) failed.push(n.id)
     }
+    if (failed.length > 0) await remoteSetLine(sb, failed, 'failed').catch(() => undefined)
+    setDb(prev => ({
+      ...prev,
+      notifications: prev.notifications.map(x => {
+        if (!(claimed as { id: string }[]).some(c => c.id === x.id)) return x
+        return { ...x, lineStatus: failed.includes(x.id) ? 'failed' as const : 'sent' as const }
+      }),
+    }))
   }, [sb])
 
   useEffect(() => {
@@ -388,7 +399,18 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
       },
       logout: async () => { await sb.auth.signOut() },
       resetDemo: () => { throw new Error('รีเซ็ตได้เฉพาะโหมด demo — โหมด Supabase จัดการข้อมูลผ่าน SQL Editor') },
-      updateSettings: (s) => setSettings(s),
+      // สวิตช์ LINE เขียนลง DB (global ทุกเครื่อง, admin เท่านั้น) — endpoint/note เก็บ local ตามเดิม
+      updateSettings: async (s) => {
+        const prevEnabled = settingsRef.current.lineEnabled
+        setSettings(s)
+        if (s.lineEnabled !== prevEnabled) {
+          const { error } = await sb.rpc('rpc_set_line_enabled', { p_enabled: s.lineEnabled })
+          if (error) {
+            setSettings(x => ({ ...x, lineEnabled: prevEnabled }))
+            throw new Error(`ตั้งสวิตช์ LINE ไม่สำเร็จ: ${error.message} (ต้องเป็น Manage และรัน migration 0017 แล้ว)`)
+          }
+        }
+      },
       importDb: () => { throw new Error('Import ได้เฉพาะโหมด demo') },
       markNotificationsRead: async () => { await remoteMarkRead(sb); await reload() },
       refresh: async () => { await reload() },

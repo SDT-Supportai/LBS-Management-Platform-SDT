@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useStore, can } from '../data/StoreContext'
 import { Modal, useToast, useTryAction } from '../ui/components'
 import { DEPT_LABEL } from '../ui/format'
+import { supabase } from '../lib/supabase'
 import type { Department, User } from '../types'
 
 const DEPTS: Department[] = ['sales', 'project', 'purchasing', 'service', 'admin']
@@ -34,19 +35,24 @@ export default function DevSettingsPage() {
     if (ok) setUserModal(null)
   }
 
-  const save = () => { updateSettings(form); show('บันทึกการตั้งค่าแล้ว') }
+  const save = () => tryAction(async () => { await updateSettings(form) }, 'บันทึกการตั้งค่าแล้ว (สวิตช์ LINE มีผลทุกเครื่อง)')
 
   const testLine = async () => {
     setTesting(true)
     try {
+      // /line-notify ต้องมี Supabase JWT (โหมด LIVE) — กันคนนอกยิงข้อความเข้ากลุ่ม
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (supabase) {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session) headers.Authorization = `Bearer ${session.access_token}`
+      }
       const r = await fetch(form.lineEndpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers,
         body: JSON.stringify({ message: '🔔 ทดสอบการแจ้งเตือนจาก 115kV LBS Platform' }),
       })
-      show(r.ok ? 'ส่งทดสอบสำเร็จ — เช็คข้อความใน LINE group' : `endpoint ตอบกลับ ${r.status} — เช็ค env LINE_CHANNEL_ACCESS_TOKEN / LINE_GROUP_ID บน Netlify`, !r.ok)
+      show(r.ok ? 'ส่งทดสอบสำเร็จ — เช็คข้อความใน LINE group' : `endpoint ตอบกลับ ${r.status} — เช็ค env LINE_CHANNEL_ACCESS_TOKEN / LINE_GROUP_ID บน Cloudflare Pages`, !r.ok)
     } catch {
-      show('เรียก endpoint ไม่ได้ — บน localhost ยังไม่มี Netlify Function ให้รัน (ใช้ netlify dev หรือ deploy ก่อน)', true)
+      show('เรียก endpoint ไม่ได้ — บน localhost ยังไม่มี Pages Function ให้รัน (ใช้ npx wrangler pages dev dist หรือ deploy ก่อน)', true)
     }
     setTesting(false)
   }
@@ -114,7 +120,7 @@ export default function DevSettingsPage() {
           <label className="field" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <input type="checkbox" style={{ width: 'auto' }} checked={form.lineEnabled}
               onChange={e => setForm({ ...form, lineEnabled: e.target.checked })} />
-            <span style={{ margin: 0 }}>เปิดส่งการแจ้งเตือนเข้า LINE group (ทุกเหตุการณ์ข้ามแผนก)</span>
+            <span style={{ margin: 0 }}>เปิดส่งการแจ้งเตือนเข้า LINE group (ทุกเหตุการณ์ข้ามแผนก) — <b>สวิตช์รวมทั้งระบบ มีผลทุกเครื่อง</b></span>
           </label>
           <div className="row">
             <label className="field"><span>Endpoint</span>

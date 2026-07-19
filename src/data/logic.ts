@@ -411,6 +411,11 @@ export function addAccessoryRequest(
         requestedBy: actor.id, createdAt: now(),
       }],
     }
+    // แจ้ง Division เจ้าของสต็อก — ยอดคงเหลือลด (sync 0017)
+    next = notify(next, {
+      type: 'accessory_issued', dept: 'sales', jobId: p.jobId,
+      message: `📤 ${job.jobNo} เบิก ${item.name} ${p.qty} ${item.uom} จากสต็อกกลาง (คงเหลือ ${onHand - p.qty} ${item.uom})`,
+    })
     next = notifyIfBecameReady(db, next, p.jobId)
     return audit(next, actor, 'job_accessory_request', reqId, 'issue_accessory_from_stock',
       `${job.jobNo} เบิก ${item.name} ${p.qty} ${item.uom} จากสต็อกกลาง`)

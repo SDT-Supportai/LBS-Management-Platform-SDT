@@ -27,7 +27,7 @@
 | Hosting | **Cloudflare Pages — LIVE แล้ว** https://lbs-platform-sdt.pages.dev (ย้ายจาก Netlify 2026-07-15, auto-deploy จาก `main`) |
 | GitHub repo | https://github.com/SDT-Supportai/LBS-Management-Platform-SDT (root = โฟลเดอร์นี้) |
 | Supabase project ref | `mrdnxajwnvkgvfyaclwv` (region: ตามที่สร้าง) |
-| Migrations ที่รันแล้ว | **0001–0010 ครบ** (ยืนยัน 2026-07-15) · ⚠️ **0011–0015 รอรันใน SQL Editor** — ถ้ายังไม่รัน หน้าเปิด/แก้ Job, ยกเลิก PO, แก้ Serial จะ error **และ "ยกเลิก Job" จะ error ทุกครั้ง** (0015 แก้บั๊ก serial_no ค้างจาก 0006) |
+| Migrations ที่รันแล้ว | **0001–0016 ครบ** (ยืนยัน 2026-07-19 — ตรวจผ่าน REST probe) · ⚠️ **0017 รอรัน** — สวิตช์ LINE global + กันส่งซ้ำ (frontend ทนได้ถ้ายังไม่รัน แต่แจ้งเตือน LINE จะไม่ส่งจนกว่าจะรัน + เปิดสวิตช์) |
 | E2E บน DB จริง | ✅ ผ่านทั้ง flow + ฟีเจอร์เพิ่มผู้ใช้ |
 | Admin จริง | `siradanai.s@precise.co.th` (department = admin, แสดงเป็น "Manager") |
 
@@ -90,8 +90,9 @@ lbs-platform/
 | `0014_customer_ref_from_job.sql` | **refactor (2026-07-16)**: ข้อมูลลูกค้า = **ref จาก Job เท่านั้น** (single source of truth) — jobs + `contact_phone` (rpc_create/update_job เปลี่ยน signature), drop คอลัมน์ลูกค้าที่ project_stocks/lbs_units (0012/0013), revert stock RPC, `rpc_update_unit_info` เหลือแก้ Serial (in_stock) |
 | `0015_cancel_job_fixes.sql` | **bug fix จาก code review (2026-07-17)**: (1) rpc_cancel_job อ้าง `serial_no` ที่ถูก rename ใน 0006 → ยกเลิก Job บน LIVE error ทุกครั้ง (2) วัสดุรับจาก PO บางส่วน (po_ordered + qty_received > 0) เดิมถูก cancel เงียบๆ ของหาย → ปฏิบัติเหมือน received (คืนสต็อกกลาง/ปิดยอดตามจริง) (3) `app_assert_job_editable` ล็อกแถว job FOR UPDATE — serialize ทุก transition กัน race issue↔เพิ่มวัสดุ/คืน LBS · demo sync ที่ `logic.ts` cancelJob |
 | `0016_division_approval.sql` | **ฟีเจอร์ (2026-07-19)**: Division approval flow — project ออก PR / เบิก / ยกเลิก Job ต้องให้ Division (dept `sales`) อนุมัติก่อน: ตาราง `approval_requests` + แยก core เป็น `app_exec_create_pr/issue_job/cancel_job` + `rpc_create_pr/rpc_issue_job/rpc_cancel_job` เหลือ **admin เท่านั้น** (กันยิงตรงข้ามขั้นอนุมัติ) + `rpc_request_approval` (project) / `rpc_approve_request`+`rpc_reject_request` (sales+admin, อนุมัติ = execute ใน txn เดียว) · demo sync ครบที่ `logic.ts` + หน้า "รออนุมัติ" ใหม่ |
+| `0017_line_global_switch.sql` | **fix จาก review flow แจ้งเตือน (2026-07-19)**: (1) สวิตช์ LINE เป็น global ใน DB (ตาราง `app_settings` + `rpc_set_line_enabled` admin) — เดิมอยู่ localStorage ต่อเครื่อง เครื่องที่ปิด (default) mark pending เป็น off ฆ่าข้อความทั้งระบบ (2) `rpc_claim_line_pending` atomic claim กันหลายเครื่องส่งซ้ำ (3) เบิกสต็อกกลาง → แจ้ง Division (`accessory_issued`) · คู่กับ `/line-notify` ที่บังคับ JWT แล้ว (เดิมเปิดสาธารณะ) |
 
-> DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0016 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
+> DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0017 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
 > ⚠️ **production: รันเฉพาะ migration "ไฟล์ใหม่ที่ยังไม่เคยรัน" ก่อน push frontend** — ไม่ต้องรันไฟล์เก่าซ้ำทุกรอบ (ไฟล์ migration idempotent รันซ้ำได้ก็จริง แต่ไม่จำเป็น) และ **ห้ามรัน `cleanup_e2e.sql` ซ้ำเด็ดขาด** — มันลบ transaction ทั้งหมด (Jobs/LBS/audit) ใช้ครั้งเดียวตอนล้างระบบก่อนเปิดใช้จริงเท่านั้น มีสลักนิรภัยกันรันติดมือแล้ว (2026-07-19)
 
 ## 6. Environment variables (ตั้งใน Cloudflare Pages → Settings → Environment variables · Production)
@@ -168,7 +169,8 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 - [ ] รัน **0011 → 0012 → 0013 → 0014 → 0015 → 0016** เรียงลำดับใน Supabase SQL Editor (รันซ้ำได้ปลอดภัย) — 0015 สำคัญ: ตอนนี้ "ยกเลิก Job" บน production error ทุกครั้ง (บั๊ก serial_no ค้างจาก 0006) · **0016 ต้องรันก่อน push frontend รอบนี้** — หน้าใหม่โหลดตาราง `approval_requests` ถ้าไม่มีจะ error ทั้งแอป
 
 ### 🟡 ฟีเจอร์เสริม (ตั้งค่าค้างอยู่)
-- [ ] **LINE แจ้งเตือน** — โค้ด+deploy+channel พร้อม, ได้ Group ID แล้ว (`C30dde10...204cd`) เหลือ: ใส่ env `LINE_GROUP_ID` บน Cloudflare → Retry deployment → เปิดสวิตช์ใน Dev Settings → ส่งทดสอบ · จากนั้นพิมพ์ `สถานะ <Job No.>` ในกลุ่มได้เลย
+- [ ] **LINE แจ้งเตือน** — env ครบแล้วทุกตัว (ยืนยัน 2026-07-19: ยิงทดสอบเข้ากลุ่มจริงสำเร็จ + webhook signature ทำงาน)
+      เหลือ: **รัน migration 0017** → เปิดสวิตช์ใน Dev Settings ด้วยบัญชี Manage (สวิตช์เป็น global มีผลทุกเครื่อง) → กด "ส่งข้อความทดสอบ" ยืนยัน · bot `สถานะ <Job No.>` ใช้ได้อยู่แล้ว
 - [ ] **Custom domain** — แนะนำ subdomain บริษัท `lbs.precise.co.th` (ฟรี, ขอ IT เพิ่ม CNAME → `lbs-platform-sdt.pages.dev`) แล้ว Add ใน Cloudflare Pages → Custom domains (ออก SSL อัตโนมัติ)
 
 ### 🟢 พัฒนาต่อ (ไอเดีย)
