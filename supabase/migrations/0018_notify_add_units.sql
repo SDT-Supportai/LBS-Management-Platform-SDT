@@ -1,11 +1,17 @@
 -- =====================================================================
--- 0018: แจ้งเตือนตอน "รับ LBS เพิ่มเข้าคลังเดิม" + Excel Import (2026-07-19)
---  บั๊ก: rpc_add_units_to_stock (0008) ไม่มี app_notify — ตอน Division รับ LBS
---        เพิ่มเข้าคลังที่มีอยู่แล้ว หรือ Import Excel จะไม่แจ้งเข้า LINE เลย
---        (มีแต่ตอนสร้างคลังใหม่ rpc_create_project_stock ที่ส่ง stock_created)
---  แก้: เพิ่ม app_notify('stock_received') ท้ายฟังก์ชัน (dept 'project' — Project
---        เจ้าของงานจะได้รู้ว่ามี LBS เพิ่มให้ดึงเข้า Job) · demo sync ที่ logic.ts
---  เนื้อฟังก์ชันคงเดิมทุกบรรทัด เพิ่มเฉพาะ notify · รันหลัง 0017 (idempotent)
+-- 0018: แก้ rpc_add_units_to_stock (2026-07-19)
+--  บั๊ก #1 (ร้ายแรง): Import Serial / รับ LBS เพิ่มเข้าคลังเดิม → error
+--        "column customer_name of relation lbs_units does not exist"
+--        สาเหตุ: 0013 recreate rpc_add_units_to_stock ให้ insert customer_name/
+--        contact_phone/install_location ลง lbs_units → 0014 ลบ 3 คอลัมน์นั้นออก
+--        แต่ "ลืม recreate rpc_add_units_to_stock" (recreate เฉพาะ create_project_stock)
+--        → ฟังก์ชันบน DB ยัง insert คอลัมน์ที่ไม่มีแล้ว = พังทุกครั้ง
+--  บั๊ก #2: ฟังก์ชันไม่มี app_notify — รับเพิ่มเข้าคลังเดิม/Excel Import ไม่แจ้ง LINE
+--        (มีแต่ตอนสร้างคลังใหม่ที่ส่ง stock_created)
+--  แก้ทั้งคู่: recreate ให้ insert แค่ (serial_lvb, serial_om, project_stock_id)
+--        + เพิ่ม app_notify('stock_received') dept 'project'
+--  ⚡ อิสระจาก 0017 (ใช้แค่ helper จาก 0002) — รันเดี่ยวได้ทันทีเพื่อแก้ error import
+--  demo sync ที่ logic.ts addUnitsToStock · idempotent รันซ้ำได้
 -- =====================================================================
 
 CREATE OR REPLACE FUNCTION rpc_add_units_to_stock(p_stock_id UUID, p_units JSONB)
