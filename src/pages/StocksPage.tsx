@@ -177,10 +177,10 @@ export default function StocksPage() {
 
   return (
     <>
-      <div className="page-title">115kV LBS Project Stock</div>
+      <div className="page-title">Project Stock — คลัง LBS</div>
       <div className="page-sub">
-        คลังกลางที่ Sales สั่งซื้อเข้ามา ยังไม่ผูกลูกค้า/Scope — Project Dept ดึงเข้า Job ตามลำดับงาน
-        {!canManage && ' (แผนกของคุณดูได้อย่างเดียว การสร้าง/รับเข้าสต็อกเป็นสิทธิ์ของ Sales)'}
+        คลังกลาง 115kV LBS ติดตามรายเครื่องด้วย Serial คู่ (LVB · OM) — Project ดึงเข้างานตามลำดับ
+        {!canManage && ' · แผนกของคุณดูได้อย่างเดียว (สร้าง/รับเข้าสต็อกเป็นสิทธิ์ของ Division)'}
       </div>
 
       {canManage && (

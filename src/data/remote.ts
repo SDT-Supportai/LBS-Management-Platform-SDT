@@ -49,6 +49,9 @@ function mapJob(r: Row): Job {
     issueLocation: r.issue_location ?? undefined,
     installedAt: r.installed_at ?? undefined, installNote: r.install_note ?? undefined,
     installConfirmedBy: r.install_confirmed_by ?? undefined,
+    installCheckinLat: r.install_checkin_lat != null ? Number(r.install_checkin_lat) : undefined,
+    installCheckinLng: r.install_checkin_lng != null ? Number(r.install_checkin_lng) : undefined,
+    installPhotoUrl: r.install_photo_url ?? undefined,
     cancelledAt: r.cancelled_at ?? undefined, cancelledBy: r.cancelled_by ?? undefined,
     cancelReason: r.cancel_reason ?? undefined,
   }
@@ -218,8 +221,8 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_receive_po_items', { p_po_id: p.poId, p_receipts: p.receipts.map(r => ({ request_id: r.requestId, qty: r.qty })) }),
     issueJob: (p: { jobId: string; startDate: string; endDate: string; location: string; note?: string }) =>
       rpc(sb, 'rpc_issue_job', { p_job_id: p.jobId, p_start_date: p.startDate || null, p_end_date: p.endDate || null, p_location: p.location, p_note: p.note ?? null }),
-    confirmInstall: (p: { jobId: string; installedDate: string; note?: string }) =>
-      rpc(sb, 'rpc_confirm_install', { p_job_id: p.jobId, p_installed_date: p.installedDate, p_note: p.note ?? null }),
+    confirmInstall: (p: { jobId: string; installedDate: string; note?: string; checkinLat?: number; checkinLng?: number; photoUrl?: string }) =>
+      rpc(sb, 'rpc_confirm_install', { p_job_id: p.jobId, p_installed_date: p.installedDate, p_note: p.note ?? null, p_lat: p.checkinLat ?? null, p_lng: p.checkinLng ?? null, p_photo_url: p.photoUrl ?? null }),
     cancelJob: (p: { jobId: string; reason: string; receivedAccessoryToCentral: boolean }) =>
       rpc(sb, 'rpc_cancel_job', { p_job_id: p.jobId, p_reason: p.reason, p_received_to_central: p.receivedAccessoryToCentral }),
     // Division approval flow (0016) — payload camelCase → snake_case ให้ตรง SQL

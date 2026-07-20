@@ -74,8 +74,8 @@ export default function PurchasingPage() {
     <>
       <div className="page-title">Purchasing — PR / PO</div>
       <div className="page-sub">
-        บันทึกแยกตาม Job No. — รับ PR จาก Project Dept → ออก PO (หรือตีกลับพร้อมเหตุผล) → รับของได้ทีละรายการ/ทีละจำนวน
-        {!canManage && ' (แผนกของคุณดูได้อย่างเดียว)'}
+        จัดกลุ่มตามงานโครงการ — รับ PR จาก Project → ออก PO (หรือตีกลับพร้อมเหตุผล) → รับของทีละรายการ/ทีละจำนวน
+        {!canManage && ' · แผนกของคุณดูได้อย่างเดียว'}
         {' · '}<span className="badge amber">PR รอออก PO {totalPendingPr}</span>{' '}
         <span className="badge blue">PO รอรับของ {totalOpenPo}</span>
       </div>

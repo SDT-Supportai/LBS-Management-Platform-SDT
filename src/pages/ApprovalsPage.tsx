@@ -43,10 +43,10 @@ export default function ApprovalsPage() {
 
   return (
     <div>
-      <div className="page-title">รออนุมัติ (Approvals)</div>
+      <div className="page-title">Awaiting Approval</div>
       <div className="page-sub">
-        คำขอจาก Project ที่ต้องให้ Division อนุมัติ: ออก PR · เบิกให้ Service · ยกเลิก Job
-        {canDecide ? ' — อนุมัติแล้วระบบทำรายการให้ทันที' : ' — สถานะคำขอของแผนกคุณ'}
+        คำขอจากงานโครงการที่รอ Division พิจารณา — ออก PR · เบิกให้ Service · ยกเลิก Job
+        {canDecide ? ' · อนุมัติแล้วระบบดำเนินการให้ทันที' : ' · ติดตามสถานะคำขอของแผนกคุณที่นี่'}
       </div>
 
       <div className="panel">

@@ -37,11 +37,12 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const MENU: { to: string; icon: string; label: string; badge?: { text: string; cls: string } }[] = [
     { to: '/dashboard', icon: '📊', label: 'Dashboard' },
     { to: '/stocks', icon: '📦', label: 'Project Stock (LBS)' },
-    { to: '/jobs', icon: '🗂️', label: 'Jobs', badge: readyJobs > 0 ? { text: `${readyJobs} พร้อมเบิก`, cls: 'green' } : undefined },
-    { to: '/approvals', icon: '✅', label: 'รออนุมัติ (Approvals)', badge: pendingApprovals > 0 ? { text: `${pendingApprovals}`, cls: 'amber' } : undefined },
+    { to: '/jobs', icon: '🗂️', label: 'Project ID (Jobs)', badge: readyJobs > 0 ? { text: `${readyJobs} พร้อมเบิก`, cls: 'green' } : undefined },
     { to: '/purchasing', icon: '🛒', label: 'Purchasing (PR/PO)', badge: (pendingPrs + openPos) > 0 ? { text: `${pendingPrs + openPos}`, cls: 'amber' } : undefined },
-    { to: '/service', icon: '🔧', label: 'งานติดตั้ง (Service)', badge: awaitingInstall > 0 ? { text: `${awaitingInstall} รอติดตั้ง`, cls: 'blue' } : undefined },
+    { to: '/service', icon: '🔧', label: 'Service (Installation)', badge: awaitingInstall > 0 ? { text: `${awaitingInstall} รอติดตั้ง`, cls: 'blue' } : undefined },
     { to: '/master', icon: '🗄️', label: 'Material Database' },
+    // Awaiting Approval ย้ายมาอยู่ล่าง Material Database (มติ 2026-07-19)
+    { to: '/approvals', icon: '✅', label: 'Awaiting Approval', badge: pendingApprovals > 0 ? { text: `${pendingApprovals}`, cls: 'amber' } : undefined },
     // Dev Settings เฉพาะ Manage (admin) — แผนกอื่น "not can DevSettings"
     ...(can(user, 'master.manage') ? [{ to: '/dev', icon: '⚙️', label: 'Dev Settings' }] : []),
   ]

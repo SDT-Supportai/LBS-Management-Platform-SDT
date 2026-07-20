@@ -38,9 +38,9 @@ export default function JobsPage() {
 
   return (
     <>
-      <div className="page-title">Jobs</div>
+      <div className="page-title">Project ID (Jobs)</div>
       <div className="page-sub">
-        Project Dept เปิด Job ตาม Scope ลูกค้า — สถานะไหลอัตโนมัติ: Draft → Allocated → Procuring Accessory → Ready to Issue → Issued/Installed
+        เปิดและติดตามงานโครงการตาม Scope ลูกค้า — สถานะไหลอัตโนมัติ Draft → Allocated → Procuring Accessory → Ready to Issue → Issued → Installed
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>

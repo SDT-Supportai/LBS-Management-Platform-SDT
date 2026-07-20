@@ -76,6 +76,10 @@ export interface Job {
   installedAt?: string        // วันที่ติดตั้งจริง (Service ยืนยัน)
   installNote?: string
   installConfirmedBy?: string
+  // Check-in หน้างานตอนยืนยันติดตั้ง (บังคับ — 0019)
+  installCheckinLat?: number
+  installCheckinLng?: number
+  installPhotoUrl?: string
   cancelledAt?: string
   cancelledBy?: string
   cancelReason?: string

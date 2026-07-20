@@ -144,8 +144,8 @@ export default function MasterDataPage() {
     <>
       <div className="page-title">Material Database</div>
       <div className="page-sub">
-        ฐานข้อมูลวัสดุ (ใช้ตอนออก PR) — จัดการผู้ใช้งานย้ายไปที่ Dev Settings
-        {!canMaster && ' · การเพิ่ม/แก้/ลบเป็นสิทธิ์ของ Manager'}
+        ฐานข้อมูลวัสดุกลางที่ใช้ตอนออก PR พร้อม Export/Import Excel
+        {!canMaster && ' · การเพิ่ม/แก้/ลบเป็นสิทธิ์ของ Manage'}
       </div>
 
       <div className="panel">

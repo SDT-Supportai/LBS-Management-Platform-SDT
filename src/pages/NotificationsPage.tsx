@@ -23,7 +23,7 @@ export default function NotificationsPage() {
 
   return (
     <>
-      <div className="page-title">การแจ้งเตือน</div>
+      <div className="page-title">การแจ้งเตือน (Notifications)</div>
       <div className="page-sub">
         เหตุการณ์ข้ามแผนกที่เกี่ยวกับแผนก {DEPT_LABEL[user.department]} — แจ้งใน App และส่งต่อเข้า LINE group ได้ (ตั้งค่าที่ Dev Settings)
       </div>

@@ -722,28 +722,32 @@ export function issueJob(
 // Service ยืนยันติดตั้งเสร็จ พร้อมวันที่จริง → Installed (terminal)
 export function confirmInstall(
   db: DB, actor: User,
-  p: { jobId: string; installedDate: string; note?: string },
+  p: { jobId: string; installedDate: string; note?: string; checkinLat?: number; checkinLng?: number; photoUrl?: string },
 ): DB {
   const job = db.jobs.find(j => j.id === p.jobId)
   if (!job) throw new Error('ไม่พบ Job')
   if (job.terminalStatus !== 'issued')
     throw new Error(`ยืนยันติดตั้งได้เฉพาะงานที่เบิกแล้ว (Issued) — ${job.jobNo} อยู่สถานะอื่น`)
   if (!p.installedDate) throw new Error('กรุณาระบุวันที่ติดตั้งจริง')
+  // บังคับ Check-in ตำแหน่ง + รูปถ่ายทุกครั้ง (sync 0019)
+  if (p.checkinLat === undefined || p.checkinLng === undefined) throw new Error('ต้อง Check-in ตำแหน่งหน้างานก่อนยืนยัน')
+  if (!p.photoUrl) throw new Error('ต้องแนบรูปถ่ายหน้างานก่อนยืนยัน')
   let next: DB = {
     ...db,
     jobs: db.jobs.map(j => j.id === p.jobId
       ? {
           ...j, terminalStatus: 'installed' as const,
           installedAt: p.installedDate, installNote: p.note, installConfirmedBy: actor.id,
+          installCheckinLat: p.checkinLat, installCheckinLng: p.checkinLng, installPhotoUrl: p.photoUrl,
         }
       : j),
   }
   next = notify(next, {
     type: 'job_installed', dept: 'project', jobId: p.jobId,
-    message: `🏁 ${job.jobNo} (${job.customerName}) ติดตั้งเสร็จเมื่อ ${p.installedDate} — ยืนยันโดย ${actor.fullName}`,
+    message: `🏁 ${job.jobNo} (${job.customerName}) ติดตั้งเสร็จเมื่อ ${p.installedDate} — ยืนยันโดย ${actor.fullName} 📍 พิกัด ${p.checkinLat.toFixed(5)}, ${p.checkinLng.toFixed(5)}`,
   })
   return audit(next, actor, 'job', p.jobId, 'confirm_install',
-    `${job.jobNo} ติดตั้งเสร็จ วันที่จริง ${p.installedDate}${p.note ? ` — ${p.note}` : ''}`)
+    `${job.jobNo} ติดตั้งเสร็จ วันที่จริง ${p.installedDate} (check-in ${p.checkinLat.toFixed(5)},${p.checkinLng.toFixed(5)})${p.note ? ` — ${p.note}` : ''}`)
 }
 
 // ยกเลิก Job: auto คืน LBS กลับ Stock เดิมตาม allocation + คืน Accessory สต็อกกลาง
