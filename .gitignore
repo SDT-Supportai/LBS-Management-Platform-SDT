@@ -7,3 +7,7 @@ tsconfig.tsbuildinfo
 *.log
 .netlify
 .DS_Store
+
+# local env backups (มี anon key — publishable แต่ไม่ควร track)
+.env.live-backup
+.env.*.local
