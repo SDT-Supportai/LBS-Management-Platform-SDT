@@ -13,9 +13,13 @@ BEGIN
   IF v_job IS NULL THEN RAISE NOTICE 'ไม่พบ Job "%" — ไม่มีอะไรให้ลบ', v_job_no; RETURN; END IF;
 
   -- 1) คืน LBS ทุกเครื่องของ Job นี้กลับเข้าสต็อกเดิม (เก็บเครื่อง/serial ไว้ ไม่ลบ)
+  --    ปิด trigger trg_block_issued_edit ชั่วคราว — Job ที่ issued/installed จะโดนบล็อกแก้ allocation
+  --    (ที่นี่คือการล้าง Job ทิ้งทั้งใบ ไม่ใช่แก้ระหว่างใช้งาน จึงปิดได้)
+  ALTER TABLE lbs_units DISABLE TRIGGER trg_block_issued_edit;
   UPDATE lbs_units SET status = 'in_stock', job_id = NULL, updated_at = now()
   WHERE job_id = v_job AND status IN ('allocated', 'issued');
   GET DIAGNOSTICS v_lbs = ROW_COUNT;
+  ALTER TABLE lbs_units ENABLE TRIGGER trg_block_issued_edit;
 
   -- 2) คืน accessory คลังกลางที่เบิกไปแล้ว (issued) กลับยอด
   UPDATE accessory_stock a SET qty_on_hand = a.qty_on_hand + r.qty_requested, updated_at = now()
