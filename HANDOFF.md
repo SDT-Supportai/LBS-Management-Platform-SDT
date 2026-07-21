@@ -1,6 +1,6 @@
 # HANDOFF — 115kV LBS Project Management Platform
 
-เอกสารส่งมอบ/สรุปสถานะระบบ (อัปเดต 2026-07-16) — อ่านไฟล์นี้ก่อนดูแลระบบต่อ
+เอกสารส่งมอบ/สรุปสถานะระบบ (อัปเดต 2026-07-20) — อ่านไฟล์นี้ก่อนดูแลระบบต่อ
 ประกอบกับ [README.md](README.md) (ภาพรวม), [SETUP.md](SETUP.md) (คู่มือ deploy), และ
 `../lbs-stock-project-instructions (1).md` (business rules = source of truth ห้ามเปลี่ยนโดยไม่ยืนยัน)
 
@@ -12,13 +12,14 @@
 **Sales → Project → Purchasing → Service** ตั้งแต่รับ LBS เข้าคลังกลาง จนติดตั้งหน้างานเสร็จ
 ทุกเครื่อง track ด้วย Serial คู่ (LVB + OM) รายเครื่อง มี audit log + แจ้งเตือนข้ามแผนกทุก transaction
 
-**แผนที่เมนู UI ปัจจุบัน** (ชื่อหน้าถูก rename หลายรอบ — ชื่อไฟล์ใน `src/pages/` ยังเป็นชื่อเดิม):
-- **115kV LBS Project Stock** (`StocksPage`) — คลัง LBS + ดูรายเครื่อง (ข้อมูลลูกค้า ref จาก Job) + Export/Import Excel ต่อคลัง + คลังสินค้า (Ref.Job) = วัสดุรับครบจาก PO
-- **Jobs / Job Detail** — เปิด Job (ลูกค้า+เบอร์ติดต่อ+สถานที่ = source of truth), Project Budget, Purchase Requisition (วัสดุ + Phase Budget) — ปุ่มออก PR/เบิก/ยกเลิกของ project เป็น "ขออนุมัติ" (admin ทำตรงได้)
-- **รออนุมัติ (Approvals)** (`ApprovalsPage`) — คิวคำขอจาก project ให้ Division ตัดสิน + ประวัติ (เพิ่ม 2026-07-19, มี badge จำนวนค้าง)
-- **Purchasing (PR/PO)** — จัดกลุ่มตาม Job No., ออก/ยกเลิก PO, ตีกลับ PR, รับของ partial
-- **Material Database** (`MasterDataPage`) — ฐานข้อมูลวัสดุ (ใช้ตอนออก PR) + Export/Import Excel
-- **Dev Settings** — จัดการผู้ใช้งาน (ย้ายมาจาก Master Data), LINE, backup — **Audit Log** อยู่ปุ่มล่าง sidebar ติดปุ่มออกจากระบบ
+**แผนที่เมนู UI ปัจจุบัน** (เรียงตาม sidebar · ชื่อไฟล์ใน `src/pages/` ยังเป็นชื่อเดิม เช่น JobsPage/ServicePage):
+- **Project Stock (LBS)** (`StocksPage`) — คลัง LBS + ดูรายเครื่อง (ข้อมูลลูกค้า ref จาก Job) + Export/Import Excel ต่อคลัง
+- **Project ID (Jobs)** (`JobsPage`/`JobDetailPage`) — เปิด Job, **Project Budget ต้นทุน 7 หมวด** (การ์ดแก้ได้/ตาราง Raw Material→Finance ซ่อนได้), ดึง-คืน LBS, ขอวัสดุ, ออก PR — ปุ่มออก PR/เบิก/ยกเลิกของ project เป็น "ขออนุมัติ" (Manage ทำตรง) · มีปุ่ม **🖨️ ปริ้นสรุปโครงการ (PDF)**
+- **Purchasing (PR/PO)** (`PurchasingPage`) — จัดกลุ่มตาม Job, **1 PR → หลาย PO** (เลือกอุปกรณ์เข้าแต่ละ PO), ยกเลิก PO, ตีกลับ PR, รับของ partial · สรุปประวัติ PR/PO ต่อ Job (ซ่อนได้)
+- **Service (Installation)** (`ServicePage`) — ยืนยันติดตั้ง **บังคับ Check-in GPS + แนบรูป**
+- **Material Database** (`MasterDataPage`) — ฐานข้อมูลวัสดุ + Export/Import Excel
+- **Awaiting Approval** (`ApprovalsPage`) — คิวคำขอจาก project ให้ Division ตัดสิน + ประวัติแยกตาม Job (ซ่อนได้) · badge จำนวนค้าง · **อยู่ล่าง Material Database**
+- **Dev Settings** (`DevSettingsPage`) — เฉพาะ Manage: ผู้ใช้งาน (เพิ่ม/แก้ชื่อ-อีเมล-รหัส-แผนก), สวิตช์ LINE (global), backup — **Audit Log** ปุ่มล่าง sidebar
 
 ## 2. สถานะปัจจุบัน — 🟢 LIVE บน production
 
@@ -27,9 +28,9 @@
 | Hosting | **Cloudflare Pages — LIVE แล้ว** https://lbs-platform-sdt.pages.dev (ย้ายจาก Netlify 2026-07-15, auto-deploy จาก `main`) |
 | GitHub repo | https://github.com/SDT-Supportai/LBS-Management-Platform-SDT (root = โฟลเดอร์นี้) |
 | Supabase project ref | `mrdnxajwnvkgvfyaclwv` (region: ตามที่สร้าง) |
-| Migrations ที่รันแล้ว | **0001–0016 ครบ** (ยืนยัน 2026-07-19 — ตรวจผ่าน REST probe) · ⚠️ **0017 รอรัน** — สวิตช์ LINE global + กันส่งซ้ำ (frontend ทนได้ถ้ายังไม่รัน แต่แจ้งเตือน LINE จะไม่ส่งจนกว่าจะรัน + เปิดสวิตช์) |
-| E2E บน DB จริง | ✅ ผ่านทั้ง flow + ฟีเจอร์เพิ่มผู้ใช้ |
-| Admin จริง | `siradanai.s@precise.co.th` (department = admin, แสดงเป็น "Manager") |
+| Migrations ที่รันแล้ว | **0001–0022** · ยืนยัน 2026-07-20 ผ่าน REST: columns `budget_costs` (0021) + `po_id` (0022) + `approval_requests` (0016) มีจริง → 0017–0022 รันแล้ว · ⚠️ ถ้า LINE ไม่ส่ง ให้เช็คว่าตาราง `app_settings` (0017) มี + เปิดสวิตช์แล้ว · ถ้าอัปโหลดรูปติดตั้งไม่ได้ ให้เช็ค bucket `install-photos` (0019) |
+| E2E บน DB จริง | ✅ ผ่านทั้ง flow · demo E2E: approval, LINE dispatch, budget 7 หมวด, 1 PR→N PO (12/12), check-in/photo |
+| Admin จริง | `siradanai.s@precise.co.th` (department = admin, แสดงเป็น "Manage") |
 
 ## 3. Tech stack + หลักการออกแบบ
 
@@ -54,20 +55,24 @@ lbs-platform/
       remote.ts              Supabase adapter (โหลดข้อมูล + เรียก RPC)
       StoreContext.tsx       state + auth + สลับ DemoProvider/SupabaseProvider
     pages/                   Dashboard/Stocks/Jobs/JobDetail/Purchasing/Service/
-                             Notifications/MasterData/DevSettings/Audit/Login
-    ui/                      components.tsx (Modal/Toast), format.ts (labels)
+                             Approvals/Notifications/MasterData/DevSettings/Audit/Login
+    ui/                      components.tsx (Modal/Toast/BudgetFields), format.ts (labels + COST_CATEGORIES)
     types.ts                 type ทั้งระบบ
-    styles.css               ธีม + Aurora + sidebar
+    styles.css               ธีม + Aurora + sidebar + @media print
   functions/                 Cloudflare Pages Functions (route = ชื่อไฟล์)
-    admin-users.js           POST /admin-users — สร้าง user/เปลี่ยนรหัส (service role)
-    line-notify.js           POST /line-notify — push แจ้งเตือนเข้ากลุ่ม LINE
+    admin-users.js           POST /admin-users — สร้าง user/เปลี่ยนรหัส/อีเมล (service role)
+    line-notify.js           POST /line-notify — push แจ้งเตือนเข้ากลุ่ม LINE (บังคับ JWT)
     line-webhook.js          POST /line-webhook — bot ตอบลูกค้า + คำสั่ง "id" ดู Group ID
   public/
     _redirects               SPA fallback (/* → /index.html 200)
+    logo.png                 โลโก้จริง (crop ขอบขาว) — ใช้ทั้ง login/sidebar/favicon
   supabase/
-    migrations/0001..0014    schema, RPC, seed, bug fixes, ฟีเจอร์
-    cleanup_e2e.sql          ล้างข้อมูลทดสอบก่อนใช้จริง
+    migrations/0001..0022    schema, RPC, seed, bug fixes, ฟีเจอร์
+    cleanup_e2e.sql          ⛔ ล้าง transaction ทั้งหมด (มีสลักนิรภัย) — ห้ามรันถ้ามีข้อมูลจริง
+    cleanup_e2e_accounts.sql ปิด/ลบบัญชีทดสอบ e2e (ปลอดภัยแม้มีข้อมูลจริง)
+    cleanup_job.sql          ล้าง Job เดียวเพื่อเปิด Job No. เดิมใหม่ (คืน LBS เข้าสต็อก) — แก้ v_job_no ก่อนรัน
   .env.example               รายการ env (คัดลอกเป็น .env สำหรับ local LIVE)
+  .env.demo.local            (gitignored) รัน demo local: npm run dev -- --mode demo หรือ mv .env ออก
 ```
 
 ## 5. Migrations (รันเรียงใน Supabase SQL Editor ตอน setup DB ใหม่)
@@ -92,8 +97,8 @@ lbs-platform/
 | `0016_division_approval.sql` | **ฟีเจอร์ (2026-07-19)**: Division approval flow — project ออก PR / เบิก / ยกเลิก Job ต้องให้ Division (dept `sales`) อนุมัติก่อน: ตาราง `approval_requests` + แยก core เป็น `app_exec_create_pr/issue_job/cancel_job` + `rpc_create_pr/rpc_issue_job/rpc_cancel_job` เหลือ **admin เท่านั้น** (กันยิงตรงข้ามขั้นอนุมัติ) + `rpc_request_approval` (project) / `rpc_approve_request`+`rpc_reject_request` (sales+admin, อนุมัติ = execute ใน txn เดียว) · demo sync ครบที่ `logic.ts` + หน้า "รออนุมัติ" ใหม่ |
 | `0017_line_global_switch.sql` | **fix จาก review flow แจ้งเตือน (2026-07-19)**: (1) สวิตช์ LINE เป็น global ใน DB (ตาราง `app_settings` + `rpc_set_line_enabled` admin) — เดิมอยู่ localStorage ต่อเครื่อง เครื่องที่ปิด (default) mark pending เป็น off ฆ่าข้อความทั้งระบบ (2) `rpc_claim_line_pending` atomic claim กันหลายเครื่องส่งซ้ำ (3) เบิกสต็อกกลาง → แจ้ง Division (`accessory_issued`) · คู่กับ `/line-notify` ที่บังคับ JWT แล้ว (เดิมเปิดสาธารณะ) |
 | `0018_notify_add_units.sql` | **bug fix (2026-07-19) 2 จุด**: (1) **Import Serial/รับเพิ่มเข้าคลังเดิม error `column customer_name ... does not exist`** — 0013 ทำให้ rpc_add_units_to_stock insert คอลัมน์ลูกค้า แต่ 0014 ลบคอลัมน์นั้นโดยลืม recreate ฟังก์ชันนี้ → recreate ให้ insert แค่ serial (2) เดิมไม่มี app_notify → เพิ่ม `stock_received` (dept project) · **อิสระจาก 0017 รันเดี่ยวได้** · demo sync ที่ `logic.ts` |
-| `0020_draw_notify.sql` | **มติ (2026-07-19)**: เลิกแจ้ง `job_ready` (`app_notify_if_ready` → no-op ทุก caller) → ใช้แจ้ง `lbs_drawn` ตอนดึง LBS แทน (rpc_draw_lbs agg serial_lvb+serial_om + Stock No., dept `all` เข้า LINE+ทุกแผนก) · demo sync `logic.ts` (drawLbs + notifyIfBecameReady no-op) |
 | `0019_install_checkin_photo.sql` | **ฟีเจอร์ (2026-07-19)**: Service ยืนยันติดตั้ง **บังคับ Check-in GPS + แนบรูปทุกครั้ง** — jobs + install_checkin_lat/lng + install_photo_url, **Storage bucket `install-photos`** (public read + authenticated upload), recreate `rpc_confirm_install` (signature ใหม่ +p_lat/p_lng/p_photo_url บังคับครบ) + LINE deep link ในคำขออนุมัติ (`rpc_request_approval` แนบลิงก์ /#/approvals) · demo: รูปเก็บเป็น data URL · **⚠️ ถ้า bucket สร้างผ่าน SQL ไม่ได้ (สิทธิ์) ให้สร้างชื่อ `install-photos` public ใน Dashboard→Storage เอง** |
+| `0020_draw_notify.sql` | **มติ (2026-07-19)**: เลิกแจ้ง `job_ready` (`app_notify_if_ready` → no-op ทุก caller) → ใช้แจ้ง `lbs_drawn` ตอนดึง LBS แทน (rpc_draw_lbs agg serial_lvb+serial_om + Stock No., dept `all` เข้า LINE+ทุกแผนก) · demo sync `logic.ts` (drawLbs + notifyIfBecameReady no-op) |
 | `0021_budget_7_categories.sql` | **ฟีเจอร์ (2026-07-20)**: Project Budget ต้นทุนแยก 7 หมวด — `jobs.budget_costs` JSONB (Raw mat/Outsourcing/Trans/Eng/Ove/PM/Fin, แต่ละหมวด {budget,phase,actual}), backfill budget_cost→raw_mat, budget_cost=ต้นทุนรวม(server คำนวณ); drop+recreate rpc_create/update_job (p_cost→p_costs JSONB) + `app_sum_budget_costs` · raw_mat/outsourcing actual จาก PR/PO ที่ตัดเข้าหมวด · demo sync |
 | `0022_pr_multi_po.sql` | **ฟีเจอร์ (2026-07-20)**: 1 PR → หลาย PO — `job_accessory_requests.po_id` (PO อ้าง line items), drop+recreate `rpc_create_po` (+p_request_ids เลือก line; PR pending/po_issued ออก PO เพิ่มได้), `rpc_receive_po_items` (match po_id; PR เสร็จเมื่อทุก line ครบ), `rpc_cancel_po` (คืน line ของ PO) · demo sync · UI: PurchasingPage เลือกอุปกรณ์เข้า PO, JobDetail Budget card แก้ได้ + ตาราง 7 หมวดซ่อนได้ |
 
@@ -170,21 +175,20 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
       ไฟล์ถูกใส่สลักนิรภัย (DO-block RAISE EXCEPTION) กันรันติดมือแล้ว · **หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่**
 - [ ] ตรวจว่า **service_role key ถูก rotate แล้ว** (ระหว่าง setup key เก่าเคยเปิดเผย — ตรวจ repo แล้ว 2026-07-19: **key ไม่เคยหลุดลง git** หลุดเฉพาะนอก repo) — Dashboard → Settings → API → สร้าง/roll secret key ใหม่ → อัปเดต `SUPABASE_SERVICE_ROLE_KEY` บน Cloudflare Pages env → Retry deployment
 
-### 🟠 Migrations รอรันบน production (ทำก่อนใช้ฟีเจอร์ใหม่)
-- [ ] รัน **0011 → 0012 → 0013 → 0014 → 0015 → 0016** เรียงลำดับใน Supabase SQL Editor (รันซ้ำได้ปลอดภัย) — 0015 สำคัญ: ตอนนี้ "ยกเลิก Job" บน production error ทุกครั้ง (บั๊ก serial_no ค้างจาก 0006) · **0016 ต้องรันก่อน push frontend รอบนี้** — หน้าใหม่โหลดตาราง `approval_requests` ถ้าไม่มีจะ error ทั้งแอป
+### 🟠 Migrations — ✅ 0001–0022 รันครบบน production แล้ว (2026-07-20)
+- [x] ~~0011–0022~~ รันครบ · **กติกา: หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่ (ผมจะบอกชื่อไฟล์)**
+- [ ] ยืนยัน bucket **`install-photos`** (public) มีจริง — ถ้า Service อัปโหลดรูปตอนยืนยันติดตั้งไม่ได้ ให้สร้างที่ Dashboard→Storage (0019 อาจสร้างผ่าน SQL ไม่ได้เรื่องสิทธิ์)
 
 ### 🟡 ฟีเจอร์เสริม (ตั้งค่าค้างอยู่)
-- [ ] **LINE แจ้งเตือน** — env ครบแล้วทุกตัว (ยืนยัน 2026-07-19: ยิงทดสอบเข้ากลุ่มจริงสำเร็จ + webhook signature ทำงาน)
-      เหลือ: **รัน migration 0017** → เปิดสวิตช์ใน Dev Settings ด้วยบัญชี Manage (สวิตช์เป็น global มีผลทุกเครื่อง) → กด "ส่งข้อความทดสอบ" ยืนยัน · bot `สถานะ <Job No.>` ใช้ได้อยู่แล้ว
-- [ ] **Custom domain** — แนะนำ subdomain บริษัท `lbs.precise.co.th` (ฟรี, ขอ IT เพิ่ม CNAME → `lbs-platform-sdt.pages.dev`) แล้ว Add ใน Cloudflare Pages → Custom domains (ออก SSL อัตโนมัติ)
+- [ ] **เปิดสวิตช์ LINE** — env + code + migration 0017 พร้อมหมด · เหลือ: login **Manage** → Dev Settings → เปิดสวิตช์แจ้งเตือน LINE (global มีผลทุกเครื่อง) → "ส่งข้อความทดสอบ" · bot `สถานะ <Job No.>` ใช้ได้แล้ว
+- [ ] **Custom domain** — `lbs.precise.co.th` (ขอ IT เพิ่ม CNAME → `lbs-platform-sdt.pages.dev`) แล้ว Add ใน Cloudflare Pages → Custom domains
+- [ ] **service_role key rotate** (ดูหัวข้อ 🔴) — ยังไม่ยืนยันว่า rotate แล้ว
 
 ### 🟢 พัฒนาต่อ (ไอเดีย)
-- หน้า forgot-password / เปลี่ยนรหัสตัวเอง (ตอนนี้ต้องให้ Manager reset ที่ Dev Settings → ผู้ใช้งาน)
+- หน้า forgot-password / เปลี่ยนรหัสตัวเอง (ตอนนี้ Manage reset ให้ที่ Dev Settings)
 - รายงาน/analytics (stock movement, lead time ต่อ Job)
 
-> ✅ เสร็จแล้วรอบล่าสุด: ยกเลิก PO เดี่ยว (0011) · ผู้ใช้งานย้ายไป Dev Settings · LINE bot ตอบสถานะ Job จริง (`สถานะ <Job No.>`) ·
-> Job เพิ่มเบอร์ติดต่อ + ข้อมูลลูกค้า ref จาก Job ทั้งระบบ (0014) · Export/Import Excel ต่อคลัง (Serial) + Material Database (วัสดุ) ·
-> Division approval flow (0016) + หน้ารออนุมัติ · **Manage แก้อีเมลผู้ใช้ได้** (Dev Settings → แก้ไข — ผ่าน admin function `set_email`, อัปเดตทั้ง auth.users + profiles, อีเมลใหม่ login ได้ทันที) · topbar gradient ใหม่
+> ✅ เสร็จแล้ว (2026-07-19→20): Division approval flow (0016) + หน้า Awaiting Approval · LINE global switch + กันส่งซ้ำ + auth /line-notify (0017) · แก้ import customer_name + แจ้งรับเข้าคลัง (0018) · Service Check-in GPS + รูป (0019, Supabase Storage) · แจ้ง `lbs_drawn` แทน job_ready (0020) · **Project Budget ต้นทุน 7 หมวด** (0021) · **1 PR → หลาย PO** (0022) · ปริ้น PDF สรุปโครงการ · Manage แก้อีเมลผู้ใช้ (`set_email`) · rename เมนู (Project ID/Service (Installation)/Awaiting Approval) + Division/Manage · logo จริง + login gradient + topbar gradient · IBM Plex Sans Thai · responsive (mobile drawer)
 
 ## 11. Workflow การพัฒนา
 
@@ -206,5 +210,8 @@ npm run build     # tsc + vite build -> dist/
 
 - Supabase **secret key (`sb_secret_`) ใช้นอก server ไม่ได้** — Supabase บล็อกเองถ้ายิงจาก browser/PowerShell; ใช้ได้เฉพาะใน Pages Functions
 - ตัวอักษรไทยใน `curl -d` บน Git Bash (Windows) โดน mangle → JSON พัง; ถ้าต้องยิง API ที่มีค่าไทย ใช้ในแอป/PowerShell ที่ตั้ง UTF-8
-- แก้ business rule ต้องอัปเดตทั้ง demo (`logic.ts`) และ LIVE (`0002_rpc.sql`)
-- `.env` และ `node_modules` อยู่ใน `.gitignore` แล้ว — อย่า commit ขึ้น git
+- แก้ business rule ต้องอัปเดตทั้ง demo (`logic.ts`) และ LIVE (RPC ตัวล่าสุด — grep หา `CREATE OR REPLACE FUNCTION <ชื่อ>` ในทุก migration แล้วดูไฟล์ที่ใหม่สุด ไม่ใช่แค่ 0002)
+- `.env`, `.env.*.local`, `.env.live-backup`, `node_modules` อยู่ใน `.gitignore` — อย่า commit
+- **ปุ่มแก้ไข/ดึง LBS/ออก PR/เบิก/ยกเลิก/แก้งบ หายหมด** เมื่อ Job **ล็อก** (terminal_status = issued/installed/cancelled) — เช็ค badge สถานะข้างชื่อ Job · และแก้งบ/ออก PR ต้อง login เป็น **Project หรือ Manage** เท่านั้น (badge มุมซ้ายล่าง) · "ออก PR" โผล่เมื่อมีวัสดุ source purchasing รอออก PR (ต้อง `+ เพิ่มวัสดุ` ก่อน)
+- **Job ค้างสถานะ อยากลบทิ้งเปิดเลขเดิมใหม่**: รัน `supabase/cleanup_job.sql` (แก้ `v_job_no`) — ลบเฉพาะ Job นั้น + คืน LBS เข้าสต็อก (ไม่ลบเครื่อง). ยกเลิก Job ปกติ (cancel) จะล็อกเลขไว้ (ยังเปิดเลขเดิมซ้ำไม่ได้) จึงต้องลบด้วยสคริปต์นี้
+- **รัน demo mode ในเครื่อง** (ทดสอบ UI ไม่ยุ่ง production): `mv .env .env.bak` แล้ว restart dev server (หรือ `npm run dev -- --mode demo` ใช้ `.env.demo.local` ที่ค่าว่าง) — vite bake env ตอน start, เปลี่ยน .env ต้อง restart/stop-start ให้ module cache เคลียร์
