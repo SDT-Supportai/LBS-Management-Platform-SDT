@@ -10,7 +10,7 @@ DECLARE
   v_job UUID; v_lbs INT; v_acc INT;
 BEGIN
   SELECT id INTO v_job FROM jobs WHERE job_no = v_job_no;
-  IF v_job IS NULL THEN RAISE NOTICE 'ไม่พบ Job "%%" — ไม่มีอะไรให้ลบ', v_job_no; RETURN; END IF;
+  IF v_job IS NULL THEN RAISE NOTICE 'ไม่พบ Job "%" — ไม่มีอะไรให้ลบ', v_job_no; RETURN; END IF;
 
   -- 1) คืน LBS ทุกเครื่องของ Job นี้กลับเข้าสต็อกเดิม (เก็บเครื่อง/serial ไว้ ไม่ลบ)
   UPDATE lbs_units SET status = 'in_stock', job_id = NULL, updated_at = now()
@@ -34,5 +34,5 @@ BEGIN
   DELETE FROM jobs                   WHERE id = v_job;
   -- audit_logs ไม่มี FK กับ jobs — ปล่อยไว้เป็นประวัติ (ไม่บล็อกการเปิด Job No. เดิมใหม่)
 
-  RAISE NOTICE 'ลบ Job "%%" แล้ว — คืน LBS % เครื่องเข้าสต็อก, ลบรายการวัสดุ/PR/PO % รายการ. เปิด Job No. เดิมใหม่ได้เลย', v_job_no, v_lbs, v_acc;
+  RAISE NOTICE 'ลบ Job "%" แล้ว — คืน LBS % เครื่องเข้าสต็อก, ลบรายการวัสดุ/PR/PO % รายการ. เปิด Job No. เดิมใหม่ได้เลย', v_job_no, v_lbs, v_acc;
 END $$;
