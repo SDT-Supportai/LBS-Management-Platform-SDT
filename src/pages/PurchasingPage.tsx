@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import { Modal, useTryAction } from '../ui/components'
-import { fmtDate, fmtDateTime, PR_STATUS_LABEL } from '../ui/format'
+import { fmtDate, fmtDateTime } from '../ui/format'
 
 export default function PurchasingPage() {
   const { db, user, act } = useStore()
@@ -19,6 +19,25 @@ export default function PurchasingPage() {
 
   const itemOf = (id: string) => db.items.find(i => i.id === id)
   const prLines = (prId: string) => db.accessoryRequests.filter(r => r.prId === prId)
+
+  // สรุปประวัติ PR/PO ต่อ Job (collapsible, เริ่มซ่อน)
+  const [openHist, setOpenHist] = useState<Record<string, boolean>>({})
+  const toggleHist = (id: string) => setOpenHist(p => ({ ...p, [id]: !p[id] }))
+  const jobHistory = (jobId: string): { time: string; text: string }[] => {
+    const evts: { time: string; text: string }[] = []
+    db.prs.filter(p => p.jobId === jobId).forEach(pr => {
+      evts.push({ time: pr.createdAt, text: `📄 ออก ${pr.prNo} (${prLines(pr.id).length} รายการ) ส่ง Purchasing` })
+      if (pr.status === 'rejected' && pr.rejectedAt)
+        evts.push({ time: pr.rejectedAt, text: `⛔ ตีกลับ ${pr.prNo}: ${pr.rejectReason ?? '-'}` })
+    })
+    db.pos.filter(p => p.jobId === jobId).forEach(po => {
+      const pr = db.prs.find(x => x.id === po.prId)
+      evts.push({ time: po.createdAt, text: `🛒 ออก ${po.poNo} จาก ${pr?.prNo ?? '-'} · ${po.supplierName}` })
+      if (po.status === 'received' && po.receivedAt) evts.push({ time: po.receivedAt, text: `📬 ${po.poNo} รับของครบ` })
+      if (po.status === 'cancelled') evts.push({ time: po.createdAt, text: `🗑️ ${po.poNo} ถูกยกเลิก` })
+    })
+    return evts.sort((a, b) => a.time.localeCompare(b.time))
+  }
 
   // บันทึกแยกตาม Job No. — แสดงเฉพาะ Job ที่มี PR/PO แล้ว (ใหม่สุดขึ้นก่อน)
   const jobsWithDocs = [...db.jobs]
@@ -87,7 +106,6 @@ export default function PurchasingPage() {
       {jobsWithDocs.map(job => {
         const jobPrs = db.prs.filter(p => p.jobId === job.id)
         const pendingPrs = jobPrs.filter(p => p.status === 'pending')
-        const historyPrs = jobPrs.filter(p => p.status !== 'pending' && p.status !== 'po_issued')
         const jobPos = db.pos.filter(p => p.jobId === job.id)
         return (
           <div className="panel" key={job.id}>
@@ -177,12 +195,24 @@ export default function PurchasingPage() {
               <div className="empty">ไม่มีรายการค้างของ Job นี้</div>
             )}
 
-            {historyPrs.length > 0 && (
-              <div className="panel-body muted">
-                ประวัติ PR: {historyPrs.map(pr =>
-                  `${pr.prNo} (${PR_STATUS_LABEL[pr.status]}${pr.status === 'rejected' ? `: ${pr.rejectReason}` : ''})`).join(' · ')}
-              </div>
-            )}
+            {(() => {
+              const hist = jobHistory(job.id)
+              if (hist.length === 0) return null
+              return (
+                <div className="panel-body" style={{ borderTop: '1px solid var(--border)' }}>
+                  <button className="small" onClick={() => toggleHist(job.id)}>
+                    {openHist[job.id] ? '▾' : '▸'} สรุปประวัติ PR/PO ({hist.length} ขั้นตอน)
+                  </button>
+                  {openHist[job.id] && (
+                    <ul className="hist-list">
+                      {hist.map((e, i) => (
+                        <li key={i}><span className="muted mono">{fmtDateTime(e.time)}</span> — {e.text}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )
+            })()}
           </div>
         )
       })}

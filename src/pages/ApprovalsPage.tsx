@@ -14,13 +14,21 @@ export default function ApprovalsPage() {
   const navigate = useNavigate()
   const [rejectTarget, setRejectTarget] = useState<ApprovalRequest | null>(null)
   const [rejectReason, setRejectReason] = useState('')
+  const [openJob, setOpenJob] = useState<Record<string, boolean>>({})   // ประวัติต่อ Job (เริ่มซ่อน)
   const canDecide = can(user, 'approval.decide')
+  const toggleJob = (id: string) => setOpenJob(p => ({ ...p, [id]: !p[id] }))
 
   const jobOf = (id: string) => db.jobs.find(j => j.id === id)
   const userName = (id?: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
 
   const pending = db.approvalRequests.filter(r => r.status === 'pending')
-  const decided = db.approvalRequests.filter(r => r.status !== 'pending').slice().reverse().slice(0, 30)
+  const decided = db.approvalRequests.filter(r => r.status !== 'pending').slice().reverse()
+  // จัดกลุ่มประวัติการตัดสินแยกตาม Job (คงลำดับล่าสุดก่อน)
+  const decidedGroups: [string, ApprovalRequest[]][] = (() => {
+    const m = new Map<string, ApprovalRequest[]>()
+    decided.forEach(r => { const a = m.get(r.jobId) ?? []; a.push(r); m.set(r.jobId, a) })
+    return [...m.entries()]
+  })()
 
   // สรุปเนื้อหาคำขอต่อ type ให้ division เห็นข้อมูลก่อนตัดสิน
   const payloadSummary = (r: ApprovalRequest): string => {
@@ -97,36 +105,55 @@ export default function ApprovalsPage() {
         </div>
       </div>
 
-      <div className="panel">
-        <div className="panel-head"><h3>ประวัติการตัดสิน (ล่าสุด {decided.length})</h3></div>
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr><th>ประเภท</th><th>Job No.</th><th>สถานะ</th><th>ผู้ขอ</th><th>ผู้ตัดสิน</th><th>ตัดสินเมื่อ</th></tr>
-            </thead>
-            <tbody>
-              {decided.length === 0 && (
-                <tr><td colSpan={6}><div className="empty">ยังไม่มีประวัติ</div></td></tr>
-              )}
-              {decided.map(r => (
-                <tr key={r.id}>
-                  <td>{APPROVAL_TYPE_LABEL[r.type]}</td>
-                  <td>{jobOf(r.jobId)?.jobNo ?? '-'}</td>
-                  <td>
-                    <span className={`badge ${r.status === 'approved' ? 'green' : 'red'}`}>
-                      {APPROVAL_STATUS_LABEL[r.status]}
-                    </span>
-                    {r.rejectReason && <div className="muted">เหตุผล: {r.rejectReason}</div>}
-                  </td>
-                  <td>{userName(r.requestedBy)}</td>
-                  <td>{userName(r.decidedBy)}</td>
-                  <td>{fmtDateTime(r.decidedAt)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      <div className="page-sub" style={{ marginTop: 24, marginBottom: 8, fontWeight: 700, color: 'var(--text)' }}>
+        ประวัติการตัดสิน — สรุปแยกตาม Job ({decidedGroups.length} งาน)
       </div>
+      {decidedGroups.length === 0 && (
+        <div className="panel"><div className="empty">ยังไม่มีประวัติการตัดสิน</div></div>
+      )}
+      {decidedGroups.map(([jobId, list]) => {
+        const approved = list.filter(r => r.status === 'approved').length
+        const rejected = list.filter(r => r.status === 'rejected').length
+        return (
+          <div className="panel" key={jobId}>
+            <div className="panel-head" style={{ cursor: 'pointer' }} onClick={() => toggleJob(jobId)}>
+              <h3>
+                {openJob[jobId] ? '▾' : '▸'} {jobOf(jobId)?.jobNo ?? '-'}{' '}
+                <span className="muted" style={{ fontWeight: 400 }}>{jobOf(jobId)?.customerName}</span>
+              </h3>
+              <span className="muted">
+                {approved > 0 && <span className="badge green">อนุมัติ {approved}</span>}{' '}
+                {rejected > 0 && <span className="badge red">ตีกลับ {rejected}</span>}
+              </span>
+            </div>
+            {openJob[jobId] && (
+              <div className="table-scroll">
+                <table>
+                  <thead>
+                    <tr><th>ประเภท</th><th>สถานะ</th><th>ผู้ขอ</th><th>ผู้ตัดสิน</th><th>ตัดสินเมื่อ</th></tr>
+                  </thead>
+                  <tbody>
+                    {list.map(r => (
+                      <tr key={r.id}>
+                        <td>{APPROVAL_TYPE_LABEL[r.type]}</td>
+                        <td>
+                          <span className={`badge ${r.status === 'approved' ? 'green' : 'red'}`}>
+                            {APPROVAL_STATUS_LABEL[r.status]}
+                          </span>
+                          {r.rejectReason && <div className="muted">เหตุผล: {r.rejectReason}</div>}
+                        </td>
+                        <td>{userName(r.requestedBy)}</td>
+                        <td>{userName(r.decidedBy)}</td>
+                        <td>{fmtDateTime(r.decidedAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )
+      })}
 
       {rejectTarget && (
         <Modal title={`ตีกลับคำขอ${APPROVAL_TYPE_LABEL[rejectTarget.type]} — ${jobOf(rejectTarget.jobId)?.jobNo ?? ''}`}

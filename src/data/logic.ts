@@ -82,17 +82,9 @@ function assertJobEditable(db: DB, jobId: string): Job {
   return job
 }
 
-// เช็คว่า action ทำให้ Job ขยับเป็น ready_to_issue หรือไม่ → แจ้ง Project
-function notifyIfBecameReady(before: DB, after: DB, jobId: string): DB {
-  const jobB = before.jobs.find(j => j.id === jobId)
-  const jobA = after.jobs.find(j => j.id === jobId)
-  if (!jobB || !jobA) return after
-  if (deriveJobStatus(before, jobB) !== 'ready_to_issue' && deriveJobStatus(after, jobA) === 'ready_to_issue') {
-    return notify(after, {
-      type: 'job_ready', dept: 'project', jobId,
-      message: `✅ ${jobA.jobNo} (${jobA.customerName}) ของครบแล้ว — พร้อมเบิกให้ Service`,
-    })
-  }
+// no-op (2026-07-19 · sync 0020): เลิกแจ้ง job_ready — ใช้แจ้งตอนดึง LBS แทน
+// คง signature ไว้ให้ caller เดิม (addAccessory/receivePO/updateJob/cancelAccessory) ทำงานได้
+function notifyIfBecameReady(_before: DB, after: DB, _jobId: string): DB {
   return after
 }
 
@@ -350,7 +342,11 @@ export function drawLbs(db: DB, actor: User, p: { jobId: string; stockId: string
       performedBy: actor.id, performedAt: now(),
     }],
   }
-  next = notifyIfBecameReady(db, next, p.jobId)
+  // แจ้งเตือนตอนดึง LBS — serial คู่ + Stock No. ต้นทาง (sync 0020, เข้า LINE + ทุกแผนก)
+  next = notify(next, {
+    type: 'lbs_drawn', dept: 'all', jobId: p.jobId,
+    message: `✅ ${job.jobNo} (${job.customerName}) ดึง LBS ${units.length} เครื่องจาก ${stock.stockNo} — Serial.LVB: ${units.map(u => u.serialLvb).join(', ')} · Serial.OM: ${units.map(u => u.serialOm).join(', ')}`,
+  })
   return audit(next, actor, 'stock_allocation', p.jobId, 'draw_lbs',
     `${job.jobNo} ดึง LBS ${units.length} เครื่องจาก ${stock.stockNo} (SN: ${units.map(u => u.serialLvb).join(', ')})`)
 }
