@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import { deriveJobStatus, jobAllocatedQty } from '../data/logic'
-import { BudgetFields, JobStatusBadge, Modal, toBudgetNum, useTryAction } from '../ui/components'
+import { BudgetFields, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormToApi, type CostForm } from '../ui/components'
 import { fmtDate, JOB_STATUS_LABEL } from '../ui/format'
 import type { JobStatus } from '../types'
 
@@ -14,7 +14,8 @@ export default function JobsPage() {
   const tryAction = useTryAction()
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>('active')
   const [showCreate, setShowCreate] = useState(false)
-  const [form, setForm] = useState({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', cost: '' })
+  const [form, setForm] = useState({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '' })
+  const [costs, setCosts] = useState<CostForm>(emptyCostForm())
 
   const canManage = can(user, 'job.manage')
   const jobs = db.jobs
@@ -26,13 +27,14 @@ export default function JobsPage() {
     .reverse()
 
   const submit = async () => {
-    const { salePrice, cost, ...rest } = form
+    const { salePrice, ...rest } = form
     if (await tryAction(
-      () => act.createJob({ ...rest, budgetSalePrice: toBudgetNum(salePrice), budgetCost: toBudgetNum(cost) }),
+      () => act.createJob({ ...rest, budgetSalePrice: toBudgetNum(salePrice), budgetCosts: costFormToApi(costs) }),
       'เปิด Job ใหม่เรียบร้อย',
     )) {
       setShowCreate(false)
-      setForm({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', cost: '' })
+      setForm({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '' })
+      setCosts(emptyCostForm())
     }
   }
 
@@ -123,9 +125,9 @@ export default function JobsPage() {
           </label>
           <div className="budget-legend">Project Budget</div>
           <BudgetFields
-            sale={form.salePrice} cost={form.cost}
+            sale={form.salePrice} costs={costs}
             onSale={v => setForm({ ...form, salePrice: v })}
-            onCost={v => setForm({ ...form, cost: v })}
+            onCosts={setCosts}
           />
         </Modal>
       )}

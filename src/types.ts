@@ -41,6 +41,17 @@ export interface LbsUnit {
   // ข้อมูลลูกค้า/สถานที่ ref จาก Job ที่เครื่องถูกดึงเข้า (single source of truth — ไม่เก็บซ้ำที่นี่)
 }
 
+// Project Budget — ต้นทุนแยก 7 หมวด (0021)
+// raw_mat/outsourcing: actual มาจากมูลค่าวัสดุใน PR/PO ที่ตัดเข้าหมวดนั้น
+// trans/eng/ove/pm/fin: actual กรอกเอง
+export type CostCategoryKey = 'raw_mat' | 'outsourcing' | 'trans' | 'eng' | 'ove' | 'pm' | 'fin'
+export interface CostCategory {
+  budget?: number   // งบประมาณที่ตั้งไว้ (บาท)
+  phase?: string    // รหัส Phase Budget (อ้างอิงบัญชี)
+  actual?: number   // ต้นทุนใช้จริง — เฉพาะ 5 หมวด manual (trans/eng/ove/pm/fin)
+}
+export type BudgetCosts = Partial<Record<CostCategoryKey, CostCategory>>
+
 export type JobStatus =
   | 'draft'
   | 'allocated'
@@ -61,7 +72,8 @@ export interface Job {
   contactPhone?: string        // เบอร์ติดต่อลูกค้า — ตารางรายเครื่องใน Project Stock ref ค่านี้
   // Project Budget (บาท) — กำไร derive = ราคาขาย − ต้นทุน (ไม่เก็บซ้ำ)
   budgetSalePrice?: number
-  budgetCost?: number
+  budgetCost?: number          // ต้นทุนรวม = Σ งบ 7 หมวด (คำนวณฝั่ง server จาก budgetCosts)
+  budgetCosts?: BudgetCosts    // ต้นทุนแยก 7 หมวด (0021)
   // lifecycle marker: null = ยัง active (derive สถานะจากข้อมูล), issued = เบิกแล้วรอติดตั้ง,
   // installed / cancelled = terminal จริง
   terminalStatus: 'issued' | 'installed' | 'cancelled' | null

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from 'react'
-import type { JobStatus } from '../types'
-import { JOB_STATUS_LABEL, fmtBaht } from './format'
+import type { JobStatus, BudgetCosts, CostCategoryKey } from '../types'
+import { JOB_STATUS_LABEL, fmtBaht, COST_CATEGORIES } from './format'
 
 // ---------------- Toast ----------------
 
@@ -82,26 +82,75 @@ export const toBudgetNum = (s: string): number | undefined => {
   return Number.isNaN(n) ? undefined : n
 }
 
-/** ช่องกรอกงบประมาณ: ราคาขาย / ต้นทุน + กำไร auto (= ราคาขาย − ต้นทุน) */
-export function BudgetFields({ sale, cost, onSale, onCost }: {
-  sale: string; cost: string
-  onSale: (v: string) => void; onCost: (v: string) => void
+// ---------------- Project Budget: ต้นทุน 7 หมวด (0021) ----------------
+export type CostForm = Record<CostCategoryKey, { budget: string; phase: string; actual: string }>
+
+export const emptyCostForm = (): CostForm =>
+  Object.fromEntries(COST_CATEGORIES.map(c => [c.key, { budget: '', phase: '', actual: '' }])) as CostForm
+
+export const costFormFromJob = (bc?: BudgetCosts): CostForm =>
+  Object.fromEntries(COST_CATEGORIES.map(c => {
+    const v = bc?.[c.key]
+    return [c.key, {
+      budget: v?.budget != null ? String(v.budget) : '',
+      phase: v?.phase ?? '',
+      actual: v?.actual != null ? String(v.actual) : '',
+    }]
+  })) as CostForm
+
+export const costFormToApi = (f: CostForm): BudgetCosts => {
+  const out: BudgetCosts = {}
+  for (const c of COST_CATEGORIES) {
+    const v = f[c.key]
+    const budget = toBudgetNum(v.budget)
+    const phase = v.phase.trim() || undefined
+    const actual = c.fromPR ? undefined : toBudgetNum(v.actual)   // 2 หมวดแรก actual มาจาก PR/PO
+    if (budget !== undefined || phase !== undefined || actual !== undefined)
+      out[c.key] = { budget, phase, actual }
+  }
+  return out
+}
+
+/** ช่องกรอกงบประมาณ: ราคาขาย + ต้นทุน 7 หมวด (งบ/Phase/ใช้จริง) + กำไร auto */
+export function BudgetFields({ sale, costs, onSale, onCosts }: {
+  sale: string; costs: CostForm
+  onSale: (v: string) => void; onCosts: (next: CostForm) => void
 }) {
-  const s = toBudgetNum(sale), c = toBudgetNum(cost)
-  const profit = s !== undefined && c !== undefined ? s - c : undefined
+  const s = toBudgetNum(sale)
+  const totalCost = COST_CATEGORIES.reduce((sum, c) => sum + (toBudgetNum(costs[c.key].budget) ?? 0), 0)
+  const hasCost = COST_CATEGORIES.some(c => costs[c.key].budget.trim() !== '')
+  const cost = hasCost ? totalCost : undefined
+  const profit = s !== undefined && cost !== undefined ? s - cost : undefined
   const margin = profit !== undefined && s ? (profit / s) * 100 : undefined
+  const setCat = (key: CostCategoryKey, field: 'budget' | 'phase' | 'actual', val: string) =>
+    onCosts({ ...costs, [key]: { ...costs[key], [field]: val } })
   return (
     <>
-      <div className="row">
-        <label className="field"><span>ราคาขาย (บาท)</span>
-          <input type="number" min={0} value={sale} onChange={e => onSale(e.target.value)} placeholder="0" />
-        </label>
-        <label className="field"><span>ต้นทุน (บาท)</span>
-          <input type="number" min={0} value={cost} onChange={e => onCost(e.target.value)} placeholder="0" />
-        </label>
+      <label className="field"><span>ราคาขาย (บาท)</span>
+        <input type="number" min={0} value={sale} onChange={e => onSale(e.target.value)} placeholder="0" />
+      </label>
+      <div className="budget-legend">ต้นทุน (บาท) — แยก 7 หมวด</div>
+      <div className="cost-grid cost-grid-head">
+        <span>หมวด</span><span>งบประมาณ</span><span>Phase Budget</span><span>ใช้จริง</span>
+      </div>
+      {COST_CATEGORIES.map(c => (
+        <div className="cost-grid" key={c.key}>
+          <span className="cost-label">{c.label}</span>
+          <input type="number" min={0} value={costs[c.key].budget} placeholder="0"
+            onChange={e => setCat(c.key, 'budget', e.target.value)} />
+          <input value={costs[c.key].phase} placeholder="Phase"
+            onChange={e => setCat(c.key, 'phase', e.target.value)} />
+          {c.fromPR
+            ? <span className="muted" style={{ fontSize: 11, alignSelf: 'center' }}>จาก PR/PO</span>
+            : <input type="number" min={0} value={costs[c.key].actual} placeholder="0"
+                onChange={e => setCat(c.key, 'actual', e.target.value)} />}
+        </div>
+      ))}
+      <div className="budget-profit" style={{ marginTop: 10 }}>
+        <span>ต้นทุนรวม (งบ)</span><b>{fmtBaht(cost)}</b>
       </div>
       <div className="budget-profit">
-        <span>กำไร (auto)</span>
+        <span>กำไร (auto = ราคาขาย − ต้นทุนรวม)</span>
         <b className={profit !== undefined && profit < 0 ? 'neg' : 'pos'}>
           {fmtBaht(profit)}{margin !== undefined && <span className="muted"> · {margin.toFixed(1)}%</span>}
         </b>

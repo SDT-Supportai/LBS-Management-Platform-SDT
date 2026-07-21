@@ -1,4 +1,17 @@
-import type { JobStatus, Department, AccReqStatus } from '../types'
+import type { JobStatus, Department, AccReqStatus, CostCategoryKey } from '../types'
+
+// 7 หมวดต้นทุน Project Budget (0021) — เรียงตามลำดับที่แสดง
+// fromPR = true → actual มาจากมูลค่าวัสดุ PR/PO ที่ตัดเข้าหมวดนี้ (เลือกตอนเพิ่มวัสดุ)
+// fromPR = false → กรอก actual เอง
+export const COST_CATEGORIES: { key: CostCategoryKey; label: string; fromPR: boolean }[] = [
+  { key: 'raw_mat', label: 'Raw Material', fromPR: true },
+  { key: 'outsourcing', label: 'Outsourcing', fromPR: true },
+  { key: 'trans', label: 'Transportation', fromPR: false },
+  { key: 'eng', label: 'Engineering', fromPR: false },
+  { key: 'ove', label: 'Overhead', fromPR: false },
+  { key: 'pm', label: 'Project Management', fromPR: false },
+  { key: 'fin', label: 'Finance', fromPR: false },
+]
 
 export const JOB_STATUS_LABEL: Record<JobStatus, string> = {
   draft: 'Draft',

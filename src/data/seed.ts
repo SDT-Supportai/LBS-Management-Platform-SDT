@@ -58,7 +58,12 @@ export function buildSeedDb(): DB {
     jobNo: 'JOB-2026-0001',
     customerName: 'PEA เชียงใหม่', scope: 'ติดตั้ง LBS สถานีย่อยสันทราย 4 จุด',
     installLocation: 'สถานีไฟฟ้าสันทราย จ.เชียงใหม่', requiredDate: '2026-08-20', lbsQtyRequired: 4,
-    budgetSalePrice: 4800000, budgetCost: 3600000,
+    budgetSalePrice: 4800000,
+    budgetCosts: {
+      raw_mat: { budget: 2200000, phase: 'PH1-MAT' }, outsourcing: { budget: 600000, phase: 'PH1-OUT' },
+      trans: { budget: 200000, phase: 'PH2-TRN', actual: 0 }, eng: { budget: 300000, phase: 'PH2-ENG', actual: 0 },
+      ove: { budget: 100000, phase: '', actual: 0 }, pm: { budget: 150000, phase: '', actual: 0 }, fin: { budget: 50000, phase: '', actual: 0 },
+    },
   })
   const job1 = db.jobs[0].id
   db = L.drawLbs(db, project, { jobId: job1, stockId: stock1, unitIds: unitsOf(stock1).slice(0, 3).map(u => u.id) })
@@ -68,14 +73,19 @@ export function buildSeedDb(): DB {
     jobNo: 'JOB-2026-0002',
     customerName: 'PEA ขอนแก่น', scope: 'เปลี่ยน LBS สายส่ง 115kV ช่วงบ้านไผ่ 5 จุด',
     installLocation: 'อ.บ้านไผ่ จ.ขอนแก่น', requiredDate: '2026-09-10', lbsQtyRequired: 5,
-    budgetSalePrice: 6200000, budgetCost: 4700000,
+    budgetSalePrice: 6200000,
+    budgetCosts: {
+      raw_mat: { budget: 3000000, phase: 'PH1-MAT' }, outsourcing: { budget: 800000, phase: 'PH1-OUT' },
+      trans: { budget: 250000, phase: '', actual: 120000 }, eng: { budget: 350000, phase: '', actual: 200000 },
+      ove: { budget: 120000, phase: '', actual: 0 }, pm: { budget: 130000, phase: '', actual: 0 }, fin: { budget: 50000, phase: '', actual: 0 },
+    },
   })
   const job2 = db.jobs[1].id
   db = L.drawLbs(db, project, { jobId: job2, stockId: stock1, unitIds: unitsOf(stock1).slice(0, 3).map(u => u.id) })
   db = L.drawLbs(db, project, { jobId: job2, stockId: stock2, unitIds: unitsOf(stock2).slice(0, 2).map(u => u.id) })
-  db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-ct', qty: 5, source: 'central_stock', unitPrice: 85000, phaseBudget: 'PH1-SUPPLY' })
-  db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-relay', qty: 5, source: 'purchasing', unitPrice: 120000, phaseBudget: 'PH1-SUPPLY' })
-  db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-cable', qty: 3, source: 'purchasing', unitPrice: 15000, phaseBudget: 'PH2-INSTALL' })
+  db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-ct', qty: 5, source: 'central_stock', unitPrice: 85000, phaseBudget: 'raw_mat' })
+  db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-relay', qty: 5, source: 'purchasing', unitPrice: 120000, phaseBudget: 'raw_mat' })
+  db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-cable', qty: 3, source: 'purchasing', unitPrice: 15000, phaseBudget: 'outsourcing' })
   db = L.createPR(db, project, { jobId: job2, requestIds: L.pendingPurchasingReqs(db, job2).map(r => r.id) })
   db = L.createPO(db, purchasing, { prId: db.prs[0].id, poNo: 'PO-2026-0001', supplierName: 'บจก.สยามอิเล็คทริค', expectedDate: '2026-07-30' })
 
@@ -84,22 +94,32 @@ export function buildSeedDb(): DB {
     jobNo: 'JOB-2026-0003',
     customerName: 'EGAT บางปะกง', scope: 'ติดตั้ง LBS จุดเชื่อมโยงโรงไฟฟ้า 2 จุด',
     installLocation: 'โรงไฟฟ้าบางปะกง จ.ฉะเชิงเทรา', requiredDate: '2026-07-25', lbsQtyRequired: 2,
-    budgetSalePrice: 2500000, budgetCost: 1900000,
+    budgetSalePrice: 2500000,
+    budgetCosts: {
+      raw_mat: { budget: 1200000, phase: 'PH1-MAT' }, outsourcing: { budget: 300000, phase: '' },
+      trans: { budget: 120000, phase: '', actual: 0 }, eng: { budget: 150000, phase: '', actual: 0 },
+      ove: { budget: 60000, phase: '', actual: 0 }, pm: { budget: 50000, phase: '', actual: 0 }, fin: { budget: 20000, phase: '', actual: 0 },
+    },
   })
   const job3 = db.jobs[2].id
   db = L.drawLbs(db, project, { jobId: job3, stockId: stock1, unitIds: unitsOf(stock1).slice(0, 2).map(u => u.id) })
-  db = L.addAccessoryRequest(db, project, { jobId: job3, itemId: 'i-bracket', qty: 2, source: 'central_stock', unitPrice: 32000 })
+  db = L.addAccessoryRequest(db, project, { jobId: job3, itemId: 'i-bracket', qty: 2, source: 'central_stock', unitPrice: 32000, phaseBudget: 'raw_mat' })
 
   // JOB-0004: อมตะซิตี้ — เบิกให้ Service แล้ว → Issued/Installed
   db = L.createJob(db, project, {
     jobNo: 'JOB-2026-0004',
     customerName: 'นิคมอุตสาหกรรมอมตะซิตี้', scope: 'ติดตั้ง LBS วงจรสำรองโรงงาน 1 จุด',
     installLocation: 'อมตะซิตี้ จ.ระยอง', requiredDate: '2026-07-05', lbsQtyRequired: 1,
-    budgetSalePrice: 1400000, budgetCost: 1050000,
+    budgetSalePrice: 1400000,
+    budgetCosts: {
+      raw_mat: { budget: 700000, phase: 'PH1-MAT' }, outsourcing: { budget: 150000, phase: '' },
+      trans: { budget: 60000, phase: '', actual: 55000 }, eng: { budget: 80000, phase: '', actual: 70000 },
+      ove: { budget: 30000, phase: '', actual: 0 }, pm: { budget: 20000, phase: '', actual: 0 }, fin: { budget: 10000, phase: '', actual: 0 },
+    },
   })
   const job4 = db.jobs[3].id
   db = L.drawLbs(db, project, { jobId: job4, stockId: stock2, unitIds: unitsOf(stock2).slice(0, 1).map(u => u.id) })
-  db = L.addAccessoryRequest(db, project, { jobId: job4, itemId: 'i-ct', qty: 1, source: 'central_stock', unitPrice: 85000 })
+  db = L.addAccessoryRequest(db, project, { jobId: job4, itemId: 'i-ct', qty: 1, source: 'central_stock', unitPrice: 85000, phaseBudget: 'raw_mat' })
   db = L.issueJob(db, project, {
     jobId: job4, startDate: '2026-07-05', endDate: '2026-07-06',
     location: 'อมตะซิตี้ จ.ระยอง', note: 'ทีม Service A นัดติดตั้ง 5 ก.ค. 2026',

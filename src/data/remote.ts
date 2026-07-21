@@ -2,7 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type {
   DB, User, Item, ProjectStock, LbsUnit, Job, AllocationTxn,
   AccessoryRequest, PurchaseRequisition, PurchaseOrder, AuditLog, AppNotification,
-  Department, ApprovalRequest, ApprovalType, ApprovalPayload,
+  Department, ApprovalRequest, ApprovalType, ApprovalPayload, BudgetCosts,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -42,6 +42,7 @@ function mapJob(r: Row): Job {
     lbsQtyRequired: r.lbs_qty_required, terminalStatus: r.terminal_status,
     budgetSalePrice: r.budget_sale_price != null ? Number(r.budget_sale_price) : undefined,
     budgetCost: r.budget_cost != null ? Number(r.budget_cost) : undefined,
+    budgetCosts: r.budget_costs ?? undefined,
     openedBy: r.opened_by ?? '', createdAt: r.created_at,
     issuedAt: r.issued_at ?? undefined, issuedNote: r.issued_note ?? undefined,
     installStartDate: r.install_start_date ?? undefined,
@@ -193,10 +194,10 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_delete_project_stock', { p_stock_id: p.stockId }),
     updateUnitInfo: (p: { unitId: string; serialLvb: string; serialOm: string }) =>
       rpc(sb, 'rpc_update_unit_info', { p_unit_id: p.unitId, p_serial_lvb: p.serialLvb, p_serial_om: p.serialOm }),
-    createJob: (p: { jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCost?: number }) =>
-      rpc(sb, 'rpc_create_job', { p_job_no: p.jobNo, p_customer: p.customerName, p_phone: p.contactPhone ?? null, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_cost: p.budgetCost ?? null }),
-    updateJob: (p: { jobId: string; jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCost?: number }) =>
-      rpc(sb, 'rpc_update_job', { p_job_id: p.jobId, p_job_no: p.jobNo, p_customer: p.customerName, p_phone: p.contactPhone ?? null, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_cost: p.budgetCost ?? null }),
+    createJob: (p: { jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCosts?: BudgetCosts }) =>
+      rpc(sb, 'rpc_create_job', { p_job_no: p.jobNo, p_customer: p.customerName, p_phone: p.contactPhone ?? null, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_costs: p.budgetCosts ?? null }),
+    updateJob: (p: { jobId: string; jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCosts?: BudgetCosts }) =>
+      rpc(sb, 'rpc_update_job', { p_job_id: p.jobId, p_job_no: p.jobNo, p_customer: p.customerName, p_phone: p.contactPhone ?? null, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_costs: p.budgetCosts ?? null }),
     deleteDraftJob: (p: { jobId: string }) => rpc(sb, 'rpc_delete_draft_job', { p_job_id: p.jobId }),
     drawLbs: (p: { jobId: string; stockId: string; unitIds: string[] }) =>
       rpc(sb, 'rpc_draw_lbs', { p_job_id: p.jobId, p_stock_id: p.stockId, p_unit_ids: p.unitIds }),

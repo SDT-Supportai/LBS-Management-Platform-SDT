@@ -1,6 +1,6 @@
 import type {
   DB, Job, JobStatus, User, AccessoryRequest, Department,
-  ApprovalType, ApprovalPayload,
+  ApprovalType, ApprovalPayload, BudgetCosts, CostCategoryKey,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -242,7 +242,22 @@ function normalizeBudget(v: number | undefined): number | undefined {
   return v
 }
 
-export interface JobBudgetInput { budgetSalePrice?: number; budgetCost?: number }
+export interface JobBudgetInput { budgetSalePrice?: number; budgetCosts?: BudgetCosts }
+
+// ต้นทุนรวม (planned) = Σ งบ 7 หมวด
+export function totalBudgetCost(costs?: BudgetCosts): number | undefined {
+  if (!costs) return undefined
+  const vals = Object.values(costs).map(c => c?.budget ?? 0)
+  return vals.length ? vals.reduce((s, v) => s + v, 0) : undefined
+}
+
+function assertBudgetCosts(costs?: BudgetCosts): BudgetCosts | undefined {
+  if (!costs) return undefined
+  for (const c of Object.values(costs)) {
+    if ((c?.budget ?? 0) < 0 || (c?.actual ?? 0) < 0) throw new Error('มูลค่างบประมาณติดลบไม่ได้')
+  }
+  return costs
+}
 
 export function createJob(
   db: DB, actor: User,
@@ -255,7 +270,7 @@ export function createJob(
   if (!p.customerName.trim()) throw new Error('กรุณาระบุชื่อลูกค้า')
   if (!p.lbsQtyRequired || p.lbsQtyRequired < 1) throw new Error('จำนวน LBS ตาม Scope ต้องอย่างน้อย 1 เครื่อง')
   const salePrice = normalizeBudget(p.budgetSalePrice)
-  const cost = normalizeBudget(p.budgetCost)
+  const costs = assertBudgetCosts(p.budgetCosts)
   const jobId = uid()
   let next: DB = {
     ...db,
@@ -265,7 +280,7 @@ export function createJob(
       scope: p.scope,
       installLocation: p.installLocation, requiredDate: p.requiredDate,
       lbsQtyRequired: p.lbsQtyRequired,
-      budgetSalePrice: salePrice, budgetCost: cost,
+      budgetSalePrice: salePrice, budgetCost: totalBudgetCost(costs), budgetCosts: costs,
       terminalStatus: null, openedBy: actor.id, createdAt: now(),
     }],
   }
@@ -288,7 +303,7 @@ export function updateJob(
   if (p.lbsQtyRequired < held)
     throw new Error(`ลดจำนวนตาม Scope ต่ำกว่าที่ถืออยู่ (${held} เครื่อง) ไม่ได้ — คืน LBS กลับสต็อกก่อน`)
   const salePrice = normalizeBudget(p.budgetSalePrice)
-  const cost = normalizeBudget(p.budgetCost)
+  const costs = assertBudgetCosts(p.budgetCosts)
   let next: DB = {
     ...db,
     jobs: db.jobs.map(j => j.id === p.jobId ? {
@@ -296,7 +311,7 @@ export function updateJob(
       scope: p.scope,
       installLocation: p.installLocation, requiredDate: p.requiredDate,
       lbsQtyRequired: p.lbsQtyRequired,
-      budgetSalePrice: salePrice, budgetCost: cost,
+      budgetSalePrice: salePrice, budgetCost: totalBudgetCost(costs), budgetCosts: costs,
     } : j),
   }
   next = notifyIfBecameReady(db, next, p.jobId)
@@ -1130,15 +1145,36 @@ export function jobMaterialValue(db: DB, jobId: string): number {
     .reduce((sum, r) => sum + (r.unitPrice ?? 0) * r.qtyRequested, 0)
 }
 
-// สรุปงบประมาณ Job: กำไร = ราคาขาย − ต้นทุน, ต้นทุนคงเหลือ = ต้นทุน − มูลค่าวัสดุ
+// ต้นทุนใช้จริงของหมวด raw_mat/outsourcing = Σ มูลค่าวัสดุ active ที่ตัดเข้าหมวดนั้น (phaseBudget = key)
+function categoryMaterialActual(db: DB, jobId: string, key: CostCategoryKey): number {
+  return db.accessoryRequests
+    .filter(r => r.jobId === jobId && r.status !== 'cancelled' && r.status !== 'returned' && r.phaseBudget === key)
+    .reduce((sum, r) => sum + (r.unitPrice ?? 0) * r.qtyRequested, 0)
+}
+
+// สรุปงบประมาณ Job แยก 7 หมวด: raw_mat/outsourcing actual มาจาก PR/PO, อีก 5 หมวดกรอกเอง
+// กำไร = ราคาขาย − ต้นทุนรวม(งบ), ต้นทุนคงเหลือ = ต้นทุนรวม(งบ) − ใช้จริงรวม
 export function jobBudgetSummary(db: DB, job: Job) {
   const salePrice = job.budgetSalePrice
-  const cost = job.budgetCost
-  const materialValue = jobMaterialValue(db, job.id)
+  const costs = job.budgetCosts ?? {}
+  const categories = ([
+    { key: 'raw_mat', fromPR: true }, { key: 'outsourcing', fromPR: true },
+    { key: 'trans', fromPR: false }, { key: 'eng', fromPR: false }, { key: 'ove', fromPR: false },
+    { key: 'pm', fromPR: false }, { key: 'fin', fromPR: false },
+  ] as { key: CostCategoryKey; fromPR: boolean }[]).map(c => {
+    const cat = costs[c.key]
+    const budget = cat?.budget ?? 0
+    const actual = c.fromPR ? categoryMaterialActual(db, job.id, c.key) : (cat?.actual ?? 0)
+    return { key: c.key, fromPR: c.fromPR, phase: cat?.phase, budget, actual, remaining: budget - actual }
+  })
+  const cost = job.budgetCost ?? (categories.some(c => c.budget) ? categories.reduce((s, c) => s + c.budget, 0) : undefined)
+  const totalActual = categories.reduce((s, c) => s + c.actual, 0)
+  // materialValue = ใช้จริงหมวดที่มาจาก PR/PO (raw_mat + outsourcing) — ใช้แสดงในแผง Purchase Orders
+  const materialValue = categories.filter(c => c.fromPR).reduce((s, c) => s + c.actual, 0)
   const profit = salePrice !== undefined && cost !== undefined ? salePrice - cost : undefined
   const margin = profit !== undefined && salePrice ? (profit / salePrice) * 100 : undefined
-  const remainingCost = cost !== undefined ? cost - materialValue : undefined
-  return { salePrice, cost, profit, margin, materialValue, remainingCost }
+  const remainingCost = cost !== undefined ? cost - totalActual : undefined
+  return { salePrice, cost, profit, margin, materialValue, totalActual, remainingCost, categories }
 }
 
 export function unreadNotifications(db: DB, user: User) {
