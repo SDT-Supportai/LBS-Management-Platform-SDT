@@ -16,9 +16,12 @@ export default function PurchasingPage() {
   const [expectedDate, setExpectedDate] = useState('')
   const [rejectReason, setRejectReason] = useState('')
   const [receiveQty, setReceiveQty] = useState<Record<string, number>>({})
+  const [poLineIds, setPoLineIds] = useState<Record<string, boolean>>({})   // เลือก line เข้า PO (0022)
 
   const itemOf = (id: string) => db.items.find(i => i.id === id)
   const prLines = (prId: string) => db.accessoryRequests.filter(r => r.prId === prId)
+  const poLines = (poId: string) => db.accessoryRequests.filter(r => r.poId === poId)
+  const unorderedLines = (prId: string) => db.accessoryRequests.filter(r => r.prId === prId && r.status === 'pr_sent')
 
   // สรุปประวัติ PR/PO ต่อ Job (collapsible, เริ่มซ่อน)
   const [openHist, setOpenHist] = useState<Record<string, boolean>>({})
@@ -48,12 +51,20 @@ export default function PurchasingPage() {
 
   const receivePo = receiveFor ? db.pos.find(p => p.id === receiveFor) : null
   const receiveLines = receivePo
-    ? prLines(receivePo.prId).filter(r => r.status === 'po_ordered' && r.qtyReceived < r.qtyRequested)
+    ? poLines(receivePo.id).filter(r => r.status === 'po_ordered' && r.qtyReceived < r.qtyRequested)
     : []
 
+  // เปิด modal ออก PO — default เลือกทุก line ที่ยังไม่ได้สั่งของ PR นั้น
+  const openPo = (prId: string) => {
+    setPoNo(''); setSupplier(''); setExpectedDate('')
+    setPoLineIds(Object.fromEntries(unorderedLines(prId).map(r => [r.id, true])))
+    setPoFor(prId)
+  }
   const submitPo = async () => {
     if (!poFor) return
-    if (await tryAction(() => act.createPO({ prId: poFor, poNo, supplierName: supplier, expectedDate }),
+    const requestIds = Object.entries(poLineIds).filter(([, v]) => v).map(([k]) => k)
+    if (requestIds.length === 0) { return }
+    if (await tryAction(() => act.createPO({ prId: poFor, poNo, supplierName: supplier, expectedDate, requestIds }),
       'ออก PO และแจ้งกลับ Project Dept แล้ว')) {
       setPoFor(null); setPoNo(''); setSupplier(''); setExpectedDate('')
     }
@@ -105,7 +116,8 @@ export default function PurchasingPage() {
 
       {jobsWithDocs.map(job => {
         const jobPrs = db.prs.filter(p => p.jobId === job.id)
-        const pendingPrs = jobPrs.filter(p => p.status === 'pending')
+        // PR ที่ยังมีรายการรอออก PO (pending หรือ po_issued ที่ยังสั่งไม่ครบ) — ออก PO เพิ่มได้เรื่อยๆ
+        const prsToOrder = jobPrs.filter(p => (p.status === 'pending' || p.status === 'po_issued') && unorderedLines(p.id).length > 0)
         const jobPos = db.pos.filter(p => p.jobId === job.id)
         return (
           <div className="panel" key={job.id}>
@@ -113,28 +125,28 @@ export default function PurchasingPage() {
               <h3>
                 <Link to={`/jobs/${job.id}`}>{job.jobNo}</Link>{' '}
                 <span className="muted" style={{ fontWeight: 400 }}>{job.customerName}</span>{' '}
-                {pendingPrs.length > 0 && <span className="badge amber">PR รอออก PO {pendingPrs.length}</span>}{' '}
+                {prsToOrder.length > 0 && <span className="badge amber">มีรายการรอออก PO</span>}{' '}
                 {jobPos.filter(p => p.status === 'issued').length > 0 && <span className="badge blue">PO รอรับของ {jobPos.filter(p => p.status === 'issued').length}</span>}
               </h3>
             </div>
 
-            {pendingPrs.length > 0 && (
+            {prsToOrder.length > 0 && (
               <div className="table-scroll">
                 <table>
-                  <thead><tr><th>PR No.</th><th>รายการ</th><th>ส่งเมื่อ</th><th></th></tr></thead>
+                  <thead><tr><th>PR No.</th><th>รายการที่รอออก PO</th><th>ส่งเมื่อ</th><th></th></tr></thead>
                   <tbody>
-                    {pendingPrs.map(pr => (
+                    {prsToOrder.map(pr => (
                       <tr key={pr.id}>
-                        <td className="mono"><b>{pr.prNo}</b></td>
-                        <td>{prLines(pr.id).map(r => {
+                        <td className="mono"><b>{pr.prNo}</b>{pr.status === 'po_issued' && <div className="muted" style={{ fontSize: 11 }}>ออก PO บางส่วนแล้ว</div>}</td>
+                        <td>{unorderedLines(pr.id).map(r => {
                           const it = itemOf(r.itemId)!
                           return <div key={r.id}>{it.name} × {r.qtyRequested} {it.uom}</div>
                         })}</td>
                         <td className="muted">{fmtDateTime(pr.createdAt)}</td>
                         <td style={{ whiteSpace: 'nowrap' }}>
                           {canManage && <>
-                            <button className="small primary" onClick={() => { setPoNo(''); setSupplier(''); setExpectedDate(''); setPoFor(pr.id) }}>ออก PO</button>{' '}
-                            <button className="small danger" onClick={() => { setRejectReason(''); setRejectFor(pr.id) }}>ตีกลับ</button>
+                            <button className="small primary" onClick={() => openPo(pr.id)}>ออก PO</button>{' '}
+                            {pr.status === 'pending' && <button className="small danger" onClick={() => { setRejectReason(''); setRejectFor(pr.id) }}>ตีกลับ</button>}
                           </>}
                         </td>
                       </tr>
@@ -147,17 +159,16 @@ export default function PurchasingPage() {
             {jobPos.length > 0 && (
               <div className="table-scroll">
                 <table>
-                  <thead><tr><th>PO No.</th><th>จาก PR</th><th>Supplier</th><th>กำหนดส่ง</th><th>รับของ</th><th>สถานะ</th><th></th></tr></thead>
+                  <thead><tr><th>PO No.</th><th>รายการใน PO</th><th>Supplier</th><th>กำหนดส่ง</th><th>รับของ</th><th>สถานะ</th><th></th></tr></thead>
                   <tbody>
                     {[...jobPos].reverse().map(po => {
-                      const pr = db.prs.find(p => p.id === po.prId)
-                      const lines = prLines(po.prId)
+                      const lines = poLines(po.id)
                       const totalOrdered = lines.reduce((s, r) => s + r.qtyRequested, 0)
                       const totalReceived = lines.reduce((s, r) => s + r.qtyReceived, 0)
                       return (
                         <tr key={po.id}>
                           <td className="mono"><b>{po.poNo}</b></td>
-                          <td className="mono">{pr?.prNo}</td>
+                          <td>{lines.map(r => { const it = itemOf(r.itemId)!; return <div key={r.id}>{it.name} × {r.qtyRequested} {it.uom}</div> })}</td>
                           <td>{po.supplierName}</td>
                           <td>{fmtDate(po.expectedDate)}</td>
                           <td>
@@ -177,9 +188,9 @@ export default function PurchasingPage() {
                             )}{' '}
                             {canManage && po.status === 'issued' && totalReceived === 0 && (
                               <button className="small danger" onClick={() => {
-                                const reason = window.prompt(`เหตุผลที่ยกเลิก ${po.poNo} (${pr?.prNo} จะกลับมารอออก PO ใหม่)`)
+                                const reason = window.prompt(`เหตุผลที่ยกเลิก ${po.poNo} (รายการจะกลับมารอออก PO ใหม่)`)
                                 if (reason !== null)
-                                  tryAction(() => act.cancelPO({ poId: po.id, reason }), `ยกเลิก ${po.poNo} แล้ว — ${pr?.prNo} รอออก PO ใหม่`)
+                                  tryAction(() => act.cancelPO({ poId: po.id, reason }), `ยกเลิก ${po.poNo} แล้ว — รายการรอออก PO ใหม่`)
                               }}>ยกเลิก PO</button>
                             )}
                           </td>
@@ -191,7 +202,7 @@ export default function PurchasingPage() {
               </div>
             )}
 
-            {pendingPrs.length === 0 && jobPos.length === 0 && (
+            {prsToOrder.length === 0 && jobPos.length === 0 && (
               <div className="empty">ไม่มีรายการค้างของ Job นี้</div>
             )}
 
@@ -217,12 +228,28 @@ export default function PurchasingPage() {
         )
       })}
 
-      {poFor && (
+      {poFor && (() => {
+        const lines = unorderedLines(poFor)
+        const selectedCount = lines.filter(r => poLineIds[r.id]).length
+        return (
         <Modal title={`ออก PO จาก ${db.prs.find(p => p.id === poFor)?.prNo}`} onClose={() => setPoFor(null)}
           footer={<>
             <button onClick={() => setPoFor(null)}>ยกเลิก</button>
-            <button className="primary" onClick={submitPo}>ออก PO</button>
+            <button className="primary" onClick={submitPo} disabled={selectedCount === 0}>ออก PO ({selectedCount} รายการ)</button>
           </>}>
+          <label className="field"><span>เลือกรายการเข้า PO นี้ * (1 PR แตกได้หลาย PO — ที่ไม่เลือกจะออก PO ใบถัดไปได้)</span></label>
+          <div className="serial-grid" style={{ marginBottom: 12 }}>
+            {lines.map(r => {
+              const it = itemOf(r.itemId)!
+              return (
+                <div key={r.id} className={`serial-pick${poLineIds[r.id] ? ' selected' : ''}`}
+                  onClick={() => setPoLineIds(s => ({ ...s, [r.id]: !s[r.id] }))}>
+                  <input type="checkbox" readOnly checked={!!poLineIds[r.id]} />
+                  <span>{it.name} × {r.qtyRequested} {it.uom}</span>
+                </div>
+              )
+            })}
+          </div>
           <label className="field"><span>PO No. * (กรอกเลขเอง — ห้ามซ้ำ)</span>
             <input className="mono" value={poNo} onChange={e => setPoNo(e.target.value)} placeholder="เช่น PO-2026-0002" />
           </label>
@@ -234,7 +261,8 @@ export default function PurchasingPage() {
           </label>
           <div className="muted">ระบบจะแจ้งสถานะกลับ Project Dept ทันทีหลังออก PO</div>
         </Modal>
-      )}
+        )
+      })()}
 
       {rejectFor && (
         <Modal title={`ตีกลับ ${db.prs.find(p => p.id === rejectFor)?.prNo}`} onClose={() => setRejectFor(null)}

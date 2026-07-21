@@ -33,7 +33,8 @@ export default function JobDetailPage() {
   const tryAction = useTryAction()
 
   const job = db.jobs.find(j => j.id === jobId)
-  const [modal, setModal] = useState<'draw' | 'return' | 'accessory' | 'issue' | 'cancel' | 'edit' | null>(null)
+  const [modal, setModal] = useState<'draw' | 'return' | 'accessory' | 'issue' | 'cancel' | 'edit' | 'budget' | null>(null)
+  const [budgetOpen, setBudgetOpen] = useState(false)   // ตาราง 7 หมวด (Item 4: เริ่มซ่อน)
   const [drawStock, setDrawStock] = useState('')
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [returnTarget, setReturnTarget] = useState('')
@@ -182,8 +183,23 @@ export default function JobDetailPage() {
 
       {/* ---------------- Project Budget (ต้นทุน 7 หมวด) ---------------- */}
       <div className="panel">
-        <div className="panel-head"><h3>Project Budget</h3>
-          <span className="muted">กำไร = ราคาขาย − ต้นทุนรวม(งบ) · ต้นทุนคงเหลือ = ต้นทุนรวม(งบ) − ใช้จริงรวม</span>
+        <div className="panel-head">
+          <h3>Project Budget</h3>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span className="muted">กำไร = ราคาขาย − ต้นทุนรวม(งบ) · คงเหลือ = งบ − ใช้จริง</span>
+            {canManage && !locked && (
+              <button className="small" onClick={() => {
+                setEditForm({
+                  jobNo: job.jobNo, customerName: job.customerName, contactPhone: job.contactPhone ?? '',
+                  scope: job.scope, installLocation: job.installLocation,
+                  requiredDate: job.requiredDate, lbsQtyRequired: job.lbsQtyRequired,
+                  salePrice: job.budgetSalePrice !== undefined ? String(job.budgetSalePrice) : '',
+                })
+                setEditCosts(costFormFromJob(job.budgetCosts))
+                setModal('budget')
+              }}>✏️ แก้ไขงบประมาณ</button>
+            )}
+          </div>
         </div>
         <div className="panel-body">
           <div className="budget-grid" style={{ marginBottom: 16 }}>
@@ -195,23 +211,28 @@ export default function JobDetailPage() {
             <div className="budget-cell"><div className="b-label">ต้นทุนคงเหลือ</div>
               <div className={`b-value ${budget.remainingCost !== undefined && budget.remainingCost < 0 ? 'neg' : 'pos'}`}>{fmtBaht(budget.remainingCost)}</div></div>
           </div>
-          <div className="table-scroll">
-            <table>
-              <thead><tr><th>หมวดต้นทุน</th><th>Phase Budget</th><th>ที่มา</th><th style={{ textAlign: 'right' }}>งบประมาณ</th><th style={{ textAlign: 'right' }}>ใช้จริง</th><th style={{ textAlign: 'right' }}>คงเหลือ</th></tr></thead>
-              <tbody>
-                {budget.categories.map(c => (
-                  <tr key={c.key}>
-                    <td>{COST_LABEL[c.key]}</td>
-                    <td className="mono">{c.phase || '-'}</td>
-                    <td>{c.fromPR ? <span className="badge blue">PR/PO</span> : <span className="badge neutral">กรอกเอง</span>}</td>
-                    <td style={{ textAlign: 'right' }}>{fmtBaht(c.budget)}</td>
-                    <td style={{ textAlign: 'right' }}>{fmtBaht(c.actual)}</td>
-                    <td style={{ textAlign: 'right' }} className={c.remaining < 0 ? 'b-value neg' : ''}>{fmtBaht(c.remaining)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <button className="small" onClick={() => setBudgetOpen(o => !o)}>
+            {budgetOpen ? '▾' : '▸'} รายละเอียดต้นทุน 7 หมวด (Raw Material → Finance)
+          </button>
+          {budgetOpen && (
+            <div className="table-scroll" style={{ marginTop: 10 }}>
+              <table>
+                <thead><tr><th>หมวดต้นทุน</th><th>Phase Budget</th><th>ที่มา</th><th style={{ textAlign: 'right' }}>งบประมาณ</th><th style={{ textAlign: 'right' }}>ใช้จริง</th><th style={{ textAlign: 'right' }}>คงเหลือ</th></tr></thead>
+                <tbody>
+                  {budget.categories.map(c => (
+                    <tr key={c.key}>
+                      <td>{COST_LABEL[c.key]}</td>
+                      <td className="mono">{c.phase || '-'}</td>
+                      <td>{c.fromPR ? <span className="badge blue">PR/PO</span> : <span className="badge neutral">กรอกเอง</span>}</td>
+                      <td style={{ textAlign: 'right' }}>{fmtBaht(c.budget)}</td>
+                      <td style={{ textAlign: 'right' }}>{fmtBaht(c.actual)}</td>
+                      <td style={{ textAlign: 'right' }} className={c.remaining < 0 ? 'b-value neg' : ''}>{fmtBaht(c.remaining)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
 
@@ -273,7 +294,7 @@ export default function JobDetailPage() {
               {accReqs.map(r => {
                 const item = itemOf(r.itemId)!
                 const pr = db.prs.find(p => p.id === r.prId)
-                const po = db.pos.find(p => p.prId === r.prId && p.status !== 'cancelled')
+                const po = r.poId ? db.pos.find(p => p.id === r.poId) : undefined   // line ผูก PO ใบไหน (0022)
                 const active = r.status !== 'cancelled' && r.status !== 'returned'
                 const lineValue = active && r.unitPrice !== undefined ? r.unitPrice * r.qtyRequested : undefined
                 return (
@@ -574,6 +595,24 @@ export default function JobDetailPage() {
             <input type="number" min={1} value={editForm.lbsQtyRequired} onChange={e => setEditForm({ ...editForm, lbsQtyRequired: Number(e.target.value) })} />
           </label>
           <div className="budget-legend">Project Budget</div>
+          <BudgetFields
+            sale={editForm.salePrice} costs={editCosts}
+            onSale={v => setEditForm({ ...editForm, salePrice: v })}
+            onCosts={setEditCosts}
+          />
+        </Modal>
+      )}
+
+      {modal === 'budget' && (
+        <Modal title={`แก้ไขงบประมาณ — ${job.jobNo}`} onClose={close}
+          footer={<>
+            <button onClick={close}>ยกเลิก</button>
+            <button className="primary"
+              onClick={async () => {
+                const { salePrice, ...rest } = editForm
+                if (await tryAction(() => act.updateJob({ jobId: job.id, ...rest, budgetSalePrice: toBudgetNum(salePrice), budgetCosts: costFormToApi(editCosts) }), 'บันทึกงบประมาณแล้ว')) close()
+              }}>บันทึก</button>
+          </>}>
           <BudgetFields
             sale={editForm.salePrice} costs={editCosts}
             onSale={v => setEditForm({ ...editForm, salePrice: v })}

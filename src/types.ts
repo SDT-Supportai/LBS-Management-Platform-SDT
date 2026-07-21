@@ -133,6 +133,7 @@ export interface AccessoryRequest {
   source: 'central_stock' | 'purchasing'
   status: AccReqStatus
   prId: string | null
+  poId?: string | null         // PO ที่สั่ง line นี้ (1 PR → หลาย PO, 0022)
   requestedBy: string
   createdAt: string
 }

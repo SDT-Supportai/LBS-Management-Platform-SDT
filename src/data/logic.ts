@@ -573,19 +573,28 @@ export function rejectPR(db: DB, actor: User, p: { prId: string; reason: string 
     `ตีกลับ ${pr.prNo} (${job.jobNo}) เหตุผล: ${p.reason.trim()}`)
 }
 
+// ออก PO จาก PR — เลือก line ที่จะสั่ง (1 PR แตกได้หลาย PO), sync 0022
 export function createPO(
   db: DB, actor: User,
-  p: { prId: string; poNo: string; supplierName: string; expectedDate: string },
+  p: { prId: string; poNo: string; supplierName: string; expectedDate: string; requestIds?: string[] },
 ): DB {
   const pr = db.prs.find(x => x.id === p.prId)
   if (!pr) throw new Error('ไม่พบ PR')
-  if (pr.status !== 'pending') throw new Error(`${pr.prNo} ออก PO ไปแล้ว ถูกตีกลับ หรือถูกยกเลิก`)
+  if (pr.status !== 'pending' && pr.status !== 'po_issued') throw new Error(`${pr.prNo} ถูกตีกลับหรือปิดไปแล้ว`)
   const poNo = p.poNo.trim()
   if (!poNo) throw new Error('กรุณาระบุ PO No.')
   if (db.pos.some(x => x.poNo.toLowerCase() === poNo.toLowerCase()))
     throw new Error(`PO No. "${poNo}" มีอยู่แล้ว`)
   if (!p.supplierName.trim()) throw new Error('กรุณาระบุ Supplier')
   const job = db.jobs.find(j => j.id === pr.jobId)!
+
+  // ไม่ระบุ line = เอาทุก line ที่ยังไม่ได้สั่ง (pr_sent) ของ PR นี้
+  const sentLines = db.accessoryRequests.filter(r => r.prId === p.prId && r.status === 'pr_sent')
+  const ids = p.requestIds && p.requestIds.length ? p.requestIds : sentLines.map(r => r.id)
+  const chosen = db.accessoryRequests.filter(r => ids.includes(r.id))
+  if (chosen.length === 0) throw new Error('ไม่มีรายการที่จะออก PO (เลือกรายการที่ยังไม่ได้สั่ง)')
+  if (chosen.some(r => r.prId !== p.prId || r.status !== 'pr_sent'))
+    throw new Error('เลือกได้เฉพาะรายการใน PR นี้ที่ยังไม่ได้ออก PO')
 
   const poId = uid()
   let next: DB = {
@@ -597,43 +606,44 @@ export function createPO(
     }],
     prs: db.prs.map(x => x.id === p.prId ? { ...x, status: 'po_issued' as const } : x),
     accessoryRequests: db.accessoryRequests.map(r =>
-      r.prId === p.prId && r.status === 'pr_sent' ? { ...r, status: 'po_ordered' as const } : r),
+      ids.includes(r.id) ? { ...r, status: 'po_ordered' as const, poId } : r),
   }
   next = notify(next, {
     type: 'po_created', dept: 'project', jobId: pr.jobId,
-    message: `🛒 ${poNo} ออกแล้วจาก ${pr.prNo} (${job.jobNo}) Supplier: ${p.supplierName.trim()} กำหนดส่ง ${p.expectedDate || 'ไม่ระบุ'}`,
+    message: `🛒 ${poNo} ออกแล้วจาก ${pr.prNo} (${job.jobNo}) ${chosen.length} รายการ · Supplier: ${p.supplierName.trim()} กำหนดส่ง ${p.expectedDate || 'ไม่ระบุ'}`,
   })
   return audit(next, actor, 'purchase_order', poId, 'create_po',
-    `ออก ${poNo} จาก ${pr.prNo} (${job.jobNo}) Supplier: ${p.supplierName} — แจ้งสถานะกลับ Project Dept แล้ว`)
+    `ออก ${poNo} จาก ${pr.prNo} (${job.jobNo}) ${chosen.length} รายการ · Supplier: ${p.supplierName}`)
 }
 
-// ยกเลิก PO เดี่ยว (ยังไม่รับของเลย): PO → cancelled, PR คืน pending ให้ออก PO ใหม่
+// ยกเลิก PO เดี่ยว (ยังไม่รับของเลย): คืน line ของ PO → pr_sent; PR กลับ pending ถ้าไม่เหลือ line po_ordered
 export function cancelPO(db: DB, actor: User, p: { poId: string; reason: string }): DB {
   const po = db.pos.find(x => x.id === p.poId)
   if (!po) throw new Error('ไม่พบ PO')
   if (po.status !== 'issued') throw new Error(`${po.poNo} รับของครบแล้วหรือถูกยกเลิกไปแล้ว`)
   if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผลที่ยกเลิก PO')
   const got = db.accessoryRequests
-    .filter(r => r.prId === po.prId)
+    .filter(r => r.poId === p.poId)
     .reduce((s, r) => s + r.qtyReceived, 0)
   if (got > 0)
     throw new Error(`${po.poNo} รับของเข้าระบบแล้ว ${got} หน่วย ยกเลิกไม่ได้ — รับส่วนที่เหลือให้จบ หรือติดต่อ Manager`)
-  const pr = db.prs.find(x => x.id === po.prId)!
   const job = db.jobs.find(j => j.id === po.jobId)!
 
+  const reqs2 = db.accessoryRequests.map(r =>
+    r.poId === p.poId && r.status === 'po_ordered' ? { ...r, status: 'pr_sent' as const, poId: null } : r)
+  const stillOrdered = reqs2.some(r => r.prId === po.prId && r.status === 'po_ordered')
   let next: DB = {
     ...db,
     pos: db.pos.map(x => x.id === p.poId ? { ...x, status: 'cancelled' as const } : x),
-    prs: db.prs.map(x => x.id === po.prId ? { ...x, status: 'pending' as const } : x),
-    accessoryRequests: db.accessoryRequests.map(r =>
-      r.prId === po.prId && r.status === 'po_ordered' ? { ...r, status: 'pr_sent' as const } : r),
+    prs: db.prs.map(x => x.id === po.prId && !stillOrdered ? { ...x, status: 'pending' as const } : x),
+    accessoryRequests: reqs2,
   }
   next = notify(next, {
     type: 'po_cancelled', dept: 'project', jobId: po.jobId,
-    message: `🗑️ ยกเลิก ${po.poNo} (${job.jobNo}) เหตุผล: ${p.reason.trim()} — ${pr.prNo} กลับมารอออก PO ใหม่`,
+    message: `🗑️ ยกเลิก ${po.poNo} (${job.jobNo}) เหตุผล: ${p.reason.trim()} — รายการกลับมารอออก PO ใหม่`,
   })
   return audit(next, actor, 'purchase_order', p.poId, 'cancel_po',
-    `ยกเลิก ${po.poNo} (${job.jobNo}) เหตุผล: ${p.reason.trim()} — คืน ${pr.prNo} เป็นรอออก PO`)
+    `ยกเลิก ${po.poNo} (${job.jobNo}) เหตุผล: ${p.reason.trim()}`)
 }
 
 // Partial receive: รับของทีละรายการ/ทีละจำนวนได้
@@ -648,7 +658,8 @@ export function receivePOItems(
   const receipts = p.receipts.filter(r => r.qty > 0)
   if (receipts.length === 0) throw new Error('กรุณาระบุจำนวนที่รับอย่างน้อย 1 รายการ')
 
-  const lines = db.accessoryRequests.filter(r => r.prId === po.prId)
+  // match line ด้วย poId (1 PR → หลาย PO)
+  const lines = db.accessoryRequests.filter(r => r.poId === po.id)
   const parts: string[] = []
   for (const rc of receipts) {
     const line = lines.find(l => l.id === rc.requestId)
@@ -673,27 +684,27 @@ export function receivePOItems(
     }
   })
 
-  const allComplete = updatedReqs
-    .filter(r => r.prId === po.prId)
-    .every(r => r.status === 'received' || r.status === 'cancelled' || r.status === 'returned')
+  const done = (r: AccessoryRequest) => r.status === 'received' || r.status === 'cancelled' || r.status === 'returned'
+  const poComplete = updatedReqs.filter(r => r.poId === po.id).every(done)          // PO เสร็จเมื่อ line ของ PO ครบ
+  const prComplete = updatedReqs.filter(r => r.prId === po.prId).every(done)        // PR เสร็จเมื่อทุก line ของ PR ครบ
 
   let next: DB = {
     ...db,
     accessoryRequests: updatedReqs,
-    pos: db.pos.map(x => x.id === p.poId && allComplete
+    pos: db.pos.map(x => x.id === p.poId && poComplete
       ? { ...x, status: 'received' as const, receivedAt: now() } : x),
-    prs: db.prs.map(x => x.id === po.prId && allComplete
+    prs: db.prs.map(x => x.id === po.prId && prComplete
       ? { ...x, status: 'received' as const } : x),
   }
   next = notify(next, {
     type: 'po_received', dept: 'project', jobId: po.jobId,
-    message: allComplete
+    message: poComplete
       ? `📬 ${po.poNo} (${job.jobNo}) รับของครบทุกรายการแล้ว`
       : `📬 ${po.poNo} (${job.jobNo}) รับของบางส่วน: ${parts.join(', ')}`,
   })
   next = notifyIfBecameReady(db, next, po.jobId)
-  return audit(next, actor, 'purchase_order', p.poId, allComplete ? 'receive_po_complete' : 'receive_po_partial',
-    `${po.poNo} (${job.jobNo}) รับของ${allComplete ? 'ครบ' : 'บางส่วน'}: ${parts.join(', ')}`)
+  return audit(next, actor, 'purchase_order', p.poId, poComplete ? 'receive_po_complete' : 'receive_po_partial',
+    `${po.poNo} (${job.jobNo}) รับของ${poComplete ? 'ครบ' : 'บางส่วน'}: ${parts.join(', ')}`)
 }
 
 // ---------------- Issue / Install / Cancel ----------------

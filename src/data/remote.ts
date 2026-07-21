@@ -70,7 +70,7 @@ function mapAccReq(r: Row): AccessoryRequest {
     qtyRequested: Number(r.qty_requested), qtyReceived: Number(r.qty_received),
     unitPrice: r.unit_price != null ? Number(r.unit_price) : undefined,
     phaseBudget: r.phase_budget ?? undefined,
-    source: r.source, status: r.status, prId: r.pr_id,
+    source: r.source, status: r.status, prId: r.pr_id, poId: r.po_id ?? null,
     requestedBy: r.requested_by ?? '', createdAt: r.created_at,
   }
 }
@@ -214,8 +214,8 @@ export function remoteActions(sb: SupabaseClient) {
     createPR: (p: { jobId: string; requestIds: string[] }) =>
       rpc(sb, 'rpc_create_pr', { p_job_id: p.jobId, p_request_ids: p.requestIds }),
     rejectPR: (p: { prId: string; reason: string }) => rpc(sb, 'rpc_reject_pr', { p_pr_id: p.prId, p_reason: p.reason }),
-    createPO: (p: { prId: string; poNo: string; supplierName: string; expectedDate: string }) =>
-      rpc(sb, 'rpc_create_po', { p_pr_id: p.prId, p_po_no: p.poNo, p_supplier: p.supplierName, p_expected_date: p.expectedDate || null }),
+    createPO: (p: { prId: string; poNo: string; supplierName: string; expectedDate: string; requestIds?: string[] }) =>
+      rpc(sb, 'rpc_create_po', { p_pr_id: p.prId, p_po_no: p.poNo, p_supplier: p.supplierName, p_expected_date: p.expectedDate || null, p_request_ids: p.requestIds && p.requestIds.length ? p.requestIds : null }),
     cancelPO: (p: { poId: string; reason: string }) =>
       rpc(sb, 'rpc_cancel_po', { p_po_id: p.poId, p_reason: p.reason }),
     receivePOItems: (p: { poId: string; receipts: { requestId: string; qty: number }[] }) =>
