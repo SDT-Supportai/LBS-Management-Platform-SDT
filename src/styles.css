@@ -390,3 +390,17 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary-sof
   .login-logo { animation: none; }
   .sidebar { transition: none; }
 }
+
+/* ---------- print: สรุปโครงการ (Job Detail → Ctrl+P / บันทึก PDF) ---------- */
+@media print {
+  .sidebar, .topbar, .mobile-header, .nav-backdrop, .modal-overlay,
+  button, .glow-dot, .aurora { display: none !important; }
+  .app { display: block; }
+  .main { padding: 0; }
+  .page-title { font-size: 20px; }
+  /* พิมพ์สีพื้น badge/หัวตารางให้อ่านออก */
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .panel { border: 1px solid #999; box-shadow: none; break-inside: avoid; margin-bottom: 12px; }
+  .table-scroll { overflow: visible !important; }
+  a { color: #000; text-decoration: none; }
+}

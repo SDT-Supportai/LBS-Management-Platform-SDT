@@ -101,6 +101,9 @@ export default function JobDetailPage() {
       <div className="page-sub">
         {job.customerName}{job.contactPhone && <> · 📞 {job.contactPhone}</>} · {job.scope || 'ไม่ระบุ scope'} · ติดตั้งที่ {job.installLocation || '-'} · กำหนด {fmtDate(job.requiredDate)}
       </div>
+      <div style={{ marginBottom: 16 }}>
+        <button className="small" onClick={() => window.print()}>🖨️ ปริ้นสรุปโครงการ (PDF)</button>
+      </div>
 
       {job.terminalStatus === 'issued' && (
         <div className="panel"><div className="panel-body">
