@@ -2,11 +2,15 @@ import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import { stockSummary } from '../data/logic'
-import { Modal, useToast, useTryAction } from '../ui/components'
-import { fmtDate } from '../ui/format'
+import { Modal, useToast, useTryAction, toBudgetNum } from '../ui/components'
+import { fmtBaht, fmtDate } from '../ui/format'
 
-interface UnitRow { lvb: string; om: string }
-const emptyRow = (): UnitRow => ({ lvb: '', om: '' })
+interface UnitRow { lvb: string; om: string; cost: string }
+const emptyRow = (): UnitRow => ({ lvb: '', om: '', cost: '' })
+
+// UnitRow (ฟอร์ม string) → payload logic/RPC ({ lvb, om, cost? })
+const rowsToUnits = (rows: UnitRow[]) =>
+  rows.map(r => ({ lvb: r.lvb, om: r.om, cost: toBudgetNum(r.cost) }))
 
 // สเปกคงที่ของ LBS ที่รับเข้าคลัง (แสดงเป็น Description ทุกคลัง)
 const LBS_DESCRIPTION = '115 kV Load Break Switch with SF6 Gas Interrupters, 2000A'
@@ -38,6 +42,7 @@ function UnitRowsEditor({ rows, setRows }: { rows: UnitRow[]; setRows: (r: UnitR
           <span>#</span>
           <span>Serial.LVB *</span>
           <span>Serial.OM *</span>
+          <span>ต้นทุน/เครื่อง (฿)</span>
           <span />
         </div>
         {rows.map((r, i) => (
@@ -45,6 +50,7 @@ function UnitRowsEditor({ rows, setRows }: { rows: UnitRow[]; setRows: (r: UnitR
             <span className="muted">{i + 1}</span>
             <input className="mono" value={r.lvb} placeholder="LBS26-001" onChange={e => update(i, 'lvb', e.target.value)} />
             <input className="mono" value={r.om} placeholder="OM26-001" onChange={e => update(i, 'om', e.target.value)} />
+            <input type="number" min={0} value={r.cost} placeholder="0" onChange={e => update(i, 'cost', e.target.value)} />
             <button className="small danger" type="button" onClick={() => remove(i)} title="ลบแถว">✕</button>
           </div>
         ))}
@@ -92,7 +98,7 @@ export default function StocksPage() {
 
   const submitCreate = async () => {
     if (await tryAction(
-      () => act.createProjectStock({ stockNo, itemId: lbsItem.id, units: rows, notes }),
+      () => act.createProjectStock({ stockNo, itemId: lbsItem.id, units: rowsToUnits(rows), notes }),
       `สร้าง ${stockNo} เรียบร้อย`,
     )) {
       setShowCreate(false); setRows([emptyRow()]); setNotes('')
@@ -102,7 +108,7 @@ export default function StocksPage() {
   const submitAdd = async () => {
     if (!addTo) return
     if (await tryAction(
-      () => act.addUnitsToStock({ stockId: addTo, units: rows }),
+      () => act.addUnitsToStock({ stockId: addTo, units: rowsToUnits(rows) }),
       'รับ LBS เข้าสต็อกเรียบร้อย',
     )) { setAddTo(null); setRows([emptyRow()]) }
   }
@@ -120,6 +126,7 @@ export default function StocksPage() {
       return {
         'Serial.LVB': u.serialLvb,
         'Serial.OM': u.serialOm,
+        'ต้นทุน/เครื่อง': u.unitCost ?? '',
         'สถานะ': UNIT_STATUS_LABEL[u.status] ?? u.status,
         'Job No.': job?.jobNo ?? '',
         'ชื่อลูกค้า': job?.customerName ?? '',
@@ -128,7 +135,7 @@ export default function StocksPage() {
       }
     })
     const ws = XLSX.utils.json_to_sheet(rows)
-    ws['!cols'] = [{ wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 24 }, { wch: 14 }, { wch: 28 }]
+    ws['!cols'] = [{ wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 24 }, { wch: 14 }, { wch: 28 }]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, s.stockNo.slice(0, 31))
     XLSX.writeFile(wb, `${s.stockNo.replace(/[\\/:*?"<>|]/g, '-')}-${new Date().toISOString().slice(0, 10)}.xlsx`)
@@ -149,13 +156,16 @@ export default function StocksPage() {
       raw.forEach((row, i) => {
         const lvb = cell(row, ['Serial.LVB', 'serial.lvb', 'serial_lvb', 'lvb'])
         const om = cell(row, ['Serial.OM', 'serial.om', 'serial_om', 'om'])
+        const costStr = cell(row, ['ต้นทุน/เครื่อง', 'ต้นทุน', 'unit_cost', 'cost'])
         if (!lvb && !om) return                       // ข้ามแถวว่าง
         const no = `แถว ${i + 2}`
         if (!lvb || !om) return void errors.push(`${no}: ต้องมีทั้ง Serial.LVB และ Serial.OM`)
         if (lvb === om) return void errors.push(`${no}: LVB กับ OM ห้ามเป็นเลขเดียวกัน (${lvb})`)
         if (seen.has(lvb) || seen.has(om)) return void errors.push(`${no}: "${lvb}" / "${om}" ซ้ำกับที่มีในระบบ/ในไฟล์`)
+        if (costStr !== '' && (Number.isNaN(Number(costStr)) || Number(costStr) < 0))
+          return void errors.push(`${no}: ต้นทุน/เครื่อง "${costStr}" ต้องเป็นตัวเลขไม่ติดลบ`)
         seen.add(lvb); seen.add(om)
-        units.push({ lvb, om })
+        units.push({ lvb, om, cost: costStr })
       })
       if (units.length === 0 && errors.length === 0) return show('ไม่พบแถวที่กรอก Serial ในไฟล์', true)
       setImportPreview({ stockId: target.id, stockNo: target.no, units, errors })
@@ -168,7 +178,7 @@ export default function StocksPage() {
     if (!importPreview) return
     setImporting(true)
     const ok = await tryAction(
-      () => act.addUnitsToStock({ stockId: importPreview.stockId, units: importPreview.units }),
+      () => act.addUnitsToStock({ stockId: importPreview.stockId, units: rowsToUnits(importPreview.units) }),
       `รับเข้า ${importPreview.units.length} เครื่อง เข้า ${importPreview.stockNo} แล้ว`,
     )
     setImporting(false)
@@ -200,7 +210,12 @@ export default function StocksPage() {
                 {s.stockNo}{' '}
                 <span className="badge green">คงเหลือ {sum.available}</span>{' '}
                 <span className="badge blue">ถูกดึง {sum.allocated}</span>{' '}
-                <span className="badge neutral">เบิกแล้ว {sum.issued}</span>
+                <span className="badge neutral">เบิกแล้ว {sum.issued}</span>{' '}
+                {sum.totalCost !== undefined && (
+                  <span className="badge amber" title={`รวมต้นทุน ${sum.costedUnits}/${sum.total} เครื่องที่กรอกราคา`}>
+                    มูลค่าคลัง {fmtBaht(sum.totalCost)}
+                  </span>
+                )}
               </h3>
               <div style={{ display: 'flex', gap: 8 }}>
                 {s.status === 'closed' && <span className="badge red">ปิดคลัง</span>}
@@ -225,7 +240,7 @@ export default function StocksPage() {
             {expanded && (
               <div className="table-scroll">
                 <table>
-                  <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th>สถานะ</th><th>ชื่อลูกค้า</th><th>เบอร์ติดต่อ</th><th>สถานที่ติดตั้ง</th><th>Job No.</th>{canManage && <th></th>}</tr></thead>
+                  <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>ต้นทุน/เครื่อง</th><th>สถานะ</th><th>ชื่อลูกค้า</th><th>เบอร์ติดต่อ</th><th>สถานที่ติดตั้ง</th><th>Job No.</th>{canManage && <th></th>}</tr></thead>
                   <tbody>
                     {units.map(u => {
                       // ข้อมูลลูกค้า ref จาก Job ที่เครื่องถูกดึงเข้า — เครื่องยังไม่เข้า Job = '-'
@@ -234,6 +249,7 @@ export default function StocksPage() {
                         <tr key={u.id}>
                           <td className="mono">{u.serialLvb}</td>
                           <td className="mono">{u.serialOm}</td>
+                          <td style={{ textAlign: 'right' }}>{fmtBaht(u.unitCost)}</td>
                           <td>
                             {u.status === 'in_stock' && <span className="badge green">อยู่ในสต็อก</span>}
                             {u.status === 'allocated' && <span className="badge blue">ถูกดึงเข้า Job</span>}
@@ -325,6 +341,7 @@ export default function StocksPage() {
       {showCreate && (
         <Modal
           title="สร้าง Project Stock ใหม่"
+          size="wide"
           onClose={() => setShowCreate(false)}
           footer={<>
             <button onClick={() => setShowCreate(false)}>ยกเลิก</button>
@@ -349,6 +366,7 @@ export default function StocksPage() {
       {addTo && (
         <Modal
           title={`รับ LBS เพิ่มเข้า ${db.projectStocks.find(s => s.id === addTo)?.stockNo}`}
+          size="wide"
           onClose={() => setAddTo(null)}
           footer={<>
             <button onClick={() => setAddTo(null)}>ยกเลิก</button>
@@ -409,13 +427,14 @@ export default function StocksPage() {
           )}
           <div className="table-scroll" style={{ maxHeight: 320, overflowY: 'auto' }}>
             <table>
-              <thead><tr><th>#</th><th>Serial.LVB</th><th>Serial.OM</th></tr></thead>
+              <thead><tr><th>#</th><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>ต้นทุน/เครื่อง</th></tr></thead>
               <tbody>
                 {importPreview.units.map((u, i) => (
                   <tr key={i}>
                     <td className="muted">{i + 1}</td>
                     <td className="mono">{u.lvb}</td>
                     <td className="mono">{u.om}</td>
+                    <td style={{ textAlign: 'right' }}>{u.cost ? fmtBaht(Number(u.cost)) : '-'}</td>
                   </tr>
                 ))}
               </tbody>

@@ -18,11 +18,11 @@ const ITEMS: Item[] = [
   { id: 'i-cable', code: 'ACC-CBL-01', epicorCode: 'EPC-CBL-25', name: 'Control Cable 25m', itemType: 'accessory', uom: 'ม้วน', stockableCentrally: false },
 ]
 
-// สร้างคู่ serial (LVB + OM) ต่อเครื่อง เช่น LBS24-001 / OM24-001
-function units(prefix: string, from: number, count: number): { lvb: string; om: string }[] {
+// สร้างคู่ serial (LVB + OM) ต่อเครื่อง เช่น LBS24-001 / OM24-001 · cost = ต้นทุนต่อเครื่อง (บาท)
+function units(prefix: string, from: number, count: number, cost?: number): { lvb: string; om: string; cost?: number }[] {
   return Array.from({ length: count }, (_, i) => {
     const n = String(from + i).padStart(3, '0')
-    return { lvb: `${prefix}-${n}`, om: `OM${prefix.slice(3)}-${n}` }
+    return { lvb: `${prefix}-${n}`, om: `OM${prefix.slice(3)}-${n}`, cost }
   })
 }
 
@@ -43,11 +43,11 @@ export function buildSeedDb(): DB {
   // Sales สั่ง LBS เข้าสต็อกกลาง 2 รอบ
   db = L.createProjectStock(db, sales, {
     stockNo: 'Project Stock No.1', itemId: 'i-lbs',
-    units: units('LBS24', 1, 30), notes: 'ล็อตสั่งซื้อรอบที่ 1 (30 set)',
+    units: units('LBS24', 1, 30, 850000), notes: 'ล็อตสั่งซื้อรอบที่ 1 (30 set)',
   })
   db = L.createProjectStock(db, sales, {
     stockNo: 'Project Stock No.2', itemId: 'i-lbs',
-    units: units('LBS25', 1, 10), notes: 'ล็อตสั่งซื้อรอบที่ 2 (10 set)',
+    units: units('LBS25', 1, 10, 890000), notes: 'ล็อตสั่งซื้อรอบที่ 2 (10 set)',
   })
   const stock1 = db.projectStocks[0].id
   const stock2 = db.projectStocks[1].id

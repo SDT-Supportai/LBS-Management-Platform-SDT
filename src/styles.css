@@ -252,6 +252,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary-sof
   background: #fff; border-radius: 12px; width: 100%; max-width: 520px;
   max-height: 84vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,.25);
 }
+.modal.modal-wide { max-width: 880px; }
 .modal-head { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
 .modal-head h3 { font-size: 15px; }
 .modal-body { padding: 18px 20px; }
@@ -260,7 +261,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary-sof
 /* ---------- misc ---------- */
 /* ตัวแก้ไขรายเครื่อง (Serial.LVB + Serial.OM) */
 .unit-rows { max-height: 300px; overflow-y: auto; }
-.unit-row { display: grid; grid-template-columns: 28px 1fr 1fr 34px; gap: 8px; align-items: center; margin-bottom: 6px; }
+.unit-row { display: grid; grid-template-columns: 28px 1fr 1fr 120px 34px; gap: 8px; align-items: center; margin-bottom: 6px; }
 .unit-row-head span { color: var(--muted); font-weight: 600; font-size: 12px; }
 .unit-row input { padding: 7px 9px; }
 .unit-row button.small { padding: 5px 8px; }

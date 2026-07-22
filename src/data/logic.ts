@@ -91,18 +91,20 @@ function notifyIfBecameReady(_before: DB, after: DB, _jobId: string): DB {
 // ---------------- Project Stock (Sales) ----------------
 
 // รับคู่ serial (LVB + OM) ต่อเครื่อง — ตรวจครบถ้วน + unique ทั้งสอง field
-export interface UnitSerialInput { lvb: string; om: string }
+export interface UnitSerialInput { lvb: string; om: string; cost?: number }
 
 function normalizeUnits(rows: UnitSerialInput[]): UnitSerialInput[] {
   return rows
-    .map(r => ({ lvb: r.lvb.trim(), om: r.om.trim() }))
+    .map(r => ({ lvb: r.lvb.trim(), om: r.om.trim(), cost: r.cost }))
     .filter(r => r.lvb || r.om)
 }
 
-function assertUnitsValid(db: DB, units: { lvb: string; om: string }[]): void {
+function assertUnitsValid(db: DB, units: { lvb: string; om: string; cost?: number }[]): void {
   if (units.length === 0) throw new Error('กรุณาระบุ Serial No. อย่างน้อย 1 เครื่อง')
   const missing = units.find(u => !u.lvb || !u.om)
   if (missing) throw new Error('ต้องกรอกทั้ง Serial.LVB และ Serial.OM ให้ครบทุกเครื่อง')
+  const badCost = units.find(u => u.cost !== undefined && (Number.isNaN(u.cost) || u.cost < 0))
+  if (badCost) throw new Error('ต้นทุนตัว LBS ต้องเป็นตัวเลขไม่ติดลบ')
   const allSerials = db.lbsUnits.flatMap(u => [u.serialLvb, u.serialOm])
   for (const field of ['lvb', 'om'] as const) {
     const label = field === 'lvb' ? 'Serial.LVB' : 'Serial.OM'
@@ -141,7 +143,7 @@ export function createProjectStock(
       ...db.lbsUnits,
       ...units.map(u => ({
         id: uid(), serialLvb: u.lvb, serialOm: u.om, projectStockId: stockId,
-        status: 'in_stock' as const, jobId: null,
+        status: 'in_stock' as const, jobId: null, unitCost: u.cost,
       })),
     ],
   }
@@ -164,7 +166,7 @@ export function addUnitsToStock(db: DB, actor: User, p: { stockId: string; units
       ...db.lbsUnits,
       ...units.map(u => ({
         id: uid(), serialLvb: u.lvb, serialOm: u.om, projectStockId: p.stockId,
-        status: 'in_stock' as const, jobId: null,
+        status: 'in_stock' as const, jobId: null, unitCost: u.cost,
       })),
     ],
   }
@@ -317,6 +319,26 @@ export function updateJob(
   next = notifyIfBecameReady(db, next, p.jobId)
   return audit(next, actor, 'job', p.jobId, 'update_job',
     `แก้ไขข้อมูล ${job.jobNo}${jobNo !== job.jobNo ? ` (เปลี่ยนเลขเป็น ${jobNo})` : ''}`)
+}
+
+// แก้เฉพาะงบประมาณ (ราคาขาย + ต้นทุน 7 หมวด) — Manage แก้ได้แม้ Job ล็อกแล้ว
+// (ไม่แตะ scope/allocation/Job No. จึงไม่ผ่าน assertJobEditable) — สำหรับแก้ตัวเลขบัญชีย้อนหลัง
+export function updateJobBudget(
+  db: DB, actor: User,
+  p: { jobId: string } & JobBudgetInput,
+): DB {
+  const job = db.jobs.find(j => j.id === p.jobId)
+  if (!job) throw new Error('ไม่พบ Job')
+  const salePrice = normalizeBudget(p.budgetSalePrice)
+  const costs = assertBudgetCosts(p.budgetCosts)
+  const next: DB = {
+    ...db,
+    jobs: db.jobs.map(j => j.id === p.jobId ? {
+      ...j, budgetSalePrice: salePrice, budgetCost: totalBudgetCost(costs), budgetCosts: costs,
+    } : j),
+  }
+  return audit(next, actor, 'job', p.jobId, 'update_job',
+    `แก้ไขงบประมาณ ${job.jobNo}`)
 }
 
 // ลบได้เฉพาะ Job เปล่า (Draft ที่ยังไม่เคยมี transaction ใดๆ)
@@ -1137,11 +1159,15 @@ export function setNotificationLineStatus(db: DB, p: { ids: string[]; status: 'o
 
 export function stockSummary(db: DB, stockId: string) {
   const units = db.lbsUnits.filter(u => u.projectStockId === stockId)
+  const withCost = units.filter(u => u.unitCost !== undefined)
   return {
     total: units.length,
     available: units.filter(u => u.status === 'in_stock').length,
     allocated: units.filter(u => u.status === 'allocated').length,
     issued: units.filter(u => u.status === 'issued').length,
+    // มูลค่าคลัง = Σ ต้นทุนต่อเครื่อง (เฉพาะเครื่องที่กรอกราคา) · undefined ถ้ายังไม่มีเครื่องใดกรอกราคา
+    totalCost: withCost.length ? withCost.reduce((s, u) => s + (u.unitCost ?? 0), 0) : undefined,
+    costedUnits: withCost.length,
   }
 }
 
@@ -1163,6 +1189,14 @@ function categoryMaterialActual(db: DB, jobId: string, key: CostCategoryKey): nu
     .reduce((sum, r) => sum + (r.unitPrice ?? 0) * r.qtyRequested, 0)
 }
 
+// ต้นทุนตัว LBS ที่ดึงเข้า Job = Σ ต้นทุนต่อเครื่องของ unit ที่ยังถือ/เบิกให้ Job นี้ (allocated/issued)
+// → บวกเข้า actual หมวด Raw Material (main equipment เป็นต้นทุนวัตถุดิบหลักของงาน)
+export function jobLbsCost(db: DB, jobId: string): number {
+  return db.lbsUnits
+    .filter(u => u.jobId === jobId && (u.status === 'allocated' || u.status === 'issued'))
+    .reduce((sum, u) => sum + (u.unitCost ?? 0), 0)
+}
+
 // สรุปงบประมาณ Job แยก 7 หมวด: raw_mat/outsourcing actual มาจาก PR/PO, อีก 5 หมวดกรอกเอง
 // กำไร = ราคาขาย − ต้นทุนรวม(งบ), ต้นทุนคงเหลือ = ต้นทุนรวม(งบ) − ใช้จริงรวม
 export function jobBudgetSummary(db: DB, job: Job) {
@@ -1175,17 +1209,20 @@ export function jobBudgetSummary(db: DB, job: Job) {
   ] as { key: CostCategoryKey; fromPR: boolean }[]).map(c => {
     const cat = costs[c.key]
     const budget = cat?.budget ?? 0
-    const actual = c.fromPR ? categoryMaterialActual(db, job.id, c.key) : (cat?.actual ?? 0)
+    // raw_mat actual = ค่าวัสดุ PR/PO + ต้นทุนตัว LBS ที่ดึงเข้า Job นี้
+    const lbsCost = c.key === 'raw_mat' ? jobLbsCost(db, job.id) : 0
+    const actual = c.fromPR ? categoryMaterialActual(db, job.id, c.key) + lbsCost : (cat?.actual ?? 0)
     return { key: c.key, fromPR: c.fromPR, phase: cat?.phase, budget, actual, remaining: budget - actual }
   })
   const cost = job.budgetCost ?? (categories.some(c => c.budget) ? categories.reduce((s, c) => s + c.budget, 0) : undefined)
   const totalActual = categories.reduce((s, c) => s + c.actual, 0)
-  // materialValue = ใช้จริงหมวดที่มาจาก PR/PO (raw_mat + outsourcing) — ใช้แสดงในแผง Purchase Orders
-  const materialValue = categories.filter(c => c.fromPR).reduce((s, c) => s + c.actual, 0)
+  const lbsCost = jobLbsCost(db, job.id)
+  // materialValue = ค่าวัสดุ PR/PO ล้วน (raw_mat + outsourcing) ไม่รวมต้นทุนตัว LBS — ใช้แสดงในแผง Purchase Orders
+  const materialValue = categories.filter(c => c.fromPR).reduce((s, c) => s + c.actual, 0) - lbsCost
   const profit = salePrice !== undefined && cost !== undefined ? salePrice - cost : undefined
   const margin = profit !== undefined && salePrice ? (profit / salePrice) * 100 : undefined
   const remainingCost = cost !== undefined ? cost - totalActual : undefined
-  return { salePrice, cost, profit, margin, materialValue, totalActual, remainingCost, categories }
+  return { salePrice, cost, profit, margin, materialValue, lbsCost, totalActual, remainingCost, categories }
 }
 
 export function unreadNotifications(db: DB, user: User) {

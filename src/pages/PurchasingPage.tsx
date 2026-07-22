@@ -2,7 +2,10 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import { Modal, useTryAction } from '../ui/components'
-import { fmtDate, fmtDateTime } from '../ui/format'
+import { fmtBaht, fmtDate, fmtDateTime, COST_CATEGORIES } from '../ui/format'
+import type { CostCategoryKey } from '../types'
+
+const COST_LABEL: Record<string, string> = Object.fromEntries(COST_CATEGORIES.map(c => [c.key, c.label]))
 
 export default function PurchasingPage() {
   const { db, user, act } = useStore()
@@ -133,24 +136,50 @@ export default function PurchasingPage() {
             {prsToOrder.length > 0 && (
               <div className="table-scroll">
                 <table>
-                  <thead><tr><th>PR No.</th><th>รายการที่รอออก PO</th><th>ส่งเมื่อ</th><th></th></tr></thead>
+                  <thead><tr>
+                    <th>PR No.</th><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th>
+                    <th style={{ textAlign: 'right' }}>จำนวน</th>
+                    <th style={{ textAlign: 'right' }}>ราคา/หน่วย</th>
+                    <th style={{ textAlign: 'right' }}>มูลค่า</th>
+                    <th>Phase Budget</th><th>ส่งเมื่อ</th><th></th>
+                  </tr></thead>
                   <tbody>
-                    {prsToOrder.map(pr => (
-                      <tr key={pr.id}>
-                        <td className="mono"><b>{pr.prNo}</b>{pr.status === 'po_issued' && <div className="muted" style={{ fontSize: 11 }}>ออก PO บางส่วนแล้ว</div>}</td>
-                        <td>{unorderedLines(pr.id).map(r => {
-                          const it = itemOf(r.itemId)!
-                          return <div key={r.id}>{it.name} × {r.qtyRequested} {it.uom}</div>
-                        })}</td>
-                        <td className="muted">{fmtDateTime(pr.createdAt)}</td>
-                        <td style={{ whiteSpace: 'nowrap' }}>
-                          {canManage && <>
-                            <button className="small primary" onClick={() => openPo(pr.id)}>ออก PO</button>{' '}
-                            {pr.status === 'pending' && <button className="small danger" onClick={() => { setRejectReason(''); setRejectFor(pr.id) }}>ตีกลับ</button>}
-                          </>}
-                        </td>
-                      </tr>
-                    ))}
+                    {prsToOrder.map(pr => {
+                      const lines = unorderedLines(pr.id)
+                      return lines.map((r, idx) => {
+                        const it = itemOf(r.itemId)!
+                        const value = r.unitPrice !== undefined ? r.unitPrice * r.qtyRequested : undefined
+                        const cat = r.phaseBudget ? (COST_LABEL[r.phaseBudget] ?? r.phaseBudget) : undefined
+                        const phase = r.phaseBudget ? job.budgetCosts?.[r.phaseBudget as CostCategoryKey]?.phase : undefined
+                        return (
+                          <tr key={r.id}>
+                            {idx === 0 && (
+                              <td className="mono" rowSpan={lines.length}>
+                                <b>{pr.prNo}</b>{pr.status === 'po_issued' && <div className="muted" style={{ fontSize: 11 }}>ออก PO บางส่วนแล้ว</div>}
+                              </td>
+                            )}
+                            <td className="mono">{it.epicorCode || '-'}</td>
+                            <td>{it.name} <span className="muted mono">{it.code}</span></td>
+                            <td style={{ textAlign: 'right' }}>{r.qtyRequested} {it.uom}</td>
+                            <td style={{ textAlign: 'right' }}>{fmtBaht(r.unitPrice)}</td>
+                            <td style={{ textAlign: 'right' }}>{fmtBaht(value)}</td>
+                            <td>
+                              {cat ?? '-'}
+                              {phase && <div className="muted mono" style={{ fontSize: 11 }}>Phase: {phase}</div>}
+                            </td>
+                            {idx === 0 && <td className="muted" rowSpan={lines.length}>{fmtDateTime(pr.createdAt)}</td>}
+                            {idx === 0 && (
+                              <td style={{ whiteSpace: 'nowrap' }} rowSpan={lines.length}>
+                                {canManage && <>
+                                  <button className="small primary" onClick={() => openPo(pr.id)}>ออก PO</button>{' '}
+                                  {pr.status === 'pending' && <button className="small danger" onClick={() => { setRejectReason(''); setRejectFor(pr.id) }}>ตีกลับ</button>}
+                                </>}
+                              </td>
+                            )}
+                          </tr>
+                        )
+                      })
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -231,24 +260,43 @@ export default function PurchasingPage() {
       {poFor && (() => {
         const lines = unorderedLines(poFor)
         const selectedCount = lines.filter(r => poLineIds[r.id]).length
+        const poForJob = db.jobs.find(j => j.id === db.prs.find(p => p.id === poFor)?.jobId)
         return (
-        <Modal title={`ออก PO จาก ${db.prs.find(p => p.id === poFor)?.prNo}`} onClose={() => setPoFor(null)}
+        <Modal title={`ออก PO จาก ${db.prs.find(p => p.id === poFor)?.prNo}`} size="wide" onClose={() => setPoFor(null)}
           footer={<>
             <button onClick={() => setPoFor(null)}>ยกเลิก</button>
             <button className="primary" onClick={submitPo} disabled={selectedCount === 0}>ออก PO ({selectedCount} รายการ)</button>
           </>}>
           <label className="field"><span>เลือกรายการเข้า PO นี้ * (1 PR แตกได้หลาย PO — ที่ไม่เลือกจะออก PO ใบถัดไปได้)</span></label>
-          <div className="serial-grid" style={{ marginBottom: 12 }}>
-            {lines.map(r => {
-              const it = itemOf(r.itemId)!
-              return (
-                <div key={r.id} className={`serial-pick${poLineIds[r.id] ? ' selected' : ''}`}
-                  onClick={() => setPoLineIds(s => ({ ...s, [r.id]: !s[r.id] }))}>
-                  <input type="checkbox" readOnly checked={!!poLineIds[r.id]} />
-                  <span>{it.name} × {r.qtyRequested} {it.uom}</span>
-                </div>
-              )
-            })}
+          <div className="table-scroll" style={{ marginBottom: 12 }}>
+            <table>
+              <thead><tr>
+                <th></th><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th>
+                <th style={{ textAlign: 'right' }}>จำนวน</th>
+                <th style={{ textAlign: 'right' }}>ราคา/หน่วย</th>
+                <th style={{ textAlign: 'right' }}>มูลค่า</th>
+                <th>Phase Budget</th>
+              </tr></thead>
+              <tbody>
+                {lines.map(r => {
+                  const it = itemOf(r.itemId)!
+                  const value = r.unitPrice !== undefined ? r.unitPrice * r.qtyRequested : undefined
+                  const cat = r.phaseBudget ? (COST_LABEL[r.phaseBudget] ?? r.phaseBudget) : undefined
+                  const phase = r.phaseBudget ? poForJob?.budgetCosts?.[r.phaseBudget as CostCategoryKey]?.phase : undefined
+                  return (
+                    <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => setPoLineIds(s => ({ ...s, [r.id]: !s[r.id] }))}>
+                      <td><input type="checkbox" readOnly checked={!!poLineIds[r.id]} /></td>
+                      <td className="mono">{it.epicorCode || '-'}</td>
+                      <td>{it.name} <span className="muted mono">{it.code}</span></td>
+                      <td style={{ textAlign: 'right' }}>{r.qtyRequested} {it.uom}</td>
+                      <td style={{ textAlign: 'right' }}>{fmtBaht(r.unitPrice)}</td>
+                      <td style={{ textAlign: 'right' }}>{fmtBaht(value)}</td>
+                      <td>{cat ?? '-'}{phase && <div className="muted mono" style={{ fontSize: 11 }}>Phase: {phase}</div>}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
           <label className="field"><span>PO No. * (กรอกเลขเอง — ห้ามซ้ำ)</span>
             <input className="mono" value={poNo} onChange={e => setPoNo(e.target.value)} placeholder="เช่น PO-2026-0002" />

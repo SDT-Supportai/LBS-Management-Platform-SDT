@@ -92,6 +92,40 @@ export default function JobDetailPage() {
   const selAccItem = itemOf(accForm.itemId)
   const selAccStockQty = db.accessoryStock.find(r => r.itemId === accForm.itemId)?.qtyOnHand ?? 0
 
+  // Export รายการวัสดุ (Purchase Orders) ของ Job → Excel · xlsx โหลด dynamic กัน bundle บวม
+  const exportPurchaseOrders = async () => {
+    if (!job) return
+    const XLSX = await import('xlsx')
+    const rows = accReqs.map(r => {
+      const item = itemOf(r.itemId)!
+      const pr = db.prs.find(p => p.id === r.prId)
+      const po = r.poId ? db.pos.find(p => p.id === r.poId) : undefined
+      const active = r.status !== 'cancelled' && r.status !== 'returned'
+      const lineValue = active && r.unitPrice !== undefined ? r.unitPrice * r.qtyRequested : undefined
+      const cat = r.phaseBudget ? (COST_LABEL[r.phaseBudget] ?? r.phaseBudget) : ''
+      const phase = r.phaseBudget ? (job.budgetCosts?.[r.phaseBudget as CostCategoryKey]?.phase ?? '') : ''
+      return {
+        'รหัส Epicor': item.epicorCode || '',
+        'ชื่ออุปกรณ์': item.name,
+        'รหัสภายใน': item.code,
+        'จำนวน': r.qtyRequested,
+        'หน่วย': item.uom,
+        'ราคา/หน่วย': r.unitPrice ?? '',
+        'มูลค่า': lineValue ?? '',
+        'Phase Budget': cat,
+        'Phase': phase,
+        'แหล่ง': r.source === 'central_stock' ? 'คลังสินค้า' : 'Purchasing',
+        'สถานะ': ACC_STATUS_LABEL[r.status],
+        'PR / PO': [pr?.prNo, po?.poNo].filter(Boolean).join(' / '),
+      }
+    })
+    const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ 'รหัส Epicor': '', 'ชื่ออุปกรณ์': '(ยังไม่มีรายการวัสดุ)' }])
+    ws['!cols'] = [{ wch: 14 }, { wch: 24 }, { wch: 14 }, { wch: 8 }, { wch: 8 }, { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 18 }]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Purchase Orders')
+    XLSX.writeFile(wb, `${job.jobNo.replace(/[\\/:*?"<>|]/g, '-')}-PO-${new Date().toISOString().slice(0, 10)}.xlsx`)
+  }
+
   return (
     <>
       <div style={{ marginBottom: 6 }}><Link to="/jobs">← กลับหน้า Jobs</Link></div>
@@ -187,7 +221,8 @@ export default function JobDetailPage() {
           <h3>Project Budget</h3>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <span className="muted">กำไร = ราคาขาย − ต้นทุนรวม(งบ) · คงเหลือ = งบ − ใช้จริง</span>
-            {canManage && !locked && (
+            {/* Manage แก้งบได้แม้ Job ล็อกแล้ว (แก้ตัวเลขบัญชีย้อนหลัง) — role อื่นแก้ได้เฉพาะก่อนล็อก */}
+            {((canManage && !locked) || isManage) && (
               <button className="small" onClick={() => {
                 setEditForm({
                   jobNo: job.jobNo, customerName: job.customerName, contactPhone: job.contactPhone ?? '',
@@ -197,7 +232,7 @@ export default function JobDetailPage() {
                 })
                 setEditCosts(costFormFromJob(job.budgetCosts))
                 setModal('budget')
-              }}>✏️ แก้ไขงบประมาณ</button>
+              }}>✏️ แก้ไขงบประมาณ{locked ? ' (ล็อกแล้ว)' : ''}</button>
             )}
           </div>
         </div>
@@ -231,6 +266,11 @@ export default function JobDetailPage() {
                   ))}
                 </tbody>
               </table>
+              {budget.lbsCost > 0 && (
+                <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+                  * ใช้จริงหมวด Raw Material รวมต้นทุนตัว LBS ที่ดึงเข้า Job {fmtBaht(budget.lbsCost)} ({allocatedUnits.length} เครื่อง)
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -267,6 +307,7 @@ export default function JobDetailPage() {
         <div className="panel-head">
           <h3>Purchase Orders <span className="muted" style={{ fontWeight: 400 }}>· มูลค่าวัสดุ {fmtBaht(budget.materialValue)} · ต้นทุนคงเหลือ {fmtBaht(budget.remainingCost)}</span></h3>
           <div style={{ display: 'flex', gap: 8 }}>
+            <button className="small" onClick={exportPurchaseOrders} disabled={accReqs.length === 0}>⬇ Export Excel</button>
             {canManage && !locked && (
               <button className="small" onClick={() => { setAccForm({ itemId: accessoryItems[0]?.id ?? '', qty: 1, source: 'central_stock', unitPrice: '', phaseBudget: 'raw_mat' }); openModal('accessory') }}>+ เพิ่มวัสดุ</button>
             )}
@@ -309,7 +350,12 @@ export default function JobDetailPage() {
                     </td>
                     <td>{fmtBaht(r.unitPrice)}</td>
                     <td>{fmtBaht(lineValue)}</td>
-                    <td>{r.phaseBudget ? (COST_LABEL[r.phaseBudget] ?? r.phaseBudget) : '-'}</td>
+                    <td>
+                      {r.phaseBudget ? (COST_LABEL[r.phaseBudget] ?? r.phaseBudget) : '-'}
+                      {r.phaseBudget && job.budgetCosts?.[r.phaseBudget as CostCategoryKey]?.phase && (
+                        <div className="muted mono" style={{ fontSize: 11 }}>Phase: {job.budgetCosts[r.phaseBudget as CostCategoryKey]!.phase}</div>
+                      )}
+                    </td>
                     <td>{r.source === 'central_stock' ? <span className="badge green">คลังสินค้า</span> : <span className="badge amber">Purchasing</span>}</td>
                     <td><span className={`badge ${r.status === 'issued' || r.status === 'received' ? 'green' : r.status === 'cancelled' || r.status === 'returned' ? 'neutral' : 'amber'}`}>{ACC_STATUS_LABEL[r.status]}</span></td>
                     <td className="mono">{[pr?.prNo, po?.poNo].filter(Boolean).join(' / ') || '-'}</td>
@@ -610,7 +656,12 @@ export default function JobDetailPage() {
             <button className="primary"
               onClick={async () => {
                 const { salePrice, ...rest } = editForm
-                if (await tryAction(() => act.updateJob({ jobId: job.id, ...rest, budgetSalePrice: toBudgetNum(salePrice), budgetCosts: costFormToApi(editCosts) }), 'บันทึกงบประมาณแล้ว')) close()
+                // Job ล็อกแล้ว → ใช้ updateJobBudget (แก้เฉพาะงบ, ไม่ผ่าน assertJobEditable); ยังเปิดอยู่ → updateJob ตามเดิม
+                const budgetPayload = { budgetSalePrice: toBudgetNum(salePrice), budgetCosts: costFormToApi(editCosts) }
+                const save = locked
+                  ? () => act.updateJobBudget({ jobId: job.id, ...budgetPayload })
+                  : () => act.updateJob({ jobId: job.id, ...rest, ...budgetPayload })
+                if (await tryAction(save, 'บันทึกงบประมาณแล้ว')) close()
               }}>บันทึก</button>
           </>}>
           <BudgetFields

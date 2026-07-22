@@ -38,6 +38,8 @@ export interface LbsUnit {
   projectStockId: string
   status: LbsUnitStatus
   jobId: string | null
+  unitCost?: number            // ต้นทุนตัว LBS ต่อเครื่อง (บาท) — กรอกตอนสร้าง/รับเข้า Stock
+                               // ดึงเข้า Job → บวกเข้า actual หมวด Raw Material (jobBudgetSummary)
   // ข้อมูลลูกค้า/สถานที่ ref จาก Job ที่เครื่องถูกดึงเข้า (single source of truth — ไม่เก็บซ้ำที่นี่)
 }
 

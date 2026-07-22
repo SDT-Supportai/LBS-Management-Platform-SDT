@@ -47,15 +47,16 @@ export function useTryAction() {
 
 // ---------------- Modal ----------------
 
-export function Modal({ title, onClose, children, footer }: {
+export function Modal({ title, onClose, children, footer, size = 'default' }: {
   title: string
   onClose: () => void
   children: ReactNode
   footer?: ReactNode
+  size?: 'default' | 'wide'
 }) {
   return (
     <div className="modal-overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="modal">
+      <div className={`modal${size === 'wide' ? ' modal-wide' : ''}`}>
         <div className="modal-head">
           <h3>{title}</h3>
           <button className="small" onClick={onClose}>✕</button>
