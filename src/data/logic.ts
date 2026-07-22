@@ -179,6 +179,50 @@ export function addUnitsToStock(db: DB, actor: User, p: { stockId: string; units
     `รับ LBS เพิ่มเข้า ${stock.stockNo} จำนวน ${units.length} เครื่อง`)
 }
 
+// Import Excel: รับเครื่องใหม่ + อัพเดทต้นทุนของเครื่องที่ "ซ้ำในคลังนี้ (คู่ Serial ตรงกัน)" ในคราวเดียว
+// newUnits = แถวที่ยังไม่มีในระบบ (insert) · updateUnits = แถวที่ตรงคู่ Serial กับเครื่องในคลังนี้ (อัพเดทต้นทุน)
+// การแยกแยะ new/update/conflict ทำฝั่ง UI (import preview) — ฟังก์ชันนี้เชื่อผลที่ผ่านการตัดสินใจแล้ว
+export function importUnitsToStock(
+  db: DB, actor: User,
+  p: { stockId: string; newUnits: UnitSerialInput[]; updateUnits: UnitSerialInput[] },
+): DB {
+  const stock = db.projectStocks.find(s => s.id === p.stockId)
+  if (!stock) throw new Error('ไม่พบ Project Stock')
+  const newUnits = normalizeUnits(p.newUnits)
+  const updateUnits = normalizeUnits(p.updateUnits)
+  if (newUnits.length) assertUnitsValid(db, newUnits)   // เครื่องใหม่: กันซ้ำกับระบบ/ในไฟล์ + validate cost
+  const badCost = updateUnits.find(u => u.cost !== undefined && (Number.isNaN(u.cost) || u.cost < 0))
+  if (badCost) throw new Error('ต้นทุนตัว LBS ต้องเป็นตัวเลขไม่ติดลบ')
+  if (newUnits.length === 0 && updateUnits.length === 0) throw new Error('ไม่มีรายการให้นำเข้า')
+
+  // อัพเดทต้นทุน: match คู่ Serial (lvb+om) เฉพาะเครื่องในคลังนี้ · cost ว่าง = คงค่าเดิม (ไม่ลบทิ้ง)
+  const costByKey = new Map<string, number>()
+  for (const u of updateUnits) if (u.cost !== undefined) costByKey.set(`${u.lvb} ${u.om}`, u.cost)
+  let updatedCount = 0
+  let lbsUnits = db.lbsUnits.map(x => {
+    if (x.projectStockId === p.stockId) {
+      const c = costByKey.get(`${x.serialLvb} ${x.serialOm}`)
+      if (c !== undefined) { updatedCount++; return { ...x, unitCost: c } }
+    }
+    return x
+  })
+  // รับเครื่องใหม่เข้าคลัง
+  lbsUnits = [
+    ...lbsUnits,
+    ...newUnits.map(u => ({
+      id: uid(), serialLvb: u.lvb, serialOm: u.om, projectStockId: p.stockId,
+      status: 'in_stock' as const, jobId: null, unitCost: u.cost,
+    })),
+  ]
+  let next: DB = { ...db, lbsUnits }
+  if (newUnits.length > 0) next = notify(next, {
+    type: 'stock_received', dept: 'project',
+    message: `📦 Division รับ LBS เพิ่มเข้า ${stock.stockNo} จำนวน ${newUnits.length} เครื่อง — พร้อมให้ดึงเข้า Job`,
+  })
+  return audit(next, actor, 'project_stock', p.stockId, 'import_units',
+    `Import เข้า ${stock.stockNo}: รับใหม่ ${newUnits.length} เครื่อง${updatedCount ? ` · อัพเดทต้นทุน ${updatedCount} เครื่อง` : ''}`)
+}
+
 export function updateProjectStock(
   db: DB, actor: User,
   p: { stockId: string; notes: string; status: 'open' | 'closed' },

@@ -96,6 +96,7 @@ type MaybePromise = void | Promise<void>
 export interface StoreActions {
   createProjectStock: (p: Parameters<typeof L.createProjectStock>[2]) => MaybePromise
   addUnitsToStock: (p: Parameters<typeof L.addUnitsToStock>[2]) => MaybePromise
+  importUnitsToStock: (p: Parameters<typeof L.importUnitsToStock>[2]) => MaybePromise
   updateProjectStock: (p: Parameters<typeof L.updateProjectStock>[2]) => MaybePromise
   createJob: (p: Parameters<typeof L.createJob>[2]) => MaybePromise
   updateJob: (p: Parameters<typeof L.updateJob>[2]) => MaybePromise
@@ -235,6 +236,7 @@ function DemoProvider({ children }: { children: ReactNode }) {
       act: {
         createProjectStock: run('stock.manage', L.createProjectStock),
         addUnitsToStock: run('stock.manage', L.addUnitsToStock),
+        importUnitsToStock: run('stock.manage', L.importUnitsToStock),
         updateProjectStock: run('stock.manage', L.updateProjectStock),
         createJob: run('job.manage', L.createJob),
         updateJob: run('job.manage', L.updateJob),

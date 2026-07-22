@@ -75,7 +75,13 @@ export default function StocksPage() {
   const [editNotes, setEditNotes] = useState('')
   const [editStatus, setEditStatus] = useState<'open' | 'closed'>('open')
   const [editUnit, setEditUnit] = useState<{ id: string; lvb: string; om: string } | null>(null)
-  const [importPreview, setImportPreview] = useState<{ stockId: string; stockNo: string; units: UnitRow[]; errors: string[] } | null>(null)
+  const [importPreview, setImportPreview] = useState<{
+    stockId: string; stockNo: string
+    newUnits: UnitRow[]
+    dupUnits: { row: UnitRow; oldCost?: number }[]   // ซ้ำในคลังนี้ (คู่ Serial ตรง) — เลือกอัพเดทต้นทุน/ข้าม
+    errors: string[]
+  } | null>(null)
+  const [dupAction, setDupAction] = useState<'update' | 'skip'>('update')
   const [importing, setImporting] = useState(false)
   const importFileRef = useRef<HTMLInputElement>(null)
   const importToRef = useRef<{ id: string; no: string } | null>(null)
@@ -150,9 +156,11 @@ export default function StocksPage() {
       const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[wb.SheetNames[0]], { defval: '' })
       if (raw.length === 0) return show('ไฟล์ไม่มีข้อมูล — ต้องมีหัวตาราง Serial.LVB, Serial.OM', true)
 
-      const units: UnitRow[] = []
+      const newUnits: UnitRow[] = []
+      const dupUnits: { row: UnitRow; oldCost?: number }[] = []
       const errors: string[] = []
-      const seen = new Set(db.lbsUnits.flatMap(u => [u.serialLvb, u.serialOm]))
+      const stockNoOf = (id: string) => db.projectStocks.find(s => s.id === id)?.stockNo ?? '?'
+      const seenInFile = new Set<string>()          // กันซ้ำภายในไฟล์ (ข้าม field ด้วย)
       raw.forEach((row, i) => {
         const lvb = cell(row, ['Serial.LVB', 'serial.lvb', 'serial_lvb', 'lvb'])
         const om = cell(row, ['Serial.OM', 'serial.om', 'serial_om', 'om'])
@@ -161,14 +169,33 @@ export default function StocksPage() {
         const no = `แถว ${i + 2}`
         if (!lvb || !om) return void errors.push(`${no}: ต้องมีทั้ง Serial.LVB และ Serial.OM`)
         if (lvb === om) return void errors.push(`${no}: LVB กับ OM ห้ามเป็นเลขเดียวกัน (${lvb})`)
-        if (seen.has(lvb) || seen.has(om)) return void errors.push(`${no}: "${lvb}" / "${om}" ซ้ำกับที่มีในระบบ/ในไฟล์`)
         if (costStr !== '' && (Number.isNaN(Number(costStr)) || Number(costStr) < 0))
           return void errors.push(`${no}: ต้นทุน/เครื่อง "${costStr}" ต้องเป็นตัวเลขไม่ติดลบ`)
-        seen.add(lvb); seen.add(om)
-        units.push({ lvb, om, cost: costStr })
+        if (seenInFile.has(lvb) || seenInFile.has(om))
+          return void errors.push(`${no}: "${lvb}" / "${om}" ซ้ำกันในไฟล์`)
+        // ซ้ำในคลังนี้ (คู่ Serial ตรงกันเป๊ะ) → อัพเดทต้นทุนได้
+        const exact = db.lbsUnits.find(u => u.projectStockId === target.id && u.serialLvb === lvb && u.serialOm === om)
+        if (exact) {
+          seenInFile.add(lvb); seenInFile.add(om)
+          dupUnits.push({ row: { lvb, om, cost: costStr }, oldCost: exact.unitCost })
+          return
+        }
+        // ชน Serial กับเครื่องอื่น (คลังอื่น หรือคู่ไม่ตรงในคลังนี้) → กรอกผิด/ซ้ำ (error)
+        const collide = db.lbsUnits.find(u => [u.serialLvb, u.serialOm].some(s => s === lvb || s === om))
+        if (collide) {
+          const where = collide.projectStockId === target.id
+            ? 'เครื่องในคลังนี้ (คู่ Serial ไม่ตรง)'
+            : `เครื่องในคลังอื่น (${stockNoOf(collide.projectStockId)})`
+          return void errors.push(`${no}: "${lvb}" / "${om}" ชนกับ${where} — ตรวจว่ากรอกถูกไหม`)
+        }
+        // เครื่องใหม่
+        seenInFile.add(lvb); seenInFile.add(om)
+        newUnits.push({ lvb, om, cost: costStr })
       })
-      if (units.length === 0 && errors.length === 0) return show('ไม่พบแถวที่กรอก Serial ในไฟล์', true)
-      setImportPreview({ stockId: target.id, stockNo: target.no, units, errors })
+      if (newUnits.length === 0 && dupUnits.length === 0 && errors.length === 0)
+        return show('ไม่พบแถวที่กรอก Serial ในไฟล์', true)
+      setDupAction('update')
+      setImportPreview({ stockId: target.id, stockNo: target.no, newUnits, dupUnits, errors })
     } catch {
       show('อ่านไฟล์ไม่ได้ — ต้องเป็นไฟล์ Excel (.xlsx)', true)
     }
@@ -177,9 +204,15 @@ export default function StocksPage() {
   const runImport = async () => {
     if (!importPreview) return
     setImporting(true)
+    const newUnits = rowsToUnits(importPreview.newUnits)
+    const updateUnits = dupAction === 'update' ? rowsToUnits(importPreview.dupUnits.map(d => d.row)) : []
+    const msg = [
+      newUnits.length ? `รับเข้า ${newUnits.length} เครื่อง` : '',
+      updateUnits.length ? `อัพเดทต้นทุน ${updateUnits.length} เครื่อง` : '',
+    ].filter(Boolean).join(' · ')
     const ok = await tryAction(
-      () => act.addUnitsToStock({ stockId: importPreview.stockId, units: rowsToUnits(importPreview.units) }),
-      `รับเข้า ${importPreview.units.length} เครื่อง เข้า ${importPreview.stockNo} แล้ว`,
+      () => act.importUnitsToStock({ stockId: importPreview.stockId, newUnits, updateUnits }),
+      `${msg} เข้า ${importPreview.stockNo} แล้ว`,
     )
     setImporting(false)
     if (ok) setImportPreview(null)
@@ -409,39 +442,98 @@ export default function StocksPage() {
       <input ref={importFileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }}
         onChange={e => { const f = e.target.files?.[0]; if (f) onPickImportFile(f); e.target.value = '' }} />
 
-      {importPreview && (
-        <Modal title={`Import Serial เข้า ${importPreview.stockNo} — ตรวจสอบก่อนยืนยัน`} onClose={() => setImportPreview(null)}
+      {importPreview && (() => {
+        const { newUnits, dupUnits, errors } = importPreview
+        const nothingToDo = newUnits.length === 0 && (dupUnits.length === 0 || dupAction === 'skip')
+        const confirmLabel = importing ? 'กำลังนำเข้า…'
+          : `ยืนยัน — รับใหม่ ${newUnits.length}${dupAction === 'update' && dupUnits.length ? ` · อัพเดท ${dupUnits.length}` : ''} เครื่อง`
+        return (
+        <Modal title={`Import Serial เข้า ${importPreview.stockNo} — ตรวจสอบก่อนยืนยัน`} size="wide" onClose={() => setImportPreview(null)}
           footer={<>
             <button onClick={() => setImportPreview(null)} disabled={importing}>ยกเลิก</button>
-            <button className="primary" disabled={importing || importPreview.units.length === 0 || importPreview.errors.length > 0}
-              onClick={runImport}>
-              {importing ? 'กำลังนำเข้า…' : `ยืนยันรับเข้า ${importPreview.units.length} เครื่อง`}
+            <button className="primary" disabled={importing || errors.length > 0 || nothingToDo} onClick={runImport}>
+              {confirmLabel}
             </button>
           </>}>
-          {importPreview.errors.length > 0 && (
-            <div className="muted" style={{ color: 'var(--red)', marginBottom: 10 }}>
-              พบปัญหา {importPreview.errors.length} แถว — แก้ไฟล์แล้ว import ใหม่:<br />
-              {importPreview.errors.slice(0, 5).map((e, i) => <span key={i}>• {e}<br /></span>)}
-              {importPreview.errors.length > 5 && <span>… และอีก {importPreview.errors.length - 5} แถว</span>}
+          {errors.length > 0 && (
+            <div className="muted" style={{ color: 'var(--red)', marginBottom: 12 }}>
+              พบปัญหา {errors.length} แถว — ต้องแก้ไฟล์ให้หมดก่อนถึงจะ import ได้:<br />
+              {errors.slice(0, 6).map((e, i) => <span key={i}>• {e}<br /></span>)}
+              {errors.length > 6 && <span>… และอีก {errors.length - 6} แถว</span>}
             </div>
           )}
-          <div className="table-scroll" style={{ maxHeight: 320, overflowY: 'auto' }}>
-            <table>
-              <thead><tr><th>#</th><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>ต้นทุน/เครื่อง</th></tr></thead>
-              <tbody>
-                {importPreview.units.map((u, i) => (
-                  <tr key={i}>
-                    <td className="muted">{i + 1}</td>
-                    <td className="mono">{u.lvb}</td>
-                    <td className="mono">{u.om}</td>
-                    <td style={{ textAlign: 'right' }}>{u.cost ? fmtBaht(Number(u.cost)) : '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+
+          {/* ตัดสินใจ: เจอ Serial ซ้ำ (คู่ตรงกัน) ในคลังนี้ */}
+          {dupUnits.length > 0 && (
+            <div className="panel" style={{ marginBottom: 12, border: '1px solid var(--amber, #d97706)' }}>
+              <div className="panel-body">
+                <b>พบ {dupUnits.length} เครื่องที่ Serial ซ้ำกับที่มีอยู่แล้วในคลังนี้</b>
+                <div className="muted" style={{ margin: '4px 0 10px' }}>
+                  คู่ Serial (LVB + OM) ตรงกับเครื่องเดิม — ต้องการทำอะไร?
+                </div>
+                <label className="field" style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-start', marginBottom: 6 }}>
+                  <input type="radio" name="dupAction" checked={dupAction === 'update'} onChange={() => setDupAction('update')} style={{ marginTop: 3 }} />
+                  <span><b>อัพเดทข้อมูล (ต้นทุน/เครื่อง) ของเครื่องเดิม</b> — ใช้ค่าจากไฟล์ทับของเดิม (ช่องต้นทุนว่าง = คงค่าเดิม)</span>
+                </label>
+                <label className="field" style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-start' }}>
+                  <input type="radio" name="dupAction" checked={dupAction === 'skip'} onChange={() => setDupAction('skip')} style={{ marginTop: 3 }} />
+                  <span><b>ข้าม — ฉันกรอกซ้ำผิด</b> ไม่แตะเครื่องเดิม (รับเข้าเฉพาะเครื่องใหม่ {newUnits.length} เครื่อง)</span>
+                </label>
+                <div className="table-scroll" style={{ maxHeight: 220, overflowY: 'auto', marginTop: 10 }}>
+                  <table>
+                    <thead><tr><th>#</th><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>ต้นทุนเดิม</th><th style={{ textAlign: 'right' }}>ต้นทุนใหม่ (จากไฟล์)</th></tr></thead>
+                    <tbody>
+                      {dupUnits.map((d, i) => {
+                        const hasNew = d.row.cost.trim() !== ''
+                        return (
+                          <tr key={i}>
+                            <td className="muted">{i + 1}</td>
+                            <td className="mono">{d.row.lvb}</td>
+                            <td className="mono">{d.row.om}</td>
+                            <td style={{ textAlign: 'right' }}>{fmtBaht(d.oldCost)}</td>
+                            <td style={{ textAlign: 'right' }}>
+                              {dupAction === 'skip' ? <span className="muted">— (ข้าม)</span>
+                                : hasNew ? fmtBaht(Number(d.row.cost))
+                                : <span className="muted">คงเดิม</span>}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* เครื่องใหม่ที่จะรับเข้า */}
+          {newUnits.length > 0 && (
+            <>
+              <div className="muted" style={{ marginBottom: 6 }}>เครื่องใหม่ที่จะรับเข้า {newUnits.length} เครื่อง</div>
+              <div className="table-scroll" style={{ maxHeight: 280, overflowY: 'auto' }}>
+                <table>
+                  <thead><tr><th>#</th><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>ต้นทุน/เครื่อง</th></tr></thead>
+                  <tbody>
+                    {newUnits.map((u, i) => (
+                      <tr key={i}>
+                        <td className="muted">{i + 1}</td>
+                        <td className="mono">{u.lvb}</td>
+                        <td className="mono">{u.om}</td>
+                        <td style={{ textAlign: 'right' }}>{u.cost ? fmtBaht(Number(u.cost)) : '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {newUnits.length === 0 && dupUnits.length === 0 && errors.length === 0 && (
+            <div className="empty">ไม่พบรายการในไฟล์</div>
+          )}
         </Modal>
-      )}
+        )
+      })()}
     </>
   )
 }

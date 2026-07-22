@@ -188,6 +188,8 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_create_project_stock', { p_stock_no: p.stockNo, p_item_id: p.itemId, p_units: p.units, p_notes: p.notes ?? null }),
     addUnitsToStock: (p: { stockId: string; units: { lvb: string; om: string; cost?: number }[] }) =>
       rpc(sb, 'rpc_add_units_to_stock', { p_stock_id: p.stockId, p_units: p.units }),
+    importUnitsToStock: (p: { stockId: string; newUnits: { lvb: string; om: string; cost?: number }[]; updateUnits: { lvb: string; om: string; cost?: number }[] }) =>
+      rpc(sb, 'rpc_import_units_to_stock', { p_stock_id: p.stockId, p_new_units: p.newUnits, p_update_units: p.updateUnits }),
     updateProjectStock: (p: { stockId: string; notes: string; status: 'open' | 'closed' }) =>
       rpc(sb, 'rpc_update_project_stock', { p_stock_id: p.stockId, p_notes: p.notes, p_status: p.status }),
     deleteProjectStock: (p: { stockId: string }) =>
