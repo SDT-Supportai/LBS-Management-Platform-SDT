@@ -40,6 +40,7 @@ export default function JobDetailPage() {
   const [returnTarget, setReturnTarget] = useState('')
   // phaseBudget = หมวดต้นทุนที่ตัด (raw_mat/outsourcing) สำหรับ source purchasing
   const [accForm, setAccForm] = useState({ itemId: '', qty: 1, source: 'central_stock' as 'central_stock' | 'purchasing', unitPrice: '', phaseBudget: 'raw_mat' as CostCategoryKey })
+  const [accSearch, setAccSearch] = useState('')   // ค้นหาวัสดุในโมดัลเพิ่มวัสดุ
   const [issueForm, setIssueForm] = useState({ startDate: '', endDate: '', location: '', note: '' })
   const [cancelReason, setCancelReason] = useState('')
   const [receivedToCentral, setReceivedToCentral] = useState(true)
@@ -51,6 +52,7 @@ export default function JobDetailPage() {
   const canManage = can(user, 'job.manage')
   // Manage (admin) ข้ามขั้นอนุมัติได้ — project ต้องส่งคำขอให้ Division ก่อน (0016)
   const isManage = can(user, 'master.manage')
+  const canCleanup = can(user, 'accessory.cleanup')   // Project/Division/Manage ลบรายการวัสดุที่ยกเลิก
   const locked = !job || job.terminalStatus !== null
   const pendingApprovalOf = (type: 'create_pr' | 'issue_job' | 'cancel_job') =>
     db.approvalRequests.some(r => r.jobId === jobId && r.type === type && r.status === 'pending')
@@ -90,6 +92,13 @@ export default function JobDetailPage() {
   })
 
   const accessoryItems = db.items.filter(i => i.itemType === 'accessory')
+  const filterAcc = (term: string) => {
+    const t = term.trim().toLowerCase()
+    if (!t) return accessoryItems
+    return accessoryItems.filter(i =>
+      i.name.toLowerCase().includes(t) || (i.epicorCode ?? '').toLowerCase().includes(t) || i.code.toLowerCase().includes(t))
+  }
+  const filteredAcc = filterAcc(accSearch)
   const selAccItem = itemOf(accForm.itemId)
   const selAccStockQty = db.accessoryStock.find(r => r.itemId === accForm.itemId)?.qtyOnHand ?? 0
 
@@ -328,7 +337,7 @@ export default function JobDetailPage() {
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="small" onClick={exportPurchaseOrders} disabled={accReqs.length === 0}>⬇ Export Excel</button>
             {canManage && !locked && (
-              <button className="small" onClick={() => { setAccForm({ itemId: accessoryItems[0]?.id ?? '', qty: 1, source: 'central_stock', unitPrice: '', phaseBudget: 'raw_mat' }); openModal('accessory') }}>+ เพิ่มวัสดุ</button>
+              <button className="small" onClick={() => { setAccSearch(''); setAccForm({ itemId: accessoryItems[0]?.id ?? '', qty: 1, source: 'central_stock', unitPrice: '', phaseBudget: 'raw_mat' }); openModal('accessory') }}>+ เพิ่มวัสดุ</button>
             )}
             {canManage && !locked && pendingReqs.length > 0 && (
               <button className="small primary" disabled={pendingApprovalOf('create_pr')}
@@ -400,6 +409,13 @@ export default function JobDetailPage() {
                           }}>แก้จำนวน</button>{' '}
                           <button className="small danger" onClick={() => tryAction(() => act.cancelAccessoryRequest({ requestId: r.id }), 'ยกเลิกคำขอแล้ว')}>ยกเลิก</button>
                         </>
+                      )}
+                      {/* ลบรายการที่ยกเลิก (ยังไม่เคยผูก PR/PO) ออกจากการ์ด — Project/Division/Manage */}
+                      {canCleanup && r.status === 'cancelled' && !r.prId && !r.poId && (
+                        <button className="small danger" title="ลบรายการที่ยกเลิกออกจากการ์ด"
+                          onClick={() => { if (confirm(`ลบ "${item.name}" (ที่ยกเลิกแล้ว) ออกจากการ์ด?`)) tryAction(() => act.deleteAccessoryRequest({ requestId: r.id }), 'ลบรายการออกจากการ์ดแล้ว') }}>
+                          🗑️ ลบออกจากการ์ด
+                        </button>
                       )}
                     </td>
                   </tr>
@@ -487,7 +503,7 @@ export default function JobDetailPage() {
       )}
 
       {modal === 'accessory' && (
-        <Modal title="Purchase Requisition — เพิ่มวัสดุให้ Job" onClose={close}
+        <Modal title="Purchase Requisition — เพิ่มวัสดุให้ Job" size="wide" onClose={close}
           footer={<>
             <button onClick={close}>ยกเลิก</button>
             <button className="primary" disabled={!accForm.itemId}
@@ -495,12 +511,26 @@ export default function JobDetailPage() {
               {accForm.source === 'central_stock' ? 'เบิกจากคลังสินค้า' : 'เพิ่มรายการ (รอออก PR)'}
             </button>
           </>}>
-          <label className="field"><span>รายการวัสดุ (Accessory)</span>
-            <select value={accForm.itemId} onChange={e => {
+          <label className="field"><span>ค้นหาวัสดุ (ชื่อ / รหัส Epicor)</span>
+            <input value={accSearch} placeholder="พิมพ์เพื่อค้นหา…" autoFocus
+              onChange={e => {
+                const term = e.target.value
+                setAccSearch(term)
+                // ถ้ารายการที่เลือกอยู่ไม่อยู่ในผลค้นหา → เลือกตัวแรกของผลลัพธ์ให้อัตโนมัติ
+                const f = filterAcc(term)
+                if (!f.some(i => i.id === accForm.itemId)) {
+                  const first = f[0]
+                  setAccForm(a => ({ ...a, itemId: first?.id ?? '', source: first?.stockableCentrally ? 'central_stock' : 'purchasing' }))
+                }
+              }} />
+          </label>
+          <label className="field"><span>รายการวัสดุ (Accessory){accSearch.trim() ? ` · พบ ${filteredAcc.length} รายการ` : ''}</span>
+            <select value={accForm.itemId} size={Math.min(8, Math.max(3, filteredAcc.length))} onChange={e => {
               const item = itemOf(e.target.value)
               setAccForm({ ...accForm, itemId: e.target.value, source: item?.stockableCentrally ? 'central_stock' : 'purchasing' })
             }}>
-              {accessoryItems.map(i => <option key={i.id} value={i.id}>{i.name}{(i.epicorCode || i.code) ? ` (${i.epicorCode || i.code})` : ''}</option>)}
+              {filteredAcc.length === 0 && <option value="">— ไม่พบวัสดุที่ค้นหา —</option>}
+              {filteredAcc.map(i => <option key={i.id} value={i.id}>{i.name}{(i.epicorCode || i.code) ? ` (${i.epicorCode || i.code})` : ''}</option>)}
             </select>
           </label>
           {selAccItem && (

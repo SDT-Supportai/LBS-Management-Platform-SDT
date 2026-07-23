@@ -597,6 +597,25 @@ export function cancelAccessoryRequest(db: DB, actor: User, p: { requestId: stri
     `${job.jobNo} ยกเลิกคำขอ ${item.name} ${req.qtyRequested} ${item.uom}`)
 }
 
+// ลบรายการวัสดุที่ยกเลิกออกจากการ์ด (Project/Division/Manage) — เฉพาะที่ยังไม่เคยผูก PR/PO
+// (audit การยกเลิกยังอยู่ใน auditLogs · รายการที่เคยเข้า PR/PO เก็บไว้คงประวัติเอกสาร)
+export function deleteAccessoryRequest(db: DB, actor: User, p: { requestId: string }): DB {
+  const req = db.accessoryRequests.find(r => r.id === p.requestId)
+  if (!req) throw new Error('ไม่พบรายการวัสดุ')
+  if (req.status !== 'cancelled')
+    throw new Error('ลบออกจากการ์ดได้เฉพาะรายการที่ยกเลิกแล้ว')
+  if (req.prId || req.poId)
+    throw new Error('รายการนี้เคยผูก PR/PO ลบไม่ได้ (คงประวัติเอกสาร)')
+  const job = db.jobs.find(j => j.id === req.jobId)
+  const item = db.items.find(i => i.id === req.itemId)
+  const next: DB = {
+    ...db,
+    accessoryRequests: db.accessoryRequests.filter(r => r.id !== p.requestId),
+  }
+  return audit(next, actor, 'job_accessory_request', p.requestId, 'delete_accessory_request',
+    `${job?.jobNo ?? ''} ลบรายการวัสดุที่ยกเลิก ${item?.name ?? ''} ออกจากการ์ด`)
+}
+
 // ---------------- PR / PO (Project ↔ Purchasing) ----------------
 
 export function createPR(db: DB, actor: User, p: { jobId: string; requestIds: string[] }): DB {

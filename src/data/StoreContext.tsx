@@ -19,6 +19,7 @@ export const PERMISSIONS: Record<string, Department[]> = {
   'service.confirm': ['service', 'admin'],
   'master.manage': ['admin'],
   'approval.decide': ['sales', 'admin'],   // Division อนุมัติ/ตีกลับคำขอจาก project
+  'accessory.cleanup': ['project', 'sales', 'admin'],   // ลบรายการวัสดุที่ยกเลิกออกจากการ์ด (Project/Division/Manage)
 }
 
 export function can(user: User | null, perm: keyof typeof PERMISSIONS): boolean {
@@ -111,6 +112,7 @@ export interface StoreActions {
   updateAccessoryRequestPrice: (p: Parameters<typeof L.updateAccessoryRequestPrice>[2]) => MaybePromise
   returnAccessory: (p: Parameters<typeof L.returnAccessory>[2]) => MaybePromise
   cancelAccessoryRequest: (p: Parameters<typeof L.cancelAccessoryRequest>[2]) => MaybePromise
+  deleteAccessoryRequest: (p: Parameters<typeof L.deleteAccessoryRequest>[2]) => MaybePromise
   createPR: (p: Parameters<typeof L.createPR>[2]) => MaybePromise
   rejectPR: (p: Parameters<typeof L.rejectPR>[2]) => MaybePromise
   createPO: (p: Parameters<typeof L.createPO>[2]) => MaybePromise
@@ -252,6 +254,7 @@ function DemoProvider({ children }: { children: ReactNode }) {
         updateAccessoryRequestPrice: run('job.manage', L.updateAccessoryRequestPrice),
         returnAccessory: run('job.manage', L.returnAccessory),
         cancelAccessoryRequest: run('job.manage', L.cancelAccessoryRequest),
+        deleteAccessoryRequest: run('accessory.cleanup', L.deleteAccessoryRequest),
         // 3 action นี้ต้องผ่านการอนุมัติจาก Division — เรียกตรงได้เฉพาะ admin (ข้ามขั้นอนุมัติ)
         createPR: run('master.manage', L.createPR),
         rejectPR: run('purchasing.manage', L.rejectPR),

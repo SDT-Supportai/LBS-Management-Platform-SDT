@@ -216,6 +216,7 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_update_accessory_request_price', { p_request_id: p.requestId, p_unit_price: p.unitPrice ?? null }),
     returnAccessory: (p: { requestId: string }) => rpc(sb, 'rpc_return_accessory', { p_request_id: p.requestId }),
     cancelAccessoryRequest: (p: { requestId: string }) => rpc(sb, 'rpc_cancel_accessory_request', { p_request_id: p.requestId }),
+    deleteAccessoryRequest: (p: { requestId: string }) => rpc(sb, 'rpc_delete_accessory_request', { p_request_id: p.requestId }),
     createPR: (p: { jobId: string; requestIds: string[] }) =>
       rpc(sb, 'rpc_create_pr', { p_job_id: p.jobId, p_request_ids: p.requestIds }),
     rejectPR: (p: { prId: string; reason: string }) => rpc(sb, 'rpc_reject_pr', { p_pr_id: p.prId, p_reason: p.reason }),
