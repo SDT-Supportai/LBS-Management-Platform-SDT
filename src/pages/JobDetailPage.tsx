@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary } from '../data/logic'
-import { BudgetFields, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, type CostForm } from '../ui/components'
+import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
 import { ACC_STATUS_LABEL, PR_STATUS_LABEL, COST_CATEGORIES, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import type { LbsUnit, CostCategoryKey } from '../types'
 
@@ -45,6 +45,7 @@ export default function JobDetailPage() {
   const [receivedToCentral, setReceivedToCentral] = useState(true)
   const [editForm, setEditForm] = useState({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '' })
   const [editCosts, setEditCosts] = useState<CostForm>(emptyCostForm())
+  const [editSites, setEditSites] = useState<InstallSite[]>([])   // จุดติดตั้งเพิ่มเติม (modal แก้ไขข้อมูล Job)
 
   const status = job ? deriveJobStatus(db, job) : 'draft'
   const canManage = can(user, 'job.manage')
@@ -140,6 +141,24 @@ export default function JobDetailPage() {
         <button className="small" onClick={() => window.print()}>🖨️ ปริ้นสรุปโครงการ (PDF)</button>
       </div>
 
+      {/* จุดติดตั้ง — แสดงเมื่อมีหลายจุด (จุดที่ 1 = install_location หลัก + จุดที่ 2+ = installSites) */}
+      {job.installSites && job.installSites.length > 0 && (
+        <div className="panel">
+          <div className="panel-head"><h3>จุดติดตั้ง <span className="muted" style={{ fontWeight: 400 }}>· {job.installSites.length + 1} จุด</span></h3></div>
+          <div className="table-scroll">
+            <table>
+              <thead><tr><th>จุดที่</th><th>สถานที่ติดตั้ง</th><th>วันที่ต้องการติดตั้ง</th></tr></thead>
+              <tbody>
+                <tr><td>1</td><td>{job.installLocation || '-'}</td><td>{fmtDate(job.requiredDate)}</td></tr>
+                {job.installSites.map((s, i) => (
+                  <tr key={i}><td>{i + 2}</td><td>{s.location || '-'}</td><td>{fmtDate(s.requiredDate)}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {job.terminalStatus === 'issued' && (
         <div className="panel"><div className="panel-body">
           <b>เบิกให้ Service แล้ว — รอติดตั้ง</b> เบิกเมื่อ {fmtDateTime(job.issuedAt)} — {job.issuedNote || 'ไม่มีบันทึกเพิ่มเติม'}
@@ -199,6 +218,7 @@ export default function JobDetailPage() {
               salePrice: job.budgetSalePrice !== undefined ? String(job.budgetSalePrice) : '',
             })
             setEditCosts(costFormFromJob(job.budgetCosts))
+            setEditSites(job.installSites ?? [])
             openModal('edit')
           }}>แก้ไขข้อมูล Job</button>
           <button className="danger" disabled={pendingApprovalOf('cancel_job')}
@@ -606,13 +626,14 @@ export default function JobDetailPage() {
       )}
 
       {modal === 'edit' && (
-        <Modal title={`แก้ไขข้อมูล ${job.jobNo}`} onClose={close}
+        <Modal title={`แก้ไขข้อมูล ${job.jobNo}`} size="wide" onClose={close}
           footer={<>
             <button onClick={close}>ยกเลิก</button>
             <button className="primary"
               onClick={async () => {
                 const { salePrice, ...rest } = editForm
-                if (await tryAction(() => act.updateJob({ jobId: job.id, ...rest, budgetSalePrice: toBudgetNum(salePrice), budgetCosts: costFormToApi(editCosts) }), 'บันทึกแล้ว')) close()
+                const sites = rest.lbsQtyRequired > 1 ? editSites : []
+                if (await tryAction(() => act.updateJob({ jobId: job.id, ...rest, budgetSalePrice: toBudgetNum(salePrice), budgetCosts: costFormToApi(editCosts), installSites: sites }), 'บันทึกแล้ว')) close()
               }}>บันทึก</button>
           </>}>
           <label className="field"><span>Job No. * (แก้ได้ก่อนเบิก — ห้ามซ้ำ)</span>
@@ -630,7 +651,7 @@ export default function JobDetailPage() {
             <textarea rows={2} value={editForm.scope} onChange={e => setEditForm({ ...editForm, scope: e.target.value })} />
           </label>
           <div className="row">
-            <label className="field"><span>สถานที่ติดตั้ง</span>
+            <label className="field"><span>สถานที่ติดตั้ง{editForm.lbsQtyRequired > 1 ? ' (จุดที่ 1)' : ''}</span>
               <input value={editForm.installLocation} onChange={e => setEditForm({ ...editForm, installLocation: e.target.value })} />
             </label>
             <label className="field"><span>วันที่ต้องการติดตั้ง</span>
@@ -640,6 +661,12 @@ export default function JobDetailPage() {
           <label className="field"><span>จำนวน LBS ตาม Scope (เครื่อง)</span>
             <input type="number" min={1} value={editForm.lbsQtyRequired} onChange={e => setEditForm({ ...editForm, lbsQtyRequired: Number(e.target.value) })} />
           </label>
+          {editForm.lbsQtyRequired > 1 && (
+            <div style={{ marginBottom: 4 }}>
+              <div className="muted" style={{ marginBottom: 6 }}>จุดติดตั้งเพิ่มเติม (ติดตั้งหลายจุดได้เมื่อมี LBS มากกว่า 1 เครื่อง)</div>
+              <InstallSitesEditor sites={editSites} onChange={setEditSites} max={editForm.lbsQtyRequired - 1} />
+            </div>
+          )}
           <div className="budget-legend">Project Budget</div>
           <BudgetFields
             sale={editForm.salePrice} costs={editCosts}
@@ -660,7 +687,8 @@ export default function JobDetailPage() {
                 const budgetPayload = { budgetSalePrice: toBudgetNum(salePrice), budgetCosts: costFormToApi(editCosts) }
                 const save = locked
                   ? () => act.updateJobBudget({ jobId: job.id, ...budgetPayload })
-                  : () => act.updateJob({ jobId: job.id, ...rest, ...budgetPayload })
+                  : () => act.updateJob({ jobId: job.id, ...rest, ...budgetPayload, installSites: job.installSites })  // คงจุดติดตั้งเดิม (modal นี้ไม่แก้จุด)
+                if (await tryAction(save, 'บันทึกงบประมาณแล้ว')) close()
                 if (await tryAction(save, 'บันทึกงบประมาณแล้ว')) close()
               }}>บันทึก</button>
           </>}>

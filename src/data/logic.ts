@@ -290,6 +290,17 @@ function normalizeBudget(v: number | undefined): number | undefined {
 
 export interface JobBudgetInput { budgetSalePrice?: number; budgetCosts?: BudgetCosts }
 
+// จุดติดตั้งเพิ่มเติม (จุดที่ 2+) — trim + ตัดแถวว่างทิ้ง · คืน undefined ถ้าไม่เหลือจุด
+function normalizeInstallSites(
+  sites?: { location: string; requiredDate: string }[],
+): { location: string; requiredDate: string }[] | undefined {
+  if (!sites) return undefined
+  const out = sites
+    .map(s => ({ location: (s.location ?? '').trim(), requiredDate: s.requiredDate ?? '' }))
+    .filter(s => s.location || s.requiredDate)
+  return out.length ? out : undefined
+}
+
 // ต้นทุนรวม (planned) = Σ งบ 7 หมวด
 export function totalBudgetCost(costs?: BudgetCosts): number | undefined {
   if (!costs) return undefined
@@ -307,7 +318,7 @@ function assertBudgetCosts(costs?: BudgetCosts): BudgetCosts | undefined {
 
 export function createJob(
   db: DB, actor: User,
-  p: { jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number } & JobBudgetInput,
+  p: { jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; installSites?: { location: string; requiredDate: string }[] } & JobBudgetInput,
 ): DB {
   const jobNo = p.jobNo.trim()
   if (!jobNo) throw new Error('กรุณาระบุ Job No.')
@@ -325,7 +336,7 @@ export function createJob(
       customerName: p.customerName.trim(), contactPhone: p.contactPhone?.trim() || undefined,
       scope: p.scope,
       installLocation: p.installLocation, requiredDate: p.requiredDate,
-      lbsQtyRequired: p.lbsQtyRequired,
+      lbsQtyRequired: p.lbsQtyRequired, installSites: normalizeInstallSites(p.installSites),
       budgetSalePrice: salePrice, budgetCost: totalBudgetCost(costs), budgetCosts: costs,
       terminalStatus: null, openedBy: actor.id, createdAt: now(),
     }],
@@ -336,7 +347,7 @@ export function createJob(
 
 export function updateJob(
   db: DB, actor: User,
-  p: { jobId: string; jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number } & JobBudgetInput,
+  p: { jobId: string; jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; installSites?: { location: string; requiredDate: string }[] } & JobBudgetInput,
 ): DB {
   const job = assertJobEditable(db, p.jobId)   // แก้ Job No. ได้ก่อนเบิกเท่านั้น (issued/installed/cancelled ล็อกอยู่แล้ว)
   const jobNo = p.jobNo.trim()
@@ -356,7 +367,7 @@ export function updateJob(
       ...j, jobNo, customerName: p.customerName.trim(), contactPhone: p.contactPhone?.trim() || undefined,
       scope: p.scope,
       installLocation: p.installLocation, requiredDate: p.requiredDate,
-      lbsQtyRequired: p.lbsQtyRequired,
+      lbsQtyRequired: p.lbsQtyRequired, installSites: normalizeInstallSites(p.installSites),
       budgetSalePrice: salePrice, budgetCost: totalBudgetCost(costs), budgetCosts: costs,
     } : j),
   }

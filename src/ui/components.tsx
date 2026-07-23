@@ -74,6 +74,37 @@ export function JobStatusBadge({ status }: { status: JobStatus }) {
   return <span className={`badge ${status}`}>{JOB_STATUS_LABEL[status]}</span>
 }
 
+// ---------------- จุดติดตั้งเพิ่มเติม (จุดที่ 2+) ----------------
+export interface InstallSite { location: string; requiredDate: string }
+
+/** แก้ไขจุดติดตั้งเพิ่มเติม (จุดที่ 2, 3, …) — โผล่เฉพาะ Job ที่ LBS > 1 · จำกัด ≤ max จุด */
+export function InstallSitesEditor({ sites, onChange, max }: {
+  sites: InstallSite[]; onChange: (next: InstallSite[]) => void; max: number
+}) {
+  const set = (i: number, field: keyof InstallSite, v: string) =>
+    onChange(sites.map((s, idx) => idx === i ? { ...s, [field]: v } : s))
+  const add = () => onChange([...sites, { location: '', requiredDate: '' }])
+  const remove = (i: number) => onChange(sites.filter((_, idx) => idx !== i))
+  return (
+    <div>
+      {sites.map((s, i) => (
+        <div className="row" key={i} style={{ alignItems: 'flex-end' }}>
+          <label className="field"><span>จุดที่ {i + 2} — สถานที่ติดตั้ง</span>
+            <input value={s.location} onChange={e => set(i, 'location', e.target.value)} placeholder="เช่น สถานีย่อยแม่ริม" />
+          </label>
+          <label className="field"><span>วันที่ต้องการติดตั้ง</span>
+            <input type="date" value={s.requiredDate} onChange={e => set(i, 'requiredDate', e.target.value)} />
+          </label>
+          <button className="small danger" type="button" style={{ marginBottom: 12 }} onClick={() => remove(i)} title="ลบจุดนี้">✕</button>
+        </div>
+      ))}
+      <button className="small" type="button" onClick={add} disabled={sites.length >= max}>
+        + เพิ่มจุดติดตั้ง{sites.length >= max ? ` (สูงสุด ${max + 1} จุดตามจำนวน LBS)` : ''}
+      </button>
+    </div>
+  )
+}
+
 // ---------------- Project Budget fields ----------------
 
 export const toBudgetNum = (s: string): number | undefined => {

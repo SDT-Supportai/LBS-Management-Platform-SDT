@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import { deriveJobStatus, jobAllocatedQty } from '../data/logic'
-import { BudgetFields, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormToApi, type CostForm } from '../ui/components'
+import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
 import { fmtDate, JOB_STATUS_LABEL } from '../ui/format'
 import type { JobStatus } from '../types'
 
@@ -16,6 +16,7 @@ export default function JobsPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [form, setForm] = useState({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '' })
   const [costs, setCosts] = useState<CostForm>(emptyCostForm())
+  const [installSites, setInstallSites] = useState<InstallSite[]>([])
 
   const canManage = can(user, 'job.manage')
   const jobs = db.jobs
@@ -28,13 +29,16 @@ export default function JobsPage() {
 
   const submit = async () => {
     const { salePrice, ...rest } = form
+    // จุดติดตั้งเพิ่มเติมมีผลเฉพาะ LBS > 1
+    const sites = rest.lbsQtyRequired > 1 ? installSites : []
     if (await tryAction(
-      () => act.createJob({ ...rest, budgetSalePrice: toBudgetNum(salePrice), budgetCosts: costFormToApi(costs) }),
+      () => act.createJob({ ...rest, budgetSalePrice: toBudgetNum(salePrice), budgetCosts: costFormToApi(costs), installSites: sites }),
       'เปิด Job ใหม่เรียบร้อย',
     )) {
       setShowCreate(false)
       setForm({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '' })
       setCosts(emptyCostForm())
+      setInstallSites([])
     }
   }
 
@@ -73,7 +77,7 @@ export default function JobsPage() {
                   <tr key={job.id} className="clickable" onClick={() => navigate(`/jobs/${job.id}`)}>
                     <td><b>{job.jobNo}</b></td>
                     <td>{job.customerName}<div className="muted">{job.scope}</div></td>
-                    <td>{job.installLocation || '-'}</td>
+                    <td>{job.installLocation || '-'}{job.installSites?.length ? <span className="badge blue" style={{ marginLeft: 6 }}>+{job.installSites.length} จุด</span> : null}</td>
                     <td>{fmtDate(job.requiredDate)}</td>
                     <td>
                       {allocated}/{job.lbsQtyRequired}
@@ -91,6 +95,7 @@ export default function JobsPage() {
       {showCreate && (
         <Modal
           title="เปิด Job ใหม่ (Project Dept)"
+          size="wide"
           onClose={() => setShowCreate(false)}
           footer={<>
             <button onClick={() => setShowCreate(false)}>ยกเลิก</button>
@@ -112,7 +117,7 @@ export default function JobsPage() {
             <textarea rows={2} value={form.scope} onChange={e => setForm({ ...form, scope: e.target.value })} placeholder="ติดตั้ง LBS สถานีย่อย 4 จุด" />
           </label>
           <div className="row">
-            <label className="field"><span>สถานที่ติดตั้ง</span>
+            <label className="field"><span>สถานที่ติดตั้ง{form.lbsQtyRequired > 1 ? ' (จุดที่ 1)' : ''}</span>
               <input value={form.installLocation} onChange={e => setForm({ ...form, installLocation: e.target.value })} />
             </label>
             <label className="field"><span>วันที่ต้องการติดตั้ง</span>
@@ -123,6 +128,12 @@ export default function JobsPage() {
             <input type="number" min={1} value={form.lbsQtyRequired}
               onChange={e => setForm({ ...form, lbsQtyRequired: Number(e.target.value) })} />
           </label>
+          {form.lbsQtyRequired > 1 && (
+            <div style={{ marginBottom: 4 }}>
+              <div className="muted" style={{ marginBottom: 6 }}>จุดติดตั้งเพิ่มเติม (ติดตั้งหลายจุดได้เมื่อมี LBS มากกว่า 1 เครื่อง)</div>
+              <InstallSitesEditor sites={installSites} onChange={setInstallSites} max={form.lbsQtyRequired - 1} />
+            </div>
+          )}
           <div className="budget-legend">Project Budget</div>
           <BudgetFields
             sale={form.salePrice} costs={costs}

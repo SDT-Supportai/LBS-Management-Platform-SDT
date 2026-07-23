@@ -69,8 +69,10 @@ export interface Job {
   customerName: string
   scope: string
   installLocation: string
-  requiredDate: string
+  requiredDate: string         // จุดติดตั้งที่ 1 (หลัก) — ทุกหน้าที่แสดง "สถานที่/กำหนด" ใช้คู่นี้
   lbsQtyRequired: number
+  // จุดติดตั้งเพิ่มเติม (จุดที่ 2+) — ใช้ได้เมื่อ Job มี LBS > 1 · ข้อมูลวางแผนอย่างเดียว (ไม่ผูก Serial)
+  installSites?: { location: string; requiredDate: string }[]
   contactPhone?: string        // เบอร์ติดต่อลูกค้า — ตารางรายเครื่องใน Project Stock ref ค่านี้
   // Project Budget (บาท) — กำไร derive = ราคาขาย − ต้นทุน (ไม่เก็บซ้ำ)
   budgetSalePrice?: number

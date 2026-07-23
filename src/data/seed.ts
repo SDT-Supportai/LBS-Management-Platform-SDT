@@ -58,6 +58,11 @@ export function buildSeedDb(): DB {
     jobNo: 'JOB-2026-0001',
     customerName: 'PEA เชียงใหม่', scope: 'ติดตั้ง LBS สถานีย่อยสันทราย 4 จุด',
     installLocation: 'สถานีไฟฟ้าสันทราย จ.เชียงใหม่', requiredDate: '2026-08-20', lbsQtyRequired: 4,
+    installSites: [
+      { location: 'สถานีไฟฟ้าแม่ริม จ.เชียงใหม่', requiredDate: '2026-08-22' },
+      { location: 'สถานีไฟฟ้าสันกำแพง จ.เชียงใหม่', requiredDate: '2026-08-25' },
+      { location: 'สถานีไฟฟ้าหางดง จ.เชียงใหม่', requiredDate: '2026-08-28' },
+    ],
     budgetSalePrice: 4800000,
     budgetCosts: {
       raw_mat: { budget: 2200000, phase: 'PH1-MAT' }, outsourcing: { budget: 600000, phase: 'PH1-OUT' },
