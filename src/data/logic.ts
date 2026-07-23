@@ -197,11 +197,11 @@ export function importUnitsToStock(
 
   // อัพเดทต้นทุน: match คู่ Serial (lvb+om) เฉพาะเครื่องในคลังนี้ · cost ว่าง = คงค่าเดิม (ไม่ลบทิ้ง)
   const costByKey = new Map<string, number>()
-  for (const u of updateUnits) if (u.cost !== undefined) costByKey.set(`${u.lvb} ${u.om}`, u.cost)
+  for (const u of updateUnits) if (u.cost !== undefined) costByKey.set(`${u.lvb}|${u.om}`, u.cost)
   let updatedCount = 0
   let lbsUnits = db.lbsUnits.map(x => {
     if (x.projectStockId === p.stockId) {
-      const c = costByKey.get(`${x.serialLvb} ${x.serialOm}`)
+      const c = costByKey.get(`${x.serialLvb}|${x.serialOm}`)
       if (c !== undefined) { updatedCount++; return { ...x, unitCost: c } }
     }
     return x

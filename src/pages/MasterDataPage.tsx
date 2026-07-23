@@ -6,7 +6,7 @@ import type { Item } from '../types'
 // ---------------- Excel import/export (Accessory Catalog) ----------------
 
 interface ImportRow {
-  code: string; epicorCode: string; name: string; uom: string
+  epicorCode: string; name: string; uom: string
   action: 'create' | 'update' | 'unchanged' | 'error'
   error?: string
   itemId?: string
@@ -22,21 +22,22 @@ function cell(row: Record<string, unknown>, keys: string[]): string {
 }
 
 function parseImportRows(rows: Record<string, unknown>[], items: Item[]): ImportRow[] {
+  const seen = new Set<string>()   // กันรหัส Epicor ซ้ำกันเองในไฟล์
   return rows.map(raw => {
-    const code = cell(raw, ['รหัส', 'code'])
-    const epicorCode = cell(raw, ['รหัส Epicor', 'epicor', 'epicor_code', 'epicor code'])
+    const epicorCode = cell(raw, ['รหัส Epicor', 'epicor', 'epicor_code', 'epicor code', 'รหัส', 'code'])
     const name = cell(raw, ['ชื่ออุปกรณ์', 'ชื่อ', 'name'])
     const uom = cell(raw, ['หน่วย', 'uom'])
-    const base: Omit<ImportRow, 'action'> = { code, epicorCode, name, uom }
-    if (!code) return { ...base, action: 'error' as const, error: 'ไม่มีรหัส' }
+    const base: Omit<ImportRow, 'action'> = { epicorCode, name, uom }
+    if (!epicorCode) return { ...base, action: 'error' as const, error: 'ไม่มีรหัส Epicor' }
     if (!name) return { ...base, action: 'error' as const, error: 'ไม่มีชื่ออุปกรณ์' }
-    const existing = items.find(i => i.code.toLowerCase() === code.toLowerCase())
+    const key = epicorCode.toLowerCase()
+    if (seen.has(key)) return { ...base, action: 'error' as const, error: `รหัส Epicor "${epicorCode}" ซ้ำในไฟล์` }
+    seen.add(key)
+    const existing = items.find(i => (i.epicorCode ?? '').toLowerCase() === key)
     if (!existing) return { ...base, action: 'create' as const }
     if (existing.itemType === 'main_equipment')
       return { ...base, action: 'error' as const, error: 'เป็น LBS หลัก แก้จากไฟล์ไม่ได้' }
-    const changed = (existing.epicorCode ?? '') !== epicorCode
-      || existing.name !== name
-      || (uom !== '' && existing.uom !== uom)
+    const changed = existing.name !== name || (uom !== '' && existing.uom !== uom)
     return { ...base, action: changed ? 'update' as const : 'unchanged' as const, itemId: existing.id }
   })
 }
@@ -55,17 +56,20 @@ export default function MasterDataPage() {
   // ---- item modal state ----
   const [itemModal, setItemModal] = useState<'create' | 'edit' | null>(null)
   const [itemTarget, setItemTarget] = useState<Item | null>(null)
-  const [itemForm, setItemForm] = useState({ code: '', epicorCode: '', name: '', uom: 'ชิ้น', stockableCentrally: false, initialQty: 0 })
+  const [itemForm, setItemForm] = useState({ epicorCode: '', name: '', uom: 'ชิ้น', stockableCentrally: false, initialQty: 0 })
 
   const accessories = db.items.filter(i => i.itemType === 'accessory')
   const stockQty = (itemId: string) => db.accessoryStock.find(r => r.itemId === itemId)?.qtyOnHand ?? 0
 
-  const openCreateItem = () => { setItemForm({ code: '', epicorCode: '', name: '', uom: 'ชิ้น', stockableCentrally: false, initialQty: 0 }); setItemTarget(null); setItemModal('create') }
-  const openEditItem = (i: Item) => { setItemForm({ code: i.code, epicorCode: i.epicorCode ?? '', name: i.name, uom: i.uom, stockableCentrally: i.stockableCentrally, initialQty: 0 }); setItemTarget(i); setItemModal('edit') }
+  const openCreateItem = () => { setItemForm({ epicorCode: '', name: '', uom: 'ชิ้น', stockableCentrally: false, initialQty: 0 }); setItemTarget(null); setItemModal('create') }
+  const openEditItem = (i: Item) => { setItemForm({ epicorCode: i.epicorCode ?? '', name: i.name, uom: i.uom, stockableCentrally: i.stockableCentrally, initialQty: 0 }); setItemTarget(i); setItemModal('edit') }
   const submitItem = async () => {
+    // ใช้ "รหัส Epicor" เป็นตัวระบุหลัก — code (schema เดิม) set = epicorCode เบื้องหลัง
+    const epicorCode = itemForm.epicorCode.trim()
+    if (!epicorCode) return show('กรุณาระบุรหัส Epicor', true)
     const ok = itemModal === 'create'
-      ? await tryAction(() => act.createItem(itemForm), 'เพิ่ม Accessory แล้ว')
-      : await tryAction(() => act.updateItem({ itemId: itemTarget!.id, ...itemForm }), 'บันทึกแล้ว')
+      ? await tryAction(() => act.createItem({ code: epicorCode, epicorCode, name: itemForm.name, uom: itemForm.uom, stockableCentrally: itemForm.stockableCentrally, initialQty: itemForm.initialQty }), 'เพิ่ม Accessory แล้ว')
+      : await tryAction(() => act.updateItem({ itemId: itemTarget!.id, code: itemTarget!.code, epicorCode, name: itemForm.name, uom: itemForm.uom, stockableCentrally: itemForm.stockableCentrally }), 'บันทึกแล้ว')
     if (ok) setItemModal(null)
   }
 
@@ -75,7 +79,6 @@ export default function MasterDataPage() {
   const exportExcel = async () => {
     const XLSX = await import('xlsx')
     const rows = accessories.map(i => ({
-      'รหัส': i.code,
       'รหัส Epicor': i.epicorCode ?? '',
       'ชื่ออุปกรณ์': i.name,
       'หน่วย': i.uom,
@@ -83,7 +86,7 @@ export default function MasterDataPage() {
       'คลังคงเหลือ': i.stockableCentrally ? stockQty(i.id) : '',
     }))
     const ws = XLSX.utils.json_to_sheet(rows)
-    ws['!cols'] = [{ wch: 14 }, { wch: 14 }, { wch: 32 }, { wch: 8 }, { wch: 12 }, { wch: 10 }]
+    ws['!cols'] = [{ wch: 14 }, { wch: 32 }, { wch: 8 }, { wch: 12 }, { wch: 10 }]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'Accessory Catalog')
     XLSX.writeFile(wb, `accessory-catalog-${new Date().toISOString().slice(0, 10)}.xlsx`)
@@ -95,7 +98,7 @@ export default function MasterDataPage() {
       const wb = XLSX.read(await file.arrayBuffer())
       const ws = wb.Sheets[wb.SheetNames[0]]
       const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: '' })
-      if (raw.length === 0) return show('ไฟล์ไม่มีข้อมูล — ต้องมีหัวตาราง: รหัส, รหัส Epicor, ชื่ออุปกรณ์, หน่วย', true)
+      if (raw.length === 0) return show('ไฟล์ไม่มีข้อมูล — ต้องมีหัวตาราง: รหัส Epicor, ชื่ออุปกรณ์, หน่วย', true)
       setImportRows(parseImportRows(raw, db.items))
     } catch {
       show('อ่านไฟล์ไม่ได้ — ต้องเป็นไฟล์ Excel (.xlsx)', true)
@@ -112,19 +115,19 @@ export default function MasterDataPage() {
       try {
         if (row.action === 'create') {
           await act.createItem({
-            code: row.code, epicorCode: row.epicorCode || undefined, name: row.name,
+            code: row.epicorCode, epicorCode: row.epicorCode, name: row.name,
             uom: row.uom || 'ชิ้น', stockableCentrally: false, initialQty: 0,
           })
         } else {
           const existing = db.items.find(i => i.id === row.itemId)!
           await act.updateItem({
-            itemId: existing.id, code: row.code, epicorCode: row.epicorCode || undefined,
+            itemId: existing.id, code: existing.code, epicorCode: row.epicorCode,
             name: row.name, uom: row.uom || existing.uom, stockableCentrally: existing.stockableCentrally,
           })
         }
         ok++
       } catch (e) {
-        fails.push(`${row.code}: ${e instanceof Error ? e.message : String(e)}`)
+        fails.push(`${row.epicorCode}: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
     setImporting(false)
@@ -136,8 +139,11 @@ export default function MasterDataPage() {
   const adjustStock = (i: Item) => {
     const v = window.prompt(`ยอดคงเหลือใหม่ของ ${i.name} (ปัจจุบัน ${stockQty(i.id)} ${i.uom})`)
     if (v === null) return
+    const qty = Number(v.trim())
+    if (v.trim() === '' || Number.isNaN(qty)) return show('กรุณากรอกยอดเป็นตัวเลข', true)
+    if (qty < 0) return show('ยอดคงเหลือติดลบไม่ได้', true)
     const note = window.prompt('เหตุผลการปรับยอด (บันทึกลง audit)') ?? ''
-    tryAction(() => act.adjustAccessoryStock({ itemId: i.id, newQty: Number(v), note }), 'ปรับยอดแล้ว')
+    tryAction(() => act.adjustAccessoryStock({ itemId: i.id, newQty: qty, note }), 'ปรับยอดแล้ว')
   }
 
   return (
@@ -167,12 +173,11 @@ export default function MasterDataPage() {
         {showCatalog && (
           <div className="table-scroll">
             <table>
-              <thead><tr><th>รหัส</th><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>หน่วย</th><th></th></tr></thead>
+              <thead><tr><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>หน่วย</th><th></th></tr></thead>
               <tbody>
-                {accessories.length === 0 && <tr><td colSpan={5}><div className="empty">ยังไม่มีวัสดุในระบบ</div></td></tr>}
+                {accessories.length === 0 && <tr><td colSpan={4}><div className="empty">ยังไม่มีวัสดุในระบบ</div></td></tr>}
                 {accessories.map(i => (
                   <tr key={i.id}>
-                    <td className="mono">{i.code}</td>
                     <td className="mono">{i.epicorCode || '-'}</td>
                     <td>{i.name}</td>
                     <td>{i.uom}</td>
@@ -200,10 +205,7 @@ export default function MasterDataPage() {
             <button className="primary" onClick={submitItem}>บันทึก</button>
           </>}>
           <div className="row">
-            <label className="field"><span>รหัส *</span>
-              <input value={itemForm.code} onChange={e => setItemForm({ ...itemForm, code: e.target.value })} placeholder="ACC-XXX-01" />
-            </label>
-            <label className="field"><span>รหัส Epicor</span>
+            <label className="field"><span>รหัส Epicor *</span>
               <input value={itemForm.epicorCode} onChange={e => setItemForm({ ...itemForm, epicorCode: e.target.value })} placeholder="EPC-XXX-01" />
             </label>
             <label className="field"><span>หน่วยนับ</span>
@@ -237,12 +239,12 @@ export default function MasterDataPage() {
             </button>
           </>}>
           <div className="muted" style={{ marginBottom: 10 }}>
-            รหัสที่มีอยู่แล้ว = อัปเดตทับ (ชื่อ/Epicor/หน่วย) · รหัสใหม่ = เพิ่มรายการ (การจัดหาเริ่มต้น: Purchasing)
+            รหัส Epicor ที่มีอยู่แล้ว = อัปเดตทับ (ชื่อ/หน่วย) · รหัส Epicor ใหม่ = เพิ่มรายการ (การจัดหาเริ่มต้น: Purchasing)
             · ไม่แตะยอดคลังสินค้า
           </div>
           <div className="table-scroll" style={{ maxHeight: 320, overflowY: 'auto' }}>
             <table>
-              <thead><tr><th>ผล</th><th>รหัส</th><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>หน่วย</th></tr></thead>
+              <thead><tr><th>ผล</th><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>หน่วย</th></tr></thead>
               <tbody>
                 {importRows.map((r, i) => (
                   <tr key={i}>
@@ -252,7 +254,6 @@ export default function MasterDataPage() {
                       {r.action === 'unchanged' && <span className="badge neutral">ไม่เปลี่ยน</span>}
                       {r.action === 'error' && <span className="badge red" title={r.error}>ข้าม: {r.error}</span>}
                     </td>
-                    <td className="mono">{r.code || '-'}</td>
                     <td className="mono">{r.epicorCode || '-'}</td>
                     <td>{r.name || '-'}</td>
                     <td>{r.uom || '-'}</td>

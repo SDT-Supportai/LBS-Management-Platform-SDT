@@ -159,7 +159,7 @@ export default function PurchasingPage() {
                               </td>
                             )}
                             <td className="mono">{it.epicorCode || '-'}</td>
-                            <td>{it.name} <span className="muted mono">{it.code}</span></td>
+                            <td>{it.name}</td>
                             <td style={{ textAlign: 'right' }}>{r.qtyRequested} {it.uom}</td>
                             <td style={{ textAlign: 'right' }}>{fmtBaht(r.unitPrice)}</td>
                             <td style={{ textAlign: 'right' }}>{fmtBaht(value)}</td>
@@ -287,7 +287,7 @@ export default function PurchasingPage() {
                     <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => setPoLineIds(s => ({ ...s, [r.id]: !s[r.id] }))}>
                       <td><input type="checkbox" readOnly checked={!!poLineIds[r.id]} /></td>
                       <td className="mono">{it.epicorCode || '-'}</td>
-                      <td>{it.name} <span className="muted mono">{it.code}</span></td>
+                      <td>{it.name}</td>
                       <td style={{ textAlign: 'right' }}>{r.qtyRequested} {it.uom}</td>
                       <td style={{ textAlign: 'right' }}>{fmtBaht(r.unitPrice)}</td>
                       <td style={{ textAlign: 'right' }}>{fmtBaht(value)}</td>

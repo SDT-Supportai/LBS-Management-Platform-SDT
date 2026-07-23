@@ -108,7 +108,6 @@ export default function JobDetailPage() {
       return {
         'รหัส Epicor': item.epicorCode || '',
         'ชื่ออุปกรณ์': item.name,
-        'รหัสภายใน': item.code,
         'จำนวน': r.qtyRequested,
         'หน่วย': item.uom,
         'ราคา/หน่วย': r.unitPrice ?? '',
@@ -121,7 +120,7 @@ export default function JobDetailPage() {
       }
     })
     const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ 'รหัส Epicor': '', 'ชื่ออุปกรณ์': '(ยังไม่มีรายการวัสดุ)' }])
-    ws['!cols'] = [{ wch: 14 }, { wch: 24 }, { wch: 14 }, { wch: 8 }, { wch: 8 }, { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 18 }]
+    ws['!cols'] = [{ wch: 14 }, { wch: 24 }, { wch: 8 }, { wch: 8 }, { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 18 }]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'Purchase Orders')
     XLSX.writeFile(wb, `${job.jobNo.replace(/[\\/:*?"<>|]/g, '-')}-PO-${new Date().toISOString().slice(0, 10)}.xlsx`)
@@ -361,7 +360,7 @@ export default function JobDetailPage() {
                 return (
                   <tr key={r.id}>
                     <td className="mono">{item.epicorCode || '-'}</td>
-                    <td>{item.name} <span className="muted mono">{item.code}</span></td>
+                    <td>{item.name}</td>
                     <td>
                       {r.qtyRequested} {item.uom}
                       {r.source === 'purchasing' && (r.status === 'po_ordered' || r.status === 'received') && (
@@ -501,7 +500,7 @@ export default function JobDetailPage() {
               const item = itemOf(e.target.value)
               setAccForm({ ...accForm, itemId: e.target.value, source: item?.stockableCentrally ? 'central_stock' : 'purchasing' })
             }}>
-              {accessoryItems.map(i => <option key={i.id} value={i.id}>{i.name} ({i.code})</option>)}
+              {accessoryItems.map(i => <option key={i.id} value={i.id}>{i.name}{(i.epicorCode || i.code) ? ` (${i.epicorCode || i.code})` : ''}</option>)}
             </select>
           </label>
           {selAccItem && (

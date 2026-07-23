@@ -17,7 +17,7 @@
 - **Project ID (Jobs)** (`JobsPage`/`JobDetailPage`) — เปิด Job, **Project Budget ต้นทุน 7 หมวด** (การ์ดแก้ได้/ตาราง Raw Material→Finance ซ่อนได้ · **Manage แก้งบได้แม้ Job ล็อก** 0023), ดึง-คืน LBS, ขอวัสดุ, ออก PR — ปุ่มออก PR/เบิก/ยกเลิกของ project เป็น "ขออนุมัติ" (Manage ทำตรง) · Purchase Orders มีปุ่ม **⬇ Export Excel** + คอลัมน์ Phase Budget โชว์ Phase ที่กรอกในงบ · **ดึง LBS เข้า Job → ต้นทุนเครื่องบวกเข้า actual หมวด Raw Material** (0024) · **หลายจุดติดตั้งต่อ Job เมื่อ LBS>1** (จุดที่ 1 = ฟิลด์เดิม + จุดที่ 2+ = install_sites, 0026) · ปุ่ม **🖨️ ปริ้นสรุปโครงการ (PDF)**
 - **Purchasing (PR/PO)** (`PurchasingPage`) — จัดกลุ่มตาม Job, **1 PR → หลาย PO** (เลือกอุปกรณ์เข้าแต่ละ PO), ยกเลิก PO, ตีกลับ PR, รับของ partial · **รายการรอออก PO แสดงครบ** (Epicor, ชื่อ, จำนวน, ราคา/หน่วย, มูลค่า, Phase Budget) · popup ออก PO เป็น Modal กว้าง · สรุปประวัติ PR/PO ต่อ Job (ซ่อนได้)
 - **Service (Installation)** (`ServicePage`) — ยืนยันติดตั้ง **บังคับ Check-in GPS + แนบรูป**
-- **Material Database** (`MasterDataPage`) — ฐานข้อมูลวัสดุ + Export/Import Excel
+- **Material Database** (`MasterDataPage`) — ฐานข้อมูลวัสดุ + Export/Import Excel · **ใช้ "รหัส Epicor" เป็นตัวระบุหลัก** (ตัดช่อง "รหัส" ภายในออกจาก UI ทั้งหมด — เบื้องหลัง client set `code`=Epicor คง schema เดิม, Import match/เช็คซ้ำด้วย Epicor)
 - **Awaiting Approval** (`ApprovalsPage`) — คิวคำขอจาก project ให้ Division ตัดสิน + ประวัติแยกตาม Job (ซ่อนได้) · badge จำนวนค้าง · **อยู่ล่าง Material Database**
 - **Dev Settings** (`DevSettingsPage`) — เฉพาะ Manage: ผู้ใช้งาน (เพิ่ม/แก้ชื่อ-อีเมล-รหัส-แผนก), สวิตช์ LINE (global), backup — **Audit Log** ปุ่มล่าง sidebar
 
@@ -193,6 +193,7 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 - หน้า forgot-password / เปลี่ยนรหัสตัวเอง (ตอนนี้ Manage reset ให้ที่ Dev Settings)
 - รายงาน/analytics (stock movement, lead time ต่อ Job)
 
+> ✅ เสร็จแล้ว (2026-07-23): Material Database ใช้ "รหัส Epicor" เป็น key (ตัดช่อง "รหัส" ภายในทุกหน้า, client set code=Epicor — ไม่ต้อง migration) · fix null byte ใน logic.ts (ตัวคั่น costByKey เป็น `|`) · adjustStock validate ตัวเลข · Material Import เช็ค Epicor ซ้ำในไฟล์
 > ✅ เสร็จแล้ว (2026-07-23): หลายจุดติดตั้งต่อ Job เมื่อ LBS>1 — install_sites JSONB, ฟอร์มเปิด/แก้ Job + แผงจุดติดตั้ง (0026) · เปิด Job Modal = wide
 > ✅ เสร็จแล้ว (2026-07-23): Import Serial upsert — ซ้ำในคลัง (คู่ตรง) ให้เลือกอัพเดทต้นทุน/ข้าม, ชนคลังอื่นเป็น error (0025)
 > ✅ เสร็จแล้ว (2026-07-22): Manage แก้งบได้แม้ Job ล็อก (0023) · ต้นทุนตัว LBS ต่อเครื่อง + มูลค่าคลัง + บวกเข้า raw_mat actual ตอนดึงเข้า Job (0024) · Purchase Orders (Jobs) Export Excel + Phase Budget โชว์ Phase ที่กรอก · Purchasing รายการรอออก PO แสดงครบคอลัมน์ + popup ออก PO กว้าง · Modal มี size variant `wide`

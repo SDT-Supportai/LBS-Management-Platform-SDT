@@ -333,7 +333,7 @@ export default function StocksPage() {
                   return (
                     <tr key={`${po.id}-${r.id}`}>
                       <td className="mono">{item.epicorCode || '-'}</td>
-                      <td>{item.name} <span className="muted mono">{item.code}</span></td>
+                      <td>{item.name}</td>
                       <td>{r.qtyReceived} {item.uom}</td>
                       <td className="mono"><b>{po.poNo}</b></td>
                       <td>{job ? <Link to={`/jobs/${job.id}`}>{job.jobNo}</Link> : '-'}</td>
