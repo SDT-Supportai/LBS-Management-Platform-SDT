@@ -33,7 +33,8 @@ export default function JobDetailPage() {
   const tryAction = useTryAction()
 
   const job = db.jobs.find(j => j.id === jobId)
-  const [modal, setModal] = useState<'draw' | 'return' | 'accessory' | 'issue' | 'cancel' | 'edit' | 'budget' | null>(null)
+  const [modal, setModal] = useState<'draw' | 'return' | 'accessory' | 'issue' | 'cancel' | 'edit' | 'budget' | 'swap' | null>(null)
+  const [swapForm, setSwapForm] = useState({ allocatedUnitId: '', stockUnitId: '', reason: '' })
   const [budgetOpen, setBudgetOpen] = useState(false)   // ตาราง 7 หมวด (Item 4: เริ่มซ่อน)
   const [drawStock, setDrawStock] = useState('')
   const [picked, setPicked] = useState<Set<string>>(new Set())
@@ -54,13 +55,15 @@ export default function JobDetailPage() {
   const isManage = can(user, 'master.manage')
   const canCleanup = can(user, 'accessory.cleanup')   // Project/Division/Manage ลบรายการวัสดุที่ยกเลิก
   const locked = !job || job.terminalStatus !== null
-  const pendingApprovalOf = (type: 'create_pr' | 'issue_job' | 'cancel_job') =>
+  const pendingApprovalOf = (type: 'create_pr' | 'issue_job' | 'cancel_job' | 'swap_lbs') =>
     db.approvalRequests.some(r => r.jobId === jobId && r.type === type && r.status === 'pending')
 
   const allocatedUnits = useMemo(
     () => db.lbsUnits.filter(u => u.jobId === jobId && (u.status === 'allocated' || u.status === 'issued')),
     [db.lbsUnits, jobId],
   )
+  // เครื่องว่างในคลัง (ทุก Stock) ที่ใช้เป็นคู่สลับเลข Serial ได้
+  const inStockUnits = useMemo(() => db.lbsUnits.filter(u => u.status === 'in_stock'), [db.lbsUnits])
   const accReqs = db.accessoryRequests.filter(r => r.jobId === jobId)
   const pendingReqs = job ? pendingPurchasingReqs(db, job.id) : []
   const receivedFromPo = accReqs.filter(r => r.source === 'purchasing' && r.status === 'received')
@@ -308,9 +311,23 @@ export default function JobDetailPage() {
       <div className="panel">
         <div className="panel-head">
           <h3>LBS ที่ดึงเข้า Job — {allocatedUnits.length}/{job.lbsQtyRequired} เครื่อง</h3>
-          {allocatedUnits.length >= job.lbsQtyRequired
-            ? <span className="badge green">ครบตาม Scope</span>
-            : <span className="badge amber">ขาดอีก {job.lbsQtyRequired - allocatedUnits.length} เครื่อง</span>}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {allocatedUnits.length >= job.lbsQtyRequired
+              ? <span className="badge green">ครบตาม Scope</span>
+              : <span className="badge amber">ขาดอีก {job.lbsQtyRequired - allocatedUnits.length} เครื่อง</span>}
+            {/* สลับเลข Serial ของเครื่องบน Job กับเครื่องในคลัง (ก่อนเบิกให้ Service) — project ขออนุมัติ Division ก่อน */}
+            {canManage && !locked && allocatedUnits.some(u => u.status === 'allocated') && inStockUnits.length > 0 && (
+              <button className="small" disabled={pendingApprovalOf('swap_lbs')}
+                title={pendingApprovalOf('swap_lbs') ? 'มีคำขอสลับ LBS รอ Division อนุมัติอยู่แล้ว' : ''}
+                onClick={() => {
+                  const firstAlloc = allocatedUnits.find(u => u.status === 'allocated')
+                  setSwapForm({ allocatedUnitId: firstAlloc?.id ?? '', stockUnitId: inStockUnits[0]?.id ?? '', reason: '' })
+                  setModal('swap')
+                }}>
+                {isManage ? '🔁 สลับ LBS' : '🔁 ขออนุมัติสลับ LBS'}
+              </button>
+            )}
+          </div>
         </div>
         <div className="table-scroll">
           <table>
@@ -501,6 +518,54 @@ export default function JobDetailPage() {
           </label>
         </Modal>
       )}
+
+      {modal === 'swap' && (() => {
+        const a = db.lbsUnits.find(u => u.id === swapForm.allocatedUnitId)
+        const b = db.lbsUnits.find(u => u.id === swapForm.stockUnitId)
+        const allocatable = allocatedUnits.filter(u => u.status === 'allocated')
+        return (
+        <Modal title={`สลับ LBS — ${job.jobNo}`} size="wide" onClose={close}
+          footer={<>
+            <button onClick={close}>ยกเลิก</button>
+            <button className="primary" disabled={!swapForm.allocatedUnitId || !swapForm.stockUnitId || !swapForm.reason.trim()}
+              onClick={async () => {
+                const ok = isManage
+                  ? await tryAction(() => act.swapLbs({ jobId: job.id, allocatedUnitId: swapForm.allocatedUnitId, stockUnitId: swapForm.stockUnitId, reason: swapForm.reason }), 'สลับ LBS เรียบร้อย')
+                  : await tryAction(() => act.requestApproval({ type: 'swap_lbs', jobId: job.id, payload: { swapAllocatedUnitId: swapForm.allocatedUnitId, swapStockUnitId: swapForm.stockUnitId, reason: swapForm.reason } }), 'ส่งคำขอสลับ LBS ให้ Division อนุมัติแล้ว')
+                if (ok) close()
+              }}>
+              {isManage ? 'สลับเลย' : 'ขออนุมัติสลับ'}
+            </button>
+          </>}>
+          <div className="muted" style={{ marginBottom: 12 }}>
+            สลับเฉพาะ <b>เลข Serial (LVB + OM)</b> ระหว่างเครื่องบน Job กับเครื่องว่างในคลัง — เครื่องไม่ย้าย/ไม่เปลี่ยนสถานะ
+            {!isManage && <> · ต้องให้ <b>Division</b> อนุมัติก่อน</>}
+          </div>
+          <div className="row">
+            <label className="field"><span>เครื่องบน Job (จะรับเลขใหม่)</span>
+              <select value={swapForm.allocatedUnitId} onChange={e => setSwapForm({ ...swapForm, allocatedUnitId: e.target.value })}>
+                {allocatable.map(u => <option key={u.id} value={u.id}>{u.serialLvb} / {u.serialOm} · {stockOf(u.projectStockId)?.stockNo}</option>)}
+              </select>
+            </label>
+            <label className="field"><span>เครื่องในคลัง (เอาเลขมาสลับ · คงค่าจาก Project Stock)</span>
+              <select value={swapForm.stockUnitId} onChange={e => setSwapForm({ ...swapForm, stockUnitId: e.target.value })}>
+                {inStockUnits.map(u => <option key={u.id} value={u.id}>{u.serialLvb} / {u.serialOm} · {stockOf(u.projectStockId)?.stockNo}</option>)}
+              </select>
+            </label>
+          </div>
+          {a && b && (
+            <div className="budget-profit" style={{ marginBottom: 12 }}>
+              <span>ผลหลังสลับ</span>
+              <b className="mono" style={{ fontSize: 12 }}>บน Job: {b.serialLvb}/{b.serialOm} · คลัง: {a.serialLvb}/{a.serialOm}</b>
+            </div>
+          )}
+          <label className="field"><span>เหตุผลการสลับ * (แจ้ง Division)</span>
+            <textarea rows={2} value={swapForm.reason} onChange={e => setSwapForm({ ...swapForm, reason: e.target.value })}
+              placeholder="เช่น เครื่องเดิมชำรุด / สลับตามหน้างานจริง" />
+          </label>
+        </Modal>
+        )
+      })()}
 
       {modal === 'accessory' && (
         <Modal title="Purchase Requisition — เพิ่มวัสดุให้ Job" size="wide" onClose={close}

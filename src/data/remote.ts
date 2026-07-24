@@ -100,6 +100,8 @@ function mapApproval(r: Row): ApprovalRequest {
       location: pl.location ?? undefined, note: pl.note ?? undefined,
       reason: pl.reason ?? undefined,
       receivedToCentral: pl.received_to_central ?? undefined,
+      swapAllocatedUnitId: pl.swap_allocated_unit_id ?? undefined,
+      swapStockUnitId: pl.swap_stock_unit_id ?? undefined,
     },
     status: r.status, requestedBy: r.requested_by ?? '', requestedAt: r.requested_at,
     decidedBy: r.decided_by ?? undefined, decidedAt: r.decided_at ?? undefined,
@@ -208,6 +210,8 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_draw_lbs', { p_job_id: p.jobId, p_stock_id: p.stockId, p_unit_ids: p.unitIds }),
     returnLbs: (p: { jobId: string; unitIds: string[]; targetStockId: string; note?: string }) =>
       rpc(sb, 'rpc_return_lbs', { p_job_id: p.jobId, p_unit_ids: p.unitIds, p_target_stock_id: p.targetStockId, p_note: p.note ?? null }),
+    swapLbs: (p: { jobId: string; allocatedUnitId: string; stockUnitId: string; reason: string }) =>
+      rpc(sb, 'rpc_swap_lbs', { p_job_id: p.jobId, p_allocated_unit_id: p.allocatedUnitId, p_stock_unit_id: p.stockUnitId, p_reason: p.reason }),
     addAccessoryRequest: (p: { jobId: string; itemId: string; qty: number; source: 'central_stock' | 'purchasing'; unitPrice?: number; phaseBudget?: string }) =>
       rpc(sb, 'rpc_add_accessory_request', { p_job_id: p.jobId, p_item_id: p.itemId, p_qty: p.qty, p_source: p.source, p_unit_price: p.unitPrice ?? null, p_phase_budget: p.phaseBudget ?? null }),
     updateAccessoryRequestQty: (p: { requestId: string; qty: number }) =>
@@ -244,6 +248,8 @@ export function remoteActions(sb: SupabaseClient) {
           ...(p.payload.note !== undefined ? { note: p.payload.note } : {}),
           ...(p.payload.reason !== undefined ? { reason: p.payload.reason } : {}),
           ...(p.payload.receivedToCentral !== undefined ? { received_to_central: p.payload.receivedToCentral } : {}),
+          ...(p.payload.swapAllocatedUnitId !== undefined ? { swap_allocated_unit_id: p.payload.swapAllocatedUnitId } : {}),
+          ...(p.payload.swapStockUnitId !== undefined ? { swap_stock_unit_id: p.payload.swapStockUnitId } : {}),
         },
       }),
     approveRequest: (p: { requestId: string }) =>

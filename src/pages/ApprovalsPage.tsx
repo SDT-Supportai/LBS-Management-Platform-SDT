@@ -46,6 +46,12 @@ export default function ApprovalsPage() {
         : `${fmtDate(r.payload.startDate)} – ${fmtDate(r.payload.endDate)}`
       return `ติดตั้ง ${range} ที่ ${r.payload.location ?? '-'}${r.payload.note ? ` — ${r.payload.note}` : ''}`
     }
+    if (r.type === 'swap_lbs') {
+      const a = db.lbsUnits.find(u => u.id === r.payload.swapAllocatedUnitId)
+      const b = db.lbsUnits.find(u => u.id === r.payload.swapStockUnitId)
+      const sn = (u?: typeof a) => u ? `${u.serialLvb}/${u.serialOm}` : '?'
+      return `สลับ ${sn(a)} (บน Job) ↔ ${sn(b)} (คลัง) · เหตุผล: ${r.payload.reason ?? '-'}`
+    }
     return `เหตุผล: ${r.payload.reason ?? '-'}${r.payload.receivedToCentral ? ' (วัสดุที่รับแล้วคืนเข้าสต็อกกลาง)' : ''}`
   }
 
@@ -53,7 +59,7 @@ export default function ApprovalsPage() {
     <div>
       <div className="page-title">Awaiting Approval</div>
       <div className="page-sub">
-        คำขอจากงานโครงการที่รอ Division พิจารณา — ออก PR · เบิกให้ Service · ยกเลิก Job
+        คำขอจากงานโครงการที่รอ Division พิจารณา — ออก PR · เบิกให้ Service · ยกเลิก Job · สลับ LBS
         {canDecide ? ' · อนุมัติแล้วระบบดำเนินการให้ทันที' : ' · ติดตามสถานะคำขอของแผนกคุณที่นี่'}
       </div>
 

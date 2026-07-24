@@ -107,6 +107,7 @@ export interface StoreActions {
   deleteDraftJob: (p: Parameters<typeof L.deleteDraftJob>[2]) => MaybePromise
   drawLbs: (p: Parameters<typeof L.drawLbs>[2]) => MaybePromise
   returnLbs: (p: Parameters<typeof L.returnLbs>[2]) => MaybePromise
+  swapLbs: (p: Parameters<typeof L.swapLbs>[2]) => MaybePromise
   addAccessoryRequest: (p: Parameters<typeof L.addAccessoryRequest>[2]) => MaybePromise
   updateAccessoryRequestQty: (p: Parameters<typeof L.updateAccessoryRequestQty>[2]) => MaybePromise
   updateAccessoryRequestPrice: (p: Parameters<typeof L.updateAccessoryRequestPrice>[2]) => MaybePromise
@@ -249,6 +250,8 @@ function DemoProvider({ children }: { children: ReactNode }) {
         deleteDraftJob: run('job.manage', L.deleteDraftJob),
         drawLbs: run('job.manage', L.drawLbs),
         returnLbs: run('job.manage', L.returnLbs),
+        // สลับ LBS ตรง = admin เท่านั้น (project ต้องผ่าน requestApproval — 0028)
+        swapLbs: run('master.manage', L.swapLbs),
         addAccessoryRequest: run('job.manage', L.addAccessoryRequest),
         updateAccessoryRequestQty: run('job.manage', L.updateAccessoryRequestQty),
         updateAccessoryRequestPrice: run('job.manage', L.updateAccessoryRequestPrice),

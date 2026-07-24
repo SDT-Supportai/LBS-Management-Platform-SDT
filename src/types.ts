@@ -169,7 +169,7 @@ export interface PurchaseOrder {
 
 // คำขออนุมัติจาก Division (dept ใน DB = 'sales', แสดงผลเป็น "Division")
 // project ขอ → division/admin อนุมัติ (execute ทันที) หรือตีกลับพร้อมเหตุผล
-export type ApprovalType = 'create_pr' | 'issue_job' | 'cancel_job'
+export type ApprovalType = 'create_pr' | 'issue_job' | 'cancel_job' | 'swap_lbs'
 
 export interface ApprovalPayload {
   requestIds?: string[]            // create_pr
@@ -177,8 +177,11 @@ export interface ApprovalPayload {
   endDate?: string
   location?: string
   note?: string
-  reason?: string                  // cancel_job
+  reason?: string                  // cancel_job / swap_lbs (เหตุผลการสลับ)
   receivedToCentral?: boolean
+  // swap_lbs: สลับเลข Serial (LVB+OM) ระหว่างเครื่องที่ดึงเข้า Job (allocated) กับเครื่องในคลัง (in_stock)
+  swapAllocatedUnitId?: string     // เครื่องบน Job ที่จะรับเลขใหม่
+  swapStockUnitId?: string         // เครื่องในคลังที่จะเอาเลขมาสลับ (คงอยู่ในคลัง)
 }
 
 export interface ApprovalRequest {

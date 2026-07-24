@@ -472,6 +472,35 @@ export function returnLbs(
     `${job.jobNo} คืน LBS ${units.length} เครื่องเข้า ${target.stockNo} (SN: ${units.map(u => u.serialLvb).join(', ')})`)
 }
 
+// สลับเลข Serial (LVB+OM เป็นคู่) ระหว่างเครื่องที่ดึงเข้า Job (allocated) กับเครื่องในคลัง (in_stock)
+// เครื่องไม่ย้าย/ไม่เปลี่ยนสถานะ-สังกัดคลัง — แค่แลกคู่เลข · ทำได้หลังดึง LBS จนถึงก่อนเบิก (assertJobEditable)
+// เป็น core execute — ถูกเรียกโดย Manage ตรง หรือ approveRequest (หลัง Division อนุมัติ)
+export function swapLbs(
+  db: DB, actor: User,
+  p: { jobId: string; allocatedUnitId: string; stockUnitId: string; reason: string },
+): DB {
+  const job = assertJobEditable(db, p.jobId)
+  if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผลการสลับ LBS')
+  const a = db.lbsUnits.find(u => u.id === p.allocatedUnitId)
+  if (!a || a.jobId !== p.jobId || a.status !== 'allocated')
+    throw new Error('เครื่องต้นทางต้องเป็น LBS ที่ดึงเข้า Job นี้อยู่ (allocated)')
+  const b = db.lbsUnits.find(u => u.id === p.stockUnitId)
+  if (!b || b.status !== 'in_stock')
+    throw new Error('เครื่องที่จะสลับต้องเป็นเครื่องว่างในคลัง (in_stock)')
+  if (a.id === b.id) throw new Error('เลือกเครื่องสลับซ้ำกันไม่ได้')
+  // แลกคู่ Serial (permutation → ไม่ชน unique)
+  const next: DB = {
+    ...db,
+    lbsUnits: db.lbsUnits.map(u => {
+      if (u.id === a.id) return { ...u, serialLvb: b.serialLvb, serialOm: b.serialOm }
+      if (u.id === b.id) return { ...u, serialLvb: a.serialLvb, serialOm: a.serialOm }
+      return u
+    }),
+  }
+  return audit(next, actor, 'lbs_unit', a.id, 'swap_lbs_serial',
+    `${job.jobNo} สลับ LBS: ${a.serialLvb}/${a.serialOm} ↔ ${b.serialLvb}/${b.serialOm} (คลัง) — เหตุผล: ${p.reason.trim()}`)
+}
+
 // ---------------- Accessory ----------------
 
 export function addAccessoryRequest(
@@ -965,7 +994,7 @@ export function cancelJob(
 // admin ข้ามขั้นอนุมัติได้โดยเรียก createPR/issueJob/cancelJob ตรง (StoreContext คุมสิทธิ์)
 
 const APPROVAL_TYPE_LABEL: Record<ApprovalType, string> = {
-  create_pr: 'ออก PR', issue_job: 'เบิกให้ Service', cancel_job: 'ยกเลิก Job',
+  create_pr: 'ออก PR', issue_job: 'เบิกให้ Service', cancel_job: 'ยกเลิก Job', swap_lbs: 'สลับ LBS',
 }
 
 export function requestApproval(
@@ -991,6 +1020,15 @@ export function requestApproval(
     if (!p.payload.startDate || !p.payload.endDate) throw new Error('กรุณาระบุกำหนดวันติดตั้ง (Start–End)')
     if (p.payload.endDate < p.payload.startDate) throw new Error('วันสิ้นสุดต้องไม่ก่อนวันเริ่มติดตั้ง')
     if (!p.payload.location?.trim()) throw new Error('กรุณาระบุสถานที่ติดตั้ง (Location)')
+  } else if (p.type === 'swap_lbs') {
+    if (!p.payload.reason?.trim()) throw new Error('กรุณาระบุเหตุผลการสลับ LBS')
+    const a = db.lbsUnits.find(u => u.id === p.payload.swapAllocatedUnitId)
+    if (!a || a.jobId !== p.jobId || a.status !== 'allocated')
+      throw new Error('เครื่องต้นทางต้องเป็น LBS ที่ดึงเข้า Job นี้อยู่ (allocated)')
+    const b = db.lbsUnits.find(u => u.id === p.payload.swapStockUnitId)
+    if (!b || b.status !== 'in_stock')
+      throw new Error('เครื่องที่จะสลับต้องเป็นเครื่องว่างในคลัง (in_stock)')
+    typeLabel = 'สลับ LBS'
   } else {
     if (!p.payload.reason?.trim()) throw new Error('กรุณาระบุเหตุผลการยกเลิก')
   }
@@ -1029,6 +1067,11 @@ export function approveRequest(db: DB, actor: User, p: { requestId: string }): D
     next = issueJob(next, actor, {
       jobId: req.jobId, startDate: req.payload.startDate ?? '', endDate: req.payload.endDate ?? '',
       location: req.payload.location ?? '', note: req.payload.note,
+    })
+  } else if (req.type === 'swap_lbs') {
+    next = swapLbs(next, actor, {
+      jobId: req.jobId, allocatedUnitId: req.payload.swapAllocatedUnitId ?? '',
+      stockUnitId: req.payload.swapStockUnitId ?? '', reason: req.payload.reason ?? '',
     })
   } else {
     next = cancelJob(next, actor, {
