@@ -65,7 +65,7 @@ lbs-platform/
     line-webhook.js          POST /line-webhook — bot ตอบลูกค้า + คำสั่ง "id" ดู Group ID
   public/
     _redirects               SPA fallback (/* → /index.html 200)
-    logo.png                 โลโก้จริง (crop ขอบขาว) — ใช้ทั้ง login/sidebar/favicon
+    logo.jpg                 โลโก้จริง (เสาส่งไฟในวงกลม) — ใช้ทั้ง login/sidebar/favicon (refs = /logo.jpg)
   supabase/
     migrations/0001..0028    schema, RPC, seed, bug fixes, ฟีเจอร์
     cleanup_e2e.sql          ⛔ ล้าง transaction ทั้งหมด (มีสลักนิรภัย) — ห้ามรันถ้ามีข้อมูลจริง

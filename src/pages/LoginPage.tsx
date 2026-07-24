@@ -9,7 +9,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
-  const [logoErr, setLogoErr] = useState(false)   // ยังไม่มีไฟล์ /logo.png → fallback ⚡
+  const [logoErr, setLogoErr] = useState(false)   // ยังไม่มีไฟล์ /logo.jpg → fallback ⚡
 
   const doLogin = async (em: string, pw: string) => {
     setBusy(true)
@@ -27,7 +27,7 @@ export default function LoginPage() {
         <div className="login-head">
           {!logoErr ? (
             <img
-              src="/logo.png" alt="115kV LBS Platform logo" className="login-logo"
+              src="/logo.jpg" alt="115kV LBS Platform logo" className="login-logo"
               onError={() => setLogoErr(true)}
             />
           ) : (

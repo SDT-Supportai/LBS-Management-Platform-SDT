@@ -17,11 +17,11 @@ import DevSettingsPage from './pages/DevSettingsPage'
 import ApprovalsPage from './pages/ApprovalsPage'
 import { deriveJobStatus, unreadNotifications } from './data/logic'
 
-// Logo จริง (/logo.png) + fallback ⚡ ถ้ายังไม่มีไฟล์
+// Logo จริง (/logo.jpg) + fallback ⚡ ถ้ายังไม่มีไฟล์
 function BrandLogo() {
   const [err, setErr] = useState(false)
   if (err) return <>⚡</>
-  return <img src="/logo.png" alt="" onError={() => setErr(true)} />
+  return <img src="/logo.jpg" alt="" onError={() => setErr(true)} />
 }
 
 function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
