@@ -73,6 +73,7 @@ export default function StocksPage() {
   const [showAccessory, setShowAccessory] = useState(false)               // คลังสินค้า (Ref.Job) เริ่มต้นซ่อน
   const [editStock, setEditStock] = useState<string | null>(null)
   const [editNotes, setEditNotes] = useState('')
+  const [editPoNo, setEditPoNo] = useState('')
   const [editStatus, setEditStatus] = useState<'open' | 'closed'>('open')
   const [editUnit, setEditUnit] = useState<{ id: string; lvb: string; om: string } | null>(null)
   const [importPreview, setImportPreview] = useState<{
@@ -89,6 +90,7 @@ export default function StocksPage() {
   const [stockNo, setStockNo] = useState(`Project Stock No.${db.projectStocks.length + 1}`)
   const [rows, setRows] = useState<UnitRow[]>([emptyRow()])
   const [notes, setNotes] = useState('')
+  const [poNo, setPoNo] = useState('')
 
   const lbsItem = db.items.find(i => i.itemType === 'main_equipment')!
   const canManage = can(user, 'stock.manage')
@@ -104,10 +106,10 @@ export default function StocksPage() {
 
   const submitCreate = async () => {
     if (await tryAction(
-      () => act.createProjectStock({ stockNo, itemId: lbsItem.id, units: rowsToUnits(rows), notes }),
+      () => act.createProjectStock({ stockNo, itemId: lbsItem.id, units: rowsToUnits(rows), notes, poNo }),
       `สร้าง ${stockNo} เรียบร้อย`,
     )) {
-      setShowCreate(false); setRows([emptyRow()]); setNotes('')
+      setShowCreate(false); setRows([emptyRow()]); setNotes(''); setPoNo('')
     }
   }
 
@@ -228,7 +230,7 @@ export default function StocksPage() {
 
       {canManage && (
         <div style={{ marginBottom: 16 }}>
-          <button className="primary" onClick={() => { setRows([emptyRow()]); setStockNo(`Project Stock No.${db.projectStocks.length + 1}`); setShowCreate(true) }}>+ สร้าง Project Stock ใหม่ (สั่งซื้อ LBS เข้าคลัง)</button>
+          <button className="primary" onClick={() => { setRows([emptyRow()]); setStockNo(`Project Stock No.${db.projectStocks.length + 1}`); setPoNo(''); setNotes(''); setShowCreate(true) }}>+ สร้าง Project Stock ใหม่ (สั่งซื้อ LBS เข้าคลัง)</button>
         </div>
       )}
 
@@ -257,7 +259,7 @@ export default function StocksPage() {
                   <button className="small" onClick={() => { importToRef.current = { id: s.id, no: s.stockNo }; importFileRef.current?.click() }}>⬆ Import</button>
                 )}
                 {canManage && <button className="small" onClick={() => { setRows([emptyRow()]); setAddTo(s.id) }}>+ รับ LBS เพิ่ม</button>}
-                {canManage && <button className="small" onClick={() => { setEditNotes(s.notes ?? ''); setEditStatus(s.status); setEditStock(s.id) }}>แก้ไข</button>}
+                {canManage && <button className="small" onClick={() => { setEditNotes(s.notes ?? ''); setEditPoNo(s.poNo ?? ''); setEditStatus(s.status); setEditStock(s.id) }}>แก้ไข</button>}
                 {canManage && (
                   <button className="small danger" onClick={() => {
                     if (confirm(`ลบ ${s.stockNo}? (ลบได้เฉพาะคลังที่ไม่เคยมีประวัติดึง/คืน — Serial ในคลังจะถูกลบด้วย)`))
@@ -307,7 +309,7 @@ export default function StocksPage() {
               </div>
             )}
             <div className="panel-body muted">
-              บันทึก: {s.notes || '-'} · สร้างเมื่อ {fmtDate(s.createdAt)} โดย {db.users.find(u => u.id === s.createdBy)?.fullName}
+              PO No.: {s.poNo || '-'} · Remark: {s.notes || '-'} · สร้างเมื่อ {fmtDate(s.createdAt)} โดย {db.users.find(u => u.id === s.createdBy)?.fullName}
             </div>
           </div>
         )
@@ -354,13 +356,16 @@ export default function StocksPage() {
           footer={<>
             <button onClick={() => setEditStock(null)}>ยกเลิก</button>
             <button className="primary" onClick={async () => {
-              if (await tryAction(() => act.updateProjectStock({ stockId: editStock, notes: editNotes, status: editStatus }), 'บันทึกแล้ว'))
+              if (await tryAction(() => act.updateProjectStock({ stockId: editStock, notes: editNotes, status: editStatus, poNo: editPoNo }), 'บันทึกแล้ว'))
                 setEditStock(null)
             }}>บันทึก</button>
           </>}
         >
-          <label className="field"><span>บันทึก</span>
-            <input value={editNotes} onChange={e => setEditNotes(e.target.value)} />
+          <label className="field"><span>PO No.</span>
+            <input className="mono" value={editPoNo} onChange={e => setEditPoNo(e.target.value)} placeholder="เช่น PO-2026-0007 (ว่างได้)" />
+          </label>
+          <label className="field"><span>Remark</span>
+            <input value={editNotes} onChange={e => setEditNotes(e.target.value)} placeholder="หมายเหตุ (ว่างได้)" />
           </label>
           <label className="field"><span>สถานะคลัง</span>
             <select value={editStatus} onChange={e => setEditStatus(e.target.value as 'open' | 'closed')}>
@@ -381,17 +386,22 @@ export default function StocksPage() {
             <button className="primary" onClick={submitCreate}>สร้างสต็อก ({filledRows(rows)} เครื่อง)</button>
           </>}
         >
-          <label className="field"><span>Stock No.</span>
-            <input value={stockNo} onChange={e => setStockNo(e.target.value)} />
-          </label>
+          <div className="row">
+            <label className="field"><span>Stock No.</span>
+              <input value={stockNo} onChange={e => setStockNo(e.target.value)} />
+            </label>
+            <label className="field"><span>PO No. (ว่างได้ · แก้ภายหลังได้)</span>
+              <input className="mono" value={poNo} onChange={e => setPoNo(e.target.value)} placeholder="เช่น PO-2026-0007" />
+            </label>
+          </div>
           <div className="muted" style={{ marginBottom: 12 }}>
             <b>Description:</b> {LBS_DESCRIPTION}<br />
             ข้อมูลลูกค้า/สถานที่ติดตั้งไม่ต้องกรอกที่คลัง — ระบบอ้างอิงจาก Job ที่เครื่องถูกดึงเข้า
           </div>
           <label className="field"><span>Serial No. ของ LBS แต่ละเครื่อง (Serial.LVB + Serial.OM บังคับทั้งคู่)</span></label>
           <UnitRowsEditor rows={rows} setRows={setRows} />
-          <label className="field" style={{ marginTop: 14 }}><span>บันทึก (อ้างอิงรอบสั่งซื้อ ฯลฯ)</span>
-            <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="ล็อตสั่งซื้อรอบที่ 3" />
+          <label className="field" style={{ marginTop: 14 }}><span>Remark (ว่างได้ · แก้ภายหลังได้)</span>
+            <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="เช่น ล็อตสั่งซื้อรอบที่ 3" />
           </label>
         </Modal>
       )}

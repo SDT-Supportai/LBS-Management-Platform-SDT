@@ -43,11 +43,11 @@ export function buildSeedDb(): DB {
   // Sales สั่ง LBS เข้าสต็อกกลาง 2 รอบ
   db = L.createProjectStock(db, sales, {
     stockNo: 'Project Stock No.1', itemId: 'i-lbs',
-    units: units('LBS24', 1, 30, 850000), notes: 'ล็อตสั่งซื้อรอบที่ 1 (30 set)',
+    units: units('LBS24', 1, 30, 850000), notes: 'ล็อตสั่งซื้อรอบที่ 1 (30 set)', poNo: 'PO-2024-0011',
   })
   db = L.createProjectStock(db, sales, {
     stockNo: 'Project Stock No.2', itemId: 'i-lbs',
-    units: units('LBS25', 1, 10, 890000), notes: 'ล็อตสั่งซื้อรอบที่ 2 (10 set)',
+    units: units('LBS25', 1, 10, 890000), notes: 'ล็อตสั่งซื้อรอบที่ 2 (10 set)', poNo: 'PO-2025-0003',
   })
   const stock1 = db.projectStocks[0].id
   const stock2 = db.projectStocks[1].id

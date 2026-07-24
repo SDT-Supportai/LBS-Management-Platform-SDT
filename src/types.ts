@@ -24,7 +24,8 @@ export interface ProjectStock {
   stockNo: string
   itemId: string
   status: 'open' | 'closed'
-  notes?: string
+  poNo?: string                // PO No. อ้างอิงการสั่งซื้อ LBS เข้าคลัง (ว่างได้ · แก้ภายหลังได้)
+  notes?: string               // Remark (ว่างได้ · แก้ภายหลังได้)
   createdBy: string
   createdAt: string
 }

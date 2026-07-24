@@ -123,7 +123,7 @@ function assertUnitsValid(db: DB, units: { lvb: string; om: string; cost?: numbe
 
 export function createProjectStock(
   db: DB, actor: User,
-  p: { stockNo: string; itemId: string; units: UnitSerialInput[]; notes?: string },
+  p: { stockNo: string; itemId: string; units: UnitSerialInput[]; notes?: string; poNo?: string },
 ): DB {
   const stockNo = p.stockNo.trim()
   if (!stockNo) throw new Error('กรุณาระบุ Stock No.')
@@ -137,7 +137,7 @@ export function createProjectStock(
     ...db,
     projectStocks: [...db.projectStocks, {
       id: stockId, stockNo, itemId: p.itemId, status: 'open',
-      notes: p.notes, createdBy: actor.id, createdAt: now(),
+      poNo: p.poNo?.trim() || undefined, notes: p.notes, createdBy: actor.id, createdAt: now(),
     }],
     lbsUnits: [
       ...db.lbsUnits,
@@ -225,14 +225,14 @@ export function importUnitsToStock(
 
 export function updateProjectStock(
   db: DB, actor: User,
-  p: { stockId: string; notes: string; status: 'open' | 'closed' },
+  p: { stockId: string; notes: string; status: 'open' | 'closed'; poNo?: string },
 ): DB {
   const stock = db.projectStocks.find(s => s.id === p.stockId)
   if (!stock) throw new Error('ไม่พบ Project Stock')
   let next: DB = {
     ...db,
     projectStocks: db.projectStocks.map(s =>
-      s.id === p.stockId ? { ...s, notes: p.notes, status: p.status } : s),
+      s.id === p.stockId ? { ...s, poNo: p.poNo?.trim() || undefined, notes: p.notes, status: p.status } : s),
   }
   return audit(next, actor, 'project_stock', p.stockId, 'update_stock',
     `แก้ไข ${stock.stockNo}${stock.status !== p.status ? ` (${p.status === 'closed' ? 'ปิดคลัง — ห้ามดึงเพิ่ม' : 'เปิดคลังอีกครั้ง'})` : ''}`)
