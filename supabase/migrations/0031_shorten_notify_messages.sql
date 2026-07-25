@@ -80,10 +80,13 @@ BEGIN
     '''🗑️ ยกเลิก '' || po.po_no || '' ('' || j.job_no || '') เหตุผล: '' || trim(p_reason) || '' — รายการกลับมารอออก PO ใหม่''',
     '''🗑️ ยกเลิก '' || po.po_no || '' ('' || j.job_no || ''): '' || trim(p_reason)');
 
-  -- 11) job_issued (app_exec_issue_job)
+  -- 11) job_issued (app_exec_issue_job) — ข้อความขึ้น 2 บรรทัด แยก replace ต่อบรรทัด
   PERFORM app_shorten_notify('app_exec_issue_job',
-    '''🚚 '' || j.job_no || '' ('' || j.customer_name || '') เบิกของครบแล้ว — Service เข้าติดตั้งที่ '' || trim(p_location) || '' กำหนด '' || range',
-    '''🚚 '' || j.job_no || '' เบิกให้ Service · ติดตั้ง '' || trim(p_location) || '' · '' || range');
+    '''🚚 '' || j.job_no || '' ('' || j.customer_name || '') เบิกของครบแล้ว — Service เข้าติดตั้งที่ ''',
+    '''🚚 '' || j.job_no || '' เบิกให้ Service · ติดตั้ง ''');
+  PERFORM app_shorten_notify('app_exec_issue_job',
+    '|| trim(p_location) || '' กำหนด '' || range',
+    '|| trim(p_location) || '' · '' || range');
 
   -- 12) job_installed (rpc_confirm_install) — ตัดชื่อลูกค้า + พิกัด GPS
   PERFORM app_shorten_notify('rpc_confirm_install',
