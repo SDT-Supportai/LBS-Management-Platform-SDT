@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useStore } from '../data/StoreContext'
+import { useStore, wasSessionExpired } from '../data/StoreContext'
 import { useToast } from '../ui/components'
 import { DEPT_LABEL } from '../ui/format'
 
@@ -10,6 +10,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [logoErr, setLogoErr] = useState(false)   // ยังไม่มีไฟล์ /logo.jpg → fallback ⚡
+  const [expired] = useState(wasSessionExpired)    // เพิ่งหมดเวลา session 2 ชม.
 
   const doLogin = async (em: string, pw: string) => {
     setBusy(true)
@@ -36,6 +37,11 @@ export default function LoginPage() {
           <h1>115kV LBS Project Management Platform</h1>
           <div className="sub">Dev. Mr. Siradanai Sirisunthorn</div>
         </div>
+        {expired && (
+          <div className="muted" style={{ background: 'rgba(217,119,6,.12)', color: 'var(--amber, #b45309)', border: '1px solid rgba(217,119,6,.35)', borderRadius: 8, padding: '8px 12px', marginBottom: 14, fontSize: 13 }}>
+            ⏱️ เซสชันหมดอายุ (จำกัด 2 ชั่วโมงต่อการเข้าใช้) — กรุณาเข้าสู่ระบบใหม่
+          </div>
+        )}
         <form onSubmit={e => { e.preventDefault(); doLogin(email, password) }}>
           <label className="field">
             <span>อีเมล</span>

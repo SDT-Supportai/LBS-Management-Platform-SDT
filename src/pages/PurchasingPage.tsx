@@ -188,7 +188,7 @@ export default function PurchasingPage() {
             {jobPos.length > 0 && (
               <div className="table-scroll">
                 <table>
-                  <thead><tr><th>PO No.</th><th>รายการใน PO</th><th>Supplier</th><th>กำหนดส่ง</th><th>รับของ</th><th>สถานะ</th><th></th></tr></thead>
+                  <thead><tr><th>PO No.</th><th>รายการใน PO · ราคาจริง</th><th>Supplier</th><th>กำหนดส่ง</th><th>รับของ</th><th>สถานะ</th><th></th></tr></thead>
                   <tbody>
                     {[...jobPos].reverse().map(po => {
                       const lines = poLines(po.id)
@@ -197,7 +197,28 @@ export default function PurchasingPage() {
                       return (
                         <tr key={po.id}>
                           <td className="mono"><b>{po.poNo}</b></td>
-                          <td>{lines.map(r => { const it = itemOf(r.itemId)!; return <div key={r.id}>{it.name} × {r.qtyRequested} {it.uom}</div> })}</td>
+                          <td>{lines.map(r => {
+                            const it = itemOf(r.itemId)!
+                            const value = r.unitPrice !== undefined ? r.unitPrice * r.qtyRequested : undefined
+                            // Purchasing บันทึกราคาจริงหลังออก PO (Job ยังไม่ล็อก) — ราคาทับค่าประมาณการ กระทบงบ actual
+                            const canEditPrice = canManage && po.status !== 'cancelled' && !job.terminalStatus && (r.status === 'po_ordered' || r.status === 'received')
+                            return (
+                              <div key={r.id} style={{ marginBottom: 3 }}>
+                                {it.name} × {r.qtyRequested} {it.uom} · <span className="mono">{fmtBaht(r.unitPrice)}</span>{value !== undefined ? ` = ${fmtBaht(value)}` : ''}
+                                {canEditPrice && (
+                                  <button className="small" style={{ marginLeft: 6 }} title="บันทึก/แก้ราคาจริงจาก Supplier"
+                                    onClick={() => {
+                                      const v = window.prompt(`ราคาจริงต่อหน่วยของ ${it.name} (บาท/${it.uom})`, r.unitPrice !== undefined ? String(r.unitPrice) : '')
+                                      if (v === null) return
+                                      const t = v.trim()
+                                      if (t !== '' && (Number.isNaN(Number(t)) || Number(t) < 0))
+                                        return void tryAction(() => { throw new Error('กรุณากรอกราคาเป็นตัวเลขไม่ติดลบ') })
+                                      tryAction(() => act.updatePoLinePrice({ requestId: r.id, unitPrice: t === '' ? undefined : Number(t) }), 'บันทึกราคาจริงแล้ว — งบต้นทุนใช้จริงอัปเดต')
+                                    }}>💰 ราคาจริง</button>
+                                )}
+                              </div>
+                            )
+                          })}</td>
                           <td>{po.supplierName}</td>
                           <td>{fmtDate(po.expectedDate)}</td>
                           <td>

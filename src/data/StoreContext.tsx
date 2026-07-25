@@ -10,6 +10,50 @@ const DB_KEY_V1 = 'lbs-platform-db-v1'
 const SESSION_KEY = 'lbs-platform-session-v1'
 const SETTINGS_KEY = 'lbs-platform-settings-v1'
 
+// ล็อกอินหมดอายุแบบ absolute 2 ชั่วโมงนับจากตอน login (ทั้งโหมด demo + Supabase)
+const SESSION_EXPIRY_KEY = 'lbs-platform-session-expiry'
+const SESSION_EXPIRED_FLAG = 'lbs-platform-session-expired'
+const SESSION_MAX_MS = 2 * 60 * 60 * 1000
+
+function startSession() {
+  localStorage.setItem(SESSION_EXPIRY_KEY, String(Date.now() + SESSION_MAX_MS))
+  localStorage.removeItem(SESSION_EXPIRED_FLAG)
+}
+function endSession() {
+  localStorage.removeItem(SESSION_EXPIRY_KEY)
+  localStorage.removeItem(SESSION_EXPIRED_FLAG)
+}
+// true ถ้าเพิ่งถูก logout เพราะหมดเวลา (LoginPage อ่านไปโชว์ข้อความ)
+export function wasSessionExpired(): boolean {
+  return localStorage.getItem(SESSION_EXPIRED_FLAG) === '1'
+}
+
+// เฝ้าเวลา session — พอถึงกำหนดเรียก onExpire (logout) · เช็คทุก ≤1 นาที
+// deps = userId เท่านั้น (ใช้ ref กับ onExpire กัน effect รันซ้ำจาก render)
+function useSessionExpiry(userId: string | null, onExpire: () => void) {
+  const onExpireRef = useRef(onExpire)
+  onExpireRef.current = onExpire
+  useEffect(() => {
+    if (!userId) return
+    // backfill: มี session ค้างจากก่อน deploy ฟีเจอร์นี้ (ยังไม่มี key) → เริ่มนับ 2 ชม.จากตอนนี้
+    if (!localStorage.getItem(SESSION_EXPIRY_KEY)) startSession()
+    let timer: number
+    const tick = () => {
+      const exp = Number(localStorage.getItem(SESSION_EXPIRY_KEY))
+      const rem = exp - Date.now()
+      if (!exp || rem <= 0) {
+        localStorage.removeItem(SESSION_EXPIRY_KEY)
+        localStorage.setItem(SESSION_EXPIRED_FLAG, '1')
+        onExpireRef.current()
+        return
+      }
+      timer = window.setTimeout(tick, Math.min(rem, 60_000))
+    }
+    tick()
+    return () => window.clearTimeout(timer)
+  }, [userId])
+}
+
 // สิทธิ์ตามแผนก — ฝั่ง UI ใช้ซ่อน/แสดงปุ่ม; โหมด Supabase ตัวจริงคือ RPC ฝั่ง server
 // (ชื่อแสดงผล: sales = "Division", admin = "Manage" — ค่าใน DB คงเดิม)
 export const PERMISSIONS: Record<string, Department[]> = {
@@ -111,6 +155,7 @@ export interface StoreActions {
   addAccessoryRequest: (p: Parameters<typeof L.addAccessoryRequest>[2]) => MaybePromise
   updateAccessoryRequestQty: (p: Parameters<typeof L.updateAccessoryRequestQty>[2]) => MaybePromise
   updateAccessoryRequestPrice: (p: Parameters<typeof L.updateAccessoryRequestPrice>[2]) => MaybePromise
+  updatePoLinePrice: (p: Parameters<typeof L.updatePoLinePrice>[2]) => MaybePromise
   returnAccessory: (p: Parameters<typeof L.returnAccessory>[2]) => MaybePromise
   cancelAccessoryRequest: (p: Parameters<typeof L.cancelAccessoryRequest>[2]) => MaybePromise
   deleteAccessoryRequest: (p: Parameters<typeof L.deleteAccessoryRequest>[2]) => MaybePromise
@@ -161,6 +206,8 @@ function DemoProvider({ children }: { children: ReactNode }) {
     return d.users.find(u => u.id === localStorage.getItem(SESSION_KEY)) ?? null
   })
   const [settings, setSettings] = useState<AppSettings>(loadSettings)
+  // ล็อกอินหมดอายุใน 2 ชม. → เคลียร์ session + เด้งกลับหน้า login
+  useSessionExpiry(user?.id ?? null, () => { localStorage.removeItem(SESSION_KEY); setUser(null) })
   // mirror ของ db สำหรับรัน business logic แบบ synchronous:
   // ถ้า throw ภายใน setState updater React จะ crash ทั้ง tree และ try/catch ฝั่ง UI จับไม่ได้
   const dbRef = useRef(db)
@@ -217,10 +264,12 @@ function DemoProvider({ children }: { children: ReactNode }) {
         if (!u || u.password !== password) throw new Error('อีเมลหรือรหัสผ่านไม่ถูกต้อง')
         if (!u.isActive) throw new Error('บัญชีนี้ถูกปิดการใช้งาน ติดต่อผู้ดูแลระบบ')
         localStorage.setItem(SESSION_KEY, u.id)
+        startSession()
         setUser(u)
       },
       logout: () => {
         localStorage.removeItem(SESSION_KEY)
+        endSession()
         setUser(null)
       },
       resetDemo: () => applyDb(buildSeedDb()),
@@ -255,6 +304,7 @@ function DemoProvider({ children }: { children: ReactNode }) {
         addAccessoryRequest: run('job.manage', L.addAccessoryRequest),
         updateAccessoryRequestQty: run('job.manage', L.updateAccessoryRequestQty),
         updateAccessoryRequestPrice: run('job.manage', L.updateAccessoryRequestPrice),
+        updatePoLinePrice: run('purchasing.manage', L.updatePoLinePrice),
         returnAccessory: run('job.manage', L.returnAccessory),
         cancelAccessoryRequest: run('job.manage', L.cancelAccessoryRequest),
         deleteAccessoryRequest: run('accessory.cleanup', L.deleteAccessoryRequest),
@@ -295,6 +345,8 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
   const settingsRef = useRef(settings)
   settingsRef.current = settings
   const userIdRef = useRef<string | null>(null)
+  // ล็อกอินหมดอายุใน 2 ชม. → signOut (onAuthStateChange จะเคลียร์ user ให้)
+  useSessionExpiry(user?.id ?? null, () => { sb.auth.signOut() })
 
   useEffect(() => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)) }, [settings])
 
@@ -407,8 +459,9 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
           await sb.auth.signOut()
           throw new Error('บัญชีนี้ถูกปิดการใช้งาน ติดต่อผู้ดูแลระบบ')
         }
+        startSession()
       },
-      logout: async () => { await sb.auth.signOut() },
+      logout: async () => { endSession(); await sb.auth.signOut() },
       resetDemo: () => { throw new Error('รีเซ็ตได้เฉพาะโหมด demo — โหมด Supabase จัดการข้อมูลผ่าน SQL Editor') },
       // สวิตช์ LINE เขียนลง DB (global ทุกเครื่อง, admin เท่านั้น) — endpoint/note เก็บ local ตามเดิม
       updateSettings: async (s) => {

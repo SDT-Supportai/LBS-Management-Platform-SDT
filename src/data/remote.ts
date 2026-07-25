@@ -218,6 +218,8 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_update_accessory_request_qty', { p_request_id: p.requestId, p_qty: p.qty }),
     updateAccessoryRequestPrice: (p: { requestId: string; unitPrice?: number }) =>
       rpc(sb, 'rpc_update_accessory_request_price', { p_request_id: p.requestId, p_unit_price: p.unitPrice ?? null }),
+    updatePoLinePrice: (p: { requestId: string; unitPrice?: number }) =>
+      rpc(sb, 'rpc_update_po_line_price', { p_request_id: p.requestId, p_unit_price: p.unitPrice ?? null }),
     returnAccessory: (p: { requestId: string }) => rpc(sb, 'rpc_return_accessory', { p_request_id: p.requestId }),
     cancelAccessoryRequest: (p: { requestId: string }) => rpc(sb, 'rpc_cancel_accessory_request', { p_request_id: p.requestId }),
     deleteAccessoryRequest: (p: { requestId: string }) => rpc(sb, 'rpc_delete_accessory_request', { p_request_id: p.requestId }),

@@ -44,9 +44,9 @@ body {
 }
 /* logo จริงบน badge ขาวมน (Modern Corporate) — รูปพื้นขาวเลยกลืนกับ badge พอดี */
 .sidebar .brand-logo, .mobile-header .brand-logo {
-  width: 38px; height: 38px; flex-shrink: 0; border-radius: 10px;
+  width: 52px; height: 52px; flex-shrink: 0; border-radius: 12px;
   background: #fff; padding: 3px; overflow: hidden;
-  display: flex; align-items: center; justify-content: center; font-size: 17px;
+  display: flex; align-items: center; justify-content: center; font-size: 22px;
   box-shadow: 0 4px 14px rgba(59, 95, 184, .45);
 }
 .sidebar .brand-logo img, .mobile-header .brand-logo img {
@@ -331,7 +331,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary-sof
 }
 .login-head { text-align: center; margin-bottom: 22px; }
 .login-logo {
-  width: 138px; max-width: 60%; height: auto; margin-bottom: 10px;
+  width: 200px; max-width: 78%; height: auto; margin-bottom: 12px;
   animation: logo-in .8s ease both;
 }
 .login-logo-fallback { display: inline-block; font-size: 64px; line-height: 1.2; }
@@ -384,7 +384,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary-sof
   .topbar { margin: -16px -16px 14px; padding: 8px 14px; }
   .row { flex-direction: column; }
   .login-card { padding: 26px 20px 22px; }
-  .login-logo { width: 112px; }
+  .login-logo { width: 160px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -590,6 +590,26 @@ export function updateAccessoryRequestPrice(db: DB, actor: User, p: { requestId:
     `${job.jobNo} แก้ราคา ${item.name} เป็น ${unitPrice ?? 0} บาท/${item.uom}`)
 }
 
+// Purchasing บันทึกราคาจริงหลังออก PO — เฉพาะรายการที่ออก PO แล้ว (po_ordered/received) และ Job ยังไม่ล็อก
+// ราคาเดียว: ราคาจริงทับราคาประมาณการ → กระทบต้นทุนใช้จริงในงบทันที
+export function updatePoLinePrice(db: DB, actor: User, p: { requestId: string; unitPrice?: number }): DB {
+  const req = db.accessoryRequests.find(r => r.id === p.requestId)
+  if (!req) throw new Error('ไม่พบรายการวัสดุ')
+  if (!req.poId || (req.status !== 'po_ordered' && req.status !== 'received'))
+    throw new Error('บันทึกราคาจริงได้เฉพาะรายการที่ออก PO แล้ว')
+  const job = assertJobEditable(db, req.jobId)   // ล็อกเมื่อ Job ถูกเบิก/ยกเลิก
+  const unitPrice = normalizeBudget(p.unitPrice)
+  const item = db.items.find(i => i.id === req.itemId)!
+  const po = db.pos.find(x => x.id === req.poId)
+  let next: DB = {
+    ...db,
+    accessoryRequests: db.accessoryRequests.map(r =>
+      r.id === p.requestId ? { ...r, unitPrice } : r),
+  }
+  return audit(next, actor, 'job_accessory_request', p.requestId, 'update_po_actual_price',
+    `${job.jobNo} บันทึกราคาจริง ${item.name} = ${unitPrice ?? 0} บาท/${item.uom}${po ? ` (${po.poNo})` : ''}`)
+}
+
 // คืน Accessory ที่เบิกจากสต็อกกลาง (ทำได้เหมือน LBS)
 export function returnAccessory(db: DB, actor: User, p: { requestId: string }): DB {
   const req = db.accessoryRequests.find(r => r.id === p.requestId)
