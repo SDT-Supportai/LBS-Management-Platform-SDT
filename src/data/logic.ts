@@ -149,7 +149,7 @@ export function createProjectStock(
   }
   next = notify(next, {
     type: 'stock_created', dept: 'project',
-    message: `📦 Sales รับ LBS เข้า ${stockNo} จำนวน ${units.length} เครื่อง — พร้อมให้ดึงเข้า Job`,
+    message: `📦 รับ LBS เข้า ${stockNo} +${units.length} เครื่อง (พร้อมดึงเข้า Job)`,
   })
   return audit(next, actor, 'project_stock', stockId, 'create_stock',
     `สร้าง ${stockNo} รับ LBS เข้า ${units.length} เครื่อง`)
@@ -173,7 +173,7 @@ export function addUnitsToStock(db: DB, actor: User, p: { stockId: string; units
   // แจ้งเข้า LINE ว่ามี LBS เพิ่มเข้าคลัง (sync 0018 — เดิมเงียบ ทั้งรับเข้าคลังเดิมและ Excel import)
   next = notify(next, {
     type: 'stock_received', dept: 'project',
-    message: `📦 Division รับ LBS เพิ่มเข้า ${stock.stockNo} จำนวน ${units.length} เครื่อง — พร้อมให้ดึงเข้า Job`,
+    message: `📦 เพิ่ม LBS เข้า ${stock.stockNo} +${units.length} เครื่อง (พร้อมดึงเข้า Job)`,
   })
   return audit(next, actor, 'project_stock', p.stockId, 'add_units',
     `รับ LBS เพิ่มเข้า ${stock.stockNo} จำนวน ${units.length} เครื่อง`)
@@ -217,7 +217,7 @@ export function importUnitsToStock(
   let next: DB = { ...db, lbsUnits }
   if (newUnits.length > 0) next = notify(next, {
     type: 'stock_received', dept: 'project',
-    message: `📦 Division รับ LBS เพิ่มเข้า ${stock.stockNo} จำนวน ${newUnits.length} เครื่อง — พร้อมให้ดึงเข้า Job`,
+    message: `📦 เพิ่ม LBS เข้า ${stock.stockNo} +${newUnits.length} เครื่อง (พร้อมดึงเข้า Job)`,
   })
   return audit(next, actor, 'project_stock', p.stockId, 'import_units',
     `Import เข้า ${stock.stockNo}: รับใหม่ ${newUnits.length} เครื่อง${updatedCount ? ` · อัพเดทต้นทุน ${updatedCount} เครื่อง` : ''}`)
@@ -437,7 +437,7 @@ export function drawLbs(db: DB, actor: User, p: { jobId: string; stockId: string
   // แจ้งเตือนตอนดึง LBS — serial คู่ + Stock No. ต้นทาง (sync 0020, เข้า LINE + ทุกแผนก)
   next = notify(next, {
     type: 'lbs_drawn', dept: 'all', jobId: p.jobId,
-    message: `✅ ${job.jobNo} (${job.customerName}) ดึง LBS ${units.length} เครื่องจาก ${stock.stockNo} — Serial.LVB: ${units.map(u => u.serialLvb).join(', ')} · Serial.OM: ${units.map(u => u.serialOm).join(', ')}`,
+    message: `✅ ${job.jobNo} ดึง LBS ${units.length} เครื่องจาก ${stock.stockNo}`,
   })
   return audit(next, actor, 'stock_allocation', p.jobId, 'draw_lbs',
     `${job.jobNo} ดึง LBS ${units.length} เครื่องจาก ${stock.stockNo} (SN: ${units.map(u => u.serialLvb).join(', ')})`)
@@ -536,7 +536,7 @@ export function addAccessoryRequest(
     // แจ้ง Division เจ้าของสต็อก — ยอดคงเหลือลด (sync 0017)
     next = notify(next, {
       type: 'accessory_issued', dept: 'sales', jobId: p.jobId,
-      message: `📤 ${job.jobNo} เบิก ${item.name} ${p.qty} ${item.uom} จากสต็อกกลาง (คงเหลือ ${onHand - p.qty} ${item.uom})`,
+      message: `📤 ${job.jobNo} เบิก ${item.name} ${p.qty} ${item.uom} (คลังเหลือ ${onHand - p.qty})`,
     })
     next = notifyIfBecameReady(db, next, p.jobId)
     return audit(next, actor, 'job_accessory_request', reqId, 'issue_accessory_from_stock',
@@ -687,7 +687,7 @@ export function createPR(db: DB, actor: User, p: { jobId: string; requestIds: st
   }
   next = notify(next, {
     type: 'pr_created', dept: 'purchasing', jobId: p.jobId,
-    message: `📄 ${prNo} จาก ${job.jobNo} (${job.customerName}) รอออก PO — ${reqs.length} รายการ`,
+    message: `📄 ${prNo} (${job.jobNo}) รอออก PO · ${reqs.length} รายการ`,
   })
   return audit(next, actor, 'purchase_requisition', prId, 'create_pr',
     `${job.jobNo} ออก ${prNo} ส่ง Purchasing (${reqs.length} รายการ)`)
@@ -712,7 +712,7 @@ export function rejectPR(db: DB, actor: User, p: { prId: string; reason: string 
   }
   next = notify(next, {
     type: 'pr_rejected', dept: 'project', jobId: pr.jobId,
-    message: `⛔ Purchasing ตีกลับ ${pr.prNo} (${job.jobNo}) เหตุผล: ${p.reason.trim()} — รายการเด้งกลับให้แก้ไข/ออก PR ใหม่`,
+    message: `⛔ ตีกลับ ${pr.prNo} (${job.jobNo}): ${p.reason.trim()}`,
   })
   return audit(next, actor, 'purchase_requisition', p.prId, 'reject_pr',
     `ตีกลับ ${pr.prNo} (${job.jobNo}) เหตุผล: ${p.reason.trim()}`)
@@ -755,7 +755,7 @@ export function createPO(
   }
   next = notify(next, {
     type: 'po_created', dept: 'project', jobId: pr.jobId,
-    message: `🛒 ${poNo} ออกแล้วจาก ${pr.prNo} (${job.jobNo}) ${chosen.length} รายการ · Supplier: ${p.supplierName.trim()} กำหนดส่ง ${p.expectedDate || 'ไม่ระบุ'}`,
+    message: `🛒 ออก ${poNo} (${job.jobNo}) · ${chosen.length} รายการ · ${p.supplierName.trim()} · ส่ง ${p.expectedDate || 'ไม่ระบุ'}`,
   })
   return audit(next, actor, 'purchase_order', poId, 'create_po',
     `ออก ${poNo} จาก ${pr.prNo} (${job.jobNo}) ${chosen.length} รายการ · Supplier: ${p.supplierName}`)
@@ -785,7 +785,7 @@ export function cancelPO(db: DB, actor: User, p: { poId: string; reason: string 
   }
   next = notify(next, {
     type: 'po_cancelled', dept: 'project', jobId: po.jobId,
-    message: `🗑️ ยกเลิก ${po.poNo} (${job.jobNo}) เหตุผล: ${p.reason.trim()} — รายการกลับมารอออก PO ใหม่`,
+    message: `🗑️ ยกเลิก ${po.poNo} (${job.jobNo}): ${p.reason.trim()}`,
   })
   return audit(next, actor, 'purchase_order', p.poId, 'cancel_po',
     `ยกเลิก ${po.poNo} (${job.jobNo}) เหตุผล: ${p.reason.trim()}`)
@@ -844,8 +844,8 @@ export function receivePOItems(
   next = notify(next, {
     type: 'po_received', dept: 'project', jobId: po.jobId,
     message: poComplete
-      ? `📬 ${po.poNo} (${job.jobNo}) รับของครบทุกรายการแล้ว`
-      : `📬 ${po.poNo} (${job.jobNo}) รับของบางส่วน: ${parts.join(', ')}`,
+      ? `📬 ${po.poNo} (${job.jobNo}) รับของครบแล้ว`
+      : `📬 ${po.poNo} (${job.jobNo}) รับบางส่วน: ${parts.join(', ')}`,
   })
   next = notifyIfBecameReady(db, next, po.jobId)
   return audit(next, actor, 'purchase_order', p.poId, poComplete ? 'receive_po_complete' : 'receive_po_partial',
@@ -880,7 +880,7 @@ export function issueJob(
   }
   next = notify(next, {
     type: 'job_issued', dept: 'service', jobId: p.jobId,
-    message: `🚚 ${job.jobNo} (${job.customerName}) เบิกของครบแล้ว — Service เข้าติดตั้งที่ ${p.location.trim()} กำหนด ${range}`,
+    message: `🚚 ${job.jobNo} เบิกให้ Service · ติดตั้ง ${p.location.trim()} · ${range}`,
   })
   return audit(next, actor, 'job', p.jobId, 'issue_to_service',
     `เบิก ${job.jobNo} ให้ Service ติดตั้ง (LBS ${units.length} เครื่อง) นัดติดตั้ง ${range} ที่ ${p.location.trim()}`)
@@ -911,7 +911,7 @@ export function confirmInstall(
   }
   next = notify(next, {
     type: 'job_installed', dept: 'project', jobId: p.jobId,
-    message: `🏁 ${job.jobNo} (${job.customerName}) ติดตั้งเสร็จเมื่อ ${p.installedDate} — ยืนยันโดย ${actor.fullName} 📍 พิกัด ${p.checkinLat.toFixed(5)}, ${p.checkinLng.toFixed(5)}`,
+    message: `🏁 ${job.jobNo} ติดตั้งเสร็จ ${p.installedDate} · โดย ${actor.fullName}`,
   })
   return audit(next, actor, 'job', p.jobId, 'confirm_install',
     `${job.jobNo} ติดตั้งเสร็จ วันที่จริง ${p.installedDate} (check-in ${p.checkinLat.toFixed(5)},${p.checkinLng.toFixed(5)})${p.note ? ` — ${p.note}` : ''}`)
@@ -996,7 +996,7 @@ export function cancelJob(
 
   next = notify(next, {
     type: 'job_cancelled', dept: 'all', jobId: p.jobId,
-    message: `❌ ยกเลิก ${job.jobNo} (${job.customerName}) เหตุผล: ${p.reason.trim()} — คืน LBS ${units.length} เครื่อง + Accessory กลับสต็อกอัตโนมัติ`,
+    message: `❌ ยกเลิก ${job.jobNo}: ${p.reason.trim()} · คืน LBS ${units.length} + Accessory เข้าคลัง`,
   })
   // นับทั้งรับครบ (received) และรับบางส่วน (po_ordered + qtyReceived > 0) — สถานะ ณ ก่อนยกเลิก
   const receivedCount = reqs.filter(r => r.status === 'received' || (r.status === 'po_ordered' && r.qtyReceived > 0)).length
@@ -1063,7 +1063,7 @@ export function requestApproval(
   }
   next = notify(next, {
     type: 'approval_requested', dept: 'sales', jobId: p.jobId,
-    message: `🔔 ${job.jobNo} (${job.customerName}) ขออนุมัติ${typeLabel} โดย ${actor.fullName}`,
+    message: `🔔 ${job.jobNo} ขออนุมัติ${typeLabel} · โดย ${actor.fullName}`,
   })
   return audit(next, actor, 'approval_request', reqId, 'request_approval',
     `${job.jobNo} ขออนุมัติ${typeLabel}`)
@@ -1101,7 +1101,7 @@ export function approveRequest(db: DB, actor: User, p: { requestId: string }): D
   }
   next = notify(next, {
     type: 'approval_approved', dept: 'project', jobId: req.jobId,
-    message: `✅ Division อนุมัติ${APPROVAL_TYPE_LABEL[req.type]} ของ ${job.jobNo} แล้ว (โดย ${actor.fullName})`,
+    message: `✅ อนุมัติ${APPROVAL_TYPE_LABEL[req.type]} · ${job.jobNo} · โดย ${actor.fullName}`,
   })
   return audit(next, actor, 'approval_request', p.requestId, 'approve_request',
     `อนุมัติ${APPROVAL_TYPE_LABEL[req.type]} ของ ${job.jobNo}`)
@@ -1123,7 +1123,7 @@ export function rejectApprovalRequest(db: DB, actor: User, p: { requestId: strin
   }
   next = notify(next, {
     type: 'approval_rejected', dept: 'project', jobId: req.jobId,
-    message: `⛔ Division ตีกลับคำขอ${APPROVAL_TYPE_LABEL[req.type]} ของ ${job.jobNo} — เหตุผล: ${p.reason.trim()}`,
+    message: `⛔ ตีกลับ${APPROVAL_TYPE_LABEL[req.type]} · ${job.jobNo}: ${p.reason.trim()}`,
   })
   return audit(next, actor, 'approval_request', p.requestId, 'reject_request',
     `ตีกลับคำขอ${APPROVAL_TYPE_LABEL[req.type]} ของ ${job.jobNo} เหตุผล: ${p.reason.trim()}`)

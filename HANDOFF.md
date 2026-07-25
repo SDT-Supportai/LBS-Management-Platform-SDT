@@ -28,7 +28,7 @@
 | Hosting | **Cloudflare Pages — LIVE แล้ว** https://lbs-platform-sdt.pages.dev (ย้ายจาก Netlify 2026-07-15, auto-deploy จาก `main`) |
 | GitHub repo | https://github.com/SDT-Supportai/LBS-Management-Platform-SDT (root = โฟลเดอร์นี้) |
 | Supabase project ref | `mrdnxajwnvkgvfyaclwv` (region: ตามที่สร้าง) |
-| Migrations ที่รันแล้ว | **0001–0029** (0028/0029 รัน 2026-07-24) · ⚠️ **0030 เป็นไฟล์ใหม่ (2026-07-25) ยังไม่รันบน production — ต้องรันก่อน/พร้อม push frontend** ไม่งั้นปุ่ม "บันทึกราคาจริง" (Purchasing) จะ error (`rpc_update_po_line_price` ไม่มี) · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูปไม่ได้ เช็ค bucket `install-photos` (0019) |
+| Migrations ที่รันแล้ว | **0001–0030** (0030 รัน 2026-07-25) · ⚠️ **0031 เป็นไฟล์ใหม่ (2026-07-25)** — ปรับข้อความ LINE ให้สั้น (คง logic เดิม, ไม่ recreate function) · **ปลอดภัยจะ deploy ก่อนรันก็ได้** (frontend ไม่พึ่ง) แต่รันแล้วข้อความ live จึงสั้นตาม demo · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูปไม่ได้ เช็ค bucket `install-photos` (0019) |
 | E2E บน DB จริง | ✅ ผ่านทั้ง flow · demo E2E: approval, LINE dispatch, budget 7 หมวด, 1 PR→N PO (12/12), check-in/photo |
 | Admin จริง | `siradanai.s@precise.co.th` (department = admin, แสดงเป็น "Manage") |
 
@@ -67,7 +67,7 @@ lbs-platform/
     _redirects               SPA fallback (/* → /index.html 200)
     logo.jpg                 โลโก้จริง (เสาส่งไฟในวงกลม) — ใช้ทั้ง login/sidebar/favicon (refs = /logo.jpg)
   supabase/
-    migrations/0001..0030    schema, RPC, seed, bug fixes, ฟีเจอร์
+    migrations/0001..0031    schema, RPC, seed, bug fixes, ฟีเจอร์
     cleanup_e2e.sql          ⛔ ล้าง transaction ทั้งหมด (มีสลักนิรภัย) — ห้ามรันถ้ามีข้อมูลจริง
     cleanup_e2e_accounts.sql ปิด/ลบบัญชีทดสอบ e2e (ปลอดภัยแม้มีข้อมูลจริง)
     cleanup_job.sql          ล้าง Job เดียวเพื่อเปิด Job No. เดิมใหม่ (คืน LBS เข้าสต็อก) — แก้ v_job_no ก่อนรัน
@@ -104,13 +104,14 @@ lbs-platform/
 | `0023_edit_budget_when_locked.sql` | **ฟีเจอร์ (2026-07-22)**: Manage แก้งบประมาณได้แม้ Job ล็อก (issued/installed/cancelled) — `rpc_update_job_budget` (เฉพาะ admin, ไม่ผ่าน `app_assert_job_editable`, แก้เฉพาะ sale_price + budget_costs ไม่แตะ scope/allocation) · demo sync `logic.ts updateJobBudget` · UI: ปุ่ม "✏️ แก้ไขงบประมาณ" โชว์ตอนล็อกเฉพาะ Manage, save route ไป updateJobBudget เมื่อ locked |
 | `0024_lbs_unit_cost.sql` | **ฟีเจอร์ (2026-07-22)**: ต้นทุนตัว LBS ต่อเครื่อง — `lbs_units.unit_cost` + `app_unit_cost` (อ่าน `cost` จาก unit JSONB, validate ≥0), drop+recreate `rpc_create_project_stock`/`rpc_add_units_to_stock` (คงพฤติกรรมเดิม + insert unit_cost) · ดึง LBS เข้า Job → บวก actual หมวด raw_mat (คิดฝั่ง client `jobBudgetSummary`+`jobLbsCost` ไม่ต้องแก้ RPC ดึง/คืน) · demo sync · UI: StocksPage คอลัมน์ "ต้นทุน/เครื่อง" (ฟอร์ม/ตาราง/Export·Import Excel) + badge มูลค่าคลัง, Modal สร้าง/รับเข้า = wide |
 | `0025_import_units_upsert.sql` | **ฟีเจอร์ (2026-07-23)**: Import Serial แบบ upsert — `rpc_import_units_to_stock(p_new_units, p_update_units)`: รับเครื่องใหม่ (validation เดียวกับ add_units) + อัพเดท `unit_cost` เครื่องที่ match คู่ Serial (lvb+om) เฉพาะในคลังนี้ (cost ว่าง = คงเดิม) · UI แยก new/dup/conflict ใน import preview → ซ้ำในคลัง (คู่ตรง) ให้เลือก **อัพเดทต้นทุน / ข้าม(กรอกซ้ำผิด)**, ชนคลังอื่น·คู่ไม่ตรง = error · demo sync `logic.ts importUnitsToStock` · ใช้ `app_unit_cost` (0024) |
+| `0031_shorten_notify_messages.sql` | **ปรับปรุง (2026-07-25)**: ย่อข้อความแจ้งเตือน LINE ทุก workflow (15 ประเภท) — ใช้ `pg_get_functiondef`+`replace()` เปลี่ยนเฉพาะสตริงใน `app_notify` **คง body เดิม 100% (ไม่ regress logic)** · idempotent (ข้ามถ้าแก้ไปแล้ว) · helper `app_shorten_notify` drop ทิ้งท้าย · demo sync `logic.ts` · **หมายเหตุ:** LINE คิดโควตาเป็น *จำนวนข้อความ* ไม่ใช่ความยาว — การย่อช่วยอ่านง่าย ไม่ลดโควตา (ลดโควตาจริงต้องลดจำนวนแจ้ง) |
 | `0030_po_actual_price.sql` | **ฟีเจอร์ (2026-07-25)**: Purchasing บันทึกราคาจริงหลังออก PO — `rpc_update_po_line_price` (dept purchasing+admin) แก้ `unit_price` ของรายการที่ po_id ไม่ว่าง + status po_ordered/received + Job ยังไม่ล็อก · ราคาเดียว (จริงทับประมาณการ → กระทบงบ actual ทันที) · demo sync `logic.ts updatePoLinePrice` · UI: ปุ่ม 💰 ราคาจริง ต่อรายการในตาราง PO หน้า Purchasing |
 | `0029_project_stock_po_no.sql` | **ฟีเจอร์ (2026-07-24)**: Project Stock + `po_no` (PO No. ว่างได้ · แก้ภายหลังได้) — drop+recreate rpc_create_project_stock/rpc_update_project_stock (+p_po_no) คงพฤติกรรมเดิม · Remark ใช้ notes เดิม (relabel UI) · demo sync `logic.ts` |
 | `0028_swap_lbs_approval.sql` | **ฟีเจอร์ (2026-07-24)**: สลับเลข Serial LBS (LVB+OM เป็นคู่) ระหว่างเครื่อง allocated กับเครื่อง in_stock — ผ่าน Division อนุมัติ (Manage ตรง) · approval type ใหม่ `swap_lbs` (ALTER CHECK) + `app_exec_swap_lbs` (แลกคู่เลขผ่านค่าชั่วคราวกันชน unique) + `rpc_swap_lbs` + ต่อ rpc_request_approval/approve/reject · ทำได้หลังดึง LBS จนถึงก่อน issued (assertJobEditable) · เครื่องไม่ย้าย/ไม่แตะ accessory · demo sync `logic.ts swapLbs` |
 | `0027_delete_cancelled_accessory.sql` | **ฟีเจอร์ (2026-07-24)**: ลบรายการวัสดุที่ยกเลิกออกจากการ์ด — `rpc_delete_accessory_request` (Project/Division/Manage = dept project+sales+admin) ลบ job_accessory_requests ที่ `status='cancelled'` **และ** pr_id/po_id NULL (กัน PR/PO อ้างรายการที่หาย) · audit การยกเลิกยังอยู่ใน audit_logs · perm ใหม่ `accessory.cleanup` ฝั่ง client · demo sync `logic.ts deleteAccessoryRequest` |
 | `0026_job_install_sites.sql` | **ฟีเจอร์ (2026-07-23)**: หลายจุดติดตั้งต่อ Job — `jobs.install_sites` JSONB (array `{location, requiredDate}` = จุดที่ 2+; จุดที่ 1 ยังใช้ install_location/required_date เดิม) · drop+recreate `rpc_create_job`/`rpc_update_job` (+`p_install_sites`) · ข้อมูลวางแผนอย่างเดียว ไม่ผูก Serial/ไม่แตะ flow issue/confirm · UI: เปิด/แก้ Job โชว์ "เพิ่มจุดติดตั้ง" เมื่อ LBS>1 (≤ จำนวน LBS), JobDetail แผง "จุดติดตั้ง", list badge "+N จุด" · demo sync `logic.ts` (normalizeInstallSites) |
 
-> DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0030 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
+> DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0031 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
 > ⚠️ **production: รันเฉพาะ migration "ไฟล์ใหม่ที่ยังไม่เคยรัน" ก่อน push frontend** — ไม่ต้องรันไฟล์เก่าซ้ำทุกรอบ (ไฟล์ migration idempotent รันซ้ำได้ก็จริง แต่ไม่จำเป็น) และ **ห้ามรัน `cleanup_e2e.sql` ซ้ำเด็ดขาด** — มันลบ transaction ทั้งหมด (Jobs/LBS/audit) ใช้ครั้งเดียวตอนล้างระบบก่อนเปิดใช้จริงเท่านั้น มีสลักนิรภัยกันรันติดมือแล้ว (2026-07-19)
 
 ## 6. Environment variables (ตั้งใน Cloudflare Pages → Settings → Environment variables · Production)
@@ -183,9 +184,9 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
       ไฟล์ถูกใส่สลักนิรภัย (DO-block RAISE EXCEPTION) กันรันติดมือแล้ว · **หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่**
 - [ ] ตรวจว่า **service_role key ถูก rotate แล้ว** (ระหว่าง setup key เก่าเคยเปิดเผย — ตรวจ repo แล้ว 2026-07-19: **key ไม่เคยหลุดลง git** หลุดเฉพาะนอก repo) — Dashboard → Settings → API → สร้าง/roll secret key ใหม่ → อัปเดต `SUPABASE_SERVICE_ROLE_KEY` บน Cloudflare Pages env → Retry deployment
 
-### 🟠 Migrations — ✅ 0001–0029 รันครบ (0029 รัน 2026-07-24) · ⏳ 0030 รอรัน (2026-07-25)
-- [x] ~~0011–0029~~ รันครบ · **กติกา: หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่ (ผมจะบอกชื่อไฟล์)**
-- [ ] **รัน `0030_po_actual_price.sql`** บน Supabase SQL Editor ก่อน/พร้อม push frontend — idempotent · เพิ่ม `rpc_update_po_line_price` · ยังไม่รัน = ปุ่มบันทึกราคาจริงจะ error
+### 🟠 Migrations — ✅ 0001–0030 รันครบ (0030 รัน 2026-07-25) · ⏳ 0031 รอรัน (2026-07-25)
+- [x] ~~0011–0030~~ รันครบ · **กติกา: หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่ (ผมจะบอกชื่อไฟล์)**
+- [ ] **รัน `0031_shorten_notify_messages.sql`** บน Supabase SQL Editor — idempotent · ย่อข้อความ LINE (คง logic) · **ไม่รันก็ไม่พัง** (แค่ข้อความ live ยังยาว) แต่ควรรันให้ตรงกับ demo
 - [ ] ยืนยัน bucket **`install-photos`** (public) มีจริง — ถ้า Service อัปโหลดรูปตอนยืนยันติดตั้งไม่ได้ ให้สร้างที่ Dashboard→Storage (0019 อาจสร้างผ่าน SQL ไม่ได้เรื่องสิทธิ์)
 
 ### 🟡 ฟีเจอร์เสริม (ตั้งค่าค้างอยู่)
@@ -197,6 +198,7 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 - หน้า forgot-password / เปลี่ยนรหัสตัวเอง (ตอนนี้ Manage reset ให้ที่ Dev Settings)
 - รายงาน/analytics (stock movement, lead time ต่อ Job)
 
+> ✅ เสร็จแล้ว (2026-07-25): ย่อข้อความแจ้งเตือน LINE ทุก workflow (0031, คง logic) · ปุ่ม 📊 ตรวจโควตา Messaging API + progress bar ใน Dev Settings (`functions/line-quota.js`)
 > ✅ เสร็จแล้ว (2026-07-25): Session หมดอายุ 2 ชม. (absolute, ทั้ง demo/Supabase — notice หน้า login) · Purchasing บันทึกราคาจริงหลังออก PO → งบ actual (0030) · ขยายโลโก้ (login 200px · sidebar 52px)
 > ✅ เสร็จแล้ว (2026-07-24): Project Stock + PO No. (กรอกตอนสร้าง/แก้ภายหลัง) + Remark (relabel notes) (0029)
 > ✅ เสร็จแล้ว (2026-07-24): สลับเลข Serial LBS (allocated ↔ in_stock) ผ่าน Division อนุมัติ + เหตุผล / Manage ตรง — approval type swap_lbs (0028) · ทำก่อน issued

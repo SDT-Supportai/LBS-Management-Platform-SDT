@@ -14,6 +14,9 @@ export default function DevSettingsPage() {
   const canMaster = can(user, 'master.manage')
   const [form, setForm] = useState(settings)
   const [testing, setTesting] = useState(false)
+  // โควตา LINE Messaging API (push/เดือน)
+  const [quota, setQuota] = useState<{ type: string; limit: number | null; used: number; remaining: number | null } | null>(null)
+  const [loadingQuota, setLoadingQuota] = useState(false)
 
   // ---- จัดการผู้ใช้งาน (ย้ายมาจาก Material Database) ----
   const [userModal, setUserModal] = useState<'create' | 'edit' | null>(null)
@@ -55,6 +58,30 @@ export default function DevSettingsPage() {
       show('เรียก endpoint ไม่ได้ — บน localhost ยังไม่มี Pages Function ให้รัน (ใช้ npx wrangler pages dev dist หรือ deploy ก่อน)', true)
     }
     setTesting(false)
+  }
+
+  const checkQuota = async () => {
+    setLoadingQuota(true)
+    try {
+      const endpoint = form.lineEndpoint.replace(/line-notify\/?$/, 'line-quota')
+      const headers: Record<string, string> = {}
+      if (supabase) {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session) headers.Authorization = `Bearer ${session.access_token}`
+      }
+      const r = await fetch(endpoint, { headers })
+      const data = await r.json().catch(() => null)
+      if (r.ok && data?.ok) {
+        setQuota({ type: data.type, limit: data.limit, used: data.used, remaining: data.remaining })
+      } else {
+        setQuota(null)
+        show(data?.error ? `ตรวจโควตาไม่สำเร็จ: ${data.error}` : `endpoint ตอบกลับ ${r.status} — เช็ค env / deploy Pages Function`, true)
+      }
+    } catch {
+      setQuota(null)
+      show('เรียก endpoint ไม่ได้ — บน localhost ยังไม่มี Pages Function (ใช้ npx wrangler pages dev dist หรือ deploy ก่อน)', true)
+    }
+    setLoadingQuota(false)
   }
 
   const exportJson = () => {
@@ -131,10 +158,37 @@ export default function DevSettingsPage() {
                 placeholder="เช่น กลุ่ม LBS-Project-Team" />
             </label>
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="primary" onClick={save}>บันทึกการตั้งค่า</button>
             <button onClick={testLine} disabled={testing}>{testing ? 'กำลังทดสอบ...' : 'ส่งข้อความทดสอบ'}</button>
+            <button onClick={checkQuota} disabled={loadingQuota}>{loadingQuota ? 'กำลังตรวจ...' : '📊 ตรวจโควตา Messaging API'}</button>
           </div>
+
+          {quota && (() => {
+            const unlimited = quota.type !== 'limited' || quota.limit === null
+            const limit = quota.limit ?? 0
+            const pct = unlimited || limit === 0 ? 0 : Math.min(100, Math.round((quota.used / limit) * 100))
+            const color = pct >= 90 ? 'var(--red, #dc2626)' : pct >= 70 ? 'var(--amber, #d97706)' : 'var(--green, #16a34a)'
+            return (
+              <div style={{ marginTop: 14, maxWidth: 460 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
+                  <span>โควตาข้อความเดือนนี้ (push)</span>
+                  <b>{unlimited ? 'ไม่จำกัด' : `${quota.used.toLocaleString()} / ${limit.toLocaleString()}`}</b>
+                </div>
+                {!unlimited && (
+                  <>
+                    <div style={{ height: 12, borderRadius: 6, background: 'var(--border)', overflow: 'hidden' }}>
+                      <div style={{ width: `${pct}%`, height: '100%', background: color, transition: 'width .4s' }} />
+                    </div>
+                    <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                      ใช้ไป {quota.used.toLocaleString()} · คงเหลือ <b style={{ color }}>{(quota.remaining ?? 0).toLocaleString()}</b> ข้อความ ({pct}%)
+                    </div>
+                  </>
+                )}
+                {unlimited && <div className="muted" style={{ fontSize: 12 }}>ส่งได้ไม่จำกัด · ใช้ไปเดือนนี้ {quota.used.toLocaleString()} ข้อความ</div>}
+              </div>
+            )
+          })()}
         </div>
       </div>
 
