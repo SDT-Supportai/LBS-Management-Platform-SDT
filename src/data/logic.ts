@@ -489,7 +489,7 @@ export function swapLbs(
     throw new Error('เครื่องที่จะสลับต้องเป็นเครื่องว่างในคลัง (in_stock)')
   if (a.id === b.id) throw new Error('เลือกเครื่องสลับซ้ำกันไม่ได้')
   // แลกคู่ Serial (permutation → ไม่ชน unique)
-  const next: DB = {
+  let next: DB = {
     ...db,
     lbsUnits: db.lbsUnits.map(u => {
       if (u.id === a.id) return { ...u, serialLvb: b.serialLvb, serialOm: b.serialOm }
@@ -497,6 +497,10 @@ export function swapLbs(
       return u
     }),
   }
+  next = notify(next, {
+    type: 'lbs_swapped', dept: 'all', jobId: p.jobId,
+    message: `🔁 ${job.jobNo} สลับ LBS: ${a.serialLvb}/${a.serialOm} ↔ ${b.serialLvb}/${b.serialOm} (คลัง) · เหตุผล: ${p.reason.trim()}`,
+  })
   return audit(next, actor, 'lbs_unit', a.id, 'swap_lbs_serial',
     `${job.jobNo} สลับ LBS: ${a.serialLvb}/${a.serialOm} ↔ ${b.serialLvb}/${b.serialOm} (คลัง) — เหตุผล: ${p.reason.trim()}`)
 }

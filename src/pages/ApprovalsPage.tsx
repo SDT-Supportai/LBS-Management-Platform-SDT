@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { Modal, useTryAction } from '../ui/components'
+import { Modal, useToast, useTryAction } from '../ui/components'
+import { supabase } from '../lib/supabase'
 import { APPROVAL_TYPE_LABEL, APPROVAL_STATUS_LABEL, fmtDate, fmtDateTime } from '../ui/format'
 import type { ApprovalRequest } from '../types'
 
@@ -9,13 +10,29 @@ import type { ApprovalRequest } from '../types'
 // - division/admin: เห็นปุ่มอนุมัติ/ตีกลับ
 // - project: เห็นสถานะคำขอของตัวเอง (อ่านอย่างเดียว)
 export default function ApprovalsPage() {
-  const { db, user, act } = useStore()
+  const { db, user, act, mode } = useStore()
+  const { show } = useToast()
   const tryAction = useTryAction()
   const navigate = useNavigate()
   const [rejectTarget, setRejectTarget] = useState<ApprovalRequest | null>(null)
   const [rejectReason, setRejectReason] = useState('')
   const [openJob, setOpenJob] = useState<Record<string, boolean>>({})   // ประวัติต่อ Job (เริ่มซ่อน)
   const canDecide = can(user, 'approval.decide')
+  // เชื่อมบัญชี LINE (รับคำขอ + กดอนุมัติจากแชท 1:1) — เฉพาะผู้อนุมัติ โหมด LIVE
+  const [lineCode, setLineCode] = useState<string | null>(null)
+  const [lineBusy, setLineBusy] = useState(false)
+  const genLineCode = async () => {
+    if (!supabase) return
+    setLineBusy(true)
+    try {
+      const { data, error } = await supabase.rpc('rpc_line_gen_code')
+      if (error) throw error
+      setLineCode(String(data))
+    } catch (e) {
+      show('สร้างโค้ดไม่สำเร็จ: ' + (e as Error).message, true)
+    }
+    setLineBusy(false)
+  }
   const toggleJob = (id: string) => setOpenJob(p => ({ ...p, [id]: !p[id] }))
 
   const jobOf = (id: string) => db.jobs.find(j => j.id === id)
@@ -62,6 +79,30 @@ export default function ApprovalsPage() {
         คำขอจากงานโครงการที่รอ Division พิจารณา — ออก PR · เบิกให้ Service · ยกเลิก Job · สลับ LBS
         {canDecide ? ' · อนุมัติแล้วระบบดำเนินการให้ทันที' : ' · ติดตามสถานะคำขอของแผนกคุณที่นี่'}
       </div>
+
+      {canDecide && mode === 'supabase' && (
+        <div className="panel">
+          <div className="panel-head"><h3>🔗 รับคำขออนุมัติทาง LINE</h3></div>
+          <div className="panel-body">
+            {lineCode ? (
+              <>
+                <div style={{ fontSize: 30, fontWeight: 800, letterSpacing: 6 }}>{lineCode}</div>
+                <p className="muted" style={{ marginTop: 6 }}>
+                  เพิ่มบอทเป็นเพื่อนแล้ว <b>พิมพ์โค้ดนี้ในแชท 1:1</b> ภายใน 10 นาที — จากนั้นจะได้รับการ์ดคำขอพร้อมปุ่มอนุมัติที่แชทส่วนตัว
+                </p>
+                <button className="small" onClick={genLineCode} disabled={lineBusy}>สร้างโค้ดใหม่</button>
+              </>
+            ) : (
+              <>
+                <p className="muted" style={{ marginBottom: 8 }}>
+                  เชื่อมบัญชี LINE ส่วนตัว เพื่อรับคำขอและ<b>กดอนุมัติจากแชทได้เลย</b> (การตีกลับยังทำที่หน้านี้ — ต้องระบุเหตุผล)
+                </p>
+                <button onClick={genLineCode} disabled={lineBusy}>{lineBusy ? 'กำลังสร้าง...' : 'สร้างโค้ดเชื่อม LINE'}</button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="panel">
         <div className="panel-head"><h3>รอตัดสิน ({pending.length})</h3></div>

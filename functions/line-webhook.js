@@ -32,6 +32,36 @@ async function reply(token, replyToken, text) {
   })
 }
 
+function getSb(env) {
+  const url = env.SUPABASE_URL || env.VITE_SUPABASE_URL
+  const key = env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !key) return null
+  return createClient(url, key, { auth: { persistSession: false } })
+}
+
+// ปุ่ม ✅ อนุมัติ ใน Flex ส่ง postback data = "action=approve&req=<uuid>"
+async function handleApprovePostback(env, token, replyToken, data, userId) {
+  const sb = getSb(env)
+  if (!sb) { await reply(token, replyToken, 'ยังไม่ได้เชื่อมต่อฐานข้อมูล — ตั้ง SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY ก่อน'); return }
+  const params = new URLSearchParams(data)
+  const reqId = params.get('req')
+  if (!reqId) { await reply(token, replyToken, 'คำขอไม่ถูกต้อง'); return }
+  const { data: result, error } = await sb.rpc('rpc_line_approve', { p_request_id: reqId, p_line_user_id: userId })
+  if (error) { await reply(token, replyToken, 'อนุมัติไม่สำเร็จ: ' + error.message); return }
+  const MSG = {
+    unlinked: '⚠️ บัญชี LINE นี้ยังไม่ได้เชื่อมกับระบบ — เปิดแอป > ตั้งค่า > เชื่อมบัญชี LINE',
+    inactive: '⚠️ บัญชีของคุณถูกปิดการใช้งาน',
+    forbidden: '⛔ บัญชีของคุณไม่มีสิทธิ์อนุมัติ (เฉพาะ Division/Manage)',
+    notfound: 'ไม่พบคำขออนุมัตินี้แล้ว',
+    decided: 'คำขอนี้ถูกตัดสินไปแล้ว (อาจมีคนอนุมัติ/ตีกลับก่อนหน้า)',
+  }
+  if (typeof result === 'string' && result.startsWith('ok:')) {
+    await reply(token, replyToken, `✅ อนุมัติเรียบร้อย — ${result.slice(3)}\nระบบดำเนินการให้แล้ว`)
+  } else {
+    await reply(token, replyToken, MSG[result] ?? ('อนุมัติไม่สำเร็จ: ' + result))
+  }
+}
+
 // ตอบสถานะ Job จริงจาก Supabase (อ่านอย่างเดียว)
 async function jobStatusText(env, jobNoRaw) {
   const url = env.SUPABASE_URL || env.VITE_SUPABASE_URL
@@ -83,6 +113,16 @@ export async function onRequestPost(context) {
 
   const { events = [] } = JSON.parse(body)
   for (const ev of events) {
+    // ปุ่มใน Flex (อนุมัติ) — postback จากแชท 1:1 ของผู้อนุมัติ
+    if (ev.type === 'postback') {
+      const data = ev.postback?.data ?? ''
+      const userId = ev.source?.userId
+      if (data.startsWith('action=approve') && userId) {
+        await handleApprovePostback(env, accessToken, ev.replyToken, data, userId)
+      }
+      continue
+    }
+
     if (ev.type === 'message' && ev.message?.type === 'text') {
       const text = ev.message.text.trim()
       const src = ev.source ?? {}
@@ -92,6 +132,17 @@ export async function onRequestPost(context) {
         const id = src.groupId ?? src.roomId ?? src.userId ?? '(ไม่พบ)'
         const label = src.groupId ? 'Group ID' : src.roomId ? 'Room ID' : 'User ID'
         await reply(accessToken, ev.replyToken, `${label}:\n${id}\n\nนำค่านี้ไปใส่ env LINE_GROUP_ID บน Cloudflare Pages แล้ว redeploy`)
+        continue
+      }
+
+      // เชื่อมบัญชี: พิมพ์โค้ด 6 หลัก (จากแอป > ตั้งค่า > เชื่อมบัญชี LINE) ในแชท 1:1
+      if (/^\d{6}$/.test(text) && src.userId) {
+        const sb = getSb(env)
+        if (!sb) { await reply(accessToken, ev.replyToken, 'ยังไม่ได้เชื่อมต่อฐานข้อมูล'); continue }
+        const { data: name, error } = await sb.rpc('app_line_bind', { p_code: text, p_line_user_id: src.userId })
+        if (error) await reply(accessToken, ev.replyToken, 'เชื่อมบัญชีไม่สำเร็จ: ' + error.message)
+        else if (name) await reply(accessToken, ev.replyToken, `✅ เชื่อมบัญชีสำเร็จ: ${name}\nจากนี้จะได้รับคำขออนุมัติที่นี่ กดปุ่มอนุมัติได้เลย`)
+        else await reply(accessToken, ev.replyToken, '⚠️ โค้ดไม่ถูกต้องหรือหมดอายุ — สร้างโค้ดใหม่ในแอปแล้วลองอีกครั้ง (โค้ดมีอายุ 10 นาที)')
         continue
       }
 

@@ -449,6 +449,22 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
       Object.entries(remote).map(([k, fn]) => [k, wrap(fn as (p: unknown) => Promise<void>)]),
     ) as unknown as StoreActions
 
+    // หลังขออนุมัติสำเร็จ → ดันการ์ด Flex (ปุ่มอนุมัติ) เข้าแชท 1:1 ผู้อนุมัติ (best-effort, เฉพาะตอนเปิด LINE)
+    const baseRequestApproval = act.requestApproval
+    act.requestApproval = async (p) => {
+      await baseRequestApproval(p)
+      if (!settingsRef.current.lineEnabled) return
+      try {
+        const { data: { session } } = await sb.auth.getSession()
+        const endpoint = settingsRef.current.lineEndpoint.replace(/line-notify\/?$/, 'line-approval-push')
+        await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+          body: JSON.stringify({ jobId: p.jobId, type: p.type }),
+        })
+      } catch { /* best-effort — คำขอถูกบันทึกแล้ว, การ์ด LINE พลาดไม่กระทบ flow */ }
+    }
+
     return {
       db, user, settings, mode: 'supabase', loading,
       login: async (email, password) => {

@@ -1,0 +1,118 @@
+// Cloudflare Pages Function — ดันการ์ดคำขออนุมัติ (Flex + ปุ่ม ✅ อนุมัติ) เข้าแชท 1:1 ของผู้อนุมัติ
+// route: POST /line-approval-push   body: { requestId }
+// Frontend (StoreContext) เรียกหลัง project ขออนุมัติสำเร็จ (โหมด LIVE เท่านั้น)
+// env: LINE_CHANNEL_ACCESS_TOKEN, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
+//      VITE_SUPABASE_ANON_KEY (validate JWT ผู้เรียก), APP_URL (ลิงก์ตรวจสอบ)
+import { createClient } from '@supabase/supabase-js'
+
+const TYPE_LABEL = { create_pr: 'ออก PR', issue_job: 'เบิกให้ Service', cancel_job: 'ยกเลิก Job', swap_lbs: 'สลับ LBS' }
+
+function summarize(type, payload) {
+  if (type === 'create_pr') return `ออก PR · ${(payload.request_ids ?? []).length} รายการ`
+  if (type === 'issue_job') {
+    const s = payload.start_date, e = payload.end_date
+    const range = s === e ? s : `${s} – ${e}`
+    return `ติดตั้ง ${range}${payload.location ? ' · ' + payload.location : ''}`
+  }
+  if (type === 'swap_lbs') return `สลับ LBS · เหตุผล: ${payload.reason ?? '-'}`
+  return `ยกเลิก Job · เหตุผล: ${payload.reason ?? '-'}`
+}
+
+function buildFlex(appUrl, reqId, typeLabel, jobNo, customer, detail, requester) {
+  const row = (label, val) => ({
+    type: 'box', layout: 'baseline', spacing: 'sm',
+    contents: [
+      { type: 'text', text: label, color: '#8c8c8c', size: 'sm', flex: 2 },
+      { type: 'text', text: val || '-', size: 'sm', flex: 5, wrap: true },
+    ],
+  })
+  return {
+    type: 'flex',
+    altText: `🔔 คำขออนุมัติ${typeLabel}: ${jobNo}`,
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box', layout: 'vertical', paddingAll: '14px', backgroundColor: '#2563eb',
+        contents: [{ type: 'text', text: '🔔 คำขออนุมัติจาก Project', weight: 'bold', color: '#ffffff', size: 'sm' }],
+      },
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'md',
+        contents: [
+          { type: 'text', text: typeLabel, weight: 'bold', size: 'lg' },
+          { type: 'box', layout: 'vertical', spacing: 'sm', contents: [
+            row('Job', jobNo), row('ลูกค้า', customer), row('รายละเอียด', detail),
+          ] },
+          { type: 'text', text: `ผู้ขอ: ${requester}`, size: 'xs', color: '#8c8c8c' },
+        ],
+      },
+      footer: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'button', style: 'primary', color: '#16a34a', height: 'sm',
+            action: { type: 'postback', label: '✅ อนุมัติ', data: `action=approve&req=${reqId}`, displayText: `อนุมัติ ${jobNo}` } },
+          { type: 'button', style: 'secondary', height: 'sm',
+            action: { type: 'uri', label: '🔎 ตรวจสอบในระบบ', uri: `${appUrl}/approvals` } },
+          { type: 'text', text: 'ตีกลับได้ที่หน้าเว็บ (ต้องระบุเหตุผล)', size: 'xxs', color: '#aaaaaa', align: 'center' },
+        ],
+      },
+    },
+  }
+}
+
+export async function onRequestPost(context) {
+  const { request, env } = context
+  const token = env.LINE_CHANNEL_ACCESS_TOKEN
+  if (!token) return Response.json({ ok: false, error: 'LINE_CHANNEL_ACCESS_TOKEN not configured' }, { status: 500 })
+
+  const url = env.SUPABASE_URL || env.VITE_SUPABASE_URL
+  const anonKey = env.VITE_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KEY
+  const serviceKey = env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !serviceKey) return Response.json({ ok: false, error: 'Supabase not configured' }, { status: 500 })
+
+  // ตรวจ JWT ผู้เรียก (ต้อง login) — แบบเดียวกับ /line-notify
+  if (anonKey) {
+    const jwt = (request.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '')
+    if (!jwt) return Response.json({ ok: false, error: 'กรุณาเข้าสู่ระบบก่อน' }, { status: 401 })
+    const asCaller = createClient(url, anonKey, { auth: { persistSession: false } })
+    const { data: caller, error: authErr } = await asCaller.auth.getUser(jwt)
+    if (authErr || !caller?.user) return Response.json({ ok: false, error: 'token ไม่ถูกต้อง' }, { status: 401 })
+  }
+
+  // รับ requestId ตรง ๆ หรือระบุ jobId+type (คำขอ pending ต่อ job+type มีได้ตัวเดียว — unique index)
+  let body
+  try { body = await request.json() } catch { return Response.json({ ok: false, error: 'invalid JSON' }, { status: 400 }) }
+  const { requestId, jobId, type } = body ?? {}
+  if (!requestId && !(jobId && type)) return Response.json({ ok: false, error: 'requestId หรือ jobId+type จำเป็น' }, { status: 400 })
+
+  const sb = createClient(url, serviceKey, { auth: { persistSession: false } })
+
+  let q = sb.from('approval_requests').select('*').eq('status', 'pending')
+  q = requestId ? q.eq('id', requestId) : q.eq('job_id', jobId).eq('req_type', type)
+  const { data: r, error: rErr } = await q.maybeSingle()
+  if (rErr) return Response.json({ ok: false, error: rErr.message }, { status: 500 })
+  if (!r) return Response.json({ ok: true, skipped: 'ไม่พบคำขอที่รออนุมัติ' })
+
+  const { data: job } = await sb.from('jobs').select('job_no, customer_name').eq('id', r.job_id).maybeSingle()
+  const { data: requester } = await sb.from('profiles').select('full_name').eq('id', r.requested_by).maybeSingle()
+
+  // ผู้อนุมัติที่เชื่อม LINE แล้ว (Division/admin, ยัง active)
+  const { data: approvers } = await sb.from('profiles').select('line_user_id')
+    .in('department', ['sales', 'admin']).eq('is_active', true).not('line_user_id', 'is', null)
+  const recipients = (approvers ?? []).map(a => a.line_user_id).filter(Boolean)
+  if (recipients.length === 0) return Response.json({ ok: true, skipped: 'ยังไม่มีผู้อนุมัติที่เชื่อม LINE' })
+
+  const appUrl = (env.APP_URL || 'https://lbs-platform-sdt.pages.dev').replace(/\/$/, '')
+  const typeLabel = TYPE_LABEL[r.req_type] ?? r.req_type
+  const flex = buildFlex(appUrl, r.id, typeLabel, job?.job_no ?? '-', job?.customer_name ?? '-',
+    summarize(r.req_type, r.payload ?? {}), requester?.full_name ?? '-')
+
+  const results = await Promise.all(recipients.map(to =>
+    fetch('https://api.line.me/v2/bot/message/push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ to, messages: [flex] }),
+    }).then(res => res.ok).catch(() => false)
+  ))
+  const sent = results.filter(Boolean).length
+  return Response.json({ ok: true, sent, total: recipients.length })
+}
