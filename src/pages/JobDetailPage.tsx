@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary } from '../data/logic'
 import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
-import { ACC_STATUS_LABEL, PR_STATUS_LABEL, COST_CATEGORIES, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
+import { ACC_STATUS_LABEL, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import type { LbsUnit, CostCategoryKey } from '../types'
 
 const COST_LABEL: Record<string, string> = Object.fromEntries(COST_CATEGORIES.map(c => [c.key, c.label]))
@@ -197,12 +197,12 @@ export default function JobDetailPage() {
         </div></div>
       )}
 
-      {/* คำขอที่รอ Division อนุมัติของ Job นี้ */}
+      {/* คำขอที่รอ Division พิจารณาของ Job นี้ */}
       {db.approvalRequests.some(r => r.jobId === jobId && r.status === 'pending') && (
         <div className="panel"><div className="panel-body">
-          ⏳ <b>รอ Division อนุมัติ:</b>{' '}
+          ⏳ <b>รอ Division พิจารณา:</b>{' '}
           {db.approvalRequests.filter(r => r.jobId === jobId && r.status === 'pending')
-            .map(r => r.type === 'create_pr' ? 'ออก PR' : r.type === 'issue_job' ? 'เบิกให้ Service' : 'ยกเลิก Job')
+            .map(r => APPROVAL_TYPE_LABEL[r.type])
             .join(' · ')}
           {' '}— <Link to="/approvals">ดูสถานะที่หน้ารออนุมัติ →</Link>
         </div></div>
@@ -217,7 +217,7 @@ export default function JobDetailPage() {
             openModal('issue')
           }} disabled={status !== 'ready_to_issue' || pendingApprovalOf('issue_job')}
             title={status !== 'ready_to_issue' ? 'ต้องมี LBS ครบตาม Scope และ Accessory ครบทุกรายการ'
-              : pendingApprovalOf('issue_job') ? 'มีคำขอเบิกรอ Division อนุมัติอยู่แล้ว' : ''}>
+              : pendingApprovalOf('issue_job') ? 'มีคำขอเบิกรอ Division พิจารณาอยู่แล้ว' : ''}>
             {isManage ? 'เบิกทั้งหมดให้ Service' : 'ขออนุมัติเบิกให้ Service'}
           </button>
           <button onClick={() => {
@@ -233,7 +233,7 @@ export default function JobDetailPage() {
             openModal('edit')
           }}>แก้ไขข้อมูล Job</button>
           <button className="danger" disabled={pendingApprovalOf('cancel_job')}
-            title={pendingApprovalOf('cancel_job') ? 'มีคำขอยกเลิกรอ Division อนุมัติอยู่แล้ว' : ''}
+            title={pendingApprovalOf('cancel_job') ? 'มีคำขอยกเลิกรอ Division พิจารณาอยู่แล้ว' : ''}
             onClick={() => { setCancelReason(''); setReceivedToCentral(true); openModal('cancel') }}>
             {isManage ? 'ยกเลิก Job' : 'ขออนุมัติยกเลิก Job'}
           </button>
@@ -318,7 +318,7 @@ export default function JobDetailPage() {
             {/* สลับเลข Serial ของเครื่องบน Job กับเครื่องในคลัง (ก่อนเบิกให้ Service) — project ขออนุมัติ Division ก่อน */}
             {canManage && !locked && allocatedUnits.some(u => u.status === 'allocated') && inStockUnits.length > 0 && (
               <button className="small" disabled={pendingApprovalOf('swap_lbs')}
-                title={pendingApprovalOf('swap_lbs') ? 'มีคำขอสลับ LBS รอ Division อนุมัติอยู่แล้ว' : ''}
+                title={pendingApprovalOf('swap_lbs') ? 'มีคำขอสลับ LBS รอ Division พิจารณาอยู่แล้ว' : ''}
                 onClick={() => {
                   const firstAlloc = allocatedUnits.find(u => u.status === 'allocated')
                   setSwapForm({ allocatedUnitId: firstAlloc?.id ?? '', stockUnitId: inStockUnits[0]?.id ?? '', reason: '' })
@@ -358,14 +358,14 @@ export default function JobDetailPage() {
             )}
             {canManage && !locked && pendingReqs.length > 0 && (
               <button className="small primary" disabled={pendingApprovalOf('create_pr')}
-                title={pendingApprovalOf('create_pr') ? 'มีคำขอออก PR รอ Division อนุมัติอยู่แล้ว' : ''}
+                title={pendingApprovalOf('create_pr') ? 'มีคำขอออก PR รอ Division พิจารณาอยู่แล้ว' : ''}
                 onClick={() => isManage
                   ? tryAction(() => act.createPR({ jobId: job.id, requestIds: pendingReqs.map(r => r.id) }),
                       'ออก PR ส่งให้ Purchasing แล้ว')
                   : tryAction(() => act.requestApproval({
                       type: 'create_pr', jobId: job.id,
                       payload: { requestIds: pendingReqs.map(r => r.id) },
-                    }), 'ส่งคำขอออก PR ให้ Division อนุมัติแล้ว')
+                    }), 'ส่งคำขอออก PR ให้ Division พิจารณาแล้ว')
                 }>
                 {isManage ? `ออก PR ส่ง Purchasing (${pendingReqs.length} รายการ)` : `ขออนุมัติออก PR (${pendingReqs.length} รายการ)`}
               </button>
@@ -531,7 +531,7 @@ export default function JobDetailPage() {
               onClick={async () => {
                 const ok = isManage
                   ? await tryAction(() => act.swapLbs({ jobId: job.id, allocatedUnitId: swapForm.allocatedUnitId, stockUnitId: swapForm.stockUnitId, reason: swapForm.reason }), 'สลับ LBS เรียบร้อย')
-                  : await tryAction(() => act.requestApproval({ type: 'swap_lbs', jobId: job.id, payload: { swapAllocatedUnitId: swapForm.allocatedUnitId, swapStockUnitId: swapForm.stockUnitId, reason: swapForm.reason } }), 'ส่งคำขอสลับ LBS ให้ Division อนุมัติแล้ว')
+                  : await tryAction(() => act.requestApproval({ type: 'swap_lbs', jobId: job.id, payload: { swapAllocatedUnitId: swapForm.allocatedUnitId, swapStockUnitId: swapForm.stockUnitId, reason: swapForm.reason } }), 'ส่งคำขอสลับ LBS ให้ Division พิจารณาแล้ว')
                 if (ok) close()
               }}>
               {isManage ? 'สลับเลย' : 'ขออนุมัติสลับ'}
@@ -648,7 +648,7 @@ export default function JobDetailPage() {
                 const ok = isManage
                   ? await tryAction(() => act.issueJob({ jobId: job.id, ...issueForm }), `เบิก ${job.jobNo} ให้ Service แล้ว`)
                   : await tryAction(() => act.requestApproval({ type: 'issue_job', jobId: job.id, payload: { ...issueForm } }),
-                      `ส่งคำขอเบิก ${job.jobNo} ให้ Division อนุมัติแล้ว`)
+                      `ส่งคำขอเบิก ${job.jobNo} ให้ Division พิจารณาแล้ว`)
                 if (ok) close()
               }}>
               {isManage ? 'ยืนยันการเบิก' : 'ส่งคำขออนุมัติ'}
@@ -661,7 +661,7 @@ export default function JobDetailPage() {
           <p className="muted" style={{ marginBottom: 12 }}>
             {isManage
               ? 'หลังยืนยัน Job จะล็อก แก้ไข allocation หรือคืนของไม่ได้อีก'
-              : 'คำขอจะส่งให้ Division ตรวจ — เมื่ออนุมัติระบบเบิกให้ทันที แล้ว Job จะล็อก แก้ไข allocation ไม่ได้อีก'}
+              : 'คำขอจะส่งให้ Division พิจารณา — เมื่ออนุมัติระบบเบิกให้ทันที แล้ว Job จะล็อก แก้ไข allocation ไม่ได้อีก'}
           </p>
           <div className="row">
             <label className="field"><span>วันเริ่มติดตั้ง (Start) *</span>
@@ -694,7 +694,7 @@ export default function JobDetailPage() {
                   if (await tryAction(() => act.requestApproval({
                     type: 'cancel_job', jobId: job.id,
                     payload: { reason: cancelReason, receivedToCentral },
-                  }), `ส่งคำขอยกเลิก ${job.jobNo} ให้ Division อนุมัติแล้ว`)) close()
+                  }), `ส่งคำขอยกเลิก ${job.jobNo} ให้ Division พิจารณาแล้ว`)) close()
                 }
               }}>
               {isManage ? 'ยืนยันยกเลิก Job' : 'ส่งคำขออนุมัติ'}

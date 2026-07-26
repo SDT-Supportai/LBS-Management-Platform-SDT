@@ -1023,7 +1023,7 @@ export function requestApproval(
 ): DB {
   const job = assertJobEditable(db, p.jobId)
   if (db.approvalRequests.some(r => r.jobId === p.jobId && r.type === p.type && r.status === 'pending'))
-    throw new Error(`${job.jobNo} มีคำขอประเภทนี้รอ Division อนุมัติอยู่แล้ว`)
+    throw new Error(`${job.jobNo} มีคำขอประเภทนี้รอ Division พิจารณาอยู่แล้ว`)
 
   // validate ล่วงหน้าตาม type (validate เต็มอีกรอบตอน execute)
   let typeLabel: string = APPROVAL_TYPE_LABEL[p.type]
