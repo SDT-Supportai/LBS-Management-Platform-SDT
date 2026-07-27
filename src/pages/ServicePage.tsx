@@ -27,6 +27,12 @@ export default function ServicePage() {
   const [locating, setLocating] = useState(false)
   const [photo, setPhoto] = useState<{ file: File; preview: string } | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  // เลื่อน/ติดปัญหาหน้างาน (เฟส A)
+  const [visitFor, setVisitFor] = useState<string | null>(null)
+  const [visitOutcome, setVisitOutcome] = useState<'rescheduled' | 'failed'>('rescheduled')
+  const [visitReason, setVisitReason] = useState('')
+  const [visitStart, setVisitStart] = useState('')
+  const [visitEnd, setVisitEnd] = useState('')
 
   const ready = db.jobs.filter(j => deriveJobStatus(db, j) === 'ready_to_issue')
   const issued = db.jobs.filter(j => j.terminalStatus === 'issued')
@@ -39,6 +45,25 @@ export default function ServicePage() {
   const userOf = (id?: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
 
   const confirmJob = confirmFor ? db.jobs.find(j => j.id === confirmFor) : null
+  const visitJob = visitFor ? db.jobs.find(j => j.id === visitFor) : null
+  // ประวัติออกหน้างานล่าสุดต่อ Job (ใหม่สุด)
+  const lastVisit = (jobId: string) =>
+    db.siteVisits.filter(v => v.jobId === jobId).sort((a, b) => b.performedAt.localeCompare(a.performedAt))[0]
+
+  const openVisit = (jobId: string) => {
+    setVisitOutcome('rescheduled'); setVisitReason(''); setVisitStart(''); setVisitEnd(''); setVisitFor(jobId)
+  }
+  const submitVisit = async () => {
+    if (!visitFor) return
+    const ok = await tryAction(
+      () => act.logSiteVisit({
+        jobId: visitFor, outcome: visitOutcome, reason: visitReason,
+        newStartDate: visitOutcome === 'rescheduled' ? visitStart : undefined,
+        newEndDate: visitOutcome === 'rescheduled' ? (visitEnd || visitStart) : undefined,
+      }),
+      visitOutcome === 'rescheduled' ? 'บันทึกเลื่อนนัด + แจ้ง Project แล้ว' : 'บันทึกปัญหาหน้างาน + แจ้ง Project แล้ว')
+    if (ok) setVisitFor(null)
+  }
 
   const openConfirm = (jobId: string) => {
     setInstalledDate(new Date().toISOString().slice(0, 10))
@@ -127,7 +152,12 @@ export default function ServicePage() {
                       📍 {j.issueLocation || j.installLocation || '-'}
                       {j.installStartDate && <> · 📅 นัดติดตั้ง <b>{fmtDate(j.installStartDate)} – {fmtDate(j.installEndDate)}</b></>}
                     </div>
-                    {j.issuedNote && <div className="muted">📝 {j.issuedNote}</div>}</td>
+                    {j.issuedNote && <div className="muted">📝 {j.issuedNote}</div>}
+                    {(() => { const v = lastVisit(j.id); return v && (
+                      <div className="muted" style={{ color: v.outcome === 'failed' ? 'var(--danger)' : undefined }}>
+                        {v.outcome === 'rescheduled' ? '⏰ เลื่อนนัดแล้ว' : '⚠️ ติดปัญหา'}: {v.reason}
+                      </div>
+                    )})()}</td>
                   <td>
                     <div>LBS {unitsOf(j.id).length} เครื่อง <span className="muted mono">({unitsOf(j.id).map(u => u.serialLvb).join(', ')})</span></div>
                     {accOf(j.id).map(r => {
@@ -136,9 +166,12 @@ export default function ServicePage() {
                     })}
                   </td>
                   <td className="muted">{fmtDateTime(j.issuedAt)}</td>
-                  <td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
                     {canConfirm && (
-                      <button className="small success" onClick={() => openConfirm(j.id)}>ยืนยันติดตั้งเสร็จ</button>
+                      <>
+                        <button className="small success" style={{ marginRight: 6 }} onClick={() => openConfirm(j.id)}>ยืนยันติดตั้งเสร็จ</button>
+                        <button className="small" onClick={() => openVisit(j.id)}>เลื่อน/ติดปัญหา</button>
+                      </>
                     )}
                   </td>
                 </tr>
@@ -214,6 +247,40 @@ export default function ServicePage() {
 
           <label className="field"><span>บันทึกหน้างาน (ทีม/ผลการทดสอบ ฯลฯ)</span>
             <textarea rows={2} value={note} onChange={e => setNote(e.target.value)} placeholder="ทีม A ติดตั้ง + test energize ผ่าน" />
+          </label>
+        </Modal>
+      )}
+
+      {visitJob && (
+        <Modal title={`ออกหน้างานยังไม่จบ — ${visitJob.jobNo}`} onClose={() => setVisitFor(null)}
+          footer={<>
+            <button onClick={() => setVisitFor(null)}>ยกเลิก</button>
+            <button className="success"
+              disabled={!visitReason.trim() || (visitOutcome === 'rescheduled' && !visitStart)}
+              onClick={submitVisit}>บันทึก + แจ้ง Project</button>
+          </>}>
+          <p className="muted" style={{ marginBottom: 12 }}>
+            {visitJob.customerName} · {visitJob.issueLocation || visitJob.installLocation || '-'} — งานยังคงสถานะ <b>Issued</b> (ไม่ปิดงาน)
+          </p>
+          <label className="field"><span>ผลการออกหน้างาน *</span>
+            <select value={visitOutcome} onChange={e => setVisitOutcome(e.target.value as 'rescheduled' | 'failed')}>
+              <option value="rescheduled">⏰ เลื่อนนัดติดตั้ง (มีวันนัดใหม่)</option>
+              <option value="failed">⚠️ ติดปัญหาหน้างาน (ยังไม่มีนัดใหม่)</option>
+            </select>
+          </label>
+          {visitOutcome === 'rescheduled' && (
+            <div className="row">
+              <label className="field"><span>วันนัดใหม่ (เริ่ม) *</span>
+                <input type="date" value={visitStart} onChange={e => setVisitStart(e.target.value)} />
+              </label>
+              <label className="field"><span>ถึง (เว้นว่าง = วันเดียว)</span>
+                <input type="date" value={visitEnd} onChange={e => setVisitEnd(e.target.value)} />
+              </label>
+            </div>
+          )}
+          <label className="field"><span>เหตุผล / รายละเอียดหน้างาน *</span>
+            <textarea rows={3} value={visitReason} onChange={e => setVisitReason(e.target.value)}
+              placeholder={visitOutcome === 'rescheduled' ? 'เช่น ลูกค้าขอเลื่อน ยังไม่พร้อมหน้างาน' : 'เช่น จุดติดตั้งยังไม่เดินสายเมน รอผู้รับเหมา'} />
           </label>
         </Modal>
       )}

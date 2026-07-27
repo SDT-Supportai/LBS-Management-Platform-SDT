@@ -221,6 +221,20 @@ export interface AppNotification {
   lineStatus: LineStatus                // สถานะส่งเข้า LINE group
 }
 
+// บันทึกการออกหน้างานที่ "ยังไม่จบ" — เลื่อนนัด หรือ ติดปัญหา (Job ยังอยู่ issued)
+// path สำเร็จใช้ confirmInstall แยกต่างหาก — ที่นี่เก็บเฉพาะ attempt ที่ทำไม่สำเร็จ/ต้องเลื่อน
+export type SiteVisitOutcome = 'rescheduled' | 'failed'
+export interface SiteVisit {
+  id: string
+  jobId: string
+  outcome: SiteVisitOutcome
+  reason: string
+  newStartDate?: string        // เฉพาะ rescheduled — นัดใหม่ (อัปเดต installStartDate/EndDate ของ Job ด้วย)
+  newEndDate?: string
+  performedBy: string
+  performedAt: string
+}
+
 export interface DB {
   users: User[]
   items: Item[]
@@ -235,6 +249,7 @@ export interface DB {
   approvalRequests: ApprovalRequest[]
   auditLogs: AuditLog[]
   notifications: AppNotification[]
+  siteVisits: SiteVisit[]
 }
 
 export interface AppSettings {

@@ -1,6 +1,7 @@
 import type {
   DB, Job, JobStatus, User, AccessoryRequest, Department,
   ApprovalType, ApprovalPayload, BudgetCosts, CostCategoryKey,
+  SiteVisit, SiteVisitOutcome,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -919,6 +920,54 @@ export function confirmInstall(
   })
   return audit(next, actor, 'job', p.jobId, 'confirm_install',
     `${job.jobNo} ติดตั้งเสร็จ วันที่จริง ${p.installedDate} (check-in ${p.checkinLat.toFixed(5)},${p.checkinLng.toFixed(5)})${p.note ? ` — ${p.note}` : ''}`)
+}
+
+// Service บันทึกออกหน้างานแบบยังไม่จบ: เลื่อนนัด / ติดปัญหา (Job คงสถานะ issued)
+// - rescheduled: ต้องระบุนัดใหม่ → อัปเดต installStartDate/EndDate ของ Job
+// - failed: บันทึกปัญหาหน้างานไว้ (ไปแล้วแต่ติดตั้งไม่ได้) รอเข้าใหม่
+export function logSiteVisit(
+  db: DB, actor: User,
+  p: { jobId: string; outcome: SiteVisitOutcome; reason: string; newStartDate?: string; newEndDate?: string },
+): DB {
+  const job = db.jobs.find(j => j.id === p.jobId)
+  if (!job) throw new Error('ไม่พบ Job')
+  if (job.terminalStatus !== 'issued')
+    throw new Error(`บันทึกได้เฉพาะงานที่เบิกแล้ว (Issued) — ${job.jobNo} อยู่สถานะอื่น`)
+  if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผล/รายละเอียดหน้างาน')
+
+  let newStart = p.newStartDate
+  let newEnd = p.newEndDate || p.newStartDate
+  if (p.outcome === 'rescheduled') {
+    if (!newStart) throw new Error('กรุณาระบุวันนัดใหม่')
+    if (newEnd! < newStart) throw new Error('วันสิ้นสุดต้องไม่ก่อนวันเริ่ม')
+  } else {
+    newStart = undefined; newEnd = undefined
+  }
+
+  const visit: SiteVisit = {
+    id: uid(), jobId: p.jobId, outcome: p.outcome, reason: p.reason.trim(),
+    newStartDate: newStart, newEndDate: newEnd, performedBy: actor.id, performedAt: now(),
+  }
+  let next: DB = {
+    ...db,
+    siteVisits: [...db.siteVisits, visit],
+    jobs: p.outcome === 'rescheduled'
+      ? db.jobs.map(j => j.id === p.jobId ? { ...j, installStartDate: newStart, installEndDate: newEnd } : j)
+      : db.jobs,
+  }
+  const range = newStart === newEnd ? newStart : `${newStart} – ${newEnd}`
+  next = notify(next, {
+    type: p.outcome === 'rescheduled' ? 'install_rescheduled' : 'install_failed',
+    dept: 'project', jobId: p.jobId,
+    message: p.outcome === 'rescheduled'
+      ? `⏰ ${job.jobNo} เลื่อนนัดติดตั้ง → ${range} · ${p.reason.trim()}`
+      : `⚠️ ${job.jobNo} ติดปัญหาหน้างาน: ${p.reason.trim()}`,
+  })
+  return audit(next, actor, 'job', p.jobId,
+    p.outcome === 'rescheduled' ? 'reschedule_install' : 'failed_visit',
+    p.outcome === 'rescheduled'
+      ? `${job.jobNo} เลื่อนนัดติดตั้งเป็น ${range} — ${p.reason.trim()}`
+      : `${job.jobNo} ติดปัญหาหน้างาน — ${p.reason.trim()}`)
 }
 
 // ยกเลิก Job: auto คืน LBS กลับ Stock เดิมตาม allocation + คืน Accessory สต็อกกลาง

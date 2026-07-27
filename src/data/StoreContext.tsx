@@ -80,7 +80,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 const EMPTY_DB: DB = {
   users: [], items: [], projectStocks: [], lbsUnits: [], jobs: [], allocations: [],
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [],
-  auditLogs: [], notifications: [],
+  auditLogs: [], notifications: [], siteVisits: [],
 }
 
 // migrate ข้อมูล demo จาก schema เก่า (v1: issued_installed, ไม่มี qtyReceived/notifications)
@@ -111,6 +111,7 @@ function migrateDb(raw: unknown): DB {
     })),
     approvalRequests: d.approvalRequests ?? [],
     notifications: d.notifications ?? [],
+    siteVisits: d.siteVisits ?? [],
   }
 }
 
@@ -166,6 +167,7 @@ export interface StoreActions {
   receivePOItems: (p: Parameters<typeof L.receivePOItems>[2]) => MaybePromise
   issueJob: (p: Parameters<typeof L.issueJob>[2]) => MaybePromise
   confirmInstall: (p: Parameters<typeof L.confirmInstall>[2]) => MaybePromise
+  logSiteVisit: (p: Parameters<typeof L.logSiteVisit>[2]) => MaybePromise
   cancelJob: (p: Parameters<typeof L.cancelJob>[2]) => MaybePromise
   requestApproval: (p: Parameters<typeof L.requestApproval>[2]) => MaybePromise
   approveRequest: (p: Parameters<typeof L.approveRequest>[2]) => MaybePromise
@@ -316,6 +318,7 @@ function DemoProvider({ children }: { children: ReactNode }) {
         receivePOItems: run('purchasing.manage', L.receivePOItems),
         issueJob: run('master.manage', L.issueJob),
         confirmInstall: run('service.confirm', L.confirmInstall),
+        logSiteVisit: run('service.confirm', L.logSiteVisit),
         cancelJob: run('master.manage', L.cancelJob),
         requestApproval: run('job.manage', L.requestApproval),
         approveRequest: run('approval.decide', L.approveRequest),

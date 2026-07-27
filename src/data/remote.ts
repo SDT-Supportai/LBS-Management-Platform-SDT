@@ -2,7 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type {
   DB, User, Item, ProjectStock, LbsUnit, Job, AllocationTxn,
   AccessoryRequest, PurchaseRequisition, PurchaseOrder, AuditLog, AppNotification,
-  Department, ApprovalRequest, ApprovalType, ApprovalPayload, BudgetCosts,
+  Department, ApprovalRequest, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -120,6 +120,13 @@ function mapNotif(r: Row, readBy: string[]): AppNotification {
     dept: r.dept, jobId: r.job_id ?? undefined, readBy, lineStatus: r.line_status,
   }
 }
+function mapSiteVisit(r: Row): SiteVisit {
+  return {
+    id: r.id, jobId: r.job_id, outcome: r.outcome, reason: r.reason ?? '',
+    newStartDate: r.new_start_date ?? undefined, newEndDate: r.new_end_date ?? undefined,
+    performedBy: r.performed_by ?? '', performedAt: r.performed_at,
+  }
+}
 
 async function q(sb: SupabaseClient, table: string, order?: { col: string; asc?: boolean; limit?: number }) {
   let query = sb.from(table).select('*')
@@ -130,7 +137,7 @@ async function q(sb: SupabaseClient, table: string, order?: { col: string; asc?:
 }
 
 export async function loadAll(sb: SupabaseClient): Promise<DB> {
-  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, audits, notifs, reads] =
+  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, audits, notifs, reads, visits] =
     await Promise.all([
       q(sb, 'profiles'),
       q(sb, 'items', { col: 'code', limit: 10000 }),
@@ -146,6 +153,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       q(sb, 'audit_logs', { col: 'created_at', asc: false, limit: 500 }),
       q(sb, 'notifications', { col: 'created_at', asc: true, limit: 300 }),
       q(sb, 'notification_reads'),
+      q(sb, 'job_site_visits', { col: 'performed_at' }),
     ])
 
   const readsByNotif = new Map<string, string[]>()
@@ -176,6 +184,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     approvalRequests: approvals.map(mapApproval),
     auditLogs: audits.map(mapAudit),
     notifications: notifs.map(r => mapNotif(r, readsByNotif.get(r.id) ?? [])),
+    siteVisits: visits.map(mapSiteVisit),
   }
 }
 
@@ -236,6 +245,8 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_issue_job', { p_job_id: p.jobId, p_start_date: p.startDate || null, p_end_date: p.endDate || null, p_location: p.location, p_note: p.note ?? null }),
     confirmInstall: (p: { jobId: string; installedDate: string; note?: string; checkinLat?: number; checkinLng?: number; photoUrl?: string }) =>
       rpc(sb, 'rpc_confirm_install', { p_job_id: p.jobId, p_installed_date: p.installedDate, p_note: p.note ?? null, p_lat: p.checkinLat ?? null, p_lng: p.checkinLng ?? null, p_photo_url: p.photoUrl ?? null }),
+    logSiteVisit: (p: { jobId: string; outcome: 'rescheduled' | 'failed'; reason: string; newStartDate?: string; newEndDate?: string }) =>
+      rpc(sb, 'rpc_log_site_visit', { p_job_id: p.jobId, p_outcome: p.outcome, p_reason: p.reason, p_new_start_date: p.newStartDate ?? null, p_new_end_date: p.newEndDate ?? null }),
     cancelJob: (p: { jobId: string; reason: string; receivedAccessoryToCentral: boolean }) =>
       rpc(sb, 'rpc_cancel_job', { p_job_id: p.jobId, p_reason: p.reason, p_received_to_central: p.receivedAccessoryToCentral }),
     // Division approval flow (0016) — payload camelCase → snake_case ให้ตรง SQL
