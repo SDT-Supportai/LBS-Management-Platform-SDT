@@ -221,6 +221,26 @@ export interface AppNotification {
   lineStatus: LineStatus                // สถานะส่งเข้า LINE group
 }
 
+// ยืนยันติดตั้ง "รายเครื่อง" (per LBS serial) — เฟส B
+// เก็บเป็น log (หลายแถวต่อเครื่องได้) → สถานะปัจจุบันของเครื่อง = แถวล่าสุด
+// ทำให้ blocked → ยืนยันใหม่ได้ และเก็บประวัติครบ
+// หมายเหตุ: ไม่เก็บบน lbs_units เพราะ trigger trg_block_issued_edit ล็อก UPDATE ตอน job = issued
+export type UnitInstallOutcome = 'installed' | 'blocked'
+export interface UnitInstallation {
+  id: string
+  unitId: string
+  jobId: string
+  outcome: UnitInstallOutcome
+  installedDate?: string       // installed: วันที่ติดตั้งจริง (บังคับ)
+  reason?: string              // blocked: เหตุผลที่ติดตั้งไม่ได้ (บังคับ)
+  checkinLat?: number          // installed: บังคับ (หลักฐานต่อเครื่อง)
+  checkinLng?: number
+  photoUrl?: string            // installed: บังคับ
+  note?: string
+  performedBy: string
+  performedAt: string
+}
+
 // บันทึกการออกหน้างานที่ "ยังไม่จบ" — เลื่อนนัด หรือ ติดปัญหา (Job ยังอยู่ issued)
 // path สำเร็จใช้ confirmInstall แยกต่างหาก — ที่นี่เก็บเฉพาะ attempt ที่ทำไม่สำเร็จ/ต้องเลื่อน
 export type SiteVisitOutcome = 'rescheduled' | 'failed'
@@ -250,6 +270,7 @@ export interface DB {
   auditLogs: AuditLog[]
   notifications: AppNotification[]
   siteVisits: SiteVisit[]
+  unitInstallations: UnitInstallation[]
 }
 
 export interface AppSettings {

@@ -1,7 +1,7 @@
 import type {
   DB, Job, JobStatus, User, AccessoryRequest, Department,
   ApprovalType, ApprovalPayload, BudgetCosts, CostCategoryKey,
-  SiteVisit, SiteVisitOutcome,
+  SiteVisit, SiteVisitOutcome, UnitInstallOutcome,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -920,6 +920,128 @@ export function confirmInstall(
   })
   return audit(next, actor, 'job', p.jobId, 'confirm_install',
     `${job.jobNo} ติดตั้งเสร็จ วันที่จริง ${p.installedDate} (check-in ${p.checkinLat.toFixed(5)},${p.checkinLng.toFixed(5)})${p.note ? ` — ${p.note}` : ''}`)
+}
+
+// ---------------- Install per-unit (เฟส B · sync 0035) ----------------
+// สถานะติดตั้งของแต่ละเครื่อง = แถวล่าสุดใน unitInstallations (ไม่มีแถว = pending)
+export function unitInstallState(db: DB, unitId: string): UnitInstallOutcome | 'pending' {
+  const rows = db.unitInstallations
+    .filter(r => r.unitId === unitId)
+    .sort((a, b) => b.performedAt.localeCompare(a.performedAt))
+  return rows[0]?.outcome ?? 'pending'
+}
+
+// สรุปความคืบหน้าติดตั้งของ Job — ใช้โชว์ "3/5" และคุมเงื่อนไขปิดงาน
+export function jobInstallSummary(db: DB, jobId: string) {
+  const units = db.lbsUnits.filter(u => u.jobId === jobId)
+  let installed = 0, blocked = 0
+  units.forEach(u => {
+    const s = unitInstallState(db, u.id)
+    if (s === 'installed') installed++
+    else if (s === 'blocked') blocked++
+  })
+  const pending = units.length - installed - blocked
+  return {
+    total: units.length, installed, blocked, pending,
+    // ปิดงานได้เมื่อทุกเครื่องได้ข้อสรุปแล้ว และติดตั้งสำเร็จอย่างน้อย 1 เครื่อง
+    canClose: units.length > 0 && pending === 0 && installed > 0,
+  }
+}
+
+function assertUnitOnIssuedJob(db: DB, unitId: string) {
+  const unit = db.lbsUnits.find(u => u.id === unitId)
+  if (!unit) throw new Error('ไม่พบเครื่อง LBS')
+  const job = db.jobs.find(j => j.id === unit.jobId)
+  if (!job) throw new Error('เครื่องนี้ยังไม่ได้ผูกกับ Job')
+  if (job.terminalStatus !== 'issued')
+    throw new Error(`ยืนยันติดตั้งได้เฉพาะงานที่เบิกแล้ว (Issued) — ${job.jobNo} อยู่สถานะอื่น`)
+  return { unit, job }
+}
+
+// ยืนยันติดตั้งรายเครื่อง — บังคับหลักฐานต่อเครื่อง (วันที่ + GPS + รูป)
+// ไม่ยิง notification ต่อเครื่อง (กัน noise) — แจ้งตอนปิดงาน/ติดปัญหาเท่านั้น
+export function confirmUnitInstall(
+  db: DB, actor: User,
+  p: { unitId: string; installedDate: string; checkinLat?: number; checkinLng?: number; photoUrl?: string; note?: string },
+): DB {
+  const { unit, job } = assertUnitOnIssuedJob(db, p.unitId)
+  if (unitInstallState(db, p.unitId) === 'installed')
+    throw new Error(`${unit.serialLvb} ยืนยันติดตั้งไปแล้ว`)
+  if (!p.installedDate) throw new Error('กรุณาระบุวันที่ติดตั้งจริง')
+  if (p.checkinLat === undefined || p.checkinLng === undefined)
+    throw new Error('ต้อง Check-in ตำแหน่งของเครื่องนี้ก่อนยืนยัน')
+  if (!p.photoUrl) throw new Error('ต้องแนบรูปถ่ายของเครื่องนี้ก่อนยืนยัน')
+
+  const next: DB = {
+    ...db,
+    unitInstallations: [...db.unitInstallations, {
+      id: uid(), unitId: p.unitId, jobId: unit.jobId!, outcome: 'installed' as const,
+      installedDate: p.installedDate, checkinLat: p.checkinLat, checkinLng: p.checkinLng,
+      photoUrl: p.photoUrl, note: p.note, performedBy: actor.id, performedAt: now(),
+    }],
+  }
+  const s = jobInstallSummary(next, unit.jobId!)
+  return audit(next, actor, 'lbs_unit', p.unitId, 'confirm_unit_install',
+    `${job.jobNo} ติดตั้ง ${unit.serialLvb}/${unit.serialOm} วันที่ ${p.installedDate} ` +
+    `(check-in ${p.checkinLat.toFixed(5)},${p.checkinLng.toFixed(5)}) — คืบหน้า ${s.installed}/${s.total}`)
+}
+
+// เครื่องติดตั้งไม่ได้ (เครื่องเสีย/จุดติดตั้งไม่พร้อม) — แจ้ง Project ทันทีเพื่อหาทางแก้
+export function blockUnitInstall(db: DB, actor: User, p: { unitId: string; reason: string }): DB {
+  const { unit, job } = assertUnitOnIssuedJob(db, p.unitId)
+  if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผลที่ติดตั้งไม่ได้')
+
+  let next: DB = {
+    ...db,
+    unitInstallations: [...db.unitInstallations, {
+      id: uid(), unitId: p.unitId, jobId: unit.jobId!, outcome: 'blocked' as const,
+      reason: p.reason.trim(), performedBy: actor.id, performedAt: now(),
+    }],
+  }
+  next = notify(next, {
+    type: 'unit_install_blocked', dept: 'project', jobId: unit.jobId!,
+    message: `⚠️ ${job.jobNo} ติดตั้ง ${unit.serialLvb} ไม่ได้: ${p.reason.trim()}`,
+  })
+  return audit(next, actor, 'lbs_unit', p.unitId, 'block_unit_install',
+    `${job.jobNo} ติดตั้ง ${unit.serialLvb}/${unit.serialOm} ไม่ได้ — ${p.reason.trim()}`)
+}
+
+// ปิดงานติดตั้ง (ขั้นตอนแยก ต้องกดยืนยัน) → Job = installed (terminal)
+// วันติดตั้งของ Job = วันล่าสุดที่ติดตั้งสำเร็จ
+export function closeJobInstall(db: DB, actor: User, p: { jobId: string; note?: string }): DB {
+  const job = db.jobs.find(j => j.id === p.jobId)
+  if (!job) throw new Error('ไม่พบ Job')
+  if (job.terminalStatus !== 'issued')
+    throw new Error(`ปิดงานได้เฉพาะงานที่เบิกแล้ว (Issued) — ${job.jobNo} อยู่สถานะอื่น`)
+  const s = jobInstallSummary(db, p.jobId)
+  if (s.total === 0) throw new Error(`${job.jobNo} ไม่มีเครื่องที่เบิกไว้`)
+  if (s.pending > 0)
+    throw new Error(`ยังมี ${s.pending} เครื่องที่ยังไม่ได้ข้อสรุป — ยืนยันติดตั้ง หรือระบุว่าติดตั้งไม่ได้ ให้ครบก่อนปิดงาน`)
+  if (s.installed === 0) throw new Error('ต้องมีเครื่องที่ติดตั้งสำเร็จอย่างน้อย 1 เครื่องจึงปิดงานได้')
+
+  const lastDate = db.unitInstallations
+    .filter(r => r.jobId === p.jobId && r.outcome === 'installed' && r.installedDate)
+    .map(r => r.installedDate!)
+    .sort()
+    .pop()!
+
+  let next: DB = {
+    ...db,
+    jobs: db.jobs.map(j => j.id === p.jobId
+      ? {
+          ...j, terminalStatus: 'installed' as const,
+          installedAt: lastDate, installNote: p.note, installConfirmedBy: actor.id,
+        }
+      : j),
+  }
+  const blockedTxt = s.blocked > 0 ? ` · ติดปัญหา ${s.blocked} เครื่อง` : ''
+  next = notify(next, {
+    type: 'job_installed', dept: 'project', jobId: p.jobId,
+    message: `🏁 ${job.jobNo} ปิดงานติดตั้ง ${s.installed}/${s.total} เครื่อง${blockedTxt} · ${lastDate} · โดย ${actor.fullName}`,
+  })
+  return audit(next, actor, 'job', p.jobId, 'close_job_install',
+    `${job.jobNo} ปิดงานติดตั้ง ${s.installed}/${s.total} เครื่อง${blockedTxt} วันล่าสุด ${lastDate}` +
+    `${p.note ? ` — ${p.note}` : ''}`)
 }
 
 // Service บันทึกออกหน้างานแบบยังไม่จบ: เลื่อนนัด / ติดปัญหา (Job คงสถานะ issued)

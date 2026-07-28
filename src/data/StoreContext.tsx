@@ -80,7 +80,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 const EMPTY_DB: DB = {
   users: [], items: [], projectStocks: [], lbsUnits: [], jobs: [], allocations: [],
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [],
-  auditLogs: [], notifications: [], siteVisits: [],
+  auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
 }
 
 // migrate ข้อมูล demo จาก schema เก่า (v1: issued_installed, ไม่มี qtyReceived/notifications)
@@ -112,6 +112,7 @@ function migrateDb(raw: unknown): DB {
     approvalRequests: d.approvalRequests ?? [],
     notifications: d.notifications ?? [],
     siteVisits: d.siteVisits ?? [],
+    unitInstallations: d.unitInstallations ?? [],
   }
 }
 
@@ -168,6 +169,9 @@ export interface StoreActions {
   issueJob: (p: Parameters<typeof L.issueJob>[2]) => MaybePromise
   confirmInstall: (p: Parameters<typeof L.confirmInstall>[2]) => MaybePromise
   logSiteVisit: (p: Parameters<typeof L.logSiteVisit>[2]) => MaybePromise
+  confirmUnitInstall: (p: Parameters<typeof L.confirmUnitInstall>[2]) => MaybePromise
+  blockUnitInstall: (p: Parameters<typeof L.blockUnitInstall>[2]) => MaybePromise
+  closeJobInstall: (p: Parameters<typeof L.closeJobInstall>[2]) => MaybePromise
   cancelJob: (p: Parameters<typeof L.cancelJob>[2]) => MaybePromise
   requestApproval: (p: Parameters<typeof L.requestApproval>[2]) => MaybePromise
   approveRequest: (p: Parameters<typeof L.approveRequest>[2]) => MaybePromise
@@ -319,6 +323,9 @@ function DemoProvider({ children }: { children: ReactNode }) {
         issueJob: run('master.manage', L.issueJob),
         confirmInstall: run('service.confirm', L.confirmInstall),
         logSiteVisit: run('service.confirm', L.logSiteVisit),
+        confirmUnitInstall: run('service.confirm', L.confirmUnitInstall),
+        blockUnitInstall: run('service.confirm', L.blockUnitInstall),
+        closeJobInstall: run('service.confirm', L.closeJobInstall),
         cancelJob: run('master.manage', L.cancelJob),
         requestApproval: run('job.manage', L.requestApproval),
         approveRequest: run('approval.decide', L.approveRequest),

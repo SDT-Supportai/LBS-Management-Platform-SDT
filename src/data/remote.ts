@@ -2,7 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type {
   DB, User, Item, ProjectStock, LbsUnit, Job, AllocationTxn,
   AccessoryRequest, PurchaseRequisition, PurchaseOrder, AuditLog, AppNotification,
-  Department, ApprovalRequest, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit,
+  Department, ApprovalRequest, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit, UnitInstallation,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -120,6 +120,16 @@ function mapNotif(r: Row, readBy: string[]): AppNotification {
     dept: r.dept, jobId: r.job_id ?? undefined, readBy, lineStatus: r.line_status,
   }
 }
+function mapUnitInstall(r: Row): UnitInstallation {
+  return {
+    id: r.id, unitId: r.unit_id, jobId: r.job_id, outcome: r.outcome,
+    installedDate: r.installed_date ?? undefined, reason: r.reason ?? undefined,
+    checkinLat: r.checkin_lat != null ? Number(r.checkin_lat) : undefined,
+    checkinLng: r.checkin_lng != null ? Number(r.checkin_lng) : undefined,
+    photoUrl: r.photo_url ?? undefined, note: r.note ?? undefined,
+    performedBy: r.performed_by ?? '', performedAt: r.performed_at,
+  }
+}
 function mapSiteVisit(r: Row): SiteVisit {
   return {
     id: r.id, jobId: r.job_id, outcome: r.outcome, reason: r.reason ?? '',
@@ -137,7 +147,7 @@ async function q(sb: SupabaseClient, table: string, order?: { col: string; asc?:
 }
 
 export async function loadAll(sb: SupabaseClient): Promise<DB> {
-  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, audits, notifs, reads, visits] =
+  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, audits, notifs, reads, visits, unitInstalls] =
     await Promise.all([
       q(sb, 'profiles'),
       q(sb, 'items', { col: 'code', limit: 10000 }),
@@ -154,6 +164,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       q(sb, 'notifications', { col: 'created_at', asc: true, limit: 300 }),
       q(sb, 'notification_reads'),
       q(sb, 'job_site_visits', { col: 'performed_at' }),
+      q(sb, 'unit_installations', { col: 'performed_at' }),
     ])
 
   const readsByNotif = new Map<string, string[]>()
@@ -185,6 +196,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     auditLogs: audits.map(mapAudit),
     notifications: notifs.map(r => mapNotif(r, readsByNotif.get(r.id) ?? [])),
     siteVisits: visits.map(mapSiteVisit),
+    unitInstallations: unitInstalls.map(mapUnitInstall),
   }
 }
 
@@ -247,6 +259,13 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_confirm_install', { p_job_id: p.jobId, p_installed_date: p.installedDate, p_note: p.note ?? null, p_lat: p.checkinLat ?? null, p_lng: p.checkinLng ?? null, p_photo_url: p.photoUrl ?? null }),
     logSiteVisit: (p: { jobId: string; outcome: 'rescheduled' | 'failed'; reason: string; newStartDate?: string; newEndDate?: string }) =>
       rpc(sb, 'rpc_log_site_visit', { p_job_id: p.jobId, p_outcome: p.outcome, p_reason: p.reason, p_new_start_date: p.newStartDate ?? null, p_new_end_date: p.newEndDate ?? null }),
+    // ยืนยันติดตั้งรายเครื่อง (0035)
+    confirmUnitInstall: (p: { unitId: string; installedDate: string; checkinLat?: number; checkinLng?: number; photoUrl?: string; note?: string }) =>
+      rpc(sb, 'rpc_confirm_unit_install', { p_unit_id: p.unitId, p_installed_date: p.installedDate, p_lat: p.checkinLat ?? null, p_lng: p.checkinLng ?? null, p_photo_url: p.photoUrl ?? null, p_note: p.note ?? null }),
+    blockUnitInstall: (p: { unitId: string; reason: string }) =>
+      rpc(sb, 'rpc_block_unit_install', { p_unit_id: p.unitId, p_reason: p.reason }),
+    closeJobInstall: (p: { jobId: string; note?: string }) =>
+      rpc(sb, 'rpc_close_job_install', { p_job_id: p.jobId, p_note: p.note ?? null }),
     cancelJob: (p: { jobId: string; reason: string; receivedAccessoryToCentral: boolean }) =>
       rpc(sb, 'rpc_cancel_job', { p_job_id: p.jobId, p_reason: p.reason, p_received_to_central: p.receivedAccessoryToCentral }),
     // Division approval flow (0016) — payload camelCase → snake_case ให้ตรง SQL
