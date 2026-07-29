@@ -1,7 +1,7 @@
 import type {
   DB, Job, JobStatus, User, AccessoryRequest, Department,
   ApprovalType, ApprovalPayload, BudgetCosts, CostCategoryKey,
-  SiteVisit, SiteVisitOutcome, UnitInstallOutcome,
+  SiteVisit, SiteVisitOutcome, UnitInstallOutcome, TeamMember, JobAssignment,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -962,7 +962,7 @@ function assertUnitOnIssuedJob(db: DB, unitId: string) {
 // ไม่ยิง notification ต่อเครื่อง (กัน noise) — แจ้งตอนปิดงาน/ติดปัญหาเท่านั้น
 export function confirmUnitInstall(
   db: DB, actor: User,
-  p: { unitId: string; installedDate: string; checkinLat?: number; checkinLng?: number; photoUrl?: string; note?: string },
+  p: { unitId: string; installedDate: string; checkinLat?: number; checkinLng?: number; photoUrl?: string; installedByMemberId?: string; note?: string },
 ): DB {
   const { unit, job } = assertUnitOnIssuedJob(db, p.unitId)
   if (unitInstallState(db, p.unitId) === 'installed')
@@ -971,18 +971,26 @@ export function confirmUnitInstall(
   if (p.checkinLat === undefined || p.checkinLng === undefined)
     throw new Error('ต้อง Check-in ตำแหน่งของเครื่องนี้ก่อนยืนยัน')
   if (!p.photoUrl) throw new Error('ต้องแนบรูปถ่ายของเครื่องนี้ก่อนยืนยัน')
+  // ช่างที่ลงมือติดตั้ง (เฟส C) — ต้องเป็นช่างที่ยัง active
+  const member = p.installedByMemberId
+    ? db.teamMembers.find(m => m.id === p.installedByMemberId)
+    : undefined
+  if (p.installedByMemberId && (!member || !member.isActive))
+    throw new Error('ไม่พบช่างที่เลือก หรือช่างถูกปิดใช้งานแล้ว')
 
   const next: DB = {
     ...db,
     unitInstallations: [...db.unitInstallations, {
       id: uid(), unitId: p.unitId, jobId: unit.jobId!, outcome: 'installed' as const,
       installedDate: p.installedDate, checkinLat: p.checkinLat, checkinLng: p.checkinLng,
-      photoUrl: p.photoUrl, note: p.note, performedBy: actor.id, performedAt: now(),
+      photoUrl: p.photoUrl, installedByMemberId: p.installedByMemberId,
+      note: p.note, performedBy: actor.id, performedAt: now(),
     }],
   }
   const s = jobInstallSummary(next, unit.jobId!)
+  const by = member ? ` · ช่าง ${member.firstName} ${member.lastName}` : ''
   return audit(next, actor, 'lbs_unit', p.unitId, 'confirm_unit_install',
-    `${job.jobNo} ติดตั้ง ${unit.serialLvb}/${unit.serialOm} วันที่ ${p.installedDate} ` +
+    `${job.jobNo} ติดตั้ง ${unit.serialLvb}/${unit.serialOm} วันที่ ${p.installedDate}${by} ` +
     `(check-in ${p.checkinLat.toFixed(5)},${p.checkinLng.toFixed(5)}) — คืบหน้า ${s.installed}/${s.total}`)
 }
 
@@ -1042,6 +1050,148 @@ export function closeJobInstall(db: DB, actor: User, p: { jobId: string; note?: 
   return audit(next, actor, 'job', p.jobId, 'close_job_install',
     `${job.jobNo} ปิดงานติดตั้ง ${s.installed}/${s.total} เครื่อง${blockedTxt} วันล่าสุด ${lastDate}` +
     `${p.note ? ` — ${p.note}` : ''}`)
+}
+
+// ---------------- ทีมช่าง + มอบหมายงาน (เฟส C · sync 0036) ----------------
+export function memberFullName(db: DB, memberId?: string): string {
+  const m = db.teamMembers.find(x => x.id === memberId)
+  return m ? `${m.firstName} ${m.lastName}` : '-'
+}
+
+// ทีมที่ถูกมอบหมายให้ Job (หัวหน้าทีมขึ้นก่อน)
+export function jobTeam(db: DB, jobId: string): { assignment: JobAssignment; member: TeamMember }[] {
+  return db.jobAssignments
+    .filter(a => a.jobId === jobId)
+    .map(a => ({ assignment: a, member: db.teamMembers.find(m => m.id === a.memberId)! }))
+    .filter(x => !!x.member)
+    .sort((a, b) => Number(b.assignment.isLead) - Number(a.assignment.isLead)
+      || a.member.firstName.localeCompare(b.member.firstName))
+}
+
+// คิวงานของช่างรายคน — งานที่เบิกแล้วรอติดตั้ง (เรียงตามวันนัด) + จำนวนงานที่ปิดแล้ว
+// วันนัด derive จาก job (เฟส A เลื่อนนัดแล้วค่านี้ขยับตามเอง — ห้าม copy เก็บไว้)
+export function memberSchedule(db: DB, memberId: string) {
+  const jobIds = db.jobAssignments.filter(a => a.memberId === memberId).map(a => a.jobId)
+  const jobs = db.jobs.filter(j => jobIds.includes(j.id))
+  const active = jobs.filter(j => j.terminalStatus === 'issued')
+    .sort((a, b) => (a.installStartDate ?? '9999').localeCompare(b.installStartDate ?? '9999'))
+  return {
+    active,
+    doneCount: jobs.filter(j => j.terminalStatus === 'installed').length,
+    // จำนวนเครื่องที่ช่างคนนี้ยืนยันติดตั้งเอง (จาก unit_installations)
+    unitsInstalled: db.unitInstallations.filter(r => r.outcome === 'installed' && r.installedByMemberId === memberId).length,
+  }
+}
+
+function assertMemberFields(p: { firstName: string; lastName: string; phone: string; position: string }) {
+  if (!p.firstName.trim() || !p.lastName.trim()) throw new Error('กรุณากรอกชื่อและนามสกุล')
+  if (!p.phone.trim()) throw new Error('กรุณากรอกเบอร์ติดต่อ')
+  if (!p.position.trim()) throw new Error('กรุณากรอกตำแหน่ง')
+}
+
+export function createTeamMember(
+  db: DB, actor: User,
+  p: { firstName: string; lastName: string; phone: string; position: string; userId?: string },
+): DB {
+  assertMemberFields(p)
+  if (p.userId && db.teamMembers.some(m => m.userId === p.userId))
+    throw new Error('บัญชีนี้ถูกผูกกับช่างคนอื่นแล้ว')
+  const id = uid()
+  const next: DB = {
+    ...db,
+    teamMembers: [...db.teamMembers, {
+      id, firstName: p.firstName.trim(), lastName: p.lastName.trim(),
+      phone: p.phone.trim(), position: p.position.trim(), userId: p.userId,
+      isActive: true, createdAt: now(),
+    }],
+  }
+  return audit(next, actor, 'team_member', id, 'create_team_member',
+    `เพิ่มช่าง ${p.firstName.trim()} ${p.lastName.trim()} (${p.position.trim()}) โทร ${p.phone.trim()}`)
+}
+
+export function updateTeamMember(
+  db: DB, actor: User,
+  p: { memberId: string; firstName: string; lastName: string; phone: string; position: string; userId?: string; isActive: boolean },
+): DB {
+  const m = db.teamMembers.find(x => x.id === p.memberId)
+  if (!m) throw new Error('ไม่พบช่างในทะเบียน')
+  assertMemberFields(p)
+  if (p.userId && db.teamMembers.some(x => x.userId === p.userId && x.id !== p.memberId))
+    throw new Error('บัญชีนี้ถูกผูกกับช่างคนอื่นแล้ว')
+  // ปิดใช้งานไม่ได้ถ้ายังมีงานที่เบิกแล้วรอติดตั้งค้างอยู่ (กันคิวงานหาย)
+  if (!p.isActive && m.isActive) {
+    const activeJobs = memberSchedule(db, p.memberId).active
+    if (activeJobs.length > 0)
+      throw new Error(`ปิดใช้งานไม่ได้ — ยังมีงานรอติดตั้ง ${activeJobs.length} งาน (${activeJobs.map(j => j.jobNo).join(', ')}) ให้ย้ายมอบหมายก่อน`)
+  }
+  const next: DB = {
+    ...db,
+    teamMembers: db.teamMembers.map(x => x.id === p.memberId
+      ? {
+          ...x, firstName: p.firstName.trim(), lastName: p.lastName.trim(),
+          phone: p.phone.trim(), position: p.position.trim(), userId: p.userId, isActive: p.isActive,
+        }
+      : x),
+  }
+  return audit(next, actor, 'team_member', p.memberId, 'update_team_member',
+    `แก้ข้อมูลช่าง ${p.firstName.trim()} ${p.lastName.trim()} (${p.position.trim()})${p.isActive ? '' : ' — ปิดใช้งาน'}`)
+}
+
+// ลบได้เฉพาะช่างที่ยังไม่เคยถูกใช้งาน (ไม่มีมอบหมาย/ไม่มีประวัติติดตั้ง) — ที่เหลือใช้ปิดใช้งาน
+export function deleteTeamMember(db: DB, actor: User, p: { memberId: string }): DB {
+  const m = db.teamMembers.find(x => x.id === p.memberId)
+  if (!m) throw new Error('ไม่พบช่างในทะเบียน')
+  if (db.jobAssignments.some(a => a.memberId === p.memberId))
+    throw new Error('ช่างคนนี้เคยถูกมอบหมายงาน ลบไม่ได้ (คงประวัติ) — ใช้ปิดใช้งานแทน')
+  if (db.unitInstallations.some(r => r.installedByMemberId === p.memberId))
+    throw new Error('ช่างคนนี้มีประวัติติดตั้ง ลบไม่ได้ (คงประวัติ) — ใช้ปิดใช้งานแทน')
+  const next: DB = { ...db, teamMembers: db.teamMembers.filter(x => x.id !== p.memberId) }
+  return audit(next, actor, 'team_member', p.memberId, 'delete_team_member',
+    `ลบช่าง ${m.firstName} ${m.lastName} ออกจากทะเบียน`)
+}
+
+// มอบหมายทีมให้ Job — ส่งรายชื่อทั้งชุด (แทนที่ของเดิม) · ส่ง [] = ยกเลิกมอบหมาย
+export function assignJobTeam(
+  db: DB, actor: User,
+  p: { jobId: string; memberIds: string[]; leadMemberId?: string },
+): DB {
+  const job = db.jobs.find(j => j.id === p.jobId)
+  if (!job) throw new Error('ไม่พบ Job')
+  if (job.terminalStatus !== 'issued')
+    throw new Error(`มอบหมายทีมได้เฉพาะงานที่เบิกแล้ว (Issued) — ${job.jobNo} อยู่สถานะอื่น`)
+  const ids = [...new Set(p.memberIds)]
+  const members = ids.map(id => {
+    const m = db.teamMembers.find(x => x.id === id)
+    if (!m) throw new Error('ไม่พบช่างที่เลือกในทะเบียน')
+    if (!m.isActive) throw new Error(`${m.firstName} ${m.lastName} ถูกปิดใช้งาน เลือกไม่ได้`)
+    return m
+  })
+  if (p.leadMemberId && !ids.includes(p.leadMemberId))
+    throw new Error('หัวหน้าทีมต้องเป็นหนึ่งในช่างที่เลือก')
+
+  const ts = now()
+  let next: DB = {
+    ...db,
+    jobAssignments: [
+      ...db.jobAssignments.filter(a => a.jobId !== p.jobId),
+      ...ids.map(id => ({
+        id: uid(), jobId: p.jobId, memberId: id,
+        isLead: id === p.leadMemberId, assignedBy: actor.id, assignedAt: ts,
+      })),
+    ],
+  }
+  const lead = members.find(m => m.id === p.leadMemberId)
+  const detail = ids.length === 0
+    ? `ยกเลิกมอบหมายทีมของ ${job.jobNo}`
+    : `มอบหมาย ${job.jobNo} ให้ ${members.map(m => `${m.firstName} ${m.lastName}`).join(', ')}` +
+      `${lead ? ` (หัวหน้าทีม: ${lead.firstName} ${lead.lastName})` : ''}`
+  next = notify(next, {
+    type: ids.length === 0 ? 'team_unassigned' : 'team_assigned', dept: 'service', jobId: p.jobId,
+    message: ids.length === 0
+      ? `👷 ยกเลิกมอบหมายทีม ${job.jobNo}`
+      : `👷 ${job.jobNo} มอบหมาย ${ids.length} คน${lead ? ` · หัวหน้าทีม ${lead.firstName} ${lead.lastName}` : ''}`,
+  })
+  return audit(next, actor, 'job', p.jobId, 'assign_job_team', detail)
 }
 
 // Service บันทึกออกหน้างานแบบยังไม่จบ: เลื่อนนัด / ติดปัญหา (Job คงสถานะ issued)

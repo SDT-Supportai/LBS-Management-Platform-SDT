@@ -10,6 +10,7 @@ import JobsPage from './pages/JobsPage'
 import JobDetailPage from './pages/JobDetailPage'
 import PurchasingPage from './pages/PurchasingPage'
 import ServicePage from './pages/ServicePage'
+import ServiceSchedulingPage from './pages/ServiceSchedulingPage'
 import AuditPage from './pages/AuditPage'
 import NotificationsPage from './pages/NotificationsPage'
 import MasterDataPage from './pages/MasterDataPage'
@@ -33,6 +34,9 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const readyJobs = db.jobs.filter(j => deriveJobStatus(db, j) === 'ready_to_issue').length
   const awaitingInstall = db.jobs.filter(j => j.terminalStatus === 'issued').length
   const pendingApprovals = db.approvalRequests.filter(r => r.status === 'pending').length
+  // งานที่เบิกแล้วแต่ยังไม่มอบหมายทีม (เฟส C)
+  const unassignedJobs = db.jobs.filter(j =>
+    j.terminalStatus === 'issued' && !db.jobAssignments.some(a => a.jobId === j.id)).length
 
   const MENU: { to: string; icon: string; label: string; badge?: { text: string; cls: string } }[] = [
     { to: '/dashboard', icon: '📊', label: 'Dashboard' },
@@ -40,6 +44,7 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
     { to: '/jobs', icon: '🗂️', label: 'Project ID (Jobs)', badge: readyJobs > 0 ? { text: `${readyJobs} พร้อมเบิก`, cls: 'green' } : undefined },
     { to: '/purchasing', icon: '🛒', label: 'Purchasing (PR/PO)', badge: (pendingPrs + openPos) > 0 ? { text: `${pendingPrs + openPos}`, cls: 'amber' } : undefined },
     { to: '/service', icon: '🔧', label: 'Service (Installation)', badge: awaitingInstall > 0 ? { text: `${awaitingInstall} รอติดตั้ง`, cls: 'blue' } : undefined },
+    { to: '/scheduling', icon: '👷', label: 'Service & Scheduling', badge: unassignedJobs > 0 ? { text: `${unassignedJobs} ยังไม่มอบหมาย`, cls: 'amber' } : undefined },
     { to: '/master', icon: '🗄️', label: 'Material Database' },
     // Awaiting Approval ย้ายมาอยู่ล่าง Material Database (มติ 2026-07-19)
     { to: '/approvals', icon: '✅', label: 'Awaiting Approval', badge: pendingApprovals > 0 ? { text: `${pendingApprovals}`, cls: 'amber' } : undefined },
@@ -196,6 +201,7 @@ export default function App() {
               <Route path="/jobs/:jobId" element={<JobDetailPage />} />
               <Route path="/purchasing" element={<PurchasingPage />} />
               <Route path="/service" element={<ServicePage />} />
+              <Route path="/scheduling" element={<ServiceSchedulingPage />} />
               <Route path="/approvals" element={<ApprovalsPage />} />
               <Route path="/notifications" element={<NotificationsPage />} />
               <Route path="/master" element={<MasterDataPage />} />

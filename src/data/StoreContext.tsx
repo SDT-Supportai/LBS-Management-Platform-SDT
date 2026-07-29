@@ -81,6 +81,7 @@ const EMPTY_DB: DB = {
   users: [], items: [], projectStocks: [], lbsUnits: [], jobs: [], allocations: [],
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [],
   auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
+  teamMembers: [], jobAssignments: [],
 }
 
 // migrate ข้อมูล demo จาก schema เก่า (v1: issued_installed, ไม่มี qtyReceived/notifications)
@@ -113,6 +114,8 @@ function migrateDb(raw: unknown): DB {
     notifications: d.notifications ?? [],
     siteVisits: d.siteVisits ?? [],
     unitInstallations: d.unitInstallations ?? [],
+    teamMembers: d.teamMembers ?? [],
+    jobAssignments: d.jobAssignments ?? [],
   }
 }
 
@@ -172,6 +175,10 @@ export interface StoreActions {
   confirmUnitInstall: (p: Parameters<typeof L.confirmUnitInstall>[2]) => MaybePromise
   blockUnitInstall: (p: Parameters<typeof L.blockUnitInstall>[2]) => MaybePromise
   closeJobInstall: (p: Parameters<typeof L.closeJobInstall>[2]) => MaybePromise
+  createTeamMember: (p: Parameters<typeof L.createTeamMember>[2]) => MaybePromise
+  updateTeamMember: (p: Parameters<typeof L.updateTeamMember>[2]) => MaybePromise
+  deleteTeamMember: (p: Parameters<typeof L.deleteTeamMember>[2]) => MaybePromise
+  assignJobTeam: (p: Parameters<typeof L.assignJobTeam>[2]) => MaybePromise
   cancelJob: (p: Parameters<typeof L.cancelJob>[2]) => MaybePromise
   requestApproval: (p: Parameters<typeof L.requestApproval>[2]) => MaybePromise
   approveRequest: (p: Parameters<typeof L.approveRequest>[2]) => MaybePromise
@@ -326,6 +333,11 @@ function DemoProvider({ children }: { children: ReactNode }) {
         confirmUnitInstall: run('service.confirm', L.confirmUnitInstall),
         blockUnitInstall: run('service.confirm', L.blockUnitInstall),
         closeJobInstall: run('service.confirm', L.closeJobInstall),
+        // ทะเบียนทีมช่าง + มอบหมายงาน = ทรัพยากรของ Service เอง (Service + Manage)
+        createTeamMember: run('service.confirm', L.createTeamMember),
+        updateTeamMember: run('service.confirm', L.updateTeamMember),
+        deleteTeamMember: run('service.confirm', L.deleteTeamMember),
+        assignJobTeam: run('service.confirm', L.assignJobTeam),
         cancelJob: run('master.manage', L.cancelJob),
         requestApproval: run('job.manage', L.requestApproval),
         approveRequest: run('approval.decide', L.approveRequest),

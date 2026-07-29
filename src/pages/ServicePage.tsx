@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { deriveJobStatus, jobInstallSummary, unitInstallState } from '../data/logic'
+import { deriveJobStatus, jobInstallSummary, unitInstallState, jobTeam, memberFullName } from '../data/logic'
 import { Modal, useToast, useTryAction } from '../ui/components'
 import { fmtDate, fmtDateTime } from '../ui/format'
 import { supabase } from '../lib/supabase'
@@ -34,6 +34,11 @@ export default function ServicePage() {
   // ปิดงานติดตั้ง
   const [closeFor, setCloseFor] = useState<string | null>(null)
   const [closeNote, setCloseNote] = useState('')
+  // มอบหมายทีม (เฟส C)
+  const [assignFor, setAssignFor] = useState<string | null>(null)
+  const [assignIds, setAssignIds] = useState<string[]>([])
+  const [assignLead, setAssignLead] = useState('')
+  const [installerId, setInstallerId] = useState('')   // ช่างที่ลงมือติดตั้งเครื่องนี้
   // เลื่อน/ติดปัญหาหน้างาน (เฟส A)
   const [visitFor, setVisitFor] = useState<string | null>(null)
   const [visitOutcome, setVisitOutcome] = useState<'rescheduled' | 'failed'>('rescheduled')
@@ -64,7 +69,14 @@ export default function ServicePage() {
   const unitJob = unitJobId ? db.jobs.find(j => j.id === unitJobId) : null
   const stepUnit = step ? db.lbsUnits.find(u => u.id === step.unitId) : null
   const closeJob = closeFor ? db.jobs.find(j => j.id === closeFor) : null
+  const assignJob = assignFor ? db.jobs.find(j => j.id === assignFor) : null
   const visitJob = visitFor ? db.jobs.find(j => j.id === visitFor) : null
+  const activeMembers = db.teamMembers.filter(m => m.isActive)
+  // ตัวเลือกช่างในฟอร์มยืนยัน: ทีมที่มอบหมายไว้ก่อน (ถ้ายังไม่มอบหมาย = ช่างที่ใช้งานทั้งหมด)
+  const installerOptions = (jobId: string) => {
+    const team = jobTeam(db, jobId).map(t => t.member).filter(m => m.isActive)
+    return team.length > 0 ? team : activeMembers
+  }
   // ประวัติออกหน้างานล่าสุดต่อ Job (ใหม่สุด)
   const lastVisit = (jobId: string) =>
     db.siteVisits.filter(v => v.jobId === jobId).sort((a, b) => b.performedAt.localeCompare(a.performedAt))[0]
@@ -100,7 +112,29 @@ export default function ServicePage() {
   const openUnitConfirm = (unitId: string) => {
     setInstalledDate(new Date().toISOString().slice(0, 10))
     setNote(''); setCoords(null); setPhoto(null)
+    // default = หัวหน้าทีมของงานนี้ (ถ้ามี) — แก้ได้
+    const lead = unitJobId ? jobTeam(db, unitJobId).find(t => t.assignment.isLead) : undefined
+    setInstallerId(lead?.member.id ?? '')
     setStep({ unitId, mode: 'confirm' })
+  }
+
+  const openAssign = (jobId: string) => {
+    const team = jobTeam(db, jobId)
+    setAssignIds(team.map(t => t.member.id))
+    setAssignLead(team.find(t => t.assignment.isLead)?.member.id ?? '')
+    setAssignFor(jobId)
+  }
+  const toggleAssign = (id: string) => setAssignIds(prev => {
+    const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    if (!next.includes(assignLead)) setAssignLead('')
+    return next
+  })
+  const submitAssign = async () => {
+    if (!assignFor) return
+    const ok = await tryAction(
+      () => act.assignJobTeam({ jobId: assignFor, memberIds: assignIds, leadMemberId: assignLead || undefined }),
+      assignIds.length === 0 ? 'ยกเลิกมอบหมายทีมแล้ว' : `มอบหมายทีม ${assignIds.length} คนแล้ว`)
+    if (ok) setAssignFor(null)
   }
   const openUnitBlock = (unitId: string) => { setBlockReason(''); setStep({ unitId, mode: 'block' }) }
   const backToList = () => { setStep(null); setCoords(null); setPhoto(null) }
@@ -114,6 +148,7 @@ export default function ServicePage() {
         () => act.confirmUnitInstall({
           unitId: step.unitId, installedDate, note,
           checkinLat: coords.lat, checkinLng: coords.lng, photoUrl,
+          installedByMemberId: installerId || undefined,
         }),
         `ยืนยันติดตั้ง ${stepUnit?.serialLvb ?? ''} แล้ว`)
       if (ok) backToList()
@@ -202,7 +237,14 @@ export default function ServicePage() {
                         <div className="muted" style={{ color: v.outcome === 'failed' ? 'var(--danger)' : undefined }}>
                           {v.outcome === 'rescheduled' ? '⏰ เลื่อนนัดแล้ว' : '⚠️ ติดปัญหา'}: {v.reason}
                         </div>
-                      )})()}</td>
+                      )})()}
+                      {(() => {
+                        const team = jobTeam(db, j.id)
+                        return team.length === 0
+                          ? <div className="muted" style={{ color: 'var(--danger)' }}>👷 ยังไม่มอบหมายทีม</div>
+                          : <div className="muted">👷 {team.map(t =>
+                              `${t.member.firstName} ${t.member.lastName}${t.assignment.isLead ? ' (หัวหน้า)' : ''}`).join(', ')}</div>
+                      })()}</td>
                     <td>
                       <div>LBS {unitsOf(j.id).length} เครื่อง <span className="muted mono">({unitsOf(j.id).map(u => u.serialLvb).join(', ')})</span></div>
                       {accOf(j.id).map(r => {
@@ -220,6 +262,10 @@ export default function ServicePage() {
                     <td style={{ whiteSpace: 'nowrap' }}>
                       {canConfirm && (
                         <>
+                          <button className="small" style={{ marginRight: 6 }}
+                            onClick={() => openAssign(j.id)}>
+                            👷 มอบหมายทีม
+                          </button>
                           <button className="small" style={{ marginRight: 6 }}
                             onClick={() => { setStep(null); setUnitJobId(j.id) }}>
                             🔧 ยืนยันรายเครื่อง
@@ -276,6 +322,7 @@ export default function ServicePage() {
                                 📍 {r.checkinLat.toFixed(5)}, {r.checkinLng.toFixed(5)}
                               </a>
                             )}
+                            {r.installedByMemberId && <> · 👷 {memberFullName(db, r.installedByMemberId)}</>}
                           </div>
                         )
                       })}
@@ -382,9 +429,70 @@ export default function ServicePage() {
           </label>
           {photo && <img src={photo.preview} alt="preview" style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 8, marginBottom: 12, display: 'block' }} />}
 
-          <label className="field"><span>บันทึกของเครื่องนี้ (ทีม/ผลการทดสอบ ฯลฯ)</span>
-            <textarea rows={2} value={note} onChange={e => setNote(e.target.value)} placeholder="ทีม A ติดตั้ง + test energize ผ่าน" />
+          <label className="field"><span>ช่างที่ติดตั้งเครื่องนี้</span>
+            <select value={installerId} onChange={e => setInstallerId(e.target.value)}>
+              <option value="">— ไม่ระบุ —</option>
+              {installerOptions(unitJob.id).map(m => (
+                <option key={m.id} value={m.id}>{m.firstName} {m.lastName} · {m.position}</option>
+              ))}
+            </select>
           </label>
+          {activeMembers.length === 0 && (
+            <div className="muted" style={{ marginBottom: 12 }}>
+              ยังไม่มีช่างในทะเบียน — เพิ่มได้ที่หน้า Service &amp; Scheduling
+            </div>
+          )}
+
+          <label className="field"><span>บันทึกของเครื่องนี้ (ผลการทดสอบ ฯลฯ)</span>
+            <textarea rows={2} value={note} onChange={e => setNote(e.target.value)} placeholder="test energize ผ่าน" />
+          </label>
+        </Modal>
+      )}
+
+      {/* มอบหมายทีมให้งาน (เฟส C) */}
+      {assignJob && (
+        <Modal title={`มอบหมายทีม — ${assignJob.jobNo}`} onClose={() => setAssignFor(null)}
+          footer={<>
+            <button onClick={() => setAssignFor(null)}>ยกเลิก</button>
+            <button className="success" onClick={submitAssign}>
+              {assignIds.length === 0 ? 'ยกเลิกมอบหมายทั้งหมด' : `บันทึก (${assignIds.length} คน)`}
+            </button>
+          </>}>
+          <p className="muted" style={{ marginBottom: 12 }}>
+            {assignJob.customerName} · 📍 {assignJob.issueLocation || assignJob.installLocation || '-'}
+            {assignJob.installStartDate && <> · 📅 {fmtDate(assignJob.installStartDate)} – {fmtDate(assignJob.installEndDate)}</>}
+          </p>
+          {activeMembers.length === 0 ? (
+            <div className="empty">ยังไม่มีช่างในทะเบียน — เพิ่มที่หน้า Service &amp; Scheduling ก่อน</div>
+          ) : (
+            <>
+              <div className="table-scroll">
+                <table>
+                  <thead><tr><th>เลือก</th><th>ชื่อ - สกุล</th><th>ตำแหน่ง / เบอร์</th><th>หัวหน้าทีม</th></tr></thead>
+                  <tbody>
+                    {activeMembers.map(m => (
+                      <tr key={m.id}>
+                        <td>
+                          <input type="checkbox" checked={assignIds.includes(m.id)}
+                            onChange={() => toggleAssign(m.id)} />
+                        </td>
+                        <td><b>{m.firstName} {m.lastName}</b></td>
+                        <td className="muted">{m.position} · <span className="mono">{m.phone}</span></td>
+                        <td>
+                          <input type="radio" name="lead" checked={assignLead === m.id}
+                            disabled={!assignIds.includes(m.id)}
+                            onChange={() => setAssignLead(m.id)} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="muted" style={{ marginTop: 10 }}>
+                มอบหมายเป็น <b>แผนงาน</b> — ไม่ได้จำกัดสิทธิ์การยืนยันติดตั้ง (ผู้บันทึกในระบบยังเป็นบัญชีที่ login)
+              </p>
+            </>
+          )}
         </Modal>
       )}
 

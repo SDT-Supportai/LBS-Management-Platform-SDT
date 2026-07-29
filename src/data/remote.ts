@@ -3,6 +3,7 @@ import type {
   DB, User, Item, ProjectStock, LbsUnit, Job, AllocationTxn,
   AccessoryRequest, PurchaseRequisition, PurchaseOrder, AuditLog, AppNotification,
   Department, ApprovalRequest, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit, UnitInstallation,
+  TeamMember, JobAssignment,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -126,8 +127,23 @@ function mapUnitInstall(r: Row): UnitInstallation {
     installedDate: r.installed_date ?? undefined, reason: r.reason ?? undefined,
     checkinLat: r.checkin_lat != null ? Number(r.checkin_lat) : undefined,
     checkinLng: r.checkin_lng != null ? Number(r.checkin_lng) : undefined,
-    photoUrl: r.photo_url ?? undefined, note: r.note ?? undefined,
+    photoUrl: r.photo_url ?? undefined,
+    installedByMemberId: r.installed_by_member_id ?? undefined,
+    note: r.note ?? undefined,
     performedBy: r.performed_by ?? '', performedAt: r.performed_at,
+  }
+}
+function mapTeamMember(r: Row): TeamMember {
+  return {
+    id: r.id, firstName: r.first_name, lastName: r.last_name, phone: r.phone ?? '',
+    position: r.position ?? '', userId: r.user_id ?? undefined,
+    isActive: r.is_active !== false, createdAt: r.created_at,
+  }
+}
+function mapJobAssignment(r: Row): JobAssignment {
+  return {
+    id: r.id, jobId: r.job_id, memberId: r.member_id, isLead: r.is_lead === true,
+    assignedBy: r.assigned_by ?? '', assignedAt: r.assigned_at,
   }
 }
 function mapSiteVisit(r: Row): SiteVisit {
@@ -147,7 +163,7 @@ async function q(sb: SupabaseClient, table: string, order?: { col: string; asc?:
 }
 
 export async function loadAll(sb: SupabaseClient): Promise<DB> {
-  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, audits, notifs, reads, visits, unitInstalls] =
+  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, audits, notifs, reads, visits, unitInstalls, members, assigns] =
     await Promise.all([
       q(sb, 'profiles'),
       q(sb, 'items', { col: 'code', limit: 10000 }),
@@ -165,6 +181,8 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       q(sb, 'notification_reads'),
       q(sb, 'job_site_visits', { col: 'performed_at' }),
       q(sb, 'unit_installations', { col: 'performed_at' }),
+      q(sb, 'team_members', { col: 'created_at' }),
+      q(sb, 'job_assignments', { col: 'assigned_at' }),
     ])
 
   const readsByNotif = new Map<string, string[]>()
@@ -197,6 +215,8 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     notifications: notifs.map(r => mapNotif(r, readsByNotif.get(r.id) ?? [])),
     siteVisits: visits.map(mapSiteVisit),
     unitInstallations: unitInstalls.map(mapUnitInstall),
+    teamMembers: members.map(mapTeamMember),
+    jobAssignments: assigns.map(mapJobAssignment),
   }
 }
 
@@ -260,12 +280,21 @@ export function remoteActions(sb: SupabaseClient) {
     logSiteVisit: (p: { jobId: string; outcome: 'rescheduled' | 'failed'; reason: string; newStartDate?: string; newEndDate?: string }) =>
       rpc(sb, 'rpc_log_site_visit', { p_job_id: p.jobId, p_outcome: p.outcome, p_reason: p.reason, p_new_start_date: p.newStartDate ?? null, p_new_end_date: p.newEndDate ?? null }),
     // ยืนยันติดตั้งรายเครื่อง (0035)
-    confirmUnitInstall: (p: { unitId: string; installedDate: string; checkinLat?: number; checkinLng?: number; photoUrl?: string; note?: string }) =>
-      rpc(sb, 'rpc_confirm_unit_install', { p_unit_id: p.unitId, p_installed_date: p.installedDate, p_lat: p.checkinLat ?? null, p_lng: p.checkinLng ?? null, p_photo_url: p.photoUrl ?? null, p_note: p.note ?? null }),
+    confirmUnitInstall: (p: { unitId: string; installedDate: string; checkinLat?: number; checkinLng?: number; photoUrl?: string; installedByMemberId?: string; note?: string }) =>
+      rpc(sb, 'rpc_confirm_unit_install', { p_unit_id: p.unitId, p_installed_date: p.installedDate, p_lat: p.checkinLat ?? null, p_lng: p.checkinLng ?? null, p_photo_url: p.photoUrl ?? null, p_member_id: p.installedByMemberId ?? null, p_note: p.note ?? null }),
     blockUnitInstall: (p: { unitId: string; reason: string }) =>
       rpc(sb, 'rpc_block_unit_install', { p_unit_id: p.unitId, p_reason: p.reason }),
     closeJobInstall: (p: { jobId: string; note?: string }) =>
       rpc(sb, 'rpc_close_job_install', { p_job_id: p.jobId, p_note: p.note ?? null }),
+    // ทีมช่าง + มอบหมายงาน (0036)
+    createTeamMember: (p: { firstName: string; lastName: string; phone: string; position: string; userId?: string }) =>
+      rpc(sb, 'rpc_create_team_member', { p_first_name: p.firstName, p_last_name: p.lastName, p_phone: p.phone, p_position: p.position, p_user_id: p.userId ?? null }),
+    updateTeamMember: (p: { memberId: string; firstName: string; lastName: string; phone: string; position: string; userId?: string; isActive: boolean }) =>
+      rpc(sb, 'rpc_update_team_member', { p_member_id: p.memberId, p_first_name: p.firstName, p_last_name: p.lastName, p_phone: p.phone, p_position: p.position, p_user_id: p.userId ?? null, p_is_active: p.isActive }),
+    deleteTeamMember: (p: { memberId: string }) =>
+      rpc(sb, 'rpc_delete_team_member', { p_member_id: p.memberId }),
+    assignJobTeam: (p: { jobId: string; memberIds: string[]; leadMemberId?: string }) =>
+      rpc(sb, 'rpc_assign_job_team', { p_job_id: p.jobId, p_member_ids: p.memberIds, p_lead_member_id: p.leadMemberId ?? null }),
     cancelJob: (p: { jobId: string; reason: string; receivedAccessoryToCentral: boolean }) =>
       rpc(sb, 'rpc_cancel_job', { p_job_id: p.jobId, p_reason: p.reason, p_received_to_central: p.receivedAccessoryToCentral }),
     // Division approval flow (0016) — payload camelCase → snake_case ให้ตรง SQL

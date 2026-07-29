@@ -221,6 +221,31 @@ export interface AppNotification {
   lineStatus: LineStatus                // สถานะส่งเข้า LINE group
 }
 
+// ทะเบียนทีมช่างติดตั้ง — เฟส C
+// แยกจาก User เพราะ profiles.id อ้าง auth.users (ต้องมีบัญชี login) และไม่มีฟิลด์เบอร์/ตำแหน่ง
+// ช่างภาคสนาม/outsource จึงใส่เป็น user ไม่ได้ · userId ผูกบัญชีให้คนที่มี login (optional)
+export interface TeamMember {
+  id: string
+  firstName: string
+  lastName: string
+  phone: string
+  position: string             // free text — หัวหน้าช่าง / ช่างไฟฟ้า / ผู้ช่วยช่าง ฯลฯ
+  userId?: string              // ผูกกับบัญชีในระบบ (ถ้าช่างคนนั้นมี login)
+  isActive: boolean
+  createdAt: string
+}
+
+// มอบหมายทีมให้ Job (หลายคนต่องาน · 1 คนเป็นหัวหน้าทีม)
+// เป็น "แผนงาน" ไม่ใช่ "สิทธิ์" — ไม่บล็อกการยืนยันติดตั้ง (RPC ตรวจสิทธิ์จากแผนกตามเดิม)
+export interface JobAssignment {
+  id: string
+  jobId: string
+  memberId: string
+  isLead: boolean
+  assignedBy: string
+  assignedAt: string
+}
+
 // ยืนยันติดตั้ง "รายเครื่อง" (per LBS serial) — เฟส B
 // เก็บเป็น log (หลายแถวต่อเครื่องได้) → สถานะปัจจุบันของเครื่อง = แถวล่าสุด
 // ทำให้ blocked → ยืนยันใหม่ได้ และเก็บประวัติครบ
@@ -236,6 +261,7 @@ export interface UnitInstallation {
   checkinLat?: number          // installed: บังคับ (หลักฐานต่อเครื่อง)
   checkinLng?: number
   photoUrl?: string            // installed: บังคับ
+  installedByMemberId?: string // ช่างที่ลงมือติดตั้งเครื่องนี้ (เฟส C) — แยกจาก performedBy ที่เป็น user ผู้บันทึก
   note?: string
   performedBy: string
   performedAt: string
@@ -271,6 +297,8 @@ export interface DB {
   notifications: AppNotification[]
   siteVisits: SiteVisit[]
   unitInstallations: UnitInstallation[]
+  teamMembers: TeamMember[]
+  jobAssignments: JobAssignment[]
 }
 
 export interface AppSettings {
