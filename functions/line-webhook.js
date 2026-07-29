@@ -77,11 +77,35 @@ async function jobStatusText(env, jobNoRaw) {
   const { data: st } = await sb.from('v_job_status').select('*').eq('job_id', job.id).maybeSingle()
   const status = st?.status ?? 'draft'
 
+  // ข้อมูลรายเครื่อง + ทีมที่มอบหมาย (0035/0036)
+  const [{ data: units }, { data: states }, { data: assigns }] = await Promise.all([
+    sb.from('lbs_units').select('id').eq('job_id', job.id),
+    sb.from('v_unit_install_state').select('outcome').eq('job_id', job.id),
+    sb.from('job_assignments').select('is_lead, team_members(first_name, last_name)').eq('job_id', job.id),
+  ])
+  // นับจาก job_id ตรง ๆ — หลังเบิก unit เปลี่ยนเป็น status 'issued' ทำให้ v_job_status.lbs_allocated เป็น 0
+  const attached = units?.length ?? 0
+  const installedCnt = (states ?? []).filter(s => s.outcome === 'installed').length
+  const blockedCnt = (states ?? []).filter(s => s.outcome === 'blocked').length
+
   const lines = [
     `📋 ${job.job_no} — ${job.customer_name}`,
     `สถานะ: ${STATUS_TH[status] ?? status}`,
-    `LBS: ${st?.lbs_allocated ?? 0}/${job.lbs_qty_required} เครื่อง`,
+    `LBS: ${attached}/${job.lbs_qty_required} เครื่อง`,
   ]
+  if (status === 'issued' || status === 'installed') {
+    lines.push(`🔧 ติดตั้งแล้ว ${installedCnt}/${attached} เครื่อง` +
+      (blockedCnt > 0 ? ` · ติดตั้งไม่ได้ ${blockedCnt}` : ''))
+    if (assigns?.length) {
+      const lead = assigns.find(a => a.is_lead)?.team_members
+      const leadName = lead ? `${lead.first_name} ${lead.last_name}` : null
+      const others = assigns.length - (leadName ? 1 : 0)
+      lines.push(`👷 ทีม: ${leadName ?? `${assigns.length} คน`}` +
+        (leadName && others > 0 ? ` (+${others} คน)` : ''))
+    } else if (status === 'issued') {
+      lines.push('👷 ทีม: ยังไม่มอบหมาย')
+    }
+  }
   if (job.scope) lines.push(`Scope: ${job.scope}`)
   if (status === 'issued' && job.install_start_date) {
     const range = job.install_start_date === job.install_end_date

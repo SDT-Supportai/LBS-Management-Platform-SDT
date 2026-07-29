@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary } from '../data/logic'
+import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName } from '../data/logic'
 import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
 import { ACC_STATUS_LABEL, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import type { LbsUnit, CostCategoryKey } from '../types'
@@ -170,25 +170,120 @@ export default function JobDetailPage() {
         </div>
       )}
 
-      {job.terminalStatus === 'issued' && (
-        <div className="panel"><div className="panel-body">
-          <b>เบิกให้ Service แล้ว — รอติดตั้ง</b> เบิกเมื่อ {fmtDateTime(job.issuedAt)} — {job.issuedNote || 'ไม่มีบันทึกเพิ่มเติม'}
-          {job.installStartDate && (
-            <div>📅 นัดติดตั้ง <b>{fmtDate(job.installStartDate)} – {fmtDate(job.installEndDate)}</b> ที่ <b>{job.issueLocation || job.installLocation || '-'}</b></div>
-          )}
-          <div className="muted">Job ถูกล็อก แก้ไข allocation หรือคืนของไม่ได้อีก · Service จะกดยืนยันเมื่อติดตั้งเสร็จ</div>
-        </div></div>
-      )}
-      {job.terminalStatus === 'installed' && (
-        <div className="panel"><div className="panel-body">
-          <b style={{ color: 'var(--green)' }}>ติดตั้งเสร็จแล้ว</b> วันที่จริง {fmtDate(job.installedAt)} ยืนยันโดย {userOf(job.installConfirmedBy ?? '')}
-          {job.installNote && <> — {job.installNote}</>}
-          <div className="muted">
-            เบิกเมื่อ {fmtDateTime(job.issuedAt)}
-            {job.installStartDate && <> · นัดติดตั้ง {fmtDate(job.installStartDate)} – {fmtDate(job.installEndDate)} ที่ {job.issueLocation || '-'}</>}
-            {job.issuedNote && <> · {job.issuedNote}</>}
+      {job.terminalStatus === 'issued' && (() => {
+        const s = jobInstallSummary(db, job.id)
+        const team = jobTeam(db, job.id)
+        return (
+          <div className="panel"><div className="panel-body">
+            <b>เบิกให้ Service แล้ว — รอติดตั้ง</b> เบิกเมื่อ {fmtDateTime(job.issuedAt)} — {job.issuedNote || 'ไม่มีบันทึกเพิ่มเติม'}
+            {job.installStartDate && (
+              <div>📅 นัดติดตั้ง <b>{fmtDate(job.installStartDate)} – {fmtDate(job.installEndDate)}</b> ที่ <b>{job.issueLocation || job.installLocation || '-'}</b></div>
+            )}
+            <div style={{ marginTop: 6 }}>
+              🔧 ติดตั้งแล้ว{' '}
+              <span className={`badge ${s.canClose ? 'green' : s.installed > 0 ? 'blue' : 'neutral'}`}>{s.installed}/{s.total} เครื่อง</span>
+              {s.blocked > 0 && <> <span className="badge red">ติดตั้งไม่ได้ {s.blocked}</span></>}
+            </div>
+            <div style={{ marginTop: 4 }}>
+              👷 {team.length === 0
+                ? <span style={{ color: 'var(--danger)' }}>ยังไม่มอบหมายทีม</span>
+                : team.map(t => `${t.member.firstName} ${t.member.lastName}${t.assignment.isLead ? ' (หัวหน้า)' : ''} · ${t.member.phone}`).join(' | ')}
+            </div>
+            <div className="muted">Job ถูกล็อก แก้ไข allocation หรือคืนของไม่ได้อีก · Service ยืนยันรายเครื่องแล้วกดปิดงาน — <Link to="/service">ไปหน้า Service →</Link></div>
+          </div></div>
+        )
+      })()}
+      {job.terminalStatus === 'installed' && (() => {
+        const s = jobInstallSummary(db, job.id)
+        return (
+          <div className="panel"><div className="panel-body">
+            <b style={{ color: 'var(--green)' }}>ติดตั้งเสร็จแล้ว</b> วันที่จริง {fmtDate(job.installedAt)} ยืนยันโดย {userOf(job.installConfirmedBy ?? '')}
+            {job.installNote && <> — {job.installNote}</>}
+            <div style={{ marginTop: 6 }}>
+              🔧 ติดตั้ง <span className="badge green">{s.installed}/{s.total} เครื่อง</span>
+              {s.blocked > 0 && <> <span className="badge red">ติดตั้งไม่ได้ {s.blocked}</span></>}
+            </div>
+            <div className="muted">
+              เบิกเมื่อ {fmtDateTime(job.issuedAt)}
+              {job.installStartDate && <> · นัดติดตั้ง {fmtDate(job.installStartDate)} – {fmtDate(job.installEndDate)} ที่ {job.issueLocation || '-'}</>}
+              {job.issuedNote && <> · {job.issuedNote}</>}
+            </div>
+          </div></div>
+        )
+      })()}
+
+      {/* ติดตั้งรายเครื่อง (เฟส B/C) — เห็นได้จากหน้า Job ไม่ต้องข้ามไปหน้า Service */}
+      {(job.terminalStatus === 'issued' || job.terminalStatus === 'installed') && allocatedUnits.length > 0 && (
+        <div className="panel">
+          <div className="panel-head"><h3>การติดตั้งรายเครื่อง</h3></div>
+          <div className="table-scroll">
+            <table>
+              <thead><tr><th>Serial (LVB / OM)</th><th>สถานะ</th><th>ช่างที่ติดตั้ง</th><th>หลักฐาน</th></tr></thead>
+              <tbody>
+                {allocatedUnits.map(u => {
+                  const st = unitInstallState(db, u.id)
+                  const r = db.unitInstallations.filter(x => x.unitId === u.id)
+                    .sort((a, b) => b.performedAt.localeCompare(a.performedAt))[0]
+                  return (
+                    <tr key={u.id}>
+                      <td className="mono">{u.serialLvb}<div className="muted mono">{u.serialOm}</div></td>
+                      <td>
+                        {st === 'installed' && <span className="badge green">✅ ติดตั้งแล้ว {fmtDate(r?.installedDate)}</span>}
+                        {st === 'blocked' && <><span className="badge red">⚠️ ติดตั้งไม่ได้</span><div className="muted">{r?.reason}</div></>}
+                        {st === 'pending' && <span className="badge neutral">รอติดตั้ง</span>}
+                      </td>
+                      <td className="muted">{r?.installedByMemberId ? memberFullName(db, r.installedByMemberId) : '-'}</td>
+                      <td className="muted">
+                        {st === 'installed' && r ? (
+                          <>
+                            {r.photoUrl && <a href={r.photoUrl} target="_blank" rel="noreferrer">🖼️ รูป</a>}{' '}
+                            {r.checkinLat != null && r.checkinLng != null && (
+                              <a href={`https://www.google.com/maps?q=${r.checkinLat},${r.checkinLng}`} target="_blank" rel="noreferrer">
+                                📍 {r.checkinLat.toFixed(5)}, {r.checkinLng.toFixed(5)}
+                              </a>
+                            )}
+                            {r.note && <div>📝 {r.note}</div>}
+                          </>
+                        ) : '-'}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
-        </div></div>
+        </div>
+      )}
+
+      {/* ประวัติออกหน้างาน — เลื่อนนัด / ติดปัญหา (เฟส A) */}
+      {db.siteVisits.some(v => v.jobId === jobId) && (
+        <div className="panel">
+          <div className="panel-head"><h3>ประวัติออกหน้างาน (เลื่อนนัด / ติดปัญหา)</h3></div>
+          <div className="table-scroll">
+            <table>
+              <thead><tr><th>เมื่อ</th><th>ผล</th><th>รายละเอียด</th><th>โดย</th></tr></thead>
+              <tbody>
+                {db.siteVisits.filter(v => v.jobId === jobId)
+                  .sort((a, b) => b.performedAt.localeCompare(a.performedAt))
+                  .map(v => (
+                    <tr key={v.id}>
+                      <td className="muted">{fmtDateTime(v.performedAt)}</td>
+                      <td>{v.outcome === 'rescheduled'
+                        ? <span className="badge amber">⏰ เลื่อนนัด</span>
+                        : <span className="badge red">⚠️ ติดปัญหา</span>}</td>
+                      <td>{v.reason}
+                        {v.outcome === 'rescheduled' && v.newStartDate && (
+                          <div className="muted">นัดใหม่ {fmtDate(v.newStartDate)}
+                            {v.newEndDate && v.newEndDate !== v.newStartDate && <> – {fmtDate(v.newEndDate)}</>}</div>
+                        )}
+                      </td>
+                      <td className="muted">{userOf(v.performedBy)}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
       {job.terminalStatus === 'cancelled' && (
         <div className="panel"><div className="panel-body">

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore } from '../data/StoreContext'
-import { deriveJobStatus, stockSummary } from '../data/logic'
+import { deriveJobStatus, stockSummary, jobInstallSummary } from '../data/logic'
 import { JobStatusBadge } from '../ui/components'
 import { fmtDateTime } from '../ui/format'
 import type { JobStatus } from '../types'
@@ -28,6 +28,15 @@ export default function DashboardPage() {
 
   const pendingPr = db.prs.filter(p => p.status === 'pending')
   const openPo = db.pos.filter(p => p.status === 'issued')
+
+  // ฝั่ง Service — คืบหน้าติดตั้งรายเครื่องของงานที่เบิกแล้ว + งานที่ยังไม่มอบหมายทีม
+  const issuedJobs = db.jobs.filter(j => j.terminalStatus === 'issued')
+  const svc = issuedJobs.reduce((acc, j) => {
+    const s = jobInstallSummary(db, j.id)
+    acc.units += s.total; acc.installed += s.installed; acc.blocked += s.blocked
+    if (!db.jobAssignments.some(a => a.jobId === j.id)) acc.unassigned++
+    return acc
+  }, { units: 0, installed: 0, blocked: 0, unassigned: 0 })
   const recent = db.auditLogs.slice(0, 10)
   const userName = (id: string) => db.users.find(u => u.id === id)?.fullName ?? id
 
@@ -57,6 +66,17 @@ export default function DashboardPage() {
           <div className="label">PO รอรับของ</div>
           <div className="value">{openPo.length}</div>
           <div className="hint">รับของครบแล้ว Job จะขยับสถานะอัตโนมัติ</div>
+        </div>
+        <div className="card">
+          <div className="label">งานติดตั้ง (Service)</div>
+          <div className="value">{svc.installed}<span className="muted">/{svc.units} เครื่อง</span></div>
+          <div className="hint">
+            {svc.unassigned > 0
+              ? <b style={{ color: 'var(--danger)' }}>ยังไม่มอบหมายทีม {svc.unassigned} งาน</b>
+              : `${issuedJobs.length} งานรอติดตั้ง`}
+            {svc.blocked > 0 && <> · ติดตั้งไม่ได้ {svc.blocked} เครื่อง</>}
+            {' '}· <Link to="/scheduling">ตารางทีม →</Link>
+          </div>
         </div>
       </div>
 
