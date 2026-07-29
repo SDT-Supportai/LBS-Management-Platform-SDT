@@ -73,6 +73,28 @@ export function jobAllocatedQty(db: DB, jobId: string): number {
   return db.lbsUnits.filter(u => u.jobId === jobId && u.status === 'allocated').length
 }
 
+// จัดซื้อเพิ่มเติมหลังเบิก (sync 0037): เพิ่มวัสดุ/Outsourcing + ออก PR ทำได้ตอน issued ด้วย
+// เพราะงานติดตั้งจริงมักต้องซื้อเพิ่มหน้างาน — ต้นทุนต้องเข้า Job เดิม ไม่ใช่เปิด Job ใหม่
+// ยังล็อก allocation LBS (assertJobEditable) ไว้ตามเดิม · ปิดเมื่อปิดงาน/ยกเลิกแล้ว
+function assertJobProcurable(db: DB, jobId: string): Job {
+  const job = db.jobs.find(j => j.id === jobId)
+  if (!job) throw new Error('ไม่พบ Job')
+  if (job.terminalStatus === 'installed')
+    throw new Error(`${job.jobNo} ปิดงานติดตั้งแล้ว — จัดซื้อเพิ่มไม่ได้`)
+  if (job.terminalStatus === 'cancelled')
+    throw new Error(`${job.jobNo} ถูกยกเลิกไปแล้ว แก้ไขไม่ได้`)
+  return job
+}
+
+// แก้ราคาจริงย้อนหลัง — ทำได้แม้ปิดงานแล้ว (ใบแจ้งหนี้มักมาช้ากว่าของ) ปิดเฉพาะ Job ที่ยกเลิก
+function assertJobCostEditable(db: DB, jobId: string): Job {
+  const job = db.jobs.find(j => j.id === jobId)
+  if (!job) throw new Error('ไม่พบ Job')
+  if (job.terminalStatus === 'cancelled')
+    throw new Error(`${job.jobNo} ถูกยกเลิกไปแล้ว แก้ไขไม่ได้`)
+  return job
+}
+
 function assertJobEditable(db: DB, jobId: string): Job {
   const job = db.jobs.find(j => j.id === jobId)
   if (!job) throw new Error('ไม่พบ Job')
@@ -512,7 +534,7 @@ export function addAccessoryRequest(
   db: DB, actor: User,
   p: { jobId: string; itemId: string; qty: number; source: 'central_stock' | 'purchasing'; unitPrice?: number; phaseBudget?: string },
 ): DB {
-  const job = assertJobEditable(db, p.jobId)
+  const job = assertJobProcurable(db, p.jobId)   // เพิ่มวัสดุหลังเบิกได้ (0037)
   const item = db.items.find(i => i.id === p.itemId)
   if (!item) throw new Error('ไม่พบ Accessory')
   if (!p.qty || p.qty < 1) throw new Error('จำนวนต้องอย่างน้อย 1')
@@ -564,7 +586,7 @@ export function addAccessoryRequest(
 export function updateAccessoryRequestQty(db: DB, actor: User, p: { requestId: string; qty: number }): DB {
   const req = db.accessoryRequests.find(r => r.id === p.requestId)
   if (!req) throw new Error('ไม่พบรายการ Accessory')
-  const job = assertJobEditable(db, req.jobId)
+  const job = assertJobProcurable(db, req.jobId)
   if (req.status !== 'pending') throw new Error('แก้จำนวนได้เฉพาะรายการที่ยังไม่ออก PR')
   if (!p.qty || p.qty < 1) throw new Error('จำนวนต้องอย่างน้อย 1')
   const item = db.items.find(i => i.id === req.itemId)!
@@ -581,7 +603,7 @@ export function updateAccessoryRequestQty(db: DB, actor: User, p: { requestId: s
 export function updateAccessoryRequestPrice(db: DB, actor: User, p: { requestId: string; unitPrice?: number }): DB {
   const req = db.accessoryRequests.find(r => r.id === p.requestId)
   if (!req) throw new Error('ไม่พบรายการวัสดุ')
-  const job = assertJobEditable(db, req.jobId)
+  const job = assertJobProcurable(db, req.jobId)
   if (req.status === 'cancelled' || req.status === 'returned')
     throw new Error('แก้ราคาได้เฉพาะรายการที่ยังใช้งานอยู่')
   const unitPrice = normalizeBudget(p.unitPrice)
@@ -602,7 +624,7 @@ export function updatePoLinePrice(db: DB, actor: User, p: { requestId: string; u
   if (!req) throw new Error('ไม่พบรายการวัสดุ')
   if (!req.poId || (req.status !== 'po_ordered' && req.status !== 'received'))
     throw new Error('บันทึกราคาจริงได้เฉพาะรายการที่ออก PO แล้ว')
-  const job = assertJobEditable(db, req.jobId)   // ล็อกเมื่อ Job ถูกเบิก/ยกเลิก
+  const job = assertJobCostEditable(db, req.jobId)   // แก้ราคาจริงได้แม้ปิดงานแล้ว (0037)
   const unitPrice = normalizeBudget(p.unitPrice)
   const item = db.items.find(i => i.id === req.itemId)!
   const po = db.pos.find(x => x.id === req.poId)
@@ -619,7 +641,7 @@ export function updatePoLinePrice(db: DB, actor: User, p: { requestId: string; u
 export function returnAccessory(db: DB, actor: User, p: { requestId: string }): DB {
   const req = db.accessoryRequests.find(r => r.id === p.requestId)
   if (!req) throw new Error('ไม่พบรายการ Accessory')
-  const job = assertJobEditable(db, req.jobId)
+  const job = assertJobProcurable(db, req.jobId)
   if (req.source !== 'central_stock' || req.status !== 'issued')
     throw new Error('คืนได้เฉพาะรายการที่เบิกจากสต็อกกลางแล้วเท่านั้น')
   const item = db.items.find(i => i.id === req.itemId)!
@@ -637,7 +659,7 @@ export function returnAccessory(db: DB, actor: User, p: { requestId: string }): 
 export function cancelAccessoryRequest(db: DB, actor: User, p: { requestId: string }): DB {
   const req = db.accessoryRequests.find(r => r.id === p.requestId)
   if (!req) throw new Error('ไม่พบรายการ Accessory')
-  const job = assertJobEditable(db, req.jobId)
+  const job = assertJobProcurable(db, req.jobId)
   if (req.status !== 'pending')
     throw new Error('ยกเลิกได้เฉพาะรายการที่ยังไม่ส่ง PR — ถ้าออก PR/PO แล้วให้ประสาน Purchasing')
   const item = db.items.find(i => i.id === req.itemId)!
@@ -673,7 +695,7 @@ export function deleteAccessoryRequest(db: DB, actor: User, p: { requestId: stri
 // ---------------- PR / PO (Project ↔ Purchasing) ----------------
 
 export function createPR(db: DB, actor: User, p: { jobId: string; requestIds: string[] }): DB {
-  const job = assertJobEditable(db, p.jobId)
+  const job = assertJobProcurable(db, p.jobId)   // ออก PR หลังเบิกได้ (0037)
   const reqs = db.accessoryRequests.filter(r => p.requestIds.includes(r.id))
   if (reqs.length === 0) throw new Error('กรุณาเลือกรายการที่จะออก PR')
   const bad = reqs.find(r => r.jobId !== p.jobId || r.source !== 'purchasing' || r.status !== 'pending')
@@ -1346,7 +1368,10 @@ export function requestApproval(
   db: DB, actor: User,
   p: { type: ApprovalType; jobId: string; payload: ApprovalPayload },
 ): DB {
-  const job = assertJobEditable(db, p.jobId)
+  // ออก PR ขออนุมัติได้แม้เบิกแล้ว (จัดซื้อเพิ่มเติม 0037) — อีก 3 ประเภทยังล็อกที่ก่อนเบิก
+  const job = p.type === 'create_pr'
+    ? assertJobProcurable(db, p.jobId)
+    : assertJobEditable(db, p.jobId)
   if (db.approvalRequests.some(r => r.jobId === p.jobId && r.type === p.type && r.status === 'pending'))
     throw new Error(`${job.jobNo} มีคำขอประเภทนี้รอ Division พิจารณาอยู่แล้ว`)
 

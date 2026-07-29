@@ -55,6 +55,10 @@ export default function JobDetailPage() {
   const isManage = can(user, 'master.manage')
   const canCleanup = can(user, 'accessory.cleanup')   // Project/Division/Manage ลบรายการวัสดุที่ยกเลิก
   const locked = !job || job.terminalStatus !== null
+  // ฝั่งจัดซื้อปลดล็อกตอน issued ได้ (จัดซื้อเพิ่มเติมหลังเบิก 0037) — ปิดเมื่อปิดงาน/ยกเลิก
+  const procureLocked = !job || job.terminalStatus === 'installed' || job.terminalStatus === 'cancelled'
+  // รายการที่เพิ่มหลังเบิก (createdAt > issuedAt) — ใช้ติดป้ายให้เห็นว่าเป็นการซื้อเพิ่ม
+  const isExtra = (createdAt: string) => !!job?.issuedAt && createdAt > job.issuedAt
   const pendingApprovalOf = (type: 'create_pr' | 'issue_job' | 'cancel_job' | 'swap_lbs') =>
     db.approvalRequests.some(r => r.jobId === jobId && r.type === type && r.status === 'pending')
 
@@ -448,10 +452,12 @@ export default function JobDetailPage() {
           <h3>Purchase Orders <span className="muted" style={{ fontWeight: 400 }}>· มูลค่าวัสดุ {fmtBaht(budget.materialValue)} · ต้นทุนคงเหลือ {fmtBaht(budget.remainingCost)}</span></h3>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="small" onClick={exportPurchaseOrders} disabled={accReqs.length === 0}>⬇ Export Excel</button>
-            {canManage && !locked && (
-              <button className="small" onClick={() => { setAccSearch(''); setAccForm({ itemId: accessoryItems[0]?.id ?? '', qty: 1, source: 'central_stock', unitPrice: '', phaseBudget: 'raw_mat' }); openModal('accessory') }}>+ เพิ่มวัสดุ</button>
+            {canManage && !procureLocked && (
+              <button className="small" onClick={() => { setAccSearch(''); setAccForm({ itemId: accessoryItems[0]?.id ?? '', qty: 1, source: 'central_stock', unitPrice: '', phaseBudget: 'raw_mat' }); openModal('accessory') }}>
+                + เพิ่มวัสดุ{job.terminalStatus === 'issued' ? ' (ซื้อเพิ่มหลังเบิก)' : ''}
+              </button>
             )}
-            {canManage && !locked && pendingReqs.length > 0 && (
+            {canManage && !procureLocked && pendingReqs.length > 0 && (
               <button className="small primary" disabled={pendingApprovalOf('create_pr')}
                 title={pendingApprovalOf('create_pr') ? 'มีคำขอออก PR รอ Division พิจารณาอยู่แล้ว' : ''}
                 onClick={() => isManage
@@ -481,7 +487,9 @@ export default function JobDetailPage() {
                 return (
                   <tr key={r.id}>
                     <td className="mono">{item.epicorCode || '-'}</td>
-                    <td>{item.name}</td>
+                    <td>{item.name}
+                      {isExtra(r.createdAt) && <div><span className="badge amber">ซื้อเพิ่มหลังเบิก</span></div>}
+                    </td>
                     <td>
                       {r.qtyRequested} {item.uom}
                       {r.source === 'purchasing' && (r.status === 'po_ordered' || r.status === 'received') && (
@@ -500,7 +508,7 @@ export default function JobDetailPage() {
                     <td><span className={`badge ${r.status === 'issued' || r.status === 'received' ? 'green' : r.status === 'cancelled' || r.status === 'returned' ? 'neutral' : 'amber'}`}>{ACC_STATUS_LABEL[r.status]}</span></td>
                     <td className="mono">{[pr?.prNo, po?.poNo].filter(Boolean).join(' / ') || '-'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
-                      {canManage && !locked && active && (
+                      {canManage && !procureLocked && active && (
                         <button className="small" onClick={() => {
                           const v = window.prompt(`ราคาต่อหน่วยของ ${item.name} (บาท/${item.uom})`, r.unitPrice !== undefined ? String(r.unitPrice) : '')
                           if (v === null) return
@@ -510,10 +518,10 @@ export default function JobDetailPage() {
                           tryAction(() => act.updateAccessoryRequestPrice({ requestId: r.id, unitPrice: t === '' ? undefined : Number(t) }), 'แก้ราคาแล้ว')
                         }}>แก้ราคา</button>
                       )}{' '}
-                      {canManage && !locked && r.source === 'central_stock' && r.status === 'issued' && (
+                      {canManage && !procureLocked && r.source === 'central_stock' && r.status === 'issued' && (
                         <button className="small" onClick={() => tryAction(() => act.returnAccessory({ requestId: r.id }), 'คืน Accessory กลับคลังสินค้าแล้ว')}>คืนคลัง</button>
                       )}
-                      {canManage && !locked && r.status === 'pending' && (
+                      {canManage && !procureLocked && r.status === 'pending' && (
                         <>
                           <button className="small" onClick={() => {
                             const v = window.prompt(`จำนวนใหม่ของ ${item.name} (${item.uom})`, String(r.qtyRequested))

@@ -61,6 +61,9 @@ export default function ServicePage() {
       : s.pending > 0 ? `ต้องได้ข้อสรุปทุกเครื่องก่อน (เหลือ ${s.pending} เครื่อง)`
       : s.installed === 0 ? 'ต้องมีเครื่องที่ติดตั้งสำเร็จอย่างน้อย 1 เครื่อง'
       : ''
+  // วัสดุที่ยังค้างจัดซื้อ (รวมของที่ซื้อเพิ่มหลังเบิก — 0037) ใช้เตือนตอนปิดงาน
+  const outstandingProcurement = (jobId: string) => db.accessoryRequests.filter(r =>
+    r.jobId === jobId && (r.status === 'pending' || r.status === 'pr_sent' || r.status === 'po_ordered'))
   // แถวยืนยันล่าสุดของเครื่อง (ใช้โชว์หลักฐาน/เหตุผล)
   const lastInstallRow = (unitId: string) =>
     db.unitInstallations.filter(r => r.unitId === unitId)
@@ -535,6 +538,14 @@ export default function ServicePage() {
               <div className="panel" style={{ marginBottom: 12 }}>
                 <div className="panel-body" style={{ color: 'var(--danger)' }}>
                   ⚠️ ยังมีเครื่องที่ติดตั้งไม่ได้ {s.blocked} เครื่อง — ปิดงานได้ แต่จะถูกบันทึกไว้ในประวัติและแจ้ง Project
+                </div>
+              </div>
+            )}
+            {outstandingProcurement(closeJob.id).length > 0 && (
+              <div className="panel" style={{ marginBottom: 12 }}>
+                <div className="panel-body" style={{ color: 'var(--danger)' }}>
+                  ⚠️ ยังมีวัสดุค้างจัดซื้อ {outstandingProcurement(closeJob.id).length} รายการ (PR/PO ยังไม่จบ) —
+                  ปิดงานได้ แต่หลังปิดจะ<b>เพิ่มรายการหรือออก PR ใหม่ไม่ได้อีก</b> (รับของ/แก้ราคาจริงยังทำได้)
                 </div>
               </div>
             )}
