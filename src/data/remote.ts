@@ -19,6 +19,7 @@ function mapUser(r: Row): User {
   return {
     id: r.id, email: r.email, password: '', fullName: r.full_name,
     department: r.department as Department, isActive: r.is_active,
+    lineUserId: r.line_user_id ?? undefined,
   }
 }
 function mapItem(r: Row): Item {
@@ -333,13 +334,13 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_approve_request', { p_request_id: p.requestId }),
     rejectApprovalRequest: (p: { requestId: string; reason: string }) =>
       rpc(sb, 'rpc_reject_request', { p_request_id: p.requestId, p_reason: p.reason }),
-    createItem: (p: { code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean; initialQty?: number }) =>
-      rpc(sb, 'rpc_create_item', { p_code: p.code, p_epicor_code: p.epicorCode ?? null, p_name: p.name, p_uom: p.uom, p_stockable: p.stockableCentrally, p_initial_qty: p.initialQty ?? 0 }),
+    createItem: (p: { code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean; initialQty?: number; initialUnitCost?: number }) =>
+      rpc(sb, 'rpc_create_item', { p_code: p.code, p_epicor_code: p.epicorCode ?? null, p_name: p.name, p_uom: p.uom, p_stockable: p.stockableCentrally, p_initial_qty: p.initialQty ?? 0, p_initial_unit_cost: p.initialUnitCost ?? null }),
     updateItem: (p: { itemId: string; code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean }) =>
       rpc(sb, 'rpc_update_item', { p_item_id: p.itemId, p_code: p.code, p_epicor_code: p.epicorCode ?? null, p_name: p.name, p_uom: p.uom, p_stockable: p.stockableCentrally }),
     deleteItem: (p: { itemId: string }) => rpc(sb, 'rpc_delete_item', { p_item_id: p.itemId }),
-    adjustAccessoryStock: (p: { itemId: string; newQty: number; note: string }) =>
-      rpc(sb, 'rpc_adjust_accessory_stock', { p_item_id: p.itemId, p_new_qty: p.newQty, p_note: p.note }),
+    adjustAccessoryStock: (p: { itemId: string; newQty: number; note: string; unitCost?: number }) =>
+      rpc(sb, 'rpc_adjust_accessory_stock', { p_item_id: p.itemId, p_new_qty: p.newQty, p_note: p.note, p_unit_cost: p.unitCost ?? null }),
     // สร้าง user + เปลี่ยนรหัสผ่านต้องใช้ service role → ผ่าน netlify function
     createUser: async (p: { email: string; fullName: string; department: Department; password: string }) => {
       await callAdminFn(sb, { action: 'create', ...p })

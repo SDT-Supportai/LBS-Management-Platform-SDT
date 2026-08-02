@@ -6,6 +6,12 @@ import { supabase } from '../lib/supabase'
 import { APPROVAL_TYPE_LABEL, APPROVAL_STATUS_LABEL, fmtDate, fmtDateTime } from '../ui/format'
 import type { ApprovalRequest } from '../types'
 
+// โชว์ LINE User ID แบบปิดบางส่วน — พอให้ยืนยันว่าเชื่อมเครื่องไหน แต่ไม่เผยค่าเต็ม
+function maskLineId(id?: string): string {
+  if (!id) return '-'
+  return id.length <= 10 ? id : `${id.slice(0, 6)}…${id.slice(-4)}`
+}
+
 // หน้ารออนุมัติ (Division approval inbox)
 // - division/admin: เห็นปุ่มอนุมัติ/ตีกลับ
 // - project: เห็นสถานะคำขอของตัวเอง (อ่านอย่างเดียว)
@@ -21,6 +27,8 @@ export default function ApprovalsPage() {
   // เชื่อมบัญชี LINE (รับคำขอ + กดอนุมัติจากแชท 1:1) — เฉพาะผู้อนุมัติ โหมด LIVE
   const [lineCode, setLineCode] = useState<string | null>(null)
   const [lineBusy, setLineBusy] = useState(false)
+  // สถานะเชื่อมบัญชี LINE ของผู้ใช้ที่ login อยู่ (อ่านจาก profiles.line_user_id)
+  const lineLinked = !!user?.lineUserId
   const genLineCode = async () => {
     if (!supabase) return
     setLineBusy(true)
@@ -82,9 +90,28 @@ export default function ApprovalsPage() {
 
       {canDecide && mode === 'supabase' && (
         <div className="panel">
-          <div className="panel-head"><h3>🔗 รับคำขออนุมัติทาง LINE</h3></div>
+          <div className="panel-head">
+            <h3>🔗 รับคำขออนุมัติทาง LINE</h3>
+            {lineLinked
+              ? <span className="badge green">✅ เชื่อมต่อแล้ว</span>
+              : <span className="badge neutral">ยังไม่เชื่อมต่อ</span>}
+          </div>
           <div className="panel-body">
-            {lineCode ? (
+            {lineLinked && !lineCode ? (
+              <>
+                <p style={{ marginBottom: 8 }}>
+                  บัญชีนี้<b style={{ color: 'var(--green)' }}>เชื่อมกับ LINE แล้ว</b> — คำขออนุมัติจะส่งเข้าแชท 1:1 ของคุณ
+                  และกดปุ่ม ✅ อนุมัติ จากมือถือได้ทันที
+                </p>
+                <p className="muted" style={{ marginBottom: 8 }}>
+                  LINE User ID: <span className="mono">{maskLineId(user?.lineUserId)}</span>
+                  {' '}· การตีกลับยังต้องทำที่หน้านี้ (ต้องระบุเหตุผล)
+                </p>
+                <button className="small" onClick={genLineCode} disabled={lineBusy}>
+                  {lineBusy ? 'กำลังสร้าง...' : 'เชื่อมบัญชี LINE ใหม่ (เปลี่ยนเครื่อง)'}
+                </button>
+              </>
+            ) : lineCode ? (
               <>
                 <div style={{ fontSize: 30, fontWeight: 800, letterSpacing: 6 }}>{lineCode}</div>
                 <p className="muted" style={{ marginTop: 6 }}>

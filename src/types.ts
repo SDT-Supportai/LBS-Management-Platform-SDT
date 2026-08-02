@@ -7,6 +7,7 @@ export interface User {
   fullName: string
   department: Department
   isActive: boolean
+  lineUserId?: string          // ผูกบัญชี LINE แล้ว (0033) — ใช้แสดงสถานะเชื่อมต่อ
 }
 
 export interface Item {

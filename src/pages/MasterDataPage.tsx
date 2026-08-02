@@ -88,11 +88,12 @@ export default function MasterDataPage() {
   const [importReason, setImportReason] = useState('')            // เหตุผลตอนนำเข้าที่กระทบยอดคลัง (S3)
   const [ledgerItem, setLedgerItem] = useState<Item | null>(null)  // ดูประวัติการเคลื่อนไหว (S2)
   const [showCatalog, setShowCatalog] = useState(false)   // เริ่มต้นซ่อนตาราง (กดแสดงเอง)
+  const [showStock, setShowStock] = useState(false)       // คลังคงเหลือ — เริ่มต้นซ่อนเช่นกัน
 
   // ---- item modal state ----
   const [itemModal, setItemModal] = useState<'create' | 'edit' | null>(null)
   const [itemTarget, setItemTarget] = useState<Item | null>(null)
-  const [itemForm, setItemForm] = useState({ epicorCode: '', name: '', uom: 'ชิ้น', stockableCentrally: false, initialQty: 0 })
+  const [itemForm, setItemForm] = useState({ epicorCode: '', name: '', uom: 'ชิ้น', stockableCentrally: false, initialQty: 0, initialUnitCost: '' })
 
   const accessories = db.items.filter(i => i.itemType === 'accessory')
   const stockQty = (itemId: string) => db.accessoryStock.find(r => r.itemId === itemId)?.qtyOnHand ?? 0
@@ -106,14 +107,14 @@ export default function MasterDataPage() {
   const jobNoOf = (id: string) => db.jobs.find(j => j.id === id)?.jobNo ?? '-'
   const userNameOf = (id: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
 
-  const openCreateItem = () => { setItemForm({ epicorCode: '', name: '', uom: 'ชิ้น', stockableCentrally: false, initialQty: 0 }); setItemTarget(null); setItemModal('create') }
-  const openEditItem = (i: Item) => { setItemForm({ epicorCode: i.epicorCode ?? '', name: i.name, uom: i.uom, stockableCentrally: i.stockableCentrally, initialQty: 0 }); setItemTarget(i); setItemModal('edit') }
+  const openCreateItem = () => { setItemForm({ epicorCode: '', name: '', uom: 'ชิ้น', stockableCentrally: false, initialQty: 0, initialUnitCost: '' }); setItemTarget(null); setItemModal('create') }
+  const openEditItem = (i: Item) => { setItemForm({ epicorCode: i.epicorCode ?? '', name: i.name, uom: i.uom, stockableCentrally: i.stockableCentrally, initialQty: 0, initialUnitCost: '' }); setItemTarget(i); setItemModal('edit') }
   const submitItem = async () => {
     // ใช้ "รหัส Epicor" เป็นตัวระบุหลัก — code (schema เดิม) set = epicorCode เบื้องหลัง
     const epicorCode = itemForm.epicorCode.trim()
     if (!epicorCode) return show('กรุณาระบุรหัส Epicor', true)
     const ok = itemModal === 'create'
-      ? await tryAction(() => act.createItem({ code: epicorCode, epicorCode, name: itemForm.name, uom: itemForm.uom, stockableCentrally: itemForm.stockableCentrally, initialQty: itemForm.initialQty }), 'เพิ่ม Accessory แล้ว')
+      ? await tryAction(() => act.createItem({ code: epicorCode, epicorCode, name: itemForm.name, uom: itemForm.uom, stockableCentrally: itemForm.stockableCentrally, initialQty: itemForm.initialQty, initialUnitCost: itemForm.initialUnitCost.trim() === '' ? undefined : Number(itemForm.initialUnitCost) }), 'เพิ่ม Accessory แล้ว')
       : await tryAction(() => act.updateItem({ itemId: itemTarget!.id, code: itemTarget!.code, epicorCode, name: itemForm.name, uom: itemForm.uom, stockableCentrally: itemForm.stockableCentrally }), 'บันทึกแล้ว')
     if (ok) setItemModal(null)
   }
@@ -209,13 +210,28 @@ export default function MasterDataPage() {
   }
 
   const adjustStock = (i: Item) => {
-    const v = window.prompt(`ยอดคงเหลือใหม่ของ ${i.name} (ปัจจุบัน ${stockQty(i.id)} ${i.uom})`)
+    const cur = stockQty(i.id)
+    const v = window.prompt(`ยอดคงเหลือใหม่ของ ${i.name} (ปัจจุบัน ${cur} ${i.uom})`)
     if (v === null) return
     const qty = Number(v.trim())
     if (v.trim() === '' || Number.isNaN(qty)) return show('กรุณากรอกยอดเป็นตัวเลข', true)
     if (qty < 0) return show('ยอดคงเหลือติดลบไม่ได้', true)
+    // ยอดเพิ่ม = ของเข้าคลัง → ถามต้นทุนต่อหน่วย เพื่อให้ต้นทุนถัวเฉลี่ยมีค่า (เว้นว่าง = ไม่ขยับค่าเฉลี่ย)
+    let unitCost: number | undefined
+    if (qty > cur) {
+      const c = window.prompt(
+        `ต้นทุนต่อหน่วยของของที่เพิ่มเข้ามา ${qty - cur} ${i.uom} (บาท)\n` +
+        `เว้นว่าง = ไม่ระบุ (ต้นทุนถัวเฉลี่ยเดิมจะไม่เปลี่ยน)`,
+        stockCost(i.id) > 0 ? String(stockCost(i.id)) : '')
+      if (c === null) return
+      if (c.trim() !== '') {
+        const n = Number(c.trim())
+        if (Number.isNaN(n) || n < 0) return show('ต้นทุนต้องเป็นตัวเลขไม่ติดลบ', true)
+        unitCost = n
+      }
+    }
     const note = window.prompt('เหตุผลการปรับยอด (บันทึกลง audit)') ?? ''
-    tryAction(() => act.adjustAccessoryStock({ itemId: i.id, newQty: qty, note }), 'ปรับยอดแล้ว')
+    tryAction(() => act.adjustAccessoryStock({ itemId: i.id, newQty: qty, note, unitCost }), 'ปรับยอดแล้ว')
   }
 
   return (
@@ -278,9 +294,14 @@ export default function MasterDataPage() {
           <h3>คลังคงเหลือ ({stockItems.length})
             <span className="muted" style={{ fontWeight: 400 }}> · ของที่มีอยู่จริง เบิกเข้า Job ได้ทันทีไม่ต้องออก PR</span>
           </h3>
-          <span className="muted">มูลค่ารวม {fmtBaht(stockTotalValue)}</span>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span className="muted">มูลค่ารวม {fmtBaht(stockTotalValue)}</span>
+            <button className="small" onClick={() => setShowStock(v => !v)}>
+              {showStock ? 'ซ่อนรายการ' : `แสดงรายการ (${stockItems.length})`}
+            </button>
+          </div>
         </div>
-        <div className="table-scroll">
+        {showStock && <div className="table-scroll">
           <table>
             <thead>
               <tr><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>คงเหลือ</th><th>ต้นทุนถัวเฉลี่ย</th><th>มูลค่า</th><th></th></tr>
@@ -311,7 +332,7 @@ export default function MasterDataPage() {
               })}
             </tbody>
           </table>
-        </div>
+        </div>}
       </div>
 
       {/* ประวัติการเคลื่อนไหวของวัสดุ (ledger จาก S1) */}
@@ -376,10 +397,22 @@ export default function MasterDataPage() {
             <span style={{ margin: 0 }}>เก็บใน<b>คลังคงเหลือ</b> (เบิกเข้า Job ได้เลยไม่ต้องออก PR)</span>
           </label>
           {itemModal === 'create' && itemForm.stockableCentrally && (
-            <label className="field"><span>ยอดเริ่มต้นในคลังคงเหลือ</span>
-              <input type="number" min={0} value={itemForm.initialQty}
-                onChange={e => setItemForm({ ...itemForm, initialQty: Number(e.target.value) })} />
-            </label>
+            <>
+              <div className="row">
+                <label className="field"><span>ยอดเริ่มต้นในคลังคงเหลือ</span>
+                  <input type="number" min={0} value={itemForm.initialQty}
+                    onChange={e => setItemForm({ ...itemForm, initialQty: Number(e.target.value) })} />
+                </label>
+                <label className="field"><span>ต้นทุนต่อหน่วย (บาท)</span>
+                  <input type="number" min={0} value={itemForm.initialUnitCost} placeholder="0"
+                    onChange={e => setItemForm({ ...itemForm, initialUnitCost: e.target.value })} />
+                </label>
+              </div>
+              <div className="muted" style={{ marginBottom: 10, fontSize: 12 }}>
+                ต้นทุนต่อหน่วยใช้ตั้ง <b>ต้นทุนถัวเฉลี่ย</b> ของคลัง — เวลาเบิกเข้า Job ระบบจะดึงค่านี้ไปตัดต้นทุนงานอัตโนมัติ
+                (เว้นว่างได้ แต่มูลค่าคลังจะเป็น 0)
+              </div>
+            </>
           )}
         </Modal>
       )}

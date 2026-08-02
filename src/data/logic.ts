@@ -1609,7 +1609,7 @@ export function rejectApprovalRequest(db: DB, actor: User, p: { requestId: strin
 
 export function createItem(
   db: DB, actor: User,
-  p: { code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean; initialQty?: number },
+  p: { code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean; initialQty?: number; initialUnitCost?: number },
 ): DB {
   const code = p.code.trim()
   const epicorCode = p.epicorCode?.trim() || undefined
@@ -1630,7 +1630,8 @@ export function createItem(
     const qty0 = Math.max(0, p.initialQty ?? 0)
     next = { ...next, accessoryStock: [...next.accessoryStock, { itemId, qtyOnHand: 0, avgUnitCost: 0 }] }
     if (qty0 > 0) next = applyStockMovement(next, actor, {
-      itemId, qty: qty0, type: 'initial', note: 'ยอดเริ่มต้นตอนสร้างวัสดุ',
+      itemId, qty: qty0, unitCost: p.initialUnitCost, type: 'initial',
+      note: 'ยอดเริ่มต้นตอนสร้างวัสดุ',
     })
   }
   return audit(next, actor, 'item', itemId, 'create_item',
@@ -1683,20 +1684,25 @@ export function deleteItem(db: DB, actor: User, p: { itemId: string }): DB {
 
 export function adjustAccessoryStock(
   db: DB, actor: User,
-  p: { itemId: string; newQty: number; note: string },
+  p: { itemId: string; newQty: number; note: string; unitCost?: number },
 ): DB {
   const item = db.items.find(i => i.id === p.itemId)
   if (!item || !item.stockableCentrally) throw new Error('รายการนี้ไม่มีสต็อกกลาง')
   if (p.newQty < 0) throw new Error('ยอดคงเหลือติดลบไม่ได้')
   if (!p.note.trim()) throw new Error('กรุณาระบุเหตุผลการปรับยอด (เพื่อ audit)')
+  if (p.unitCost !== undefined && p.unitCost < 0) throw new Error('ต้นทุนต่อหน่วยติดลบไม่ได้')
   const oldQty = stockQtyOf(db, p.itemId)
   if (p.newQty === oldQty) throw new Error('ยอดใหม่เท่ากับยอดเดิม ไม่มีอะไรต้องปรับ')
 
+  const delta = p.newQty - oldQty
   const next = applyStockMovement(db, actor, {
-    itemId: p.itemId, qty: p.newQty - oldQty, type: 'adjust', note: p.note.trim(),
+    itemId: p.itemId, qty: delta, type: 'adjust', note: p.note.trim(),
+    // ใส่ต้นทุนได้เฉพาะตอนยอดเพิ่ม (ของเข้า) — ขาออกไม่กระทบต้นทุนถัวเฉลี่ย
+    unitCost: delta > 0 ? p.unitCost : undefined,
   })
+  const costTxt = delta > 0 && p.unitCost !== undefined ? ` @ ${p.unitCost} บาท/${item.uom}` : ''
   return audit(next, actor, 'accessory_stock', p.itemId, 'adjust_stock',
-    `ปรับยอดคลังคงเหลือ ${item.name}: ${oldQty} → ${p.newQty} ${item.uom} (${p.note.trim()})`)
+    `ปรับยอดคลังคงเหลือ ${item.name}: ${oldQty} → ${p.newQty} ${item.uom}${costTxt} (${p.note.trim()})`)
 }
 
 // ---------------- Master Data: Users ----------------
