@@ -32,11 +32,18 @@ export function buildSeedDb(): DB {
     items: ITEMS,
     projectStocks: [], lbsUnits: [], jobs: [], allocations: [],
     accessoryStock: [
-      { itemId: 'i-ct', qtyOnHand: 20 },
-      { itemId: 'i-bracket', qtyOnHand: 15 },
+      { itemId: 'i-ct', qtyOnHand: 20, avgUnitCost: 80000 },
+      { itemId: 'i-bracket', qtyOnHand: 15, avgUnitCost: 4500 },
+    ],
+    // ยอดตั้งต้นต้องมีแถวใน ledger ด้วย ไม่งั้นประวัติการเคลื่อนไหวจะไม่เริ่มจากศูนย์ (S1/S2)
+    stockMovements: [
+      { id: 'sm-seed-ct', itemId: 'i-ct', qty: 20, unitCost: 80000, balanceAfter: 20,
+        type: 'initial', note: 'ยอดตั้งต้นข้อมูลตัวอย่าง', performedBy: 'u-admin', performedAt: '2026-06-01T09:00:00.000Z' },
+      { id: 'sm-seed-brk', itemId: 'i-bracket', qty: 15, unitCost: 4500, balanceAfter: 15,
+        type: 'initial', note: 'ยอดตั้งต้นข้อมูลตัวอย่าง', performedBy: 'u-admin', performedAt: '2026-06-01T09:00:00.000Z' },
     ],
     accessoryRequests: [], prs: [], pos: [], approvalRequests: [], auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
-    teamMembers: [], jobAssignments: [], stockMovements: [],
+    teamMembers: [], jobAssignments: [],
   }
 
   const sales = USERS[0], project = USERS[1], purchasing = USERS[2]

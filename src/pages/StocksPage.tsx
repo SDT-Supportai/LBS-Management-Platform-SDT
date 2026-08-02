@@ -315,10 +315,13 @@ export default function StocksPage() {
         )
       })}
 
-      {/* คลังสินค้า (Ref.Job) — แสดงเฉพาะวัสดุที่รับของครบจาก PO อ้างอิง PO No. / Job No. */}
+      {/* วัสดุตาม Job (Ref.PO) — เป็น "รายงาน" ของ line ที่รับของครบจาก PO ไม่ใช่คลังที่มียอดคงเหลือ
+          เปลี่ยนชื่อจาก "คลังสินค้า (Ref.Job)" เพื่อไม่ให้สับสนกับ "คลังคงเหลือ" ที่เป็นคลังจริง (S2) */}
       <div className="panel">
         <div className="panel-head">
-          <h3>คลังสินค้า (Ref.Job) <span className="muted" style={{ fontWeight: 400 }}>· วัสดุรับครบจาก PO</span></h3>
+          <h3>วัสดุตาม Job (Ref.PO)
+            <span className="muted" style={{ fontWeight: 400 }}> · วัสดุที่รับครบจาก PO แล้วผูกกับ Job — ไม่ใช่ยอดคลังคงเหลือ</span>
+          </h3>
           <button className="small" onClick={() => setShowAccessory(!showAccessory)}>
             {showAccessory ? 'ซ่อนรายการ' : `แสดงรายการ (${receivedLineCount})`}
           </button>

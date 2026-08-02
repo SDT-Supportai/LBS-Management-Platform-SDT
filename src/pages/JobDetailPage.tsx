@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty } from '../data/logic'
+import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf } from '../data/logic'
 import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
 import { ACC_STATUS_LABEL, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import type { LbsUnit, CostCategoryKey } from '../types'
@@ -130,7 +130,7 @@ export default function JobDetailPage() {
         'มูลค่า': lineValue ?? '',
         'Phase Budget': cat,
         'Phase': phase,
-        'แหล่ง': r.source === 'central_stock' ? 'คลังสินค้า' : 'Purchasing',
+        'แหล่ง': r.source === 'central_stock' ? 'คลังคงเหลือ' : 'Purchasing',
         'สถานะ': ACC_STATUS_LABEL[r.status],
         'PR / PO': [pr?.prNo, po?.poNo].filter(Boolean).join(' / '),
       }
@@ -510,7 +510,7 @@ export default function JobDetailPage() {
                         <div className="muted mono" style={{ fontSize: 11 }}>Phase: {job.budgetCosts[r.phaseBudget as CostCategoryKey]!.phase}</div>
                       )}
                     </td>
-                    <td>{r.source === 'central_stock' ? <span className="badge green">คลังสินค้า</span> : <span className="badge amber">Purchasing</span>}</td>
+                    <td>{r.source === 'central_stock' ? <span className="badge green">คลังคงเหลือ</span> : <span className="badge amber">Purchasing</span>}</td>
                     <td><span className={`badge ${r.status === 'issued' || r.status === 'received' ? 'green' : r.status === 'cancelled' || r.status === 'returned' ? 'neutral' : 'amber'}`}>{ACC_STATUS_LABEL[r.status]}</span></td>
                     <td className="mono">{[pr?.prNo, po?.poNo].filter(Boolean).join(' / ') || '-'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
@@ -698,8 +698,8 @@ export default function JobDetailPage() {
           footer={<>
             <button onClick={close}>ยกเลิก</button>
             <button className="primary" disabled={!accForm.itemId}
-              onClick={async () => { if (await tryAction(() => act.addAccessoryRequest({ jobId: job.id, itemId: accForm.itemId, qty: accForm.qty, source: accForm.source, unitPrice: toBudgetNum(accForm.unitPrice), phaseBudget: accForm.phaseBudget }), accForm.source === 'central_stock' ? 'เบิกจากคลังสินค้าเรียบร้อย' : 'เพิ่มรายการรอออก PR แล้ว')) close() }}>
-              {accForm.source === 'central_stock' ? 'เบิกจากคลังสินค้า' : 'เพิ่มรายการ (รอออก PR)'}
+              onClick={async () => { if (await tryAction(() => act.addAccessoryRequest({ jobId: job.id, itemId: accForm.itemId, qty: accForm.qty, source: accForm.source, unitPrice: toBudgetNum(accForm.unitPrice), phaseBudget: accForm.phaseBudget }), accForm.source === 'central_stock' ? 'เบิกจากคลังคงเหลือเรียบร้อย' : 'เพิ่มรายการรอออก PR แล้ว')) close() }}>
+              {accForm.source === 'central_stock' ? 'เบิกจากคลังคงเหลือ' : 'เพิ่มรายการ (รอออก PR)'}
             </button>
           </>}>
           <label className="field"><span>ค้นหาวัสดุ (ชื่อ / รหัส Epicor)</span>
@@ -721,7 +721,16 @@ export default function JobDetailPage() {
               setAccForm({ ...accForm, itemId: e.target.value, source: item?.stockableCentrally ? 'central_stock' : 'purchasing' })
             }}>
               {filteredAcc.length === 0 && <option value="">— ไม่พบวัสดุที่ค้นหา —</option>}
-              {filteredAcc.map(i => <option key={i.id} value={i.id}>{i.name}{(i.epicorCode || i.code) ? ` (${i.epicorCode || i.code})` : ''}</option>)}
+              {/* โชว์ยอดคลังคงเหลือในลิสต์เลย — ผู้ใช้เห็นก่อนเลือกว่าจะเบิกหรือซื้อ (S2 ข้อ 4) */}
+              {filteredAcc.map(i => {
+                const onHand = db.accessoryStock.find(r => r.itemId === i.id)?.qtyOnHand ?? 0
+                return (
+                  <option key={i.id} value={i.id}>
+                    {i.name}{(i.epicorCode || i.code) ? ` (${i.epicorCode || i.code})` : ''}
+                    {onHand > 0 ? `  ✔ มีในคลัง ${onHand} ${i.uom}` : ''}
+                  </option>
+                )
+              })}
             </select>
           </label>
           {selAccItem && (
@@ -749,16 +758,38 @@ export default function JobDetailPage() {
               <span>มูลค่ารายการนี้</span><b className="pos">{fmtBaht((toBudgetNum(accForm.unitPrice) ?? 0) * accForm.qty)}</b>
             </div>
           )}
-          <label className="field"><span>แหล่งที่มา</span>
+          <label className="field"><span>จะเบิกจากคลัง หรือ สั่งซื้อ?</span>
             <select value={accForm.source} onChange={e => setAccForm({ ...accForm, source: e.target.value as typeof accForm.source })}>
-              <option value="central_stock" disabled={!selAccItem?.stockableCentrally}>
-                เบิกจากคลังสินค้า {selAccItem?.stockableCentrally ? `(คงเหลือ ${selAccStockQty} ${selAccItem.uom})` : '(item นี้ไม่มีในคลังสินค้า)'}
+              <option value="central_stock" disabled={selAccStockQty <= 0}>
+                เบิกจากคลังคงเหลือ {selAccStockQty > 0 ? `(มี ${selAccStockQty} ${selAccItem?.uom ?? ''})` : '(ไม่มีของในคลัง)'}
               </option>
               <option value="purchasing">สั่งซื้อผ่าน Purchasing (ออก PR → PO)</option>
             </select>
           </label>
-          {accForm.source === 'central_stock' && selAccItem && selAccStockQty < accForm.qty && (
-            <div className="muted" style={{ color: 'var(--red)' }}>คลังสินค้าคงเหลือ {selAccStockQty} ไม่พอ — เปลี่ยนเป็นสั่งซื้อผ่าน Purchasing</div>
+
+          {/* ถ้ามีของในคลังแต่เลือกสั่งซื้อ → เตือนและให้สลับได้ทันที (ข้อ 4) */}
+          {accForm.source === 'purchasing' && selAccStockQty > 0 && (
+            <div className="panel" style={{ marginBottom: 12 }}>
+              <div className="panel-body" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ color: 'var(--amber, #b45309)' }}>
+                  ⚠️ วัสดุนี้<b>มีอยู่ในคลังคงเหลือ {selAccStockQty} {selAccItem?.uom}</b> แล้ว —
+                  {selAccStockQty >= accForm.qty ? ' เบิกได้เลยไม่ต้องซื้อใหม่' : ` เบิกได้ ${selAccStockQty} ที่เหลือค่อยสั่งซื้อ`}
+                </span>
+                <button className="small primary" onClick={() => setAccForm({ ...accForm, source: 'central_stock', qty: Math.min(accForm.qty, selAccStockQty) })}>
+                  เปลี่ยนเป็นเบิกจากคลัง
+                </button>
+              </div>
+            </div>
+          )}
+          {accForm.source === 'central_stock' && selAccStockQty > 0 && (
+            <div className="muted" style={{ marginBottom: 8 }}>
+              ราคาที่ใช้ตัดต้นทุนจะดึงจาก<b>ต้นทุนถัวเฉลี่ยของคลัง</b> ({fmtBaht(stockCostOf(db, accForm.itemId))}) โดยอัตโนมัติ
+            </div>
+          )}
+          {accForm.source === 'central_stock' && selAccStockQty < accForm.qty && (
+            <div className="muted" style={{ color: 'var(--red)' }}>
+              คลังคงเหลือ {selAccStockQty} ไม่พอ (ขอ {accForm.qty}) — ลดจำนวน หรือเปลี่ยนเป็นสั่งซื้อผ่าน Purchasing
+            </div>
           )}
         </Modal>
       )}
