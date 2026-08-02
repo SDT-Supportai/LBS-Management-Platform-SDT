@@ -116,6 +116,32 @@ export interface AllocationTxn {
 export interface AccessoryStockRow {
   itemId: string
   qtyOnHand: number
+  avgUnitCost?: number         // ต้นทุนถัวเฉลี่ยต่อหน่วย (moving average) — ใช้ตีราคาตอนเบิกเข้า Job
+}
+
+// บัญชีเดินสะพัดของคลังคงเหลือ (เฟส S1) — ทุกการเปลี่ยนยอดต้องมีแถวที่นี่
+// qty เป็นบวก = เข้าคลัง · ลบ = ออกจากคลัง · balanceAfter = ยอดหลังรายการนี้
+export type StockMovementType =
+  | 'initial'          // ตั้งยอดเริ่มต้นตอนสร้างวัสดุ
+  | 'adjust'           // ปรับยอดด้วยมือ (ต้องมีเหตุผล)
+  | 'import_adjust'    // ปรับยอดจากการนำเข้า Excel (เฟส S3)
+  | 'issue_to_job'     // เบิกเข้า Job
+  | 'return_from_job'  // คืนของที่เบิกไปกลับคลัง
+  | 'transfer_from_job'// โอนวัสดุเหลือจาก Job เข้าคลัง (ของที่ซื้อผ่าน PO ก็โอนได้)
+  | 'job_cancelled'    // Job ถูกยกเลิก แล้วนำของเข้าคลัง
+
+export interface StockMovement {
+  id: string
+  itemId: string
+  qty: number                  // + เข้า / − ออก
+  unitCost?: number            // ต้นทุนต่อหน่วยของรายการนี้
+  balanceAfter: number
+  type: StockMovementType
+  refJobId?: string            // Job ต้นทาง/ปลายทาง
+  refRequestId?: string        // line วัสดุที่เกี่ยวข้อง
+  note?: string
+  performedBy: string
+  performedAt: string
 }
 
 export type AccReqStatus =
@@ -133,6 +159,8 @@ export interface AccessoryRequest {
   itemId: string
   qtyRequested: number
   qtyReceived: number          // สำหรับ partial receive ฝั่ง purchasing
+  qtyTransferred?: number      // จำนวนที่โอนคืนเข้าคลังคงเหลือแล้ว (เฟส S1)
+                               // ต้นทุนที่ตัดเข้า Job = unitPrice × (qtyRequested − qtyTransferred)
   unitPrice?: number           // ราคาต่อหน่วย (บาท) → มูลค่าวัสดุ = unitPrice × qtyRequested
   phaseBudget?: string         // รหัส Phase Budget (อ้างอิงงบประมาณภายใน) — กรอกตอนขอวัสดุ
   source: 'central_stock' | 'purchasing'
@@ -299,6 +327,7 @@ export interface DB {
   unitInstallations: UnitInstallation[]
   teamMembers: TeamMember[]
   jobAssignments: JobAssignment[]
+  stockMovements: StockMovement[]
 }
 
 export interface AppSettings {

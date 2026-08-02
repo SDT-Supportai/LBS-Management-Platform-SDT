@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName } from '../data/logic'
+import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty } from '../data/logic'
 import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
 import { ACC_STATUS_LABEL, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import type { LbsUnit, CostCategoryKey } from '../types'
@@ -483,7 +483,8 @@ export default function JobDetailPage() {
                 const pr = db.prs.find(p => p.id === r.prId)
                 const po = r.poId ? db.pos.find(p => p.id === r.poId) : undefined   // line ผูก PO ใบไหน (0022)
                 const active = r.status !== 'cancelled' && r.status !== 'returned'
-                const lineValue = active && r.unitPrice !== undefined ? r.unitPrice * r.qtyRequested : undefined
+                // มูลค่าคิดจากจำนวนที่ Job ถืออยู่จริง (หักส่วนที่โอนคืนคลังแล้ว — S1)
+                const lineValue = active && r.unitPrice !== undefined ? r.unitPrice * effectiveQty(r) : undefined
                 return (
                   <tr key={r.id}>
                     <td className="mono">{item.epicorCode || '-'}</td>
@@ -494,6 +495,11 @@ export default function JobDetailPage() {
                       {r.qtyRequested} {item.uom}
                       {r.source === 'purchasing' && (r.status === 'po_ordered' || r.status === 'received') && (
                         <div className="muted">รับแล้ว {r.qtyReceived}/{r.qtyRequested}</div>
+                      )}
+                      {(r.qtyTransferred ?? 0) > 0 && (
+                        <div className="muted" style={{ color: 'var(--primary)' }}>
+                          📦 โอนเข้าคลัง {r.qtyTransferred} · คงอยู่ {effectiveQty(r)}
+                        </div>
                       )}
                     </td>
                     <td>{fmtBaht(r.unitPrice)}</td>
@@ -519,7 +525,24 @@ export default function JobDetailPage() {
                         }}>แก้ราคา</button>
                       )}{' '}
                       {canManage && !procureLocked && r.source === 'central_stock' && r.status === 'issued' && (
-                        <button className="small" onClick={() => tryAction(() => act.returnAccessory({ requestId: r.id }), 'คืน Accessory กลับคลังสินค้าแล้ว')}>คืนคลัง</button>
+                        <button className="small" onClick={() => tryAction(() => act.returnAccessory({ requestId: r.id }), 'คืน Accessory กลับคลังคงเหลือแล้ว')}>คืนคลัง</button>
+                      )}{' '}
+                      {/* โอนวัสดุเหลือเข้าคลังคงเหลือ ให้ Job อื่นเบิกต่อ — ต้นทุนตัดออกจาก Job นี้ตามของ (S1) */}
+                      {canManage && !procureLocked && (r.status === 'issued' || r.status === 'received') && effectiveQty(r) > 0 && (
+                        <button className="small" title="โอนของที่เหลือเข้าคลังคงเหลือ — ต้นทุนจะถูกตัดออกจาก Job นี้ตามจำนวนที่โอน"
+                          onClick={() => {
+                            const remain = effectiveQty(r)
+                            const v = window.prompt(
+                              `โอน ${item.name} เข้าคลังคงเหลือ\nคงอยู่ที่ Job นี้ ${remain} ${item.uom}\nระบุจำนวนที่จะโอน:`,
+                              String(remain))
+                            if (v === null) return
+                            const qty = Number(v)
+                            if (!qty || Number.isNaN(qty) || qty <= 0)
+                              return void tryAction(() => { throw new Error('จำนวนต้องเป็นตัวเลขมากกว่า 0') })
+                            const note = window.prompt('เหตุผล/หมายเหตุ (ถ้ามี)', 'วัสดุเหลือจากหน้างาน') ?? undefined
+                            tryAction(() => act.transferJobMaterialToStock({ requestId: r.id, qty, note }),
+                              `โอน ${item.name} ${qty} ${item.uom} เข้าคลังคงเหลือแล้ว`)
+                          }}>📦 โอนเข้าคลัง</button>
                       )}
                       {canManage && !procureLocked && r.status === 'pending' && (
                         <>

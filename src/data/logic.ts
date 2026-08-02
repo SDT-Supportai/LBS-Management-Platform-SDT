@@ -2,6 +2,7 @@ import type {
   DB, Job, JobStatus, User, AccessoryRequest, Department,
   ApprovalType, ApprovalPayload, BudgetCosts, CostCategoryKey,
   SiteVisit, SiteVisitOutcome, UnitInstallOutcome, TeamMember, JobAssignment,
+  StockMovementType,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -528,6 +529,114 @@ export function swapLbs(
     `${job.jobNo} สลับ LBS: ${a.serialLvb}/${a.serialOm} ↔ ${b.serialLvb}/${b.serialOm} (คลัง) — เหตุผล: ${p.reason.trim()}`)
 }
 
+// ---------------- คลังคงเหลือ: ledger + ต้นทุนถัวเฉลี่ย (เฟส S1 · sync 0038) ----------------
+// กติกา: ห้ามแก้ accessoryStock ตรง ๆ ที่ไหนอีก — ต้องผ่าน applyStockMovement เท่านั้น
+// เพื่อให้ทุกการเปลี่ยนยอดมีแถวใน stockMovements อธิบายที่มาได้เสมอ
+
+export function stockQtyOf(db: DB, itemId: string): number {
+  return db.accessoryStock.find(r => r.itemId === itemId)?.qtyOnHand ?? 0
+}
+export function stockCostOf(db: DB, itemId: string): number {
+  return db.accessoryStock.find(r => r.itemId === itemId)?.avgUnitCost ?? 0
+}
+
+// qty > 0 = เข้าคลัง · qty < 0 = ออกจากคลัง
+// ต้นทุนถัวเฉลี่ยขยับเฉพาะขา "เข้า" ที่ระบุ unitCost มา (ขาออกไม่กระทบค่าเฉลี่ย)
+function applyStockMovement(
+  db: DB, actor: User,
+  p: {
+    itemId: string; qty: number; unitCost?: number; type: StockMovementType
+    refJobId?: string; refRequestId?: string; note?: string
+  },
+): DB {
+  if (p.qty === 0) return db
+  const row = db.accessoryStock.find(r => r.itemId === p.itemId)
+  const oldQty = row?.qtyOnHand ?? 0
+  const oldAvg = row?.avgUnitCost ?? 0
+  const newQty = oldQty + p.qty
+  if (newQty < 0) {
+    const item = db.items.find(i => i.id === p.itemId)
+    throw new Error(`คลังคงเหลือ ${item?.name ?? ''} ไม่พอ (คงเหลือ ${oldQty}, ต้องการ ${-p.qty})`)
+  }
+
+  // moving average — เฉลี่ยเฉพาะตอนของเข้าพร้อมต้นทุน
+  let newAvg = oldAvg
+  if (p.qty > 0 && p.unitCost !== undefined && p.unitCost >= 0) {
+    newAvg = newQty > 0 ? (oldQty * oldAvg + p.qty * p.unitCost) / newQty : p.unitCost
+  }
+  if (newQty === 0) newAvg = 0   // ของหมดคลัง — รีเซ็ตค่าเฉลี่ยกันตัวเลขค้าง
+
+  return {
+    ...db,
+    accessoryStock: row
+      ? db.accessoryStock.map(r => r.itemId === p.itemId ? { ...r, qtyOnHand: newQty, avgUnitCost: newAvg } : r)
+      : [...db.accessoryStock, { itemId: p.itemId, qtyOnHand: newQty, avgUnitCost: newAvg }],
+    stockMovements: [...db.stockMovements, {
+      id: uid(), itemId: p.itemId, qty: p.qty,
+      unitCost: p.qty > 0 ? p.unitCost : (oldAvg || undefined),
+      balanceAfter: newQty, type: p.type,
+      refJobId: p.refJobId, refRequestId: p.refRequestId, note: p.note,
+      performedBy: actor.id, performedAt: now(),
+    }],
+  }
+}
+
+// จำนวนที่ Job ถืออยู่จริงของ line นั้น (หักส่วนที่โอนคืนคลังไปแล้ว)
+export function effectiveQty(r: AccessoryRequest): number {
+  return r.qtyRequested - (r.qtyTransferred ?? 0)
+}
+
+// โอนวัสดุที่เหลือจาก Job เข้าคลังคงเหลือ เพื่อให้ Job อื่นเบิกใช้ต่อ
+// ต้นทุนโอนตามของ: ตัดมูลค่าออกจาก Job ต้นทางตามจำนวนที่โอน แล้วเข้าคลังด้วยต้นทุนเดิมของ line
+export function transferJobMaterialToStock(
+  db: DB, actor: User,
+  p: { requestId: string; qty: number; note?: string },
+): DB {
+  const req = db.accessoryRequests.find(r => r.id === p.requestId)
+  if (!req) throw new Error('ไม่พบรายการวัสดุ')
+  const item = db.items.find(i => i.id === req.itemId)
+  if (!item) throw new Error('ไม่พบวัสดุใน Master Data')
+  const job = db.jobs.find(j => j.id === req.jobId)
+  if (!job) throw new Error('ไม่พบ Job')
+  if (job.terminalStatus === 'cancelled')
+    throw new Error(`${job.jobNo} ถูกยกเลิกไปแล้ว — ของถูกคืนเข้าคลังตอนยกเลิกอยู่แล้ว`)
+  // โอนได้เฉพาะของที่อยู่ในมือ Job จริง: เบิกจากคลังแล้ว หรือ ซื้อและรับของแล้ว
+  if (req.status !== 'issued' && req.status !== 'received')
+    throw new Error('โอนเข้าคลังได้เฉพาะวัสดุที่เบิกจากคลังแล้ว หรือรับของจาก PO ครบแล้ว')
+
+  const remain = effectiveQty(req)
+  if (!p.qty || p.qty <= 0) throw new Error('จำนวนที่โอนต้องมากกว่า 0')
+  if (p.qty > remain) throw new Error(`โอนได้ไม่เกิน ${remain} ${item.uom} (คงอยู่ที่ Job)`)
+
+  let next: DB = {
+    ...db,
+    // เปิดเก็บสต็อกกลางให้อัตโนมัติ — ของมาอยู่ในคลังจริงแล้ว
+    items: item.stockableCentrally
+      ? db.items
+      : db.items.map(i => i.id === item.id ? { ...i, stockableCentrally: true } : i),
+    accessoryRequests: db.accessoryRequests.map(r =>
+      r.id === p.requestId ? { ...r, qtyTransferred: (r.qtyTransferred ?? 0) + p.qty } : r),
+  }
+  next = applyStockMovement(next, actor, {
+    itemId: req.itemId, qty: p.qty, unitCost: req.unitPrice,
+    type: 'transfer_from_job', refJobId: req.jobId, refRequestId: req.id,
+    note: p.note?.trim() || `โอนวัสดุเหลือจาก ${job.jobNo}`,
+  })
+  const value = (req.unitPrice ?? 0) * p.qty
+  next = notify(next, {
+    type: 'stock_transfer_in', dept: 'project', jobId: req.jobId,
+    message: `📦 ${job.jobNo} โอน ${item.name} ${p.qty} ${item.uom} เข้าคลังคงเหลือ (ตัดต้นทุนออก ${fmtInt(value)} ฿)`,
+  })
+  return audit(next, actor, 'accessory_stock', req.itemId, 'transfer_to_stock',
+    `${job.jobNo} โอน ${item.name} ${p.qty} ${item.uom} เข้าคลังคงเหลือ ` +
+    `(ต้นทุนที่ตัดออกจาก Job ${fmtInt(value)} บาท · คงเหลือในคลัง ${stockQtyOf(next, req.itemId)})` +
+    `${p.note?.trim() ? ` — ${p.note.trim()}` : ''}`)
+}
+
+function fmtInt(n: number): string {
+  return n.toLocaleString('th-TH', { maximumFractionDigits: 2 })
+}
+
 // ---------------- Accessory ----------------
 
 export function addAccessoryRequest(
@@ -549,17 +658,21 @@ export function addAccessoryRequest(
     const row = db.accessoryStock.find(r => r.itemId === p.itemId)
     const onHand = row?.qtyOnHand ?? 0
     if (onHand < p.qty)
-      throw new Error(`สต็อกกลาง ${item.name} คงเหลือ ${onHand} ${item.uom} ไม่พอ (ขอ ${p.qty}) — เปลี่ยนเป็นสั่งซื้อผ่าน Purchasing ได้`)
+      throw new Error(`คลังคงเหลือ ${item.name} มี ${onHand} ${item.uom} ไม่พอ (ขอ ${p.qty}) — เปลี่ยนเป็นสั่งซื้อผ่าน Purchasing ได้`)
+    // ต้นทุนตอนเบิก = ต้นทุนถัวเฉลี่ยของคลัง (ถ้ามี) — ต้นทุนไหลตามของจาก Job ต้นทาง
+    const issueCost = stockCostOf(db, p.itemId) || unitPrice
     next = {
       ...db,
-      accessoryStock: db.accessoryStock.map(r =>
-        r.itemId === p.itemId ? { ...r, qtyOnHand: r.qtyOnHand - p.qty } : r),
       accessoryRequests: [...db.accessoryRequests, {
         id: reqId, jobId: p.jobId, itemId: p.itemId, qtyRequested: p.qty, qtyReceived: 0,
-        unitPrice, phaseBudget, source: 'central_stock' as const, status: 'issued' as const, prId: null,
+        unitPrice: issueCost, phaseBudget, source: 'central_stock' as const, status: 'issued' as const, prId: null,
         requestedBy: actor.id, createdAt: now(),
       }],
     }
+    next = applyStockMovement(next, actor, {
+      itemId: p.itemId, qty: -p.qty, type: 'issue_to_job',
+      refJobId: p.jobId, refRequestId: reqId, note: `เบิกเข้า ${job.jobNo}`,
+    })
     // แจ้ง Division เจ้าของสต็อก — ยอดคงเหลือลด (sync 0017)
     next = notify(next, {
       type: 'accessory_issued', dept: 'sales', jobId: p.jobId,
@@ -645,15 +758,19 @@ export function returnAccessory(db: DB, actor: User, p: { requestId: string }): 
   if (req.source !== 'central_stock' || req.status !== 'issued')
     throw new Error('คืนได้เฉพาะรายการที่เบิกจากสต็อกกลางแล้วเท่านั้น')
   const item = db.items.find(i => i.id === req.itemId)!
-  let next: DB = {
-    ...db,
-    accessoryStock: db.accessoryStock.map(r =>
-      r.itemId === req.itemId ? { ...r, qtyOnHand: r.qtyOnHand + req.qtyRequested } : r),
+  const backQty = effectiveQty(req)
+  if (backQty <= 0) throw new Error('รายการนี้ถูกโอนเข้าคลังไปหมดแล้ว')
+  let next: DB = applyStockMovement(db, actor, {
+    itemId: req.itemId, qty: backQty, unitCost: req.unitPrice, type: 'return_from_job',
+    refJobId: req.jobId, refRequestId: req.id, note: `คืนจาก ${job.jobNo}`,
+  })
+  next = {
+    ...next,
     accessoryRequests: db.accessoryRequests.map(r =>
       r.id === p.requestId ? { ...r, status: 'returned' as const } : r),
   }
   return audit(next, actor, 'job_accessory_request', p.requestId, 'return_accessory',
-    `${job.jobNo} คืน ${item.name} ${req.qtyRequested} ${item.uom} กลับสต็อกกลาง`)
+    `${job.jobNo} คืน ${item.name} ${backQty} ${item.uom} กลับคลังคงเหลือ`)
 }
 
 export function cancelAccessoryRequest(db: DB, actor: User, p: { requestId: string }): DB {
@@ -1299,17 +1416,23 @@ export function cancelJob(
   }
 
   const reqs = next.accessoryRequests.filter(r => r.jobId === p.jobId)
-  const restock = new Map<string, number>()
+  // เก็บทั้งจำนวนและมูลค่า เพื่อคำนวณต้นทุนต่อหน่วยตอนคืนเข้าคลัง (ต้นทุนไหลตามของ)
+  const restock = new Map<string, { qty: number; value: number }>()
+  const addBack = (itemId: string, qty: number, unitPrice?: number) => {
+    if (qty <= 0) return
+    const cur = restock.get(itemId) ?? { qty: 0, value: 0 }
+    restock.set(itemId, { qty: cur.qty + qty, value: cur.value + (unitPrice ?? 0) * qty })
+  }
   const updatedReqs = next.accessoryRequests.map(r => {
     if (r.jobId !== p.jobId) return r
     if (r.source === 'central_stock' && r.status === 'issued') {
-      restock.set(r.itemId, (restock.get(r.itemId) ?? 0) + r.qtyRequested)
+      addBack(r.itemId, effectiveQty(r), r.unitPrice)
       return { ...r, status: 'returned' as const }
     }
     // รับของจาก PO มาแล้วบางส่วน (po_ordered + qtyReceived > 0) — ห้ามทิ้งเงียบ ปฏิบัติเหมือน received (sync 0015)
     if (r.status === 'po_ordered' && r.qtyReceived > 0) {
       if (p.receivedAccessoryToCentral) {
-        restock.set(r.itemId, (restock.get(r.itemId) ?? 0) + r.qtyReceived)
+        addBack(r.itemId, r.qtyReceived, r.unitPrice)
         return { ...r, status: 'returned' as const }
       }
       return { ...r, status: 'received' as const }   // ปิดยอดตามที่รับจริง (ส่วนค้างรับยกเลิกไปกับ PO) พิจารณาเป็นเคสไป
@@ -1317,29 +1440,32 @@ export function cancelJob(
     if (r.status === 'pending' || r.status === 'pr_sent' || r.status === 'po_ordered')
       return { ...r, status: 'cancelled' as const }
     if (r.status === 'received' && p.receivedAccessoryToCentral) {
-      restock.set(r.itemId, (restock.get(r.itemId) ?? 0) + r.qtyReceived)
+      addBack(r.itemId, effectiveQty(r), r.unitPrice)
       return { ...r, status: 'returned' as const }
     }
     return r
-  })
-  let accessoryStock = [...next.accessoryStock]
-  restock.forEach((qty, itemId) => {
-    const row = accessoryStock.find(x => x.itemId === itemId)
-    if (row) accessoryStock = accessoryStock.map(x => x.itemId === itemId ? { ...x, qtyOnHand: x.qtyOnHand + qty } : x)
-    else accessoryStock.push({ itemId, qtyOnHand: qty })
   })
 
   const openPrIds = next.prs.filter(x => x.jobId === p.jobId && (x.status === 'pending' || x.status === 'po_issued')).map(x => x.id)
   next = {
     ...next,
     accessoryRequests: updatedReqs,
-    accessoryStock,
     prs: next.prs.map(x => openPrIds.includes(x.id) ? { ...x, status: 'cancelled' as const } : x),
     pos: next.pos.map(x => x.jobId === p.jobId && x.status === 'issued' ? { ...x, status: 'cancelled' as const } : x),
     jobs: next.jobs.map(j => j.id === p.jobId
       ? { ...j, terminalStatus: 'cancelled' as const, cancelledAt: ts, cancelledBy: actor.id, cancelReason: p.reason }
       : j),
   }
+
+  // คืนวัสดุเข้าคลังผ่าน ledger (ต้นทุนต่อหน่วย = มูลค่ารวม ÷ จำนวน)
+  restock.forEach((v, itemId) => {
+    next = applyStockMovement(next, actor, {
+      itemId, qty: v.qty, unitCost: v.qty > 0 ? v.value / v.qty : undefined,
+      type: 'job_cancelled', refJobId: p.jobId, note: `ยกเลิก ${job.jobNo} — นำของเข้าคลัง`,
+    })
+    // ของเข้าคลังจริงแล้ว เปิดเก็บสต็อกกลางให้อัตโนมัติ
+    next = { ...next, items: next.items.map(i => i.id === itemId ? { ...i, stockableCentrally: true } : i) }
+  })
 
   next = notify(next, {
     type: 'job_cancelled', dept: 'all', jobId: p.jobId,
@@ -1499,9 +1625,13 @@ export function createItem(
       id: itemId, code, epicorCode, name: p.name.trim(), itemType: 'accessory' as const,
       uom: p.uom.trim() || 'ชิ้น', stockableCentrally: p.stockableCentrally,
     }],
-    accessoryStock: p.stockableCentrally
-      ? [...db.accessoryStock, { itemId, qtyOnHand: Math.max(0, p.initialQty ?? 0) }]
-      : db.accessoryStock,
+  }
+  if (p.stockableCentrally) {
+    const qty0 = Math.max(0, p.initialQty ?? 0)
+    next = { ...next, accessoryStock: [...next.accessoryStock, { itemId, qtyOnHand: 0, avgUnitCost: 0 }] }
+    if (qty0 > 0) next = applyStockMovement(next, actor, {
+      itemId, qty: qty0, type: 'initial', note: 'ยอดเริ่มต้นตอนสร้างวัสดุ',
+    })
   }
   return audit(next, actor, 'item', itemId, 'create_item',
     `เพิ่ม Accessory ${p.name.trim()} (${code}) ${p.stockableCentrally ? `มีสต็อกกลาง เริ่มต้น ${p.initialQty ?? 0}` : 'สั่งซื้อผ่าน Purchasing เท่านั้น'}`)
@@ -1559,16 +1689,14 @@ export function adjustAccessoryStock(
   if (!item || !item.stockableCentrally) throw new Error('รายการนี้ไม่มีสต็อกกลาง')
   if (p.newQty < 0) throw new Error('ยอดคงเหลือติดลบไม่ได้')
   if (!p.note.trim()) throw new Error('กรุณาระบุเหตุผลการปรับยอด (เพื่อ audit)')
-  const row = db.accessoryStock.find(r => r.itemId === p.itemId)
-  const oldQty = row?.qtyOnHand ?? 0
-  let next: DB = {
-    ...db,
-    accessoryStock: row
-      ? db.accessoryStock.map(r => r.itemId === p.itemId ? { ...r, qtyOnHand: p.newQty } : r)
-      : [...db.accessoryStock, { itemId: p.itemId, qtyOnHand: p.newQty }],
-  }
+  const oldQty = stockQtyOf(db, p.itemId)
+  if (p.newQty === oldQty) throw new Error('ยอดใหม่เท่ากับยอดเดิม ไม่มีอะไรต้องปรับ')
+
+  const next = applyStockMovement(db, actor, {
+    itemId: p.itemId, qty: p.newQty - oldQty, type: 'adjust', note: p.note.trim(),
+  })
   return audit(next, actor, 'accessory_stock', p.itemId, 'adjust_stock',
-    `ปรับยอดสต็อกกลาง ${item.name}: ${oldQty} → ${p.newQty} ${item.uom} (${p.note.trim()})`)
+    `ปรับยอดคลังคงเหลือ ${item.name}: ${oldQty} → ${p.newQty} ${item.uom} (${p.note.trim()})`)
 }
 
 // ---------------- Master Data: Users ----------------
@@ -1666,14 +1794,14 @@ export function pendingPurchasingReqs(db: DB, jobId: string): AccessoryRequest[]
 export function jobMaterialValue(db: DB, jobId: string): number {
   return db.accessoryRequests
     .filter(r => r.jobId === jobId && r.status !== 'cancelled' && r.status !== 'returned')
-    .reduce((sum, r) => sum + (r.unitPrice ?? 0) * r.qtyRequested, 0)
+    .reduce((sum, r) => sum + (r.unitPrice ?? 0) * effectiveQty(r), 0)
 }
 
 // ต้นทุนใช้จริงของหมวด raw_mat/outsourcing = Σ มูลค่าวัสดุ active ที่ตัดเข้าหมวดนั้น (phaseBudget = key)
 function categoryMaterialActual(db: DB, jobId: string, key: CostCategoryKey): number {
   return db.accessoryRequests
     .filter(r => r.jobId === jobId && r.status !== 'cancelled' && r.status !== 'returned' && r.phaseBudget === key)
-    .reduce((sum, r) => sum + (r.unitPrice ?? 0) * r.qtyRequested, 0)
+    .reduce((sum, r) => sum + (r.unitPrice ?? 0) * effectiveQty(r), 0)
 }
 
 // ต้นทุนตัว LBS ที่ดึงเข้า Job = Σ ต้นทุนต่อเครื่องของ unit ที่ยังถือ/เบิกให้ Job นี้ (allocated/issued)

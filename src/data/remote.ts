@@ -3,7 +3,7 @@ import type {
   DB, User, Item, ProjectStock, LbsUnit, Job, AllocationTxn,
   AccessoryRequest, PurchaseRequisition, PurchaseOrder, AuditLog, AppNotification,
   Department, ApprovalRequest, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit, UnitInstallation,
-  TeamMember, JobAssignment,
+  TeamMember, JobAssignment, StockMovement,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -133,6 +133,15 @@ function mapUnitInstall(r: Row): UnitInstallation {
     performedBy: r.performed_by ?? '', performedAt: r.performed_at,
   }
 }
+function mapStockMovement(r: Row): StockMovement {
+  return {
+    id: r.id, itemId: r.item_id, qty: Number(r.qty),
+    unitCost: r.unit_cost != null ? Number(r.unit_cost) : undefined,
+    balanceAfter: Number(r.balance_after), type: r.movement_type,
+    refJobId: r.ref_job_id ?? undefined, refRequestId: r.ref_request_id ?? undefined,
+    note: r.note ?? undefined, performedBy: r.performed_by ?? '', performedAt: r.performed_at,
+  }
+}
 function mapTeamMember(r: Row): TeamMember {
   return {
     id: r.id, firstName: r.first_name, lastName: r.last_name, phone: r.phone ?? '',
@@ -163,7 +172,7 @@ async function q(sb: SupabaseClient, table: string, order?: { col: string; asc?:
 }
 
 export async function loadAll(sb: SupabaseClient): Promise<DB> {
-  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, audits, notifs, reads, visits, unitInstalls, members, assigns] =
+  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, audits, notifs, reads, visits, unitInstalls, members, assigns, movements] =
     await Promise.all([
       q(sb, 'profiles'),
       q(sb, 'items', { col: 'code', limit: 10000 }),
@@ -183,6 +192,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       q(sb, 'unit_installations', { col: 'performed_at' }),
       q(sb, 'team_members', { col: 'created_at' }),
       q(sb, 'job_assignments', { col: 'assigned_at' }),
+      q(sb, 'stock_movements', { col: 'performed_at', asc: false, limit: 1000 }),
     ])
 
   const readsByNotif = new Map<string, string[]>()
@@ -206,7 +216,10 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     lbsUnits: units.map(mapUnit),
     jobs: jobs.map(mapJob),
     allocations: allocs.map(mapAlloc),
-    accessoryStock: accStock.map(r => ({ itemId: r.item_id, qtyOnHand: Number(r.qty_on_hand) })),
+    accessoryStock: accStock.map(r => ({
+      itemId: r.item_id, qtyOnHand: Number(r.qty_on_hand),
+      avgUnitCost: r.avg_unit_cost != null ? Number(r.avg_unit_cost) : undefined,
+    })),
     accessoryRequests: accReqs.map(mapAccReq),
     prs: prs.map(r => mapPr(r, reqIdsByPr.get(r.id) ?? [])),
     pos: pos.map(mapPo),
@@ -217,6 +230,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     unitInstallations: unitInstalls.map(mapUnitInstall),
     teamMembers: members.map(mapTeamMember),
     jobAssignments: assigns.map(mapJobAssignment),
+    stockMovements: movements.map(mapStockMovement),
   }
 }
 
@@ -262,6 +276,8 @@ export function remoteActions(sb: SupabaseClient) {
     updatePoLinePrice: (p: { requestId: string; unitPrice?: number }) =>
       rpc(sb, 'rpc_update_po_line_price', { p_request_id: p.requestId, p_unit_price: p.unitPrice ?? null }),
     returnAccessory: (p: { requestId: string }) => rpc(sb, 'rpc_return_accessory', { p_request_id: p.requestId }),
+    transferJobMaterialToStock: (p: { requestId: string; qty: number; note?: string }) =>
+      rpc(sb, 'rpc_transfer_job_material_to_stock', { p_request_id: p.requestId, p_qty: p.qty, p_note: p.note ?? null }),
     cancelAccessoryRequest: (p: { requestId: string }) => rpc(sb, 'rpc_cancel_accessory_request', { p_request_id: p.requestId }),
     deleteAccessoryRequest: (p: { requestId: string }) => rpc(sb, 'rpc_delete_accessory_request', { p_request_id: p.requestId }),
     createPR: (p: { jobId: string; requestIds: string[] }) =>

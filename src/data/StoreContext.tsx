@@ -81,7 +81,7 @@ const EMPTY_DB: DB = {
   users: [], items: [], projectStocks: [], lbsUnits: [], jobs: [], allocations: [],
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [],
   auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
-  teamMembers: [], jobAssignments: [],
+  teamMembers: [], jobAssignments: [], stockMovements: [],
 }
 
 // migrate ข้อมูล demo จาก schema เก่า (v1: issued_installed, ไม่มี qtyReceived/notifications)
@@ -116,6 +116,7 @@ function migrateDb(raw: unknown): DB {
     unitInstallations: d.unitInstallations ?? [],
     teamMembers: d.teamMembers ?? [],
     jobAssignments: d.jobAssignments ?? [],
+    stockMovements: d.stockMovements ?? [],
   }
 }
 
@@ -187,6 +188,7 @@ export interface StoreActions {
   updateItem: (p: Parameters<typeof L.updateItem>[2]) => MaybePromise
   deleteItem: (p: Parameters<typeof L.deleteItem>[2]) => MaybePromise
   adjustAccessoryStock: (p: Parameters<typeof L.adjustAccessoryStock>[2]) => MaybePromise
+  transferJobMaterialToStock: (p: Parameters<typeof L.transferJobMaterialToStock>[2]) => MaybePromise
   createUser: (p: Parameters<typeof L.createUser>[2]) => MaybePromise
   updateUser: (p: Parameters<typeof L.updateUser>[2]) => MaybePromise
 }
@@ -346,6 +348,8 @@ function DemoProvider({ children }: { children: ReactNode }) {
         updateItem: run('master.manage', L.updateItem),
         deleteItem: run('master.manage', L.deleteItem),
         adjustAccessoryStock: run('stock.manage', L.adjustAccessoryStock),
+        // โอนวัสดุเหลือจาก Job เข้าคลังคงเหลือ — Project เป็นเจ้าของวัสดุใน Job
+        transferJobMaterialToStock: run('job.manage', L.transferJobMaterialToStock),
         createUser: run('master.manage', L.createUser),
         updateUser: run('master.manage', L.updateUser),
       },
