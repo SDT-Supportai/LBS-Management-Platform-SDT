@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { useStore, can } from '../data/StoreContext'
+import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
 import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf } from '../data/logic'
 import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
 import { ACC_STATUS_LABEL, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
@@ -50,7 +50,9 @@ export default function JobDetailPage() {
   const [editSites, setEditSites] = useState<InstallSite[]>([])   // จุดติดตั้งเพิ่มเติม (modal แก้ไขข้อมูล Job)
 
   const status = job ? deriveJobStatus(db, job) : 'draft'
-  const canManage = can(user, 'job.manage')
+  // 0042: Project ทำรายการได้เฉพาะ Job ที่ตัวเองเปิด — ใบอื่นปุ่มหายทั้งหน้า (ข้อมูลยังดูได้ครบ)
+  const canManage = canEditJob(user, job)
+  const readOnlyJob = can(user, 'job.manage') && !!job && !ownsJob(user, job)
   // Manage (admin) ข้ามขั้นอนุมัติได้ — project ต้องส่งคำขอให้ Division ก่อน (0016)
   const isManage = can(user, 'master.manage')
   const canCleanup = can(user, 'accessory.cleanup')   // Project/Division/Manage ลบรายการวัสดุที่ยกเลิก
@@ -152,9 +154,21 @@ export default function JobDetailPage() {
       <div className="page-sub">
         {job.customerName}{job.contactPhone && <> · 📞 {job.contactPhone}</>} · {job.scope || 'ไม่ระบุ scope'} · ติดตั้งที่ {job.installLocation || '-'} · กำหนด {fmtDate(job.requiredDate)}
       </div>
+      <div className="muted" style={{ marginBottom: 8 }}>
+        👤 ผู้รับผิดชอบงาน: <b>{job.openedBy ? userOf(job.openedBy) : 'ไม่ระบุ (งานเก่า)'}</b>
+      </div>
       <div style={{ marginBottom: 16 }}>
         <button className="small" onClick={() => window.print()}>🖨️ ปริ้นสรุปโครงการ (PDF)</button>
       </div>
+
+      {/* 0042: Project เปิดใบอื่นได้แต่ทำรายการไม่ได้ — บอกให้ชัดว่าทำไมปุ่มหาย */}
+      {readOnlyJob && (
+        <div className="panel"><div className="panel-body">
+          🔒 <b>โหมดดูอย่างเดียว</b> — Job นี้เปิดโดย {job.openedBy ? userOf(job.openedBy) : 'ผู้ใช้อื่น'}{' '}
+          คุณดูข้อมูลได้ครบทุกส่วน แต่ดึง/คืน LBS · ขอวัสดุ · ขออนุมัติ ทำได้เฉพาะเจ้าของงาน
+          <div className="muted">ถ้าต้องแก้งานใบนี้จริง ให้แจ้ง Manage เข้าไปทำแทน</div>
+        </div></div>
+      )}
 
       {/* จุดติดตั้ง — แสดงเมื่อมีหลายจุด (จุดที่ 1 = install_location หลัก + จุดที่ 2+ = installSites) */}
       {job.installSites && job.installSites.length > 0 && (

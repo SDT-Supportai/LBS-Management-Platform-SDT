@@ -30,7 +30,7 @@
 | Hosting | **Cloudflare Pages — LIVE แล้ว** https://lbs-platform-sdt.pages.dev (ย้ายจาก Netlify 2026-07-15, auto-deploy จาก `main`) |
 | GitHub repo | https://github.com/SDT-Supportai/LBS-Management-Platform-SDT (root = โฟลเดอร์นี้) |
 | Supabase project ref | `mrdnxajwnvkgvfyaclwv` (region: ตามที่สร้าง) |
-| Migrations ที่รันแล้ว | **0001–0041 รันครบ** (0041 รัน 2026-08-03) · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูป/ไฟล์แนบไม่ได้ เช็ค bucket `install-photos` (0019 — ไฟล์แนบปัญหาใช้ bucket เดิม prefix `job-issues/`) |
+| Migrations ที่รันแล้ว | **0001–0041 รันครบ** (0041 รัน 2026-08-03) · **🆕 0042 รอรัน (ต้องรันก่อน push frontend)** · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูป/ไฟล์แนบไม่ได้ เช็ค bucket `install-photos` (0019 — ไฟล์แนบปัญหาใช้ bucket เดิม prefix `job-issues/`) |
 | E2E บน DB จริง | ✅ ผ่านทั้ง flow · demo E2E: approval, LINE dispatch, budget 7 หมวด, 1 PR→N PO (12/12), check-in/photo, ยืนยันรายเครื่อง, โอนวัสดุเข้าคลัง, Import Excel แก้ยอด, ปิดงาน+สรุปปัญหา, reopen |
 | ตรวจ LIVE แบบไม่แตะข้อมูล | probe ผ่าน PostgREST ด้วย anon key: `GET /rest/v1/<table>?select=...` (200 = มีตาราง/คอลัมน์) และ `POST /rest/v1/rpc/<fn>` (ตอบ `กรุณาเข้าสู่ระบบก่อน` = ฟังก์ชันมีจริง+auth gate ทำงาน · `404 PGRST202` = ไม่มี signature นั้น) — RPC ทุกตัวตรวจสิทธิ์ก่อนเขียน จึงไม่มี row ถูกสร้าง |
 | Admin จริง | `siradanai.s@precise.co.th` (department = admin, แสดงเป็น "Manage") |
@@ -122,6 +122,7 @@ lbs-platform/
 | `0039_stock_cost_input.sql` | **fix (2026-07-30)**: 0038 คิดค่าเฉลี่ยได้ แต่ **"ขาเข้า" 2 ทางไม่มีที่ให้ใส่ต้นทุน** (ตั้งยอดตอนสร้างวัสดุ / ปรับยอดขึ้น) → คอลัมน์ต้นทุน/มูลค่าขึ้น `-` ตลอด · เพิ่ม `rpc_create_item + p_initial_unit_cost` และ `rpc_adjust_accessory_stock + p_unit_cost` (drop+recreate — **ทั้ง 2 ตัวไม่มี app_notify จึง recreate ได้ ไม่กระทบ 0031**) · ใส่ได้เฉพาะขาเข้า · **พารามิเตอร์ใหม่มี DEFAULT → เรียกแบบเดิมยังได้ (backward compatible)** |
 | `0040_close_job_issues.sql` | **ฟีเจอร์ (2026-07-31)**: **บังคับสรุปปัญหาก่อนปิดงานติดตั้ง** — `jobs.close_has_issues` / `close_issue_detail` / `close_issue_file_url` + `rpc_close_job_install` signature ใหม่ (+p_has_issues/p_issue_detail/p_issue_file_url, validate ฝั่ง server ด้วย) · เก็บ**แยกจาก install_note** เพื่อ query/รายงานได้ · ไฟล์แนบใช้ bucket `install-photos` เดิม prefix `job-issues/<job_id>/` (ไม่ต้องสร้าง bucket ใหม่) · งานที่ปิดก่อน 0040 = NULL (ไม่ผิด แค่ไม่มีข้อมูล) |
 | `0041_reopen_job.sql` | **ฟีเจอร์ (2026-07-31)**: **เปิดงานใหม่หลังปิดผิด (Reopen) ผ่านการอนุมัติ Division** — approval type ใหม่ `reopen_job` (ALTER CHECK) + `app_assert_job_reopenable` + `app_exec_reopen_job` + `rpc_reopen_job` (admin ตรง) + ต่อ `app_exec_approve` · **unit_installations คงไว้ทั้งหมด** (ปิดใหม่ได้ทันที ไม่ต้องถ่ายรูป/GPS ซ้ำ) แต่**ล้าง** installed_at/install_note/install_confirmed_by/close_* (ถ้าไม่ล้างจะมีงาน issued ที่มีวันปิดงานค้าง = รายงานเพี้ยน) โดยคัดลอกลง audit ก่อน + `jobs.reopen_count` · **Project ขอ (สิทธิ์ job.manage) / Manage ทำตรง — ไม่เปิดให้ Service ขอ เพราะจะพลอยขอ PR/เบิก/ยกเลิกได้** |
+| `0042_job_ownership.sql` | **ฟีเจอร์ (2026-08-03)**: **สิทธิ์ระดับแถว — Project ทำรายการได้เฉพาะ Job ที่อีเมลตัวเองเปิด** (`jobs.opened_by` ที่มีอยู่แล้วตั้งแต่ 0001 ไม่ต้อง backfill) · Job อื่น **ดูได้อย่างเดียว** (RLS `read_all` คงเดิม) · `app_assert_job_owner(j jobs)` เสียบเข้า guard chain 4 ตัว (`editable`/`procurable`/`cost_editable`/`reopenable`) = **ครอบ ~12 RPC ในจุดเดียว** + เติมมือที่ `rpc_delete_accessory_request` (recreate ได้ ไม่มี app_notify) และ `rpc_transfer_job_material_to_stock` (**app_swap_guard บรรทัดเดียว** เพราะมี app_notify) · **กติกา 3 ข้อกันพังของเดิม**: บังคับเฉพาะ `department='project'` (Purchasing/Service/Division ข้ามงานได้ตามหน้าที่) · `auth.uid()` ไม่เจอโปรไฟล์ → ข้าม (**ไม่งั้นอนุมัติผ่าน LINE 0033 พังหมด** เพราะรันด้วย service_role) · หลังอนุมัติ `app_exec_*` รันด้วย uid ผู้อนุมัติ → ข้ามเอง · `opened_by IS NULL` = งานเก่า ไม่ล็อก (grandfather) · **ไม่มีปุ่มโอนเจ้าของ (มติ): คนลาออก/ลาพักร้อนให้ Manage ทำแทน** · RLS `project_jobs` รัดเป็น owner-scoped เป็น defense-in-depth · demo sync `logic.ts` (`assertJobOwner`) · UI: JobsPage คอลัมน์ "ผู้รับผิดชอบ" + badge "ของฉัน" + checkbox กรองเฉพาะงานตัวเอง · JobDetail แบนเนอร์ 🔒 โหมดดูอย่างเดียว + ซ่อนปุ่ม action ทั้งหน้า |
 | `0026_job_install_sites.sql` | **ฟีเจอร์ (2026-07-23)**: หลายจุดติดตั้งต่อ Job — `jobs.install_sites` JSONB (array `{location, requiredDate}` = จุดที่ 2+; จุดที่ 1 ยังใช้ install_location/required_date เดิม) · drop+recreate `rpc_create_job`/`rpc_update_job` (+`p_install_sites`) · ข้อมูลวางแผนอย่างเดียว ไม่ผูก Serial/ไม่แตะ flow issue/confirm · UI: เปิด/แก้ Job โชว์ "เพิ่มจุดติดตั้ง" เมื่อ LBS>1 (≤ จำนวน LBS), JobDetail แผง "จุดติดตั้ง", list badge "+N จุด" · demo sync `logic.ts` (normalizeInstallSites) |
 
 > DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0041 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
@@ -174,10 +175,12 @@ lbs-platform/
 | แผนก (DB) | แสดงผล | ทำอะไรได้ |
 |---|---|---|
 | `sales` | **Division** | สร้าง/แก้/ลบ Project Stock, รับ LBS เข้า, แก้ Serial, ปรับยอดคลังสินค้า accessory + **อนุมัติ/ตีกลับคำขอจาก project** (หน้า "รออนุมัติ") |
-| `project` | Project | เปิด/แก้/ลบ Job, ดึง-คืน LBS, ขอวัสดุ (+Phase Budget) — ส่วน **ออก PR / เบิกให้ Service / ยกเลิก Job ต้องส่งคำขอให้ Division อนุมัติ** (`rpc_request_approval`) |
+| `project` | Project | เปิด/แก้/ลบ Job, ดึง-คืน LBS, ขอวัสดุ (+Phase Budget) — ส่วน **ออก PR / เบิกให้ Service / ยกเลิก Job ต้องส่งคำขอให้ Division อนุมัติ** (`rpc_request_approval`) · **⚠️ ทำรายการได้เฉพาะ Job ที่อีเมลตัวเองเปิด (0042) — Job ของคนอื่นดูได้อย่างเดียว** |
 | `purchasing` | Purchasing | ออก PO / ยกเลิก PO (ยังไม่รับของ) / ตีกลับ PR / รับของ (partial ได้) |
 | `service` | Service | ยืนยันติดตั้งเสร็จ (+วันที่จริง) |
 | `admin` | **Manage** | ทำได้ทุกอย่าง + **ข้ามขั้นอนุมัติ** (เรียก rpc_create_pr/issue/cancel ตรงได้) + อนุมัติแทน Division ได้ + Material Database + ผู้ใช้งาน + **Dev Settings (แผนกเดียวที่เห็น** — เมนูซ่อน + route redirect สำหรับแผนกอื่น) |
+
+**สิทธิ์ระดับแถว (0042)**: Project แต่ละอีเมลดำเนินการได้เฉพาะ Job ที่ตัวเองเปิด (`jobs.opened_by`) — Job อื่นเห็นข้อมูลครบแต่ทำรายการไม่ได้ · **บังคับเฉพาะแผนก `project`** เท่านั้น (Purchasing/Service/Division/Manage ทำงานข้าม Job ได้ตามหน้าที่) · งานเก่าที่ `opened_by` ว่าง = ไม่ล็อก · **ไม่มีปุ่มโอนเจ้าของ — คนลาออก/ลาพักร้อนให้ Manage เข้าไปทำแทน**
 
 **Approval flow (0016)**: project ขอ → แจ้งเตือน Division → division/admin อนุมัติที่หน้า "รออนุมัติ" = **execute ทันทีใน transaction เดียว** (fail = rollback ทั้งคำขอ) หรือตีกลับพร้อมเหตุผล (แจ้งกลับ project) · คำขอ pending ซ้ำ type เดียวกันต่อ Job ไม่ได้ (unique partial index) · `rpc_create_pr`/`rpc_issue_job`/`rpc_cancel_job` เช็ค admin-only แล้ว — project ยิง RPC ตรงจะโดนปฏิเสธ
 
@@ -209,7 +212,8 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
       ไฟล์ถูกใส่สลักนิรภัย (DO-block RAISE EXCEPTION) กันรันติดมือแล้ว · **หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่**
 - [ ] ตรวจว่า **service_role key ถูก rotate แล้ว** (ระหว่าง setup key เก่าเคยเปิดเผย — ตรวจ repo แล้ว 2026-07-19: **key ไม่เคยหลุดลง git** หลุดเฉพาะนอก repo) — Dashboard → Settings → API → สร้าง/roll secret key ใหม่ → อัปเดต `SUPABASE_SERVICE_ROLE_KEY` บน Cloudflare Pages env → Retry deployment
 
-### 🟠 Migrations — ✅ 0001–0041 รันครบ (0041 รัน 2026-08-03)
+### 🟠 Migrations — ✅ 0001–0041 รันครบ (0041 รัน 2026-08-03) · 🆕 **0042 รอรัน**
+- [ ] 🆕 **รัน `supabase/migrations/0042_job_ownership.sql`** (สิทธิ์ระดับแถว Project — **ต้องรันก่อน push frontend** ไม่งั้น UI ซ่อนปุ่มให้แล้วแต่ DB ยังไม่ล็อก คนที่ยิง API ตรงยังแก้งานคนอื่นได้) · หลังรันดู NOTICE ท้ายสุด จะบอกจำนวน Job ที่ `opened_by` ว่าง = งานเก่าที่ยังไม่ถูกล็อก (grandfather)
 - [x] ~~0011–0041~~ รันครบ · **กติกา: หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่ (ผมจะบอกชื่อไฟล์)**
 - [ ] ยืนยัน bucket **`install-photos`** (public) มีจริง — ใช้ทั้งรูปยืนยันติดตั้ง (0019/0035) และไฟล์แนบปัญหา prefix `job-issues/` (0040) · ถ้าอัปโหลดไม่ได้ให้สร้างที่ Dashboard→Storage
 - [ ] ตรวจว่า string patch ของ 0041 ลงจริง (ตรวจผ่าน REST ไม่ได้เพราะ auth gate มาก่อน):
@@ -219,6 +223,15 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
       where n.nspname='public' and p.proname in ('rpc_request_approval','rpc_reject_request');
       ```
       ต้องได้ `patched = true` ทั้ง 2 แถว — ถ้า false ให้รัน `0041` ซ้ำ (idempotent) · อาการถ้าไม่ลง: กด "ขออนุมัติเปิดงานใหม่" แล้ว error `ประเภทคำขอไม่ถูกต้อง`
+- [ ] หลังรัน 0042 ตรวจว่า guard เจ้าของงานลงครบ 6 ฟังก์ชัน (5 ตัวแรกเป็น recreate · ตัวที่ 6 เป็น string patch จึงพลาดได้):
+      ```sql
+      select p.proname, position('app_assert_job_owner' in pg_get_functiondef(p.oid)) > 0 as has_owner_guard
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname='public' and p.proname in ('app_assert_job_editable','app_assert_job_procurable',
+        'app_assert_job_cost_editable','app_assert_job_reopenable','rpc_delete_accessory_request',
+        'rpc_transfer_job_material_to_stock') order by 1;
+      ```
+      ต้องได้ `true` ทั้ง 6 แถว — ถ้าแถวไหน false ให้รัน `0042` ซ้ำ (idempotent)
 
 ### 🟡 ฟีเจอร์เสริม (ตั้งค่าค้างอยู่)
 - [ ] **เปิดสวิตช์ LINE** — env + code + migration 0017 พร้อมหมด · เหลือ: login **Manage** → Dev Settings → เปิดสวิตช์แจ้งเตือน LINE (global มีผลทุกเครื่อง) → "ส่งข้อความทดสอบ" · bot `สถานะ <Job No.>` ใช้ได้แล้ว

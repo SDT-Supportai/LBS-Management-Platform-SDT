@@ -74,36 +74,48 @@ export function jobAllocatedQty(db: DB, jobId: string): number {
   return db.lbsUnits.filter(u => u.jobId === jobId && u.status === 'allocated').length
 }
 
+// สิทธิ์ระดับแถว (sync 0042): Project ทำรายการได้เฉพาะ Job ที่อีเมลตัวเองเปิด
+// แผนกอื่น (Division/Purchasing/Service) + Manage ข้ามได้ — งานข้าม Job เป็นธรรมชาติของหน้าที่
+// openedBy ว่าง = งานเก่าก่อน 0042 → ไม่ล็อก (grandfather)
+// เรียกจากทุก guard ด้านล่าง จึงครอบทุก action ฝั่ง project ในจุดเดียว
+function assertJobOwner(job: Job, actor: User): Job {
+  if (actor.department !== 'project') return job
+  if (!job.openedBy) return job
+  if (job.openedBy !== actor.id)
+    throw new Error(`${job.jobNo} ไม่ใช่งานที่คุณเปิด — ดูได้อย่างเดียว`)
+  return job
+}
+
 // จัดซื้อเพิ่มเติมหลังเบิก (sync 0037): เพิ่มวัสดุ/Outsourcing + ออก PR ทำได้ตอน issued ด้วย
 // เพราะงานติดตั้งจริงมักต้องซื้อเพิ่มหน้างาน — ต้นทุนต้องเข้า Job เดิม ไม่ใช่เปิด Job ใหม่
 // ยังล็อก allocation LBS (assertJobEditable) ไว้ตามเดิม · ปิดเมื่อปิดงาน/ยกเลิกแล้ว
-function assertJobProcurable(db: DB, jobId: string): Job {
+function assertJobProcurable(db: DB, jobId: string, actor: User): Job {
   const job = db.jobs.find(j => j.id === jobId)
   if (!job) throw new Error('ไม่พบ Job')
   if (job.terminalStatus === 'installed')
     throw new Error(`${job.jobNo} ปิดงานติดตั้งแล้ว — จัดซื้อเพิ่มไม่ได้`)
   if (job.terminalStatus === 'cancelled')
     throw new Error(`${job.jobNo} ถูกยกเลิกไปแล้ว แก้ไขไม่ได้`)
-  return job
+  return assertJobOwner(job, actor)
 }
 
 // แก้ราคาจริงย้อนหลัง — ทำได้แม้ปิดงานแล้ว (ใบแจ้งหนี้มักมาช้ากว่าของ) ปิดเฉพาะ Job ที่ยกเลิก
-function assertJobCostEditable(db: DB, jobId: string): Job {
+function assertJobCostEditable(db: DB, jobId: string, actor: User): Job {
   const job = db.jobs.find(j => j.id === jobId)
   if (!job) throw new Error('ไม่พบ Job')
   if (job.terminalStatus === 'cancelled')
     throw new Error(`${job.jobNo} ถูกยกเลิกไปแล้ว แก้ไขไม่ได้`)
-  return job
+  return assertJobOwner(job, actor)
 }
 
-function assertJobEditable(db: DB, jobId: string): Job {
+function assertJobEditable(db: DB, jobId: string, actor: User): Job {
   const job = db.jobs.find(j => j.id === jobId)
   if (!job) throw new Error('ไม่พบ Job')
   if (job.terminalStatus === 'issued' || job.terminalStatus === 'installed')
     throw new Error(`${job.jobNo} เบิกให้ Service แล้ว — ล็อก แก้ไข allocation ไม่ได้`)
   if (job.terminalStatus === 'cancelled')
     throw new Error(`${job.jobNo} ถูกยกเลิกไปแล้ว แก้ไขไม่ได้`)
-  return job
+  return assertJobOwner(job, actor)
 }
 
 // no-op (2026-07-19 · sync 0020): เลิกแจ้ง job_ready — ใช้แจ้งตอนดึง LBS แทน
@@ -373,7 +385,7 @@ export function updateJob(
   db: DB, actor: User,
   p: { jobId: string; jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; installSites?: { location: string; requiredDate: string }[] } & JobBudgetInput,
 ): DB {
-  const job = assertJobEditable(db, p.jobId)   // แก้ Job No. ได้ก่อนเบิกเท่านั้น (issued/installed/cancelled ล็อกอยู่แล้ว)
+  const job = assertJobEditable(db, p.jobId, actor)   // แก้ Job No. ได้ก่อนเบิกเท่านั้น (issued/installed/cancelled ล็อกอยู่แล้ว)
   const jobNo = p.jobNo.trim()
   if (!jobNo) throw new Error('กรุณาระบุ Job No.')
   if (db.jobs.some(j => j.id !== p.jobId && j.jobNo.toLowerCase() === jobNo.toLowerCase()))
@@ -422,7 +434,7 @@ export function updateJobBudget(
 
 // ลบได้เฉพาะ Job เปล่า (Draft ที่ยังไม่เคยมี transaction ใดๆ)
 export function deleteDraftJob(db: DB, actor: User, p: { jobId: string }): DB {
-  const job = assertJobEditable(db, p.jobId)
+  const job = assertJobEditable(db, p.jobId, actor)
   const hasAlloc = db.allocations.some(a => a.jobId === p.jobId)
   const hasAcc = db.accessoryRequests.some(r => r.jobId === p.jobId)
   if (hasAlloc || hasAcc)
@@ -434,7 +446,7 @@ export function deleteDraftJob(db: DB, actor: User, p: { jobId: string }): DB {
 
 // ดึง LBS: หลายครั้งได้ / ผสมหลาย Stock ได้ / ห้ามเกินยอดคงเหลือ
 export function drawLbs(db: DB, actor: User, p: { jobId: string; stockId: string; unitIds: string[] }): DB {
-  const job = assertJobEditable(db, p.jobId)
+  const job = assertJobEditable(db, p.jobId, actor)
   const stock = db.projectStocks.find(s => s.id === p.stockId)
   if (!stock) throw new Error('ไม่พบ Project Stock')
   if (stock.status === 'closed') throw new Error(`${stock.stockNo} ถูกปิดคลังแล้ว ดึงเพิ่มไม่ได้`)
@@ -472,7 +484,7 @@ export function returnLbs(
   db: DB, actor: User,
   p: { jobId: string; unitIds: string[]; targetStockId: string; note?: string },
 ): DB {
-  const job = assertJobEditable(db, p.jobId)
+  const job = assertJobEditable(db, p.jobId, actor)
   const target = db.projectStocks.find(s => s.id === p.targetStockId)
   if (!target) throw new Error('กรุณาเลือก Stock No. ปลายทางที่จะคืน')
   if (p.unitIds.length === 0) throw new Error('กรุณาเลือก Serial No. ที่จะคืน')
@@ -503,7 +515,7 @@ export function swapLbs(
   db: DB, actor: User,
   p: { jobId: string; allocatedUnitId: string; stockUnitId: string; reason: string },
 ): DB {
-  const job = assertJobEditable(db, p.jobId)
+  const job = assertJobEditable(db, p.jobId, actor)
   if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผลการสลับ LBS')
   const a = db.lbsUnits.find(u => u.id === p.allocatedUnitId)
   if (!a || a.jobId !== p.jobId || a.status !== 'allocated')
@@ -600,6 +612,7 @@ export function transferJobMaterialToStock(
   if (!job) throw new Error('ไม่พบ Job')
   if (job.terminalStatus === 'cancelled')
     throw new Error(`${job.jobNo} ถูกยกเลิกไปแล้ว — ของถูกคืนเข้าคลังตอนยกเลิกอยู่แล้ว`)
+  assertJobOwner(job, actor)   // 0042: โอนของออกจาก Job ได้เฉพาะเจ้าของงาน
   // โอนได้เฉพาะของที่อยู่ในมือ Job จริง: เบิกจากคลังแล้ว หรือ ซื้อและรับของแล้ว
   if (req.status !== 'issued' && req.status !== 'received')
     throw new Error('โอนเข้าคลังได้เฉพาะวัสดุที่เบิกจากคลังแล้ว หรือรับของจาก PO ครบแล้ว')
@@ -643,7 +656,7 @@ export function addAccessoryRequest(
   db: DB, actor: User,
   p: { jobId: string; itemId: string; qty: number; source: 'central_stock' | 'purchasing'; unitPrice?: number; phaseBudget?: string },
 ): DB {
-  const job = assertJobProcurable(db, p.jobId)   // เพิ่มวัสดุหลังเบิกได้ (0037)
+  const job = assertJobProcurable(db, p.jobId, actor)   // เพิ่มวัสดุหลังเบิกได้ (0037)
   const item = db.items.find(i => i.id === p.itemId)
   if (!item) throw new Error('ไม่พบ Accessory')
   if (!p.qty || p.qty < 1) throw new Error('จำนวนต้องอย่างน้อย 1')
@@ -699,7 +712,7 @@ export function addAccessoryRequest(
 export function updateAccessoryRequestQty(db: DB, actor: User, p: { requestId: string; qty: number }): DB {
   const req = db.accessoryRequests.find(r => r.id === p.requestId)
   if (!req) throw new Error('ไม่พบรายการ Accessory')
-  const job = assertJobProcurable(db, req.jobId)
+  const job = assertJobProcurable(db, req.jobId, actor)
   if (req.status !== 'pending') throw new Error('แก้จำนวนได้เฉพาะรายการที่ยังไม่ออก PR')
   if (!p.qty || p.qty < 1) throw new Error('จำนวนต้องอย่างน้อย 1')
   const item = db.items.find(i => i.id === req.itemId)!
@@ -716,7 +729,7 @@ export function updateAccessoryRequestQty(db: DB, actor: User, p: { requestId: s
 export function updateAccessoryRequestPrice(db: DB, actor: User, p: { requestId: string; unitPrice?: number }): DB {
   const req = db.accessoryRequests.find(r => r.id === p.requestId)
   if (!req) throw new Error('ไม่พบรายการวัสดุ')
-  const job = assertJobProcurable(db, req.jobId)
+  const job = assertJobProcurable(db, req.jobId, actor)
   if (req.status === 'cancelled' || req.status === 'returned')
     throw new Error('แก้ราคาได้เฉพาะรายการที่ยังใช้งานอยู่')
   const unitPrice = normalizeBudget(p.unitPrice)
@@ -737,7 +750,7 @@ export function updatePoLinePrice(db: DB, actor: User, p: { requestId: string; u
   if (!req) throw new Error('ไม่พบรายการวัสดุ')
   if (!req.poId || (req.status !== 'po_ordered' && req.status !== 'received'))
     throw new Error('บันทึกราคาจริงได้เฉพาะรายการที่ออก PO แล้ว')
-  const job = assertJobCostEditable(db, req.jobId)   // แก้ราคาจริงได้แม้ปิดงานแล้ว (0037)
+  const job = assertJobCostEditable(db, req.jobId, actor)   // แก้ราคาจริงได้แม้ปิดงานแล้ว (0037)
   const unitPrice = normalizeBudget(p.unitPrice)
   const item = db.items.find(i => i.id === req.itemId)!
   const po = db.pos.find(x => x.id === req.poId)
@@ -754,7 +767,7 @@ export function updatePoLinePrice(db: DB, actor: User, p: { requestId: string; u
 export function returnAccessory(db: DB, actor: User, p: { requestId: string }): DB {
   const req = db.accessoryRequests.find(r => r.id === p.requestId)
   if (!req) throw new Error('ไม่พบรายการ Accessory')
-  const job = assertJobProcurable(db, req.jobId)
+  const job = assertJobProcurable(db, req.jobId, actor)
   if (req.source !== 'central_stock' || req.status !== 'issued')
     throw new Error('คืนได้เฉพาะรายการที่เบิกจากสต็อกกลางแล้วเท่านั้น')
   const item = db.items.find(i => i.id === req.itemId)!
@@ -776,7 +789,7 @@ export function returnAccessory(db: DB, actor: User, p: { requestId: string }): 
 export function cancelAccessoryRequest(db: DB, actor: User, p: { requestId: string }): DB {
   const req = db.accessoryRequests.find(r => r.id === p.requestId)
   if (!req) throw new Error('ไม่พบรายการ Accessory')
-  const job = assertJobProcurable(db, req.jobId)
+  const job = assertJobProcurable(db, req.jobId, actor)
   if (req.status !== 'pending')
     throw new Error('ยกเลิกได้เฉพาะรายการที่ยังไม่ส่ง PR — ถ้าออก PR/PO แล้วให้ประสาน Purchasing')
   const item = db.items.find(i => i.id === req.itemId)!
@@ -800,6 +813,7 @@ export function deleteAccessoryRequest(db: DB, actor: User, p: { requestId: stri
   if (req.prId || req.poId)
     throw new Error('รายการนี้เคยผูก PR/PO ลบไม่ได้ (คงประวัติเอกสาร)')
   const job = db.jobs.find(j => j.id === req.jobId)
+  if (job) assertJobOwner(job, actor)   // 0042 (Division/Manage ข้ามได้ตาม guard)
   const item = db.items.find(i => i.id === req.itemId)
   const next: DB = {
     ...db,
@@ -812,7 +826,7 @@ export function deleteAccessoryRequest(db: DB, actor: User, p: { requestId: stri
 // ---------------- PR / PO (Project ↔ Purchasing) ----------------
 
 export function createPR(db: DB, actor: User, p: { jobId: string; requestIds: string[] }): DB {
-  const job = assertJobProcurable(db, p.jobId)   // ออก PR หลังเบิกได้ (0037)
+  const job = assertJobProcurable(db, p.jobId, actor)   // ออก PR หลังเบิกได้ (0037)
   const reqs = db.accessoryRequests.filter(r => p.requestIds.includes(r.id))
   if (reqs.length === 0) throw new Error('กรุณาเลือกรายการที่จะออก PR')
   const bad = reqs.find(r => r.jobId !== p.jobId || r.source !== 'purchasing' || r.status !== 'pending')
@@ -1002,7 +1016,7 @@ export function issueJob(
   db: DB, actor: User,
   p: { jobId: string; startDate: string; endDate: string; location: string; note?: string },
 ): DB {
-  const job = assertJobEditable(db, p.jobId)
+  const job = assertJobEditable(db, p.jobId, actor)
   const status = deriveJobStatus(db, job)
   if (status !== 'ready_to_issue')
     throw new Error(`${job.jobNo} ยังไม่พร้อมเบิก — ต้องมี LBS ครบตาม Scope และ Accessory ครบทุกรายการ`)
@@ -1493,7 +1507,7 @@ export function cancelJob(
   db: DB, actor: User,
   p: { jobId: string; reason: string; receivedAccessoryToCentral: boolean },
 ): DB {
-  const job = assertJobEditable(db, p.jobId)
+  const job = assertJobEditable(db, p.jobId, actor)
   if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผลการยกเลิก')
 
   let next: DB = db
@@ -1604,16 +1618,16 @@ export function requestApproval(
 ): DB {
   // guard ต่างกันตามประเภท: ออก PR ได้แม้เบิกแล้ว (0037) · เปิดงานใหม่ต้องปิดงานแล้ว (0041)
   const job = p.type === 'create_pr'
-    ? assertJobProcurable(db, p.jobId)
+    ? assertJobProcurable(db, p.jobId, actor)
     : p.type === 'reopen_job'
       ? (() => {
           const j = db.jobs.find(x => x.id === p.jobId)
           if (!j) throw new Error('ไม่พบ Job')
           if (j.terminalStatus !== 'installed')
             throw new Error(`ขอเปิดงานใหม่ได้เฉพาะงานที่ปิดแล้ว (Installed) — ${j.jobNo} อยู่สถานะอื่น`)
-          return j
+          return assertJobOwner(j, actor)   // 0042
         })()
-      : assertJobEditable(db, p.jobId)
+      : assertJobEditable(db, p.jobId, actor)
   if (db.approvalRequests.some(r => r.jobId === p.jobId && r.type === p.type && r.status === 'pending'))
     throw new Error(`${job.jobNo} มีคำขอประเภทนี้รอ Division พิจารณาอยู่แล้ว`)
 

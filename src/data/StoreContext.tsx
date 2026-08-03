@@ -71,6 +71,20 @@ export function can(user: User | null, perm: keyof typeof PERMISSIONS): boolean 
   return PERMISSIONS[perm].includes(user.department)
 }
 
+// สิทธิ์ระดับแถว (0042) — Project ดำเนินการได้เฉพาะ Job ที่อีเมลตัวเองเปิด · Job อื่นดูได้อย่างเดียว
+// แผนกอื่น (Division/Purchasing/Service) + Manage ไม่ถูกจำกัด (งานข้าม Job เป็นหน้าที่ปกติ)
+// openedBy ว่าง = งานเก่าก่อน 0042 → ไม่ล็อก (grandfather) · ตัวจริงคือ app_assert_job_owner ฝั่ง DB
+export function ownsJob(user: User | null, job?: { openedBy?: string } | null): boolean {
+  if (!user || !job) return false
+  if (user.department !== 'project') return true
+  if (!job.openedBy) return true
+  return job.openedBy === user.id
+}
+
+export function canEditJob(user: User | null, job?: { openedBy?: string } | null): boolean {
+  return can(user, 'job.manage') && ownsJob(user, job)
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
   lineEnabled: false,
   lineEndpoint: '/line-notify',

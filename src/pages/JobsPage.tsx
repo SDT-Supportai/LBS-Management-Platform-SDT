@@ -13,18 +13,23 @@ export default function JobsPage() {
   const navigate = useNavigate()
   const tryAction = useTryAction()
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>('active')
+  const [mineOnly, setMineOnly] = useState(false)   // 0042: กรองเฉพาะงานที่ตัวเองเปิด
   const [showCreate, setShowCreate] = useState(false)
   const [form, setForm] = useState({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '' })
   const [costs, setCosts] = useState<CostForm>(emptyCostForm())
   const [installSites, setInstallSites] = useState<InstallSite[]>([])
 
   const canManage = can(user, 'job.manage')
+  // 0042: Project ทำรายการได้เฉพาะงานที่ตัวเองเปิด → ต้องเห็นว่าใบไหนของใคร + กรองเฉพาะของตัวเองได้
+  const isProject = user?.department === 'project'
+  const userOf = (id: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
   const jobs = db.jobs
     .map(j => ({ job: j, status: deriveJobStatus(db, j) }))
     .filter(({ status }) =>
       filter === 'all' ? true
       : filter === 'active' ? status !== 'installed' && status !== 'cancelled'
       : status === filter)
+    .filter(({ job }) => !mineOnly || job.openedBy === user?.id)
     .reverse()
 
   const submit = async () => {
@@ -56,19 +61,30 @@ export default function JobsPage() {
           <option value="all">ทุกสถานะ</option>
           {FILTERS.slice(2).map(f => <option key={f} value={f}>{JOB_STATUS_LABEL[f as JobStatus]}</option>)}
         </select>
+        {isProject && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+            <input type="checkbox" checked={mineOnly} onChange={e => setMineOnly(e.target.checked)} />
+            <span>เฉพาะงานของฉัน</span>
+          </label>
+        )}
       </div>
+      {isProject && (
+        <div className="muted" style={{ marginTop: -8, marginBottom: 16 }}>
+          🔒 ดำเนินการได้เฉพาะ Job ที่คุณเปิดเอง — ใบอื่นเปิดดูข้อมูลได้ครบ แต่ทำรายการไม่ได้
+        </div>
+      )}
 
       <div className="panel">
         <div className="table-scroll">
           <table>
             <thead>
               <tr>
-                <th>Job No.</th><th>ลูกค้า / Scope</th><th>สถานที่ติดตั้ง</th><th>กำหนดส่ง</th>
+                <th>Job No.</th><th>ลูกค้า / Scope</th><th>ผู้รับผิดชอบ</th><th>สถานที่ติดตั้ง</th><th>กำหนดส่ง</th>
                 <th>LBS (ดึงแล้ว/Scope)</th><th>สถานะ</th>
               </tr>
             </thead>
             <tbody>
-              {jobs.length === 0 && <tr><td colSpan={6}><div className="empty">ไม่มี Job ในสถานะนี้</div></td></tr>}
+              {jobs.length === 0 && <tr><td colSpan={7}><div className="empty">ไม่มี Job ในสถานะนี้</div></td></tr>}
               {jobs.map(({ job, status }) => {
                 const allocated = (status === 'issued' || status === 'installed')
                   ? db.lbsUnits.filter(u => u.jobId === job.id && u.status === 'issued').length
@@ -77,6 +93,10 @@ export default function JobsPage() {
                   <tr key={job.id} className="clickable" onClick={() => navigate(`/jobs/${job.id}`)}>
                     <td><b>{job.jobNo}</b></td>
                     <td>{job.customerName}<div className="muted">{job.scope}</div></td>
+                    <td>
+                      {job.openedBy ? userOf(job.openedBy) : <span className="muted">ไม่ระบุ</span>}
+                      {isProject && job.openedBy === user?.id && <span className="badge green" style={{ marginLeft: 6 }}>ของฉัน</span>}
+                    </td>
                     <td>{job.installLocation || '-'}{job.installSites?.length ? <span className="badge blue" style={{ marginLeft: 6 }}>+{job.installSites.length} จุด</span> : null}</td>
                     <td>{fmtDate(job.requiredDate)}</td>
                     <td>
