@@ -55,6 +55,7 @@ function mapJob(r: Row): Job {
     closeHasIssues: r.close_has_issues ?? undefined,
     closeIssueDetail: r.close_issue_detail ?? undefined,
     closeIssueFileUrl: r.close_issue_file_url ?? undefined,
+    reopenCount: r.reopen_count ?? undefined,
     installConfirmedBy: r.install_confirmed_by ?? undefined,
     installCheckinLat: r.install_checkin_lat != null ? Number(r.install_checkin_lat) : undefined,
     installCheckinLng: r.install_checkin_lng != null ? Number(r.install_checkin_lng) : undefined,
@@ -322,6 +323,8 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_assign_job_team', { p_job_id: p.jobId, p_member_ids: p.memberIds, p_lead_member_id: p.leadMemberId ?? null }),
     cancelJob: (p: { jobId: string; reason: string; receivedAccessoryToCentral: boolean }) =>
       rpc(sb, 'rpc_cancel_job', { p_job_id: p.jobId, p_reason: p.reason, p_received_to_central: p.receivedAccessoryToCentral }),
+    reopenJob: (p: { jobId: string; reason: string }) =>
+      rpc(sb, 'rpc_reopen_job', { p_job_id: p.jobId, p_reason: p.reason }),
     // Division approval flow (0016) — payload camelCase → snake_case ให้ตรง SQL
     requestApproval: (p: { type: ApprovalType; jobId: string; payload: ApprovalPayload }) =>
       rpc(sb, 'rpc_request_approval', {

@@ -45,6 +45,7 @@ export const APPROVAL_TYPE_LABEL: Record<string, string> = {
   issue_job: 'เบิกให้ Service',
   cancel_job: 'ยกเลิก Job',
   swap_lbs: 'สลับ LBS',
+  reopen_job: 'เปิดงานใหม่',
 }
 
 export const APPROVAL_STATUS_LABEL: Record<string, string> = {

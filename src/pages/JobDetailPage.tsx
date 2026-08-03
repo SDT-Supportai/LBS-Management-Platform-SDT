@@ -4,7 +4,7 @@ import { useStore, can } from '../data/StoreContext'
 import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf } from '../data/logic'
 import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
 import { ACC_STATUS_LABEL, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
-import type { LbsUnit, CostCategoryKey } from '../types'
+import type { LbsUnit, CostCategoryKey, ApprovalType } from '../types'
 
 const COST_LABEL: Record<string, string> = Object.fromEntries(COST_CATEGORIES.map(c => [c.key, c.label]))
 
@@ -59,7 +59,7 @@ export default function JobDetailPage() {
   const procureLocked = !job || job.terminalStatus === 'installed' || job.terminalStatus === 'cancelled'
   // รายการที่เพิ่มหลังเบิก (createdAt > issuedAt) — ใช้ติดป้ายให้เห็นว่าเป็นการซื้อเพิ่ม
   const isExtra = (createdAt: string) => !!job?.issuedAt && createdAt > job.issuedAt
-  const pendingApprovalOf = (type: 'create_pr' | 'issue_job' | 'cancel_job' | 'swap_lbs') =>
+  const pendingApprovalOf = (type: ApprovalType) =>
     db.approvalRequests.some(r => r.jobId === jobId && r.type === type && r.status === 'pending')
 
   const allocatedUnits = useMemo(
@@ -221,7 +221,33 @@ export default function JobDetailPage() {
               เบิกเมื่อ {fmtDateTime(job.issuedAt)}
               {job.installStartDate && <> · นัดติดตั้ง {fmtDate(job.installStartDate)} – {fmtDate(job.installEndDate)} ที่ {job.issueLocation || '-'}</>}
               {job.issuedNote && <> · {job.issuedNote}</>}
+              {(job.reopenCount ?? 0) > 0 && <> · <b>เคยเปิดงานใหม่ {job.reopenCount} ครั้ง</b></>}
             </div>
+            {/* เปิดงานใหม่ (0041) — ปิดงานผิด/ต้องกลับไปแก้หน้างาน · Project ขออนุมัติ · Manage ทำตรง */}
+            {canManage && (
+              <div style={{ marginTop: 10 }}>
+                <button className="small"
+                  disabled={pendingApprovalOf('reopen_job')}
+                  title={pendingApprovalOf('reopen_job') ? 'มีคำขอเปิดงานใหม่รอ Division พิจารณาอยู่แล้ว' : ''}
+                  onClick={() => {
+                    const reason = window.prompt(
+                      isManage
+                        ? `เปิดงาน ${job.jobNo} ใหม่ (กลับเป็นรอติดตั้ง)\nระบุเหตุผล:`
+                        : `ขออนุมัติเปิดงาน ${job.jobNo} ใหม่ (Division พิจารณา)\nระบุเหตุผล:`)
+                    if (reason === null) return
+                    if (!reason.trim()) return void tryAction(() => { throw new Error('กรุณาระบุเหตุผลที่ขอเปิดงานใหม่') })
+                    isManage
+                      ? tryAction(() => act.reopenJob({ jobId: job.id, reason }), `เปิดงาน ${job.jobNo} ใหม่แล้ว — กลับเป็นรอติดตั้ง`)
+                      : tryAction(() => act.requestApproval({ type: 'reopen_job', jobId: job.id, payload: { reason } }),
+                          `ส่งคำขอเปิดงาน ${job.jobNo} ใหม่ ให้ Division พิจารณาแล้ว`)
+                  }}>
+                  🔄 {isManage ? 'เปิดงานใหม่' : 'ขออนุมัติเปิดงานใหม่'}
+                </button>
+                <span className="muted" style={{ marginLeft: 8 }}>
+                  ใช้เมื่อปิดงานผิด หรือต้องกลับไปแก้หน้างาน — ประวัติการยืนยันรายเครื่องจะยังอยู่ครบ
+                </span>
+              </div>
+            )}
           </div></div>
         )
       })()}

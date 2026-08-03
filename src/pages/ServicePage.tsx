@@ -1,7 +1,14 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { deriveJobStatus, jobInstallSummary, unitInstallState, jobTeam, memberFullName } from '../data/logic'
+import { deriveJobStatus, jobInstallSummary, unitInstallState, jobTeam, memberFullName, serviceIssues } from '../data/logic'
+import type { ServiceIssueKind } from '../data/logic'
+
+const ISSUE_KIND: Record<ServiceIssueKind, { label: string; cls: string }> = {
+  close_summary: { label: 'สรุปตอนปิดงาน', cls: 'amber' },
+  site_visit: { label: 'ติดปัญหาหน้างาน', cls: 'red' },
+  unit_blocked: { label: 'เครื่องติดตั้งไม่ได้', cls: 'red' },
+}
 import { Modal, useToast, useTryAction } from '../ui/components'
 import { fmtDate, fmtDateTime } from '../ui/format'
 import { supabase } from '../lib/supabase'
@@ -50,6 +57,10 @@ export default function ServicePage() {
   const [visitReason, setVisitReason] = useState('')
   const [visitStart, setVisitStart] = useState('')
   const [visitEnd, setVisitEnd] = useState('')
+
+  const [showIssues, setShowIssues] = useState(false)   // พาเนลรวมปัญหา — เริ่มต้นซ่อน
+  const issues = serviceIssues(db)
+  const openIssues = issues.filter(i => !i.jobClosed).length
 
   const ready = db.jobs.filter(j => deriveJobStatus(db, j) === 'ready_to_issue')
   const issued = db.jobs.filter(j => j.terminalStatus === 'issued')
@@ -227,6 +238,47 @@ export default function ServicePage() {
       <div className="page-sub">
         รับงานที่เบิกแล้ว → เข้าติดตั้งหน้างาน → ยืนยัน<b>รายเครื่อง</b> (Check-in GPS + รูปถ่าย ต่อเครื่อง) → ปิดงาน
       </div>
+
+      {/* มุมมองรวมปัญหางานบริการ — ดึงจาก 3 แหล่ง (สรุปตอนปิดงาน / ติดปัญหาหน้างาน / เครื่องติดตั้งไม่ได้) */}
+      {issues.length > 0 && (
+        <div className="panel">
+          <div className="panel-head">
+            <h3>⚠️ ปัญหางานบริการ ({issues.length})
+              {openIssues > 0 && <span className="badge red" style={{ marginLeft: 8 }}>ยังไม่ปิดงาน {openIssues}</span>}
+            </h3>
+            <button className="small" onClick={() => setShowIssues(v => !v)}>
+              {showIssues ? 'ซ่อนรายการ' : `แสดงรายการ (${issues.length})`}
+            </button>
+          </div>
+          {showIssues && (
+            <div className="table-scroll">
+              <table>
+                <thead><tr><th>ประเภท</th><th>Job No.</th><th>รายละเอียด</th><th>เมื่อ</th><th>โดย</th></tr></thead>
+                <tbody>
+                  {issues.map(is => (
+                    <tr key={is.key} style={{ opacity: is.jobClosed ? 0.65 : 1 }}>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        <span className={`badge ${ISSUE_KIND[is.kind].cls}`}>{ISSUE_KIND[is.kind].label}</span>
+                        {is.jobClosed && <div className="muted">ปิดงานแล้ว</div>}
+                      </td>
+                      <td>
+                        <Link to={`/jobs/${is.jobId}`}><b>{is.jobNo}</b></Link>
+                        <div className="muted">{is.customerName}</div>
+                      </td>
+                      <td style={{ maxWidth: 380 }}>
+                        {is.serial && <span className="mono">{is.serial}: </span>}{is.detail}
+                        {is.fileUrl && <> · <a href={is.fileUrl} target="_blank" rel="noreferrer">📎 ไฟล์แนบ</a></>}
+                      </td>
+                      <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(is.at)}</td>
+                      <td className="muted">{userOf(is.by)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="panel">
         <div className="panel-head"><h3>รอ Project เบิกให้ ({ready.length})</h3></div>

@@ -1203,6 +1203,101 @@ export function closeJobInstall(
     `${p.issueFileUrl ? ' (มีไฟล์แนบ)' : ''}${p.note ? ` — ${p.note}` : ''}`)
 }
 
+// เปิดงานใหม่หลังปิดผิด (0041) — installed → issued
+// ไม่ลบประวัติ: unitInstallations คงไว้ทั้งหมด (เครื่องที่ยืนยันแล้วยังยืนยันแล้ว ปิดใหม่ได้ทันที)
+// แต่ล้าง field ที่เกี่ยวกับ "การปิดงาน" ทิ้ง เพราะจะถูกเขียนใหม่ตอนปิดรอบหน้า
+// (ถ้าไม่ล้าง จะมีงานสถานะ issued ที่มีวันปิดงานค้าง = รายงานเพี้ยน) — สำเนาเดิมเก็บลง audit
+export function reopenJob(db: DB, actor: User, p: { jobId: string; reason: string }): DB {
+  const job = db.jobs.find(j => j.id === p.jobId)
+  if (!job) throw new Error('ไม่พบ Job')
+  if (job.terminalStatus !== 'installed')
+    throw new Error(`เปิดงานใหม่ได้เฉพาะงานที่ปิดแล้ว (Installed) — ${job.jobNo} อยู่สถานะอื่น`)
+  if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผลที่ขอเปิดงานใหม่')
+
+  const prev = [
+    `วันปิดงานเดิม ${job.installedAt ?? '-'}`,
+    `ผู้ปิด ${db.users.find(u => u.id === job.installConfirmedBy)?.fullName ?? '-'}`,
+    job.closeHasIssues === true ? `ปัญหาเดิม: ${job.closeIssueDetail ?? '-'}` : 'ไม่มีปัญหา',
+  ].join(' · ')
+
+  let next: DB = {
+    ...db,
+    jobs: db.jobs.map(j => j.id === p.jobId
+      ? {
+          ...j, terminalStatus: 'issued' as const,
+          installedAt: undefined, installNote: undefined, installConfirmedBy: undefined,
+          closeHasIssues: undefined, closeIssueDetail: undefined, closeIssueFileUrl: undefined,
+          reopenCount: (j.reopenCount ?? 0) + 1,
+        }
+      : j),
+  }
+  const s = jobInstallSummary(next, p.jobId)
+  next = notify(next, {
+    type: 'job_reopened', dept: 'all', jobId: p.jobId,
+    message: `🔄 เปิดงาน ${job.jobNo} ใหม่: ${p.reason.trim()} · กลับเป็นรอติดตั้ง (ยืนยันแล้ว ${s.installed}/${s.total} เครื่อง)`,
+  })
+  return audit(next, actor, 'job', p.jobId, 'reopen_job',
+    `เปิดงาน ${job.jobNo} ใหม่ (ครั้งที่ ${(job.reopenCount ?? 0) + 1}) — ${p.reason.trim()} ` +
+    `[ข้อมูลการปิดงานเดิม: ${prev}]`)
+}
+
+// ---------------- มุมมองรวมปัญหางานบริการ (read-only) ----------------
+// ปัญหาถูกบันทึกกระจาย 3 ที่ตามธรรมชาติของ flow — ตัวนี้รวมเป็นภาพเดียวให้ Service เห็นครบ
+//   1) job.closeHasIssues      = สรุปปัญหาตอนปิดงาน            (0040)
+//   2) siteVisits outcome=failed = ไปหน้างานแล้วติดปัญหา          (เฟส A)
+//   3) unitInstallations blocked = เครื่องติดตั้งไม่ได้ (สถานะล่าสุด) (เฟส B)
+export type ServiceIssueKind = 'close_summary' | 'site_visit' | 'unit_blocked'
+export interface ServiceIssue {
+  key: string
+  jobId: string
+  jobNo: string
+  customerName: string
+  kind: ServiceIssueKind
+  detail: string
+  at: string
+  by: string
+  serial?: string
+  fileUrl?: string
+  jobClosed: boolean          // งานปิดแล้วหรือยัง (ใช้จัดลำดับความสำคัญ)
+}
+
+export function serviceIssues(db: DB): ServiceIssue[] {
+  const out: ServiceIssue[] = []
+  const jobOf = (id: string) => db.jobs.find(j => j.id === id)
+
+  db.jobs.filter(j => j.closeHasIssues === true).forEach(j => out.push({
+    key: `close-${j.id}`, jobId: j.id, jobNo: j.jobNo, customerName: j.customerName,
+    kind: 'close_summary', detail: j.closeIssueDetail ?? '-',
+    at: j.installedAt ?? j.issuedAt ?? '', by: j.installConfirmedBy ?? '',
+    fileUrl: j.closeIssueFileUrl, jobClosed: true,
+  }))
+
+  db.siteVisits.filter(v => v.outcome === 'failed').forEach(v => {
+    const j = jobOf(v.jobId); if (!j) return
+    out.push({
+      key: `visit-${v.id}`, jobId: j.id, jobNo: j.jobNo, customerName: j.customerName,
+      kind: 'site_visit', detail: v.reason, at: v.performedAt, by: v.performedBy,
+      jobClosed: j.terminalStatus === 'installed',
+    })
+  })
+
+  db.lbsUnits.filter(u => u.jobId && unitInstallState(db, u.id) === 'blocked').forEach(u => {
+    const j = jobOf(u.jobId!); if (!j) return
+    const r = db.unitInstallations.filter(x => x.unitId === u.id)
+      .sort((a, b) => b.performedAt.localeCompare(a.performedAt))[0]
+    out.push({
+      key: `unit-${u.id}`, jobId: j.id, jobNo: j.jobNo, customerName: j.customerName,
+      kind: 'unit_blocked', detail: r?.reason ?? '-', at: r?.performedAt ?? '',
+      by: r?.performedBy ?? '', serial: u.serialLvb,
+      jobClosed: j.terminalStatus === 'installed',
+    })
+  })
+
+  // งานที่ยังไม่ปิดขึ้นก่อน (ต้องตามแก้) แล้วเรียงใหม่สุดก่อน
+  return out.sort((a, b) =>
+    Number(a.jobClosed) - Number(b.jobClosed) || b.at.localeCompare(a.at))
+}
+
 // ---------------- ทีมช่าง + มอบหมายงาน (เฟส C · sync 0036) ----------------
 export function memberFullName(db: DB, memberId?: string): string {
   const m = db.teamMembers.find(x => x.id === memberId)
@@ -1500,16 +1595,25 @@ export function cancelJob(
 
 const APPROVAL_TYPE_LABEL: Record<ApprovalType, string> = {
   create_pr: 'ออก PR', issue_job: 'เบิกให้ Service', cancel_job: 'ยกเลิก Job', swap_lbs: 'สลับ LBS',
+  reopen_job: 'เปิดงานใหม่',
 }
 
 export function requestApproval(
   db: DB, actor: User,
   p: { type: ApprovalType; jobId: string; payload: ApprovalPayload },
 ): DB {
-  // ออก PR ขออนุมัติได้แม้เบิกแล้ว (จัดซื้อเพิ่มเติม 0037) — อีก 3 ประเภทยังล็อกที่ก่อนเบิก
+  // guard ต่างกันตามประเภท: ออก PR ได้แม้เบิกแล้ว (0037) · เปิดงานใหม่ต้องปิดงานแล้ว (0041)
   const job = p.type === 'create_pr'
     ? assertJobProcurable(db, p.jobId)
-    : assertJobEditable(db, p.jobId)
+    : p.type === 'reopen_job'
+      ? (() => {
+          const j = db.jobs.find(x => x.id === p.jobId)
+          if (!j) throw new Error('ไม่พบ Job')
+          if (j.terminalStatus !== 'installed')
+            throw new Error(`ขอเปิดงานใหม่ได้เฉพาะงานที่ปิดแล้ว (Installed) — ${j.jobNo} อยู่สถานะอื่น`)
+          return j
+        })()
+      : assertJobEditable(db, p.jobId)
   if (db.approvalRequests.some(r => r.jobId === p.jobId && r.type === p.type && r.status === 'pending'))
     throw new Error(`${job.jobNo} มีคำขอประเภทนี้รอ Division พิจารณาอยู่แล้ว`)
 
@@ -1537,6 +1641,8 @@ export function requestApproval(
     if (!b || b.status !== 'in_stock')
       throw new Error('เครื่องที่จะสลับต้องเป็นเครื่องว่างในคลัง (in_stock)')
     typeLabel = 'สลับ LBS'
+  } else if (p.type === 'reopen_job') {
+    if (!p.payload.reason?.trim()) throw new Error('กรุณาระบุเหตุผลที่ขอเปิดงานใหม่')
   } else {
     if (!p.payload.reason?.trim()) throw new Error('กรุณาระบุเหตุผลการยกเลิก')
   }
@@ -1581,6 +1687,8 @@ export function approveRequest(db: DB, actor: User, p: { requestId: string }): D
       jobId: req.jobId, allocatedUnitId: req.payload.swapAllocatedUnitId ?? '',
       stockUnitId: req.payload.swapStockUnitId ?? '', reason: req.payload.reason ?? '',
     })
+  } else if (req.type === 'reopen_job') {
+    next = reopenJob(next, actor, { jobId: req.jobId, reason: req.payload.reason ?? '' })
   } else {
     next = cancelJob(next, actor, {
       jobId: req.jobId, reason: req.payload.reason ?? '',

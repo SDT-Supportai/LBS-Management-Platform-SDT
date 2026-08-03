@@ -97,6 +97,7 @@ export interface Job {
   closeHasIssues?: boolean    // true = มีปัญหา · false = ไม่มีปัญหา
   closeIssueDetail?: string   // รายละเอียดปัญหา (บังคับเมื่อ closeHasIssues = true)
   closeIssueFileUrl?: string  // ไฟล์แนบประกอบ (ถ้ามี)
+  reopenCount?: number        // จำนวนครั้งที่เปิดงานใหม่หลังปิด (0041) — เปิดบ่อย = สัญญาณปัญหากระบวนการ
   installConfirmedBy?: string
   // Check-in หน้างานตอนยืนยันติดตั้ง (บังคับ — 0019)
   installCheckinLat?: number
@@ -203,7 +204,7 @@ export interface PurchaseOrder {
 
 // คำขออนุมัติจาก Division (dept ใน DB = 'sales', แสดงผลเป็น "Division")
 // project ขอ → division/admin อนุมัติ (execute ทันที) หรือตีกลับพร้อมเหตุผล
-export type ApprovalType = 'create_pr' | 'issue_job' | 'cancel_job' | 'swap_lbs'
+export type ApprovalType = 'create_pr' | 'issue_job' | 'cancel_job' | 'swap_lbs' | 'reopen_job'
 
 export interface ApprovalPayload {
   requestIds?: string[]            // create_pr

@@ -181,6 +181,7 @@ export interface StoreActions {
   deleteTeamMember: (p: Parameters<typeof L.deleteTeamMember>[2]) => MaybePromise
   assignJobTeam: (p: Parameters<typeof L.assignJobTeam>[2]) => MaybePromise
   cancelJob: (p: Parameters<typeof L.cancelJob>[2]) => MaybePromise
+  reopenJob: (p: Parameters<typeof L.reopenJob>[2]) => MaybePromise
   requestApproval: (p: Parameters<typeof L.requestApproval>[2]) => MaybePromise
   approveRequest: (p: Parameters<typeof L.approveRequest>[2]) => MaybePromise
   rejectApprovalRequest: (p: Parameters<typeof L.rejectApprovalRequest>[2]) => MaybePromise
@@ -341,6 +342,8 @@ function DemoProvider({ children }: { children: ReactNode }) {
         deleteTeamMember: run('service.confirm', L.deleteTeamMember),
         assignJobTeam: run('service.confirm', L.assignJobTeam),
         cancelJob: run('master.manage', L.cancelJob),
+        // เปิดงานใหม่ตรง = Manage เท่านั้น · Project ใช้ requestApproval type reopen_job (0041)
+        reopenJob: run('master.manage', L.reopenJob),
         requestApproval: run('job.manage', L.requestApproval),
         approveRequest: run('approval.decide', L.approveRequest),
         rejectApprovalRequest: run('approval.decide', L.rejectApprovalRequest),

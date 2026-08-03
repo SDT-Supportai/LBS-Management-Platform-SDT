@@ -16,7 +16,7 @@ import NotificationsPage from './pages/NotificationsPage'
 import MasterDataPage from './pages/MasterDataPage'
 import DevSettingsPage from './pages/DevSettingsPage'
 import ApprovalsPage from './pages/ApprovalsPage'
-import { deriveJobStatus, unreadNotifications } from './data/logic'
+import { deriveJobStatus, unreadNotifications, serviceIssues } from './data/logic'
 
 // Logo จริง (/logo.jpg) + fallback ⚡ ถ้ายังไม่มีไฟล์
 function BrandLogo() {
@@ -37,13 +37,18 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   // งานที่เบิกแล้วแต่ยังไม่มอบหมายทีม (เฟส C)
   const unassignedJobs = db.jobs.filter(j =>
     j.terminalStatus === 'issued' && !db.jobAssignments.some(a => a.jobId === j.id)).length
+  // ปัญหางานบริการที่ยังไม่ปิดงาน — เตือนที่เมนู Service
+  const openServiceIssues = serviceIssues(db).filter(i => !i.jobClosed).length
 
   const MENU: { to: string; icon: string; label: string; badge?: { text: string; cls: string } }[] = [
     { to: '/dashboard', icon: '📊', label: 'Dashboard' },
     { to: '/stocks', icon: '📦', label: 'Project Stock (LBS)' },
     { to: '/jobs', icon: '🗂️', label: 'Project ID (Jobs)', badge: readyJobs > 0 ? { text: `${readyJobs} พร้อมเบิก`, cls: 'green' } : undefined },
     { to: '/purchasing', icon: '🛒', label: 'Purchasing (PR/PO)', badge: (pendingPrs + openPos) > 0 ? { text: `${pendingPrs + openPos}`, cls: 'amber' } : undefined },
-    { to: '/service', icon: '🔧', label: 'Service (Installation)', badge: awaitingInstall > 0 ? { text: `${awaitingInstall} รอติดตั้ง`, cls: 'blue' } : undefined },
+    { to: '/service', icon: '🔧', label: 'Service (Installation)',
+      // ปัญหาค้างสำคัญกว่าจำนวนงานรอติดตั้ง → โชว์ก่อนถ้ามี
+      badge: openServiceIssues > 0 ? { text: `⚠️ ${openServiceIssues} ปัญหา`, cls: 'red' }
+        : awaitingInstall > 0 ? { text: `${awaitingInstall} รอติดตั้ง`, cls: 'blue' } : undefined },
     { to: '/scheduling', icon: '👷', label: 'Service & Scheduling', badge: unassignedJobs > 0 ? { text: `${unassignedJobs} ยังไม่มอบหมาย`, cls: 'amber' } : undefined },
     { to: '/master', icon: '🗄️', label: 'Material Database' },
     // Awaiting Approval ย้ายมาอยู่ล่าง Material Database (มติ 2026-07-19)
