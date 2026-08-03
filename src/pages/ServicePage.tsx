@@ -31,9 +31,14 @@ export default function ServicePage() {
   const [unitJobId, setUnitJobId] = useState<string | null>(null)
   const [step, setStep] = useState<{ unitId: string; mode: 'confirm' | 'block' } | null>(null)
   const [blockReason, setBlockReason] = useState('')
-  // ปิดงานติดตั้ง
+  // ปิดงานติดตั้ง + สรุปปัญหาของงาน (บังคับตอบก่อนปิด — 0040)
   const [closeFor, setCloseFor] = useState<string | null>(null)
   const [closeNote, setCloseNote] = useState('')
+  const [hasIssues, setHasIssues] = useState<boolean | null>(null)   // null = ยังไม่ตอบ
+  const [issueDetail, setIssueDetail] = useState('')
+  // dataUrl เก็บทุกชนิดไฟล์ (โหมด demo ใช้เป็น URL) · isImage ใช้แค่ตัดสินว่าจะโชว์ preview
+  const [issueFile, setIssueFile] = useState<{ file: File; dataUrl: string; isImage: boolean } | null>(null)
+  const [closing, setClosing] = useState(false)
   // มอบหมายทีม (เฟส C)
   const [assignFor, setAssignFor] = useState<string | null>(null)
   const [assignIds, setAssignIds] = useState<string[]>([])
@@ -169,11 +174,36 @@ export default function ServicePage() {
     if (ok) backToList()
   }
 
+  // อัปโหลดไฟล์แนบปัญหา — LIVE: เข้า Storage · demo: เก็บ data URL
+  const resolveIssueFileUrl = async (jobId: string): Promise<string | undefined> => {
+    if (!issueFile) return undefined
+    if (!supabase) return issueFile.dataUrl   // demo: เก็บเป็น data URL (ทุกชนิดไฟล์)
+    const ext = (issueFile.file.name.split('.').pop() || 'bin').toLowerCase()
+    const path = `job-issues/${jobId}/${Date.now()}.${ext}`
+    const { error } = await supabase.storage.from('install-photos').upload(path, issueFile.file, { upsert: false })
+    if (error) throw new Error(`แนบไฟล์ไม่สำเร็จ: ${error.message}`)
+    return supabase.storage.from('install-photos').getPublicUrl(path).data.publicUrl
+  }
+
+  // เปิดโมดัลปิดงาน — เคลียร์คำตอบเรื่องปัญหาทุกครั้ง ห้ามค้างจากงานก่อน
+  const openClose = (jobId: string) => {
+    setCloseNote(''); setHasIssues(null); setIssueDetail(''); setIssueFile(null); setCloseFor(jobId)
+  }
+
   const submitClose = async () => {
-    if (!closeFor) return
-    const ok = await tryAction(() => act.closeJobInstall({ jobId: closeFor, note: closeNote }),
-      'ปิดงานติดตั้งแล้ว — แจ้ง Project อัตโนมัติ')
-    if (ok) { setCloseFor(null); setUnitJobId(null) }
+    if (!closeFor || hasIssues === null) return
+    setClosing(true)
+    try {
+      const issueFileUrl = hasIssues ? await resolveIssueFileUrl(closeFor) : undefined
+      const ok = await tryAction(() => act.closeJobInstall({
+        jobId: closeFor, note: closeNote,
+        hasIssues, issueDetail: hasIssues ? issueDetail : undefined, issueFileUrl,
+      }), hasIssues ? 'ปิดงานแล้ว — บันทึกปัญหาและแจ้ง Project' : 'ปิดงานติดตั้งแล้ว — แจ้ง Project อัตโนมัติ')
+      if (ok) { setCloseFor(null); setUnitJobId(null); setIssueFile(null); setHasIssues(null); setIssueDetail('') }
+    } catch (e) {
+      show(e instanceof Error ? e.message : String(e), true)
+    }
+    setClosing(false)
   }
 
   const openVisit = (jobId: string) => {
@@ -275,7 +305,7 @@ export default function ServicePage() {
                           </button>
                           <button className="small success" style={{ marginRight: 6 }}
                             disabled={!s.canClose} title={closeBlockedReason(s)}
-                            onClick={() => { setCloseNote(''); setCloseFor(j.id) }}>
+                            onClick={() => { openClose(j.id) }}>
                             🏁 ปิดงาน
                           </button>
                           <button className="small" onClick={() => openVisit(j.id)}>เลื่อน/ติดปัญหา</button>
@@ -330,6 +360,14 @@ export default function ServicePage() {
                         )
                       })}
                       {j.installNote && <div className="muted">📝 {j.installNote}</div>}
+                      {/* สรุปปัญหาของงาน (0040) */}
+                      {j.closeHasIssues === true && (
+                        <div className="muted" style={{ color: 'var(--danger)' }}>
+                          ⚠️ <b>มีปัญหา:</b> {j.closeIssueDetail}
+                          {j.closeIssueFileUrl && <> · <a href={j.closeIssueFileUrl} target="_blank" rel="noreferrer">📎 ไฟล์แนบ</a></>}
+                        </div>
+                      )}
+                      {j.closeHasIssues === false && <div className="muted">✅ ไม่มีปัญหา</div>}
                     </td>
                   </tr>
                 )
@@ -347,7 +385,7 @@ export default function ServicePage() {
             footer={<>
               <button onClick={() => setUnitJobId(null)}>ปิด</button>
               <button className="success" disabled={!s.canClose} title={closeBlockedReason(s)}
-                onClick={() => { setUnitJobId(null); setCloseNote(''); setCloseFor(unitJob.id) }}>
+                onClick={() => { setUnitJobId(null); openClose(unitJob.id) }}>
                 🏁 ปิดงาน ({s.installed}/{s.total})
               </button>
             </>}>
@@ -525,8 +563,13 @@ export default function ServicePage() {
         return (
           <Modal title={`ปิดงานติดตั้ง — ${closeJob.jobNo}`} onClose={() => setCloseFor(null)}
             footer={<>
-              <button onClick={() => setCloseFor(null)}>ยกเลิก</button>
-              <button className="success" onClick={submitClose}>ยืนยันปิดงาน</button>
+              <button onClick={() => setCloseFor(null)} disabled={closing}>ยกเลิก</button>
+              <button className="success" onClick={submitClose}
+                disabled={closing || hasIssues === null || (hasIssues && !issueDetail.trim())}
+                title={hasIssues === null ? 'ต้องระบุว่างานนี้มีปัญหาหรือไม่ก่อน'
+                  : hasIssues && !issueDetail.trim() ? 'กรอกรายละเอียดปัญหาก่อน' : ''}>
+                {closing ? 'กำลังปิดงาน...' : 'ยืนยันปิดงาน'}
+              </button>
             </>}>
             <p style={{ marginBottom: 12 }}>
               ติดตั้งสำเร็จ <b>{s.installed}/{s.total}</b> เครื่อง
@@ -549,6 +592,55 @@ export default function ServicePage() {
                 </div>
               </div>
             )}
+            {/* บังคับสรุปปัญหาก่อนปิดงาน (0040) */}
+            <div className="field">
+              <span>งานนี้มีปัญหาหรือไม่ ? *</span>
+              <div style={{ display: 'flex', gap: 18, alignItems: 'center', paddingTop: 4 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                  <input type="radio" name="hasIssues" checked={hasIssues === false}
+                    onChange={() => { setHasIssues(false); setIssueDetail(''); setIssueFile(null) }} />
+                  <span>ไม่มีปัญหา</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                  <input type="radio" name="hasIssues" checked={hasIssues === true}
+                    onChange={() => setHasIssues(true)} />
+                  <span style={{ color: 'var(--danger)' }}>มีปัญหา</span>
+                </label>
+              </div>
+            </div>
+            {hasIssues === null && (
+              <div className="muted" style={{ color: 'var(--danger)', marginBottom: 10 }}>
+                ต้องเลือกก่อนจึงจะปิดงานได้
+              </div>
+            )}
+
+            {hasIssues === true && (
+              <>
+                <label className="field"><span>รายละเอียดปัญหา *</span>
+                  <textarea rows={3} value={issueDetail} onChange={e => setIssueDetail(e.target.value)}
+                    placeholder="เช่น จุดติดตั้งที่ 2 พื้นที่คับแคบต้องใช้เครนเพิ่ม · ลูกค้าขอเปลี่ยนตำแหน่งหน้างาน" />
+                </label>
+                <label className="field"><span>แนบไฟล์ประกอบ (รูป / PDF / เอกสาร — ถ้ามี)</span>
+                  <input type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx"
+                    onChange={async e => {
+                      const f = e.target.files?.[0]
+                      if (!f) { setIssueFile(null); return }
+                      if (f.size > 10 * 1024 * 1024) { show('ไฟล์ใหญ่เกิน 10 MB', true); e.target.value = ''; return }
+                      setIssueFile({ file: f, dataUrl: await readAsDataUrl(f), isImage: f.type.startsWith('image/') })
+                    }} />
+                </label>
+                {issueFile && (
+                  <div className="muted" style={{ marginBottom: 10 }}>
+                    📎 {issueFile.file.name} ({Math.round(issueFile.file.size / 1024)} KB)
+                    {issueFile.isImage && (
+                      <img src={issueFile.dataUrl} alt="preview"
+                        style={{ maxWidth: '100%', maxHeight: 160, borderRadius: 8, marginTop: 8, display: 'block' }} />
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+
             <label className="field"><span>บันทึกสรุปงาน (ถ้ามี)</span>
               <textarea rows={2} value={closeNote} onChange={e => setCloseNote(e.target.value)}
                 placeholder="เช่น ส่งมอบลูกค้าเรียบร้อย รอเอกสารรับรอง" />

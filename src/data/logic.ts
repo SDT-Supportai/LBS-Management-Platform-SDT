@@ -1155,7 +1155,10 @@ export function blockUnitInstall(db: DB, actor: User, p: { unitId: string; reaso
 
 // ปิดงานติดตั้ง (ขั้นตอนแยก ต้องกดยืนยัน) → Job = installed (terminal)
 // วันติดตั้งของ Job = วันล่าสุดที่ติดตั้งสำเร็จ
-export function closeJobInstall(db: DB, actor: User, p: { jobId: string; note?: string }): DB {
+export function closeJobInstall(
+  db: DB, actor: User,
+  p: { jobId: string; note?: string; hasIssues?: boolean; issueDetail?: string; issueFileUrl?: string },
+): DB {
   const job = db.jobs.find(j => j.id === p.jobId)
   if (!job) throw new Error('ไม่พบ Job')
   if (job.terminalStatus !== 'issued')
@@ -1165,6 +1168,11 @@ export function closeJobInstall(db: DB, actor: User, p: { jobId: string; note?: 
   if (s.pending > 0)
     throw new Error(`ยังมี ${s.pending} เครื่องที่ยังไม่ได้ข้อสรุป — ยืนยันติดตั้ง หรือระบุว่าติดตั้งไม่ได้ ให้ครบก่อนปิดงาน`)
   if (s.installed === 0) throw new Error('ต้องมีเครื่องที่ติดตั้งสำเร็จอย่างน้อย 1 เครื่องจึงปิดงานได้')
+  // บังคับสรุปปัญหาของงานก่อนปิด (0040) — ต้องตอบว่ามีหรือไม่มี ไม่ปล่อยว่าง
+  if (p.hasIssues === undefined)
+    throw new Error('กรุณาระบุว่างานนี้มีปัญหาหรือไม่ ก่อนปิดงาน')
+  if (p.hasIssues && !p.issueDetail?.trim())
+    throw new Error('เลือก "มีปัญหา" แล้ว ต้องกรอกรายละเอียดปัญหา')
 
   const lastDate = db.unitInstallations
     .filter(r => r.jobId === p.jobId && r.outcome === 'installed' && r.installedDate)
@@ -1178,17 +1186,21 @@ export function closeJobInstall(db: DB, actor: User, p: { jobId: string; note?: 
       ? {
           ...j, terminalStatus: 'installed' as const,
           installedAt: lastDate, installNote: p.note, installConfirmedBy: actor.id,
+          closeHasIssues: p.hasIssues,
+          closeIssueDetail: p.hasIssues ? p.issueDetail!.trim() : undefined,
+          closeIssueFileUrl: p.hasIssues ? p.issueFileUrl : undefined,
         }
       : j),
   }
   const blockedTxt = s.blocked > 0 ? ` · ติดปัญหา ${s.blocked} เครื่อง` : ''
+  const issueTxt = p.hasIssues ? ` · ⚠️ มีปัญหา: ${p.issueDetail!.trim()}` : ' · ไม่มีปัญหา'
   next = notify(next, {
     type: 'job_installed', dept: 'project', jobId: p.jobId,
-    message: `🏁 ${job.jobNo} ปิดงานติดตั้ง ${s.installed}/${s.total} เครื่อง${blockedTxt} · ${lastDate} · โดย ${actor.fullName}`,
+    message: `🏁 ${job.jobNo} ปิดงานติดตั้ง ${s.installed}/${s.total} เครื่อง${blockedTxt} · ${lastDate}${issueTxt} · โดย ${actor.fullName}`,
   })
   return audit(next, actor, 'job', p.jobId, 'close_job_install',
-    `${job.jobNo} ปิดงานติดตั้ง ${s.installed}/${s.total} เครื่อง${blockedTxt} วันล่าสุด ${lastDate}` +
-    `${p.note ? ` — ${p.note}` : ''}`)
+    `${job.jobNo} ปิดงานติดตั้ง ${s.installed}/${s.total} เครื่อง${blockedTxt} วันล่าสุด ${lastDate}${issueTxt}` +
+    `${p.issueFileUrl ? ' (มีไฟล์แนบ)' : ''}${p.note ? ` — ${p.note}` : ''}`)
 }
 
 // ---------------- ทีมช่าง + มอบหมายงาน (เฟส C · sync 0036) ----------------

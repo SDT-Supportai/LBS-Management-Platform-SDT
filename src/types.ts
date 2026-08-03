@@ -93,6 +93,10 @@ export interface Job {
   issueLocation?: string
   installedAt?: string        // วันที่ติดตั้งจริง (Service ยืนยัน)
   installNote?: string
+  // สรุปปัญหาของงาน — บังคับตอบตอนปิดงานติดตั้ง (0040)
+  closeHasIssues?: boolean    // true = มีปัญหา · false = ไม่มีปัญหา
+  closeIssueDetail?: string   // รายละเอียดปัญหา (บังคับเมื่อ closeHasIssues = true)
+  closeIssueFileUrl?: string  // ไฟล์แนบประกอบ (ถ้ามี)
   installConfirmedBy?: string
   // Check-in หน้างานตอนยืนยันติดตั้ง (บังคับ — 0019)
   installCheckinLat?: number

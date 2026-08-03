@@ -207,6 +207,16 @@ export default function JobDetailPage() {
               🔧 ติดตั้ง <span className="badge green">{s.installed}/{s.total} เครื่อง</span>
               {s.blocked > 0 && <> <span className="badge red">ติดตั้งไม่ได้ {s.blocked}</span></>}
             </div>
+            {/* สรุปปัญหาของงานที่ Service ตอบตอนปิดงาน (0040) */}
+            {job.closeHasIssues === true && (
+              <div style={{ marginTop: 6, color: 'var(--danger)' }}>
+                ⚠️ <b>มีปัญหาหน้างาน:</b> {job.closeIssueDetail}
+                {job.closeIssueFileUrl && <> · <a href={job.closeIssueFileUrl} target="_blank" rel="noreferrer">📎 ไฟล์แนบ</a></>}
+              </div>
+            )}
+            {job.closeHasIssues === false && (
+              <div style={{ marginTop: 6, color: 'var(--green)' }}>✅ Service ยืนยันว่าไม่มีปัญหาหน้างาน</div>
+            )}
             <div className="muted">
               เบิกเมื่อ {fmtDateTime(job.issuedAt)}
               {job.installStartDate && <> · นัดติดตั้ง {fmtDate(job.installStartDate)} – {fmtDate(job.installEndDate)} ที่ {job.issueLocation || '-'}</>}

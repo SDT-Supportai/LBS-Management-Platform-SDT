@@ -52,6 +52,9 @@ function mapJob(r: Row): Job {
     installEndDate: r.install_end_date ?? undefined,
     issueLocation: r.issue_location ?? undefined,
     installedAt: r.installed_at ?? undefined, installNote: r.install_note ?? undefined,
+    closeHasIssues: r.close_has_issues ?? undefined,
+    closeIssueDetail: r.close_issue_detail ?? undefined,
+    closeIssueFileUrl: r.close_issue_file_url ?? undefined,
     installConfirmedBy: r.install_confirmed_by ?? undefined,
     installCheckinLat: r.install_checkin_lat != null ? Number(r.install_checkin_lat) : undefined,
     installCheckinLng: r.install_checkin_lng != null ? Number(r.install_checkin_lng) : undefined,
@@ -301,8 +304,13 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_confirm_unit_install', { p_unit_id: p.unitId, p_installed_date: p.installedDate, p_lat: p.checkinLat ?? null, p_lng: p.checkinLng ?? null, p_photo_url: p.photoUrl ?? null, p_member_id: p.installedByMemberId ?? null, p_note: p.note ?? null }),
     blockUnitInstall: (p: { unitId: string; reason: string }) =>
       rpc(sb, 'rpc_block_unit_install', { p_unit_id: p.unitId, p_reason: p.reason }),
-    closeJobInstall: (p: { jobId: string; note?: string }) =>
-      rpc(sb, 'rpc_close_job_install', { p_job_id: p.jobId, p_note: p.note ?? null }),
+    closeJobInstall: (p: { jobId: string; note?: string; hasIssues?: boolean; issueDetail?: string; issueFileUrl?: string }) =>
+      rpc(sb, 'rpc_close_job_install', {
+        p_job_id: p.jobId, p_note: p.note ?? null,
+        p_has_issues: p.hasIssues ?? null,
+        p_issue_detail: p.issueDetail ?? null,
+        p_issue_file_url: p.issueFileUrl ?? null,
+      }),
     // ทีมช่าง + มอบหมายงาน (0036)
     createTeamMember: (p: { firstName: string; lastName: string; phone: string; position: string; userId?: string }) =>
       rpc(sb, 'rpc_create_team_member', { p_first_name: p.firstName, p_last_name: p.lastName, p_phone: p.phone, p_position: p.position, p_user_id: p.userId ?? null }),
