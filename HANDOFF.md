@@ -1,7 +1,8 @@
 # HANDOFF — 115kV LBS Project Management Platform
 
-เอกสารส่งมอบ/สรุปสถานะระบบ (อัปเดต 2026-07-22) — อ่านไฟล์นี้ก่อนดูแลระบบต่อ
-ประกอบกับ [README.md](README.md) (ภาพรวม), [SETUP.md](SETUP.md) (คู่มือ deploy), และ
+เอกสารส่งมอบ/สรุปสถานะระบบ (อัปเดต 2026-08-03) — อ่านไฟล์นี้ก่อนดูแลระบบต่อ
+ประกอบกับ [README.md](README.md) (ภาพรวม), [SETUP.md](SETUP.md) (คู่มือ deploy),
+[VIDEO-SCRIPT.md](VIDEO-SCRIPT.md) (prompt + บทวีดีโอแนะนำระบบ), และ
 `../lbs-stock-project-instructions (1).md` (business rules = source of truth ห้ามเปลี่ยนโดยไม่ยืนยัน)
 
 ---
@@ -16,8 +17,9 @@
 - **Project Stock (LBS)** (`StocksPage`) — คลัง LBS + ดูรายเครื่อง (ข้อมูลลูกค้า ref จาก Job) + Export/Import Excel ต่อคลัง · **ต้นทุนตัว LBS ต่อเครื่อง** กรอกตอนสร้าง/รับเข้า/Import (คอลัมน์ "ต้นทุน/เครื่อง") → badge "มูลค่าคลัง" = Σ ต้นทุน (0024) · **Import เจอ Serial ซ้ำ (คู่ตรงในคลังนี้) → ถามว่าอัพเดทต้นทุน/ข้าม** ส่วนที่ชนคลังอื่นหรือคู่ไม่ตรงเป็น error (0025) · ตอนสร้าง/แก้คลังมีช่อง **PO No.** + **Remark** (ว่างได้ · แก้ภายหลังได้, 0029)
 - **Project ID (Jobs)** (`JobsPage`/`JobDetailPage`) — เปิด Job, **Project Budget ต้นทุน 7 หมวด** (การ์ดแก้ได้/ตาราง Raw Material→Finance ซ่อนได้ · **Manage แก้งบได้แม้ Job ล็อก** 0023), ดึง-คืน LBS, ขอวัสดุ, ออก PR — ปุ่มออก PR/เบิก/ยกเลิกของ project เป็น "ขออนุมัติ" (Manage ทำตรง) · Purchase Orders มีปุ่ม **⬇ Export Excel** + คอลัมน์ Phase Budget โชว์ Phase ที่กรอกในงบ · **ดึง LBS เข้า Job → ต้นทุนเครื่องบวกเข้า actual หมวด Raw Material** (0024) · **หลายจุดติดตั้งต่อ Job เมื่อ LBS>1** (จุดที่ 1 = ฟิลด์เดิม + จุดที่ 2+ = install_sites, 0026) · ปุ่ม **🖨️ ปริ้นสรุปโครงการ (PDF)**
 - **Purchasing (PR/PO)** (`PurchasingPage`) — จัดกลุ่มตาม Job, **1 PR → หลาย PO** (เลือกอุปกรณ์เข้าแต่ละ PO), ยกเลิก PO, ตีกลับ PR, รับของ partial · **รายการรอออก PO แสดงครบ** (Epicor, ชื่อ, จำนวน, ราคา/หน่วย, มูลค่า, Phase Budget) · popup ออก PO เป็น Modal กว้าง · สรุปประวัติ PR/PO ต่อ Job (ซ่อนได้)
-- **Service (Installation)** (`ServicePage`) — ยืนยันติดตั้ง **บังคับ Check-in GPS + แนบรูป**
-- **Material Database** (`MasterDataPage`) — ฐานข้อมูลวัสดุ + Export/Import Excel · **ใช้ "รหัส Epicor" เป็นตัวระบุหลัก** (ตัดช่อง "รหัส" ภายในออกจาก UI ทั้งหมด — เบื้องหลัง client set `code`=Epicor คง schema เดิม, Import match/เช็คซ้ำด้วย Epicor)
+- **Service (Installation)** (`ServicePage`) — **ยืนยันติดตั้งรายเครื่อง** (per serial): แต่ละเครื่องบังคับ วันที่ + Check-in GPS + รูป + เลือกช่างผู้ติดตั้ง (0035/0036) · เครื่องที่ติดตั้งไม่ได้ระบุเหตุผลรายเครื่องได้ · **เลื่อนนัด/ติดปัญหาหน้างาน** (0034 — เลื่อนแล้ววันนัดของ Job ขยับเอง) · **มอบหมายทีมช่าง + หัวหน้าทีม** (0036) · **ปิดงานเป็นขั้นแยก** ต้องได้ข้อสรุปทุกเครื่อง + สำเร็จ ≥1 และ **บังคับสรุปปัญหา (มี/ไม่มี) + แนบไฟล์** ก่อนปิด (0040) · พาเนล **⚠️ ปัญหางานบริการ** รวมปัญหาจาก 3 แหล่ง (0041)
+- **Service & Scheduling** (`ServiceSchedulingPage`) — **ทะเบียนทีมช่าง** (ชื่อ/สกุล/เบอร์/ตำแหน่ง · ผูกบัญชี login ได้ถ้ามี) + **ตารางงานรายบุคคล** (งานที่รับ + วันนัด + บทบาท + คืบหน้า) + เตือนงานที่เบิกแล้วยังไม่มอบหมายทีม (0036)
+- **Material Database** (`MasterDataPage`) — **แยก 2 พาเนลชัดเจน**: (1) **ฐานข้อมูลวัสดุ** = รายการที่ใช้ออก PR/PO (รหัส Epicor/ชื่อ/หน่วย/การจัดหา) ไม่มียอด (2) **คลังคงเหลือ** = ของที่มีจริง (คงเหลือ/ต้นทุนถัวเฉลี่ย/มูลค่า) + ปรับยอด + **📜 ประวัติการเคลื่อนไหว** (ledger 0038) — ทั้ง 2 พาเนลซ่อนได้/เริ่มซ่อน · **ใช้ "รหัส Epicor" เป็นตัวระบุหลัก** (เบื้องหลัง client set `code`=Epicor คง schema เดิม) · Export/Import Excel **round-trip ครบ 5 คอลัมน์** (รวม การจัดหา + คลังคงเหลือ — เปลี่ยนยอดต้องใส่เหตุผล → ลง ledger)
 - **Awaiting Approval** (`ApprovalsPage`) — คิวคำขอจาก project ให้ Division ตัดสิน + ประวัติแยกตาม Job (ซ่อนได้) · badge จำนวนค้าง · **อยู่ล่าง Material Database**
 - **Dev Settings** (`DevSettingsPage`) — เฉพาะ Manage: ผู้ใช้งาน (เพิ่ม/แก้ชื่อ-อีเมล-รหัส-แผนก), สวิตช์ LINE (global), backup — **Audit Log** ปุ่มล่าง sidebar
 
@@ -28,8 +30,9 @@
 | Hosting | **Cloudflare Pages — LIVE แล้ว** https://lbs-platform-sdt.pages.dev (ย้ายจาก Netlify 2026-07-15, auto-deploy จาก `main`) |
 | GitHub repo | https://github.com/SDT-Supportai/LBS-Management-Platform-SDT (root = โฟลเดอร์นี้) |
 | Supabase project ref | `mrdnxajwnvkgvfyaclwv` (region: ตามที่สร้าง) |
-| Migrations ที่รันแล้ว | **0001–0030** (0030 รัน 2026-07-25) · ⚠️ **0031 เป็นไฟล์ใหม่ (2026-07-25)** — ปรับข้อความ LINE ให้สั้น (คง logic เดิม, ไม่ recreate function) · **ปลอดภัยจะ deploy ก่อนรันก็ได้** (frontend ไม่พึ่ง) แต่รันแล้วข้อความ live จึงสั้นตาม demo · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูปไม่ได้ เช็ค bucket `install-photos` (0019) |
-| E2E บน DB จริง | ✅ ผ่านทั้ง flow · demo E2E: approval, LINE dispatch, budget 7 หมวด, 1 PR→N PO (12/12), check-in/photo |
+| Migrations ที่รันแล้ว | **0001–0041 รันครบ** (0041 รัน 2026-08-03) · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูป/ไฟล์แนบไม่ได้ เช็ค bucket `install-photos` (0019 — ไฟล์แนบปัญหาใช้ bucket เดิม prefix `job-issues/`) |
+| E2E บน DB จริง | ✅ ผ่านทั้ง flow · demo E2E: approval, LINE dispatch, budget 7 หมวด, 1 PR→N PO (12/12), check-in/photo, ยืนยันรายเครื่อง, โอนวัสดุเข้าคลัง, Import Excel แก้ยอด, ปิดงาน+สรุปปัญหา, reopen |
+| ตรวจ LIVE แบบไม่แตะข้อมูล | probe ผ่าน PostgREST ด้วย anon key: `GET /rest/v1/<table>?select=...` (200 = มีตาราง/คอลัมน์) และ `POST /rest/v1/rpc/<fn>` (ตอบ `กรุณาเข้าสู่ระบบก่อน` = ฟังก์ชันมีจริง+auth gate ทำงาน · `404 PGRST202` = ไม่มี signature นั้น) — RPC ทุกตัวตรวจสิทธิ์ก่อนเขียน จึงไม่มี row ถูกสร้าง |
 | Admin จริง | `siradanai.s@precise.co.th` (department = admin, แสดงเป็น "Manage") |
 
 ## 3. Tech stack + หลักการออกแบบ
@@ -109,9 +112,19 @@ lbs-platform/
 | `0029_project_stock_po_no.sql` | **ฟีเจอร์ (2026-07-24)**: Project Stock + `po_no` (PO No. ว่างได้ · แก้ภายหลังได้) — drop+recreate rpc_create_project_stock/rpc_update_project_stock (+p_po_no) คงพฤติกรรมเดิม · Remark ใช้ notes เดิม (relabel UI) · demo sync `logic.ts` |
 | `0028_swap_lbs_approval.sql` | **ฟีเจอร์ (2026-07-24)**: สลับเลข Serial LBS (LVB+OM เป็นคู่) ระหว่างเครื่อง allocated กับเครื่อง in_stock — ผ่าน Division อนุมัติ (Manage ตรง) · approval type ใหม่ `swap_lbs` (ALTER CHECK) + `app_exec_swap_lbs` (แลกคู่เลขผ่านค่าชั่วคราวกันชน unique) + `rpc_swap_lbs` + ต่อ rpc_request_approval/approve/reject · ทำได้หลังดึง LBS จนถึงก่อน issued (assertJobEditable) · เครื่องไม่ย้าย/ไม่แตะ accessory · demo sync `logic.ts swapLbs` |
 | `0027_delete_cancelled_accessory.sql` | **ฟีเจอร์ (2026-07-24)**: ลบรายการวัสดุที่ยกเลิกออกจากการ์ด — `rpc_delete_accessory_request` (Project/Division/Manage = dept project+sales+admin) ลบ job_accessory_requests ที่ `status='cancelled'` **และ** pr_id/po_id NULL (กัน PR/PO อ้างรายการที่หาย) · audit การยกเลิกยังอยู่ใน audit_logs · perm ใหม่ `accessory.cleanup` ฝั่ง client · demo sync `logic.ts deleteAccessoryRequest` |
+| `0032_swap_lbs_notify.sql` | **fix (2026-07-26)**: `app_exec_swap_lbs` เดิมมีแค่ audit → เติม `app_notify('lbs_swapped', …, 'all')` ให้สลับ LBS มีข้อความ action ชั้น 1 (`🔁`) เหมือนอีก 3 ประเภทที่อนุมัติผ่าน Division · demo sync `logic.ts swapLbs` |
+| `0033_line_approval.sql` | **ฟีเจอร์ (2026-07-26)**: **อนุมัติผ่าน LINE แชทส่วนตัว (1:1)** — `profiles.line_user_id` (unique) + ตาราง `line_link_codes` (โค้ด 6 หลัก อายุ 10 นาที) + `rpc_line_gen_code` (authenticated) + `app_line_bind` / `rpc_line_approve` (**service_role เท่านั้น** — กัน user อนุมัติแทนคนอื่น) + refactor แยก `app_exec_approve` ให้เว็บ(JWT) และ LINE ใช้ร่วม · **LINE อนุมัติอย่างเดียว — ตีกลับต้องทำบนเว็บ (ต้องมีเหตุผล)** · คู่กับ `functions/line-approval-push.js` (Flex card ปุ่มอนุมัติ) + `line-webhook` (postback + ผูกโค้ด) · คงแจ้งเตือนกลุ่มเดิมไว้ |
+| `0034_site_visit.sql` | **ฟีเจอร์ (2026-07-27) เฟส A**: Service บันทึกออกหน้างานที่ยังไม่จบ — ตาราง `job_site_visits` + `rpc_log_site_visit` (service+admin): `rescheduled` = **อัปเดต install_start/end_date ของ Job ให้เอง** · `failed` = บันทึกปัญหาไว้ (Job ยังเป็น issued ไม่ปิด) · demo sync `logic.ts logSiteVisit` |
+| `0035_unit_install.sql` | **ฟีเจอร์ (2026-07-27) เฟส B**: **ยืนยันติดตั้งรายเครื่อง** — ตาราง `unit_installations` (log หลายแถว/เครื่อง → **แถวล่าสุดชนะ**) + view `v_unit_install_state` + `rpc_confirm_unit_install` (บังคับ วันที่+GPS+รูป ต่อเครื่อง) / `rpc_block_unit_install` (เครื่องติดตั้งไม่ได้ → แจ้ง Project) / `rpc_close_job_install` (ปิดงานเป็นขั้นแยก: ทุกเครื่องต้องได้ข้อสรุป + สำเร็จ ≥1) + backfill งานที่ปิดไปแล้ว · **⚠️ เก็บตารางแยกไม่ใช่คอลัมน์บน lbs_units เพราะ trigger `trg_block_issued_edit` (0001) บล็อก UPDATE lbs_units ตอน job = issued** · Job คงสถานะ issued พร้อมตัวเลข x/y จนกดปิดงาน → ไม่ต้องแก้ `v_job_status`/`deriveJobStatus`/`STATUS_TH` ของบอท |
+| `0036_service_team.sql` | **ฟีเจอร์ (2026-07-28) เฟส C**: ทะเบียนทีมช่าง + มอบหมายงาน — `team_members` (ชื่อ/สกุล/เบอร์/ตำแหน่ง + `user_id` nullable) + `job_assignments` (หลายคน/งาน + ธงหัวหน้าทีม) + `unit_installations.installed_by_member_id` (**ช่างที่ลงมือติดตั้ง ≠ performed_by ที่เป็น user ผู้บันทึก**) + 4 RPC + `rpc_confirm_unit_install` signature ใหม่ (+p_member_id, drop+recreate) · **แยกจาก profiles เพราะ `profiles.id` อ้าง `auth.users` (ทุก user ต้องมีบัญชี login) และไม่มีฟิลด์เบอร์/ตำแหน่ง → ช่างภาคสนาม/outsource ใส่เป็น user ไม่ได้** · มอบหมายเป็น "แผนงาน" ไม่ใช่ "สิทธิ์" (RPC ยังตรวจ `app_assert_dept` ตามเดิม) |
+| `0037_extra_purchase_after_issue.sql` | **ฟีเจอร์ (2026-07-30)**: **จัดซื้อเพิ่มเติมหลังเบิก** — แยก guard เป็น 3 ระดับ: `app_assert_job_editable` (เดิม — scope/allocation/LBS ล็อกตั้งแต่ issued, **ไม่แตะ**) · `app_assert_job_procurable` (เพิ่มวัสดุ/ออก PR → ถึง issued, ปิดเมื่อ installed/cancelled) · `app_assert_job_cost_editable` (แก้ราคาจริงย้อนหลัง → ได้แม้ installed เพราะใบแจ้งหนี้มาช้ากว่าของ) + `app_assert_job_editable_for(jid, req_type)` ให้ `rpc_request_approval` แยกตามประเภท (create_pr ผ่านได้หลังเบิก · issue/cancel/swap ล็อกตามเดิม) · **ใช้ `app_swap_guard` patch เฉพาะบรรทัด guard ทุก overload + verify block ตอนท้าย** |
+| `0038_stock_ledger.sql` | **ฟีเจอร์ (2026-07-30) เฟส S1**: **คลังคงเหลือ = ledger + ต้นทุนถัวเฉลี่ย** — ตาราง `stock_movements` (qty +เข้า/−ออก + balance_after + ref job/request) + `accessory_stock.avg_unit_cost` (moving average) + `job_accessory_requests.qty_transferred` + `rpc_transfer_job_material_to_stock` (**โอนวัสดุเหลือจาก Job เข้าคลัง — ของที่ซื้อผ่าน PO ก็โอนได้ · ต้นทุนโอนตามของ**: ตัดมูลค่าออกจาก Job ต้นทางตามจำนวน) + backfill ยอดตั้งต้น · **⚠️ ใช้ BEFORE TRIGGER `trg_log_stock_movement` บน accessory_stock ไม่ใช่การ patch 6 RPC** (accessory_stock ถูกเขียนจาก add_accessory_request/return_accessory/cancel_job/create_item/update_item/adjust_stock กระจาย 0002/0006/0015/0016/0017) → ยอดเปลี่ยนที่ไหนก็ลง ledger เสมอ **bypass ไม่ได้** + คิดค่าเฉลี่ยในตัว · บริบท (ประเภท/Job/หมายเหตุ) ส่งผ่าน `app_set_stock_ctx` (transaction-local) ถ้าไม่ตั้ง = บันทึกเป็น `adjust` |
+| `0039_stock_cost_input.sql` | **fix (2026-07-30)**: 0038 คิดค่าเฉลี่ยได้ แต่ **"ขาเข้า" 2 ทางไม่มีที่ให้ใส่ต้นทุน** (ตั้งยอดตอนสร้างวัสดุ / ปรับยอดขึ้น) → คอลัมน์ต้นทุน/มูลค่าขึ้น `-` ตลอด · เพิ่ม `rpc_create_item + p_initial_unit_cost` และ `rpc_adjust_accessory_stock + p_unit_cost` (drop+recreate — **ทั้ง 2 ตัวไม่มี app_notify จึง recreate ได้ ไม่กระทบ 0031**) · ใส่ได้เฉพาะขาเข้า · **พารามิเตอร์ใหม่มี DEFAULT → เรียกแบบเดิมยังได้ (backward compatible)** |
+| `0040_close_job_issues.sql` | **ฟีเจอร์ (2026-07-31)**: **บังคับสรุปปัญหาก่อนปิดงานติดตั้ง** — `jobs.close_has_issues` / `close_issue_detail` / `close_issue_file_url` + `rpc_close_job_install` signature ใหม่ (+p_has_issues/p_issue_detail/p_issue_file_url, validate ฝั่ง server ด้วย) · เก็บ**แยกจาก install_note** เพื่อ query/รายงานได้ · ไฟล์แนบใช้ bucket `install-photos` เดิม prefix `job-issues/<job_id>/` (ไม่ต้องสร้าง bucket ใหม่) · งานที่ปิดก่อน 0040 = NULL (ไม่ผิด แค่ไม่มีข้อมูล) |
+| `0041_reopen_job.sql` | **ฟีเจอร์ (2026-07-31)**: **เปิดงานใหม่หลังปิดผิด (Reopen) ผ่านการอนุมัติ Division** — approval type ใหม่ `reopen_job` (ALTER CHECK) + `app_assert_job_reopenable` + `app_exec_reopen_job` + `rpc_reopen_job` (admin ตรง) + ต่อ `app_exec_approve` · **unit_installations คงไว้ทั้งหมด** (ปิดใหม่ได้ทันที ไม่ต้องถ่ายรูป/GPS ซ้ำ) แต่**ล้าง** installed_at/install_note/install_confirmed_by/close_* (ถ้าไม่ล้างจะมีงาน issued ที่มีวันปิดงานค้าง = รายงานเพี้ยน) โดยคัดลอกลง audit ก่อน + `jobs.reopen_count` · **Project ขอ (สิทธิ์ job.manage) / Manage ทำตรง — ไม่เปิดให้ Service ขอ เพราะจะพลอยขอ PR/เบิก/ยกเลิกได้** |
 | `0026_job_install_sites.sql` | **ฟีเจอร์ (2026-07-23)**: หลายจุดติดตั้งต่อ Job — `jobs.install_sites` JSONB (array `{location, requiredDate}` = จุดที่ 2+; จุดที่ 1 ยังใช้ install_location/required_date เดิม) · drop+recreate `rpc_create_job`/`rpc_update_job` (+`p_install_sites`) · ข้อมูลวางแผนอย่างเดียว ไม่ผูก Serial/ไม่แตะ flow issue/confirm · UI: เปิด/แก้ Job โชว์ "เพิ่มจุดติดตั้ง" เมื่อ LBS>1 (≤ จำนวน LBS), JobDetail แผง "จุดติดตั้ง", list badge "+N จุด" · demo sync `logic.ts` (normalizeInstallSites) |
 
-> DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0031 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
+> DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0041 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
 > ⚠️ **production: รันเฉพาะ migration "ไฟล์ใหม่ที่ยังไม่เคยรัน" ก่อน push frontend** — ไม่ต้องรันไฟล์เก่าซ้ำทุกรอบ (ไฟล์ migration idempotent รันซ้ำได้ก็จริง แต่ไม่จำเป็น) และ **ห้ามรัน `cleanup_e2e.sql` ซ้ำเด็ดขาด** — มันลบ transaction ทั้งหมด (Jobs/LBS/audit) ใช้ครั้งเดียวตอนล้างระบบก่อนเปิดใช้จริงเท่านั้น มีสลักนิรภัยกันรันติดมือแล้ว (2026-07-19)
 
 ## 6. Environment variables (ตั้งใน Cloudflare Pages → Settings → Environment variables · Production)
@@ -125,6 +138,7 @@ lbs-platform/
 | `LINE_CHANNEL_ACCESS_TOKEN` | functions | (optional) แจ้งเตือน LINE — จาก LINE Developers → Messaging API |
 | `LINE_GROUP_ID` | functions | (optional) กลุ่มปลายทาง — กลุ่มทีมจริง = `C30dde10e5b1d4ce984a85016b79204cd` (ได้จากพิมพ์ `id` ในกลุ่ม 2026-07-16) |
 | `LINE_CHANNEL_SECRET` | functions | (optional) ตรวจ signature webhook |
+| `APP_URL` | functions | ลิงก์ "🔎 ตรวจสอบในระบบ" ในการ์ด Flex (0033) — ตั้งเป็น `https://lbs-platform-sdt.pages.dev` หรือ custom domain · ไม่ตั้งก็ fallback เป็น pages.dev |
 
 ⚠️ Cloudflare Pages ทำ env ทั้งหมดให้ทั้งตอน **build** (VITE_* baked เข้า bundle) และให้ **Functions** ตอน runtime (`context.env`)
 ⚠️ **เปลี่ยน env แล้วต้อง redeploy** (Deployments → ... → Retry deployment) ค่าถึงจะมีผล
@@ -142,8 +156,13 @@ lbs-platform/
 
 ## 7. Cloudflare Pages Functions (route = ชื่อไฟล์ใน `functions/`)
 
-- `POST /line-notify` — `{message}` → push เข้ากลุ่ม LINE (frontend เรียกอัตโนมัติเมื่อเปิดสวิตช์ใน Dev Settings)
-- `POST /line-webhook` — ตั้งเป็น Webhook URL ใน LINE Developers; พิมพ์ `id` ในกลุ่มเพื่อดู Group ID, พิมพ์ `สถานะ <Job No.>` เพื่อดูสถานะงานจริงจาก Supabase (ตอบเฉพาะกลุ่มที่ตรง LINE_GROUP_ID; ตรวจ signature ด้วย Web Crypto)
+- `POST /line-notify` — `{message}` → push เข้ากลุ่ม LINE (frontend เรียกอัตโนมัติเมื่อเปิดสวิตช์ใน Dev Settings) · ต้องมี JWT
+- `POST /line-webhook` — ตั้งเป็น Webhook URL ใน LINE Developers (ต้องเปิด **Use webhook** ด้วย); ตรวจ signature ด้วย Web Crypto
+  - พิมพ์ `id` ในกลุ่ม → ดู Group ID · พิมพ์ **โค้ด 6 หลัก** ในแชท 1:1 → ผูกบัญชี LINE (0033)
+  - พิมพ์ `สถานะ <Job No.>` → สถานะงานจริงจาก Supabase (ตอบเฉพาะกลุ่มที่ตรง LINE_GROUP_ID) · **รายงานคืบหน้ารายเครื่อง `🔧 ติดตั้งแล้ว x/y` + ทีม/หัวหน้าทีม** ด้วย
+  - รับ **postback** จากปุ่ม ✅ อนุมัติ ในการ์ด Flex → `rpc_line_approve` (map `line_user_id` → user → เช็ค role sales/admin)
+- `POST /line-approval-push` — `{requestId}` หรือ `{jobId, type}` → ดันการ์ด **Flex (ปุ่ม ✅ อนุมัติ + 🔎 ตรวจสอบ)** เข้าแชท 1:1 ของผู้อนุมัติที่ผูก LINE แล้ว · StoreContext ยิงหลัง `requestApproval` สำเร็จ (LIVE + เปิดสวิตช์ LINE) · ต้องมี JWT
+- `GET /line-quota` — โควตา push ของ Messaging API (ปุ่ม 📊 ใน Dev Settings)
 - `POST /admin-users` — ต้องมี JWT admin, action `create`/`set_password`; ใช้ service role สร้าง user + auto-confirm email
 - รูปแบบ: `export async function onRequestPost({ request, env })` · อ่าน env ผ่าน `env.XXX` (ไม่ใช่ `process.env`)
 - ทดสอบ functions ในเครื่อง: `npx wrangler pages dev dist` (build ก่อน) — Vite `npm run dev` ไม่รัน functions
@@ -171,6 +190,12 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 3. **admin-users token invalid** — Supabase secret key แบบใหม่ (`sb_secret_`) ถูกจำกัดบน GoTrue auth endpoint → validate token ของผู้เรียกด้วย **anon key** แทน service key (commit `ab6e8e6`)
 4. **rpc_cancel_job พังเงียบหลัง rename คอลัมน์** — 0006 rename `serial_no` → `serial_lvb` แต่ plpgsql ไม่ validate คอลัมน์ตอน CREATE FUNCTION → rpc_cancel_job (สร้างใน 0002) ยังอ้าง serial_no แล้วมา error ตอน "รัน" เท่านั้น (แก้: 0015) — **บทเรียน: rename คอลัมน์ต้อง grep หาทุก RPC ที่อ้างถึง แล้ว recreate ให้ครบ** (พังแบบเงียบ ไม่โผล่ตอนรัน migration)
 
+5. **`CREATE OR REPLACE` ด้วย body จาก migration เก่า = revert งานของ 0031 เงียบๆ** — 0031 ย่อข้อความแจ้งเตือนด้วย `pg_get_functiondef` + `replace()` (patch เฉพาะสตริง ไม่ recreate) ดังนั้น **definition บน LIVE ≠ ข้อความในไฟล์ migration เก่า** · เคยพลาดจริง: 0033 recreate `app_exec_approve` จาก body ของ 0028 → ข้อความ `approval_approved` กลับไปยาว (ต่างจาก demo) เพิ่งแก้ใน 0041 · **กฎ: จะแก้ RPC เดิม ให้ (ก) `app_swap_guard` patch เฉพาะบรรทัด หรือ (ข) ถ้าจำเป็นต้อง recreate ให้ grep ก่อนว่า 0031 แตะฟังก์ชันนั้นไหม**
+6. **`app_swap_guard` patch ได้เฉพาะ "บรรทัดเดียว"** — 0041 ครั้งแรกเขียน match ข้าม 3 บรรทัดด้วย `E'\n'` → รันบน LIVE ไม่ผ่าน (`ไม่พบ guard เดิมใน rpc_request_approval`) เพราะ body ที่เก็บใน DB มี **CRLF** (ไฟล์ repo เป็น CRLF บน Windows) · แก้เป็น patch 2 บรรทัดเดี่ยว แล้วให้บรรทัดนั้นแยกตาม `p_type` ด้วย `CASE` เอง · **ที่ 0031/0037/0038 ผ่านหมดเพราะทุก patch เป็นบรรทัดเดียว**
+7. **บอทรายงาน `LBS: 0/N` สำหรับงานที่เบิกแล้ว** — `v_job_status.lbs_allocated` นับเฉพาะ `status='allocated'` แต่หลังเบิก unit เปลี่ยนเป็น `'issued'` → แก้: `line-webhook` นับ `lbs_units` ตาม `job_id` ตรงๆ (2026-07-29)
+8. **เปลี่ยน signature RPC = ต้องรัน migration ก่อน push** — PostgREST หา signature ใหม่ไม่เจอจะ 404 ทันที (`PGRST202`) ทำให้ปุ่มนั้นใช้ไม่ได้บน LIVE · ถ้าอยากปลอดภัยกว่า ให้พารามิเตอร์ใหม่มี `DEFAULT` (เรียกแบบเดิมยังได้) แบบที่ 0039/0040/0041 ทำ · **และตรวจว่า signature เก่าถูก DROP แล้ว** — ถ้าเหลือทั้งคู่ PostgREST จะ error ambiguous (`PGRST203`)
+9. **ALTER CHECK constraint ต้องใช้ชื่อเดิม** — Postgres ตั้งชื่อ inline CHECK เป็น `<table>_<column>_check` · 0028/0041 จึง `DROP CONSTRAINT IF EXISTS approval_requests_req_type_check` แล้ว ADD ชื่อเดิม — ถ้าใช้ชื่อใหม่จะเหลือ CHECK เก่าค้างและ insert ยังพัง
+
 > demo mode ไม่มี trigger/RLS/functions/plpgsql จึงไม่เจอบั๊กพวกนี้ — ต้องทดสอบบน DB จริงเท่านั้น
 
 ## 10. งานค้าง (TODO)
@@ -184,20 +209,37 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
       ไฟล์ถูกใส่สลักนิรภัย (DO-block RAISE EXCEPTION) กันรันติดมือแล้ว · **หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่**
 - [ ] ตรวจว่า **service_role key ถูก rotate แล้ว** (ระหว่าง setup key เก่าเคยเปิดเผย — ตรวจ repo แล้ว 2026-07-19: **key ไม่เคยหลุดลง git** หลุดเฉพาะนอก repo) — Dashboard → Settings → API → สร้าง/roll secret key ใหม่ → อัปเดต `SUPABASE_SERVICE_ROLE_KEY` บน Cloudflare Pages env → Retry deployment
 
-### 🟠 Migrations — ✅ 0001–0030 รันครบ (0030 รัน 2026-07-25) · ⏳ 0031 รอรัน (2026-07-25)
-- [x] ~~0011–0030~~ รันครบ · **กติกา: หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่ (ผมจะบอกชื่อไฟล์)**
-- [ ] **รัน `0031_shorten_notify_messages.sql`** บน Supabase SQL Editor — idempotent · ย่อข้อความ LINE (คง logic) · **ไม่รันก็ไม่พัง** (แค่ข้อความ live ยังยาว) แต่ควรรันให้ตรงกับ demo
-- [ ] ยืนยัน bucket **`install-photos`** (public) มีจริง — ถ้า Service อัปโหลดรูปตอนยืนยันติดตั้งไม่ได้ ให้สร้างที่ Dashboard→Storage (0019 อาจสร้างผ่าน SQL ไม่ได้เรื่องสิทธิ์)
+### 🟠 Migrations — ✅ 0001–0041 รันครบ (0041 รัน 2026-08-03)
+- [x] ~~0011–0041~~ รันครบ · **กติกา: หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่ (ผมจะบอกชื่อไฟล์)**
+- [ ] ยืนยัน bucket **`install-photos`** (public) มีจริง — ใช้ทั้งรูปยืนยันติดตั้ง (0019/0035) และไฟล์แนบปัญหา prefix `job-issues/` (0040) · ถ้าอัปโหลดไม่ได้ให้สร้างที่ Dashboard→Storage
+- [ ] ตรวจว่า string patch ของ 0041 ลงจริง (ตรวจผ่าน REST ไม่ได้เพราะ auth gate มาก่อน):
+      ```sql
+      select p.proname, position('reopen_job' in pg_get_functiondef(p.oid)) > 0 as patched
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname='public' and p.proname in ('rpc_request_approval','rpc_reject_request');
+      ```
+      ต้องได้ `patched = true` ทั้ง 2 แถว — ถ้า false ให้รัน `0041` ซ้ำ (idempotent) · อาการถ้าไม่ลง: กด "ขออนุมัติเปิดงานใหม่" แล้ว error `ประเภทคำขอไม่ถูกต้อง`
 
 ### 🟡 ฟีเจอร์เสริม (ตั้งค่าค้างอยู่)
 - [ ] **เปิดสวิตช์ LINE** — env + code + migration 0017 พร้อมหมด · เหลือ: login **Manage** → Dev Settings → เปิดสวิตช์แจ้งเตือน LINE (global มีผลทุกเครื่อง) → "ส่งข้อความทดสอบ" · bot `สถานะ <Job No.>` ใช้ได้แล้ว
+- [ ] **เปิดใช้อนุมัติผ่าน LINE 1:1** (0033) — ต้องทำ 3 อย่าง: (1) ตั้ง env `APP_URL` (2) LINE Developers → เปิด **Use webhook** + Webhook URL `https://lbs-platform-sdt.pages.dev/line-webhook` (postback มาที่ URL เดียวกัน ไม่ต้องตั้งแยก) (3) ผู้อนุมัติแต่ละคน: **เพิ่มบอทเป็นเพื่อน** → หน้า Awaiting Approval กด "สร้างโค้ดเชื่อม LINE" → **พิมพ์โค้ด 6 หลักในแชท 1:1** ภายใน 10 นาที (หน้านั้นจะโชว์ badge "✅ เชื่อมต่อแล้ว" เมื่อผูกสำเร็จ)
+- [ ] **ตั้งต้นทุนย้อนหลังให้วัสดุที่มีของค้างอยู่ก่อน 0039** — คอลัมน์ต้นทุนถัวเฉลี่ย/มูลค่าจะขึ้น `-` จนกว่าจะมีของเข้าใหม่พร้อมต้นทุน · วิธีชั่วคราว: ปรับยอดขึ้น 1 หน่วยพร้อมใส่ต้นทุน แล้วปรับกลับลง (ledger บันทึกทั้ง 2 รายการพร้อมเหตุผล) — ถ้าต้องทำหลายรายการ ควรทำปุ่ม "ตั้งต้นทุนตั้งต้น" ให้ตรงๆ
 - [ ] **Custom domain** — `lbs.precise.co.th` (ขอ IT เพิ่ม CNAME → `lbs-platform-sdt.pages.dev`) แล้ว Add ใน Cloudflare Pages → Custom domains
 - [ ] **service_role key rotate** (ดูหัวข้อ 🔴) — ยังไม่ยืนยันว่า rotate แล้ว
 
 ### 🟢 พัฒนาต่อ (ไอเดีย)
 - หน้า forgot-password / เปลี่ยนรหัสตัวเอง (ตอนนี้ Manage reset ให้ที่ Dev Settings)
-- รายงาน/analytics (stock movement, lead time ต่อ Job)
+- รายงาน/analytics (lead time ต่อ Job · ยอดสั่งซื้อตามซัพพลายเออร์) — **stock movement มี ledger แล้ว (0038)** เหลือทำหน้ารายงาน
+- **วงจรชีวิตของปัญหา (open → resolved)** — ตอนนี้ 0040/0041 *บันทึก+รวม*ปัญหาได้แล้ว แต่ยังไม่มีสถานะติดตาม/เจ้าภาพ → เพิ่ม `issueResolvedAt/By/Resolution` แล้วปิดปัญหาแยกจากปิดงาน + การ์ด "งานที่มีปัญหาค้าง" บน Dashboard
+- **Supplier Master** — ตาราง `suppliers` มีใน schema ตั้งแต่ 0001 แต่**ไม่ถูกใช้เลย** (PO พิมพ์ชื่อ supplier เอง = free text) → เสี่ยงชื่อไม่ตรงกัน ทำรายงานตามซัพไม่ได้
+- **ปิด PO เท่าที่รับ (short-close)** — ตอนนี้ยกเลิก PO ได้เฉพาะยังไม่รับของเลย · ถ้าซัพส่ง 3/5 แล้วส่งที่เหลือไม่ได้ PO จะค้าง `issued` ตลอด
+- **Job Detail: ยังไม่มี UI ดูข้อมูลบางส่วน** — ประวัติ ledger ของวัสดุ (ดูได้ที่ Material Database) · ตอนนี้เห็นทีม/คืบหน้า/หลักฐานรายเครื่อง/ประวัติออกหน้างานแล้ว (2026-07-29)
 
+> ✅ เสร็จแล้ว (2026-07-31): **บังคับสรุปปัญหาก่อนปิดงานติดตั้ง** (มี/ไม่มี + รายละเอียด + ไฟล์แนบ, 0040) · **มุมรวมปัญหางานบริการ** จาก 3 แหล่ง + badge เมนู · **เปิดงานใหม่ (Reopen) ผ่านการอนุมัติ Division** + reopenCount (0041)
+> ✅ เสร็จแล้ว (2026-07-30): **จัดซื้อเพิ่มเติมหลังเบิก** ผ่าน Division + แก้ราคาจริงได้แม้ปิดงาน (0037) · **Stock ledger + ต้นทุนถัวเฉลี่ย + โอนวัสดุเหลือจาก Job เข้าคลัง** (0038) · **แยกพาเนล catalog/คลังคงเหลือ + เลือกซื้อ-เบิกฉลาด (เตือนเมื่อมีของในคลัง) + Import Excel round-trip ครบ 5 คอลัมน์** · **ใส่ต้นทุนตอนของเข้าคลัง** (0039)
+> ✅ เสร็จแล้ว (2026-07-29): ต่อข้อมูล Service เข้า **Job Detail** (ทีม/คืบหน้า x/y/หลักฐานรายเครื่อง/ประวัติออกหน้างาน) · **Dashboard การ์ด "งานติดตั้ง (Service)"** · **บอท LINE รายงานคืบหน้ารายเครื่อง + ทีม** (+ แก้บั๊ก LBS 0/N)
+> ✅ เสร็จแล้ว (2026-07-27→28): Service เฟส A **เลื่อนนัด/ติดปัญหาหน้างาน** (0034) · เฟส B **ยืนยันติดตั้งรายเครื่อง + ปิดงานแยกขั้น** (0035) · เฟส C **ทะเบียนทีมช่าง + มอบหมายงาน + ผู้ติดตั้งรายเครื่อง + หน้า Service & Scheduling** (0036)
+> ✅ เสร็จแล้ว (2026-07-26): **อนุมัติผ่าน LINE แชทส่วนตัว** (การ์ด Flex ปุ่มอนุมัติ + ผูกบัญชีด้วยโค้ด 6 หลัก, 0033) · สลับ LBS มีข้อความแจ้งเตือน action (0032) · ปรับคำสถานะรอ Division เป็น "**รอ Division พิจารณา**" ทั้งระบบ + แก้บั๊กป้ายแสดงประเภท swap_lbs ผิด
 > ✅ เสร็จแล้ว (2026-07-25): ย่อข้อความแจ้งเตือน LINE ทุก workflow (0031, คง logic) · ปุ่ม 📊 ตรวจโควตา Messaging API + progress bar ใน Dev Settings (`functions/line-quota.js`)
 > ✅ เสร็จแล้ว (2026-07-25): Session หมดอายุ 2 ชม. (absolute, ทั้ง demo/Supabase — notice หน้า login) · Purchasing บันทึกราคาจริงหลังออก PO → งบ actual (0030) · ขยายโลโก้ (login 200px · sidebar 52px)
 > ✅ เสร็จแล้ว (2026-07-24): Project Stock + PO No. (กรอกตอนสร้าง/แก้ภายหลัง) + Remark (relabel notes) (0029)
@@ -230,6 +272,11 @@ npm run build     # tsc + vite build -> dist/
 - Supabase **secret key (`sb_secret_`) ใช้นอก server ไม่ได้** — Supabase บล็อกเองถ้ายิงจาก browser/PowerShell; ใช้ได้เฉพาะใน Pages Functions
 - ตัวอักษรไทยใน `curl -d` บน Git Bash (Windows) โดน mangle → JSON พัง; ถ้าต้องยิง API ที่มีค่าไทย ใช้ในแอป/PowerShell ที่ตั้ง UTF-8
 - แก้ business rule ต้องอัปเดตทั้ง demo (`logic.ts`) และ LIVE (RPC ตัวล่าสุด — grep หา `CREATE OR REPLACE FUNCTION <ชื่อ>` ในทุก migration แล้วดูไฟล์ที่ใหม่สุด ไม่ใช่แค่ 0002)
+- **⚠️ ก่อนแก้ RPC เดิม อ่านหัวข้อ 9 ข้อ 5–6 ก่อน** — `CREATE OR REPLACE` ด้วย body เก่าจะ revert การย่อข้อความของ 0031 · และ `app_swap_guard` patch ได้เฉพาะ **บรรทัดเดียว** (body ใน DB มี CRLF)
+- **ห้ามแก้ `accessory_stock.qty_on_hand` ตรงๆ ในโค้ดใหม่** — ต้องผ่าน `app_apply_stock_movement`-pattern (LIVE: UPDATE แล้วให้ trigger `trg_log_stock_movement` ลง ledger เอง + ตั้งบริบทด้วย `app_set_stock_ctx` ก่อน) · demo: ผ่าน `applyStockMovement` ใน logic.ts เท่านั้น
+- **ต้นทุนที่ใช้ตัดงบ = `unitPrice × (qtyRequested − qtyTransferred)`** ไม่ใช่ `qtyRequested` เฉยๆ (0038) — เขียนสูตรงบใหม่ที่ไหนต้องใช้ helper `effectiveQty()`
+- **`profiles.id` อ้าง `auth.users`** → ทุก user ต้องมีบัญชี login · คนที่ไม่ต้อง login (ช่างภาคสนาม/outsource) ต้องเก็บใน `team_members` ไม่ใช่ profiles (0036)
+- **ทดสอบ UI ด้วย Browser pane**: พิกัดคลิกเพี้ยนสเกล (สัดส่วนต่างกันต่อ tab เช่น ~0.59 หรือ ~0.73 เทียบ CSS pixel) และ screenshot ไม่ render modal overlay → วิธีที่ใช้ได้: อ่าน `getBoundingClientRect()` ผ่าน `javascript_tool` แล้วคูณสเกลก่อนคลิก · อ่านเนื้อ modal จาก `document.querySelector('.modal').innerText` · `form_input` ใช้ได้กับ text/textarea/select แต่ **checkbox/radio ต้องคลิกจริง** (React onChange ไม่รับค่าจากการ set `.checked`)
 - `.env`, `.env.*.local`, `.env.live-backup`, `node_modules` อยู่ใน `.gitignore` — อย่า commit
 - **ปุ่มแก้ไข/ดึง LBS/ออก PR/เบิก/ยกเลิก/แก้งบ หายหมด** เมื่อ Job **ล็อก** (terminal_status = issued/installed/cancelled) — เช็ค badge สถานะข้างชื่อ Job · และแก้งบ/ออก PR ต้อง login เป็น **Project หรือ Manage** เท่านั้น (badge มุมซ้ายล่าง) · "ออก PR" โผล่เมื่อมีวัสดุ source purchasing รอออก PR (ต้อง `+ เพิ่มวัสดุ` ก่อน)
 - **Job ค้างสถานะ อยากลบทิ้งเปิดเลขเดิมใหม่**: รัน `supabase/cleanup_job.sql` (แก้ `v_job_no`) — ลบเฉพาะ Job นั้น + คืน LBS เข้าสต็อก (ไม่ลบเครื่อง). ยกเลิก Job ปกติ (cancel) จะล็อกเลขไว้ (ยังเปิดเลขเดิมซ้ำไม่ได้) จึงต้องลบด้วยสคริปต์นี้
