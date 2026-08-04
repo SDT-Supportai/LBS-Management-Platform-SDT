@@ -1,10 +1,16 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
-import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf } from '../data/logic'
+import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, PAYMENT_TYPES } from '../data/logic'
 import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
-import { ACC_STATUS_LABEL, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
-import type { LbsUnit, CostCategoryKey, ApprovalType } from '../types'
+import { ACC_STATUS_LABEL, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
+import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType } from '../types'
+
+// ฟอร์มงวดเงิน (0044) — id = null คือเพิ่มงวดใหม่
+interface PayForm {
+  id: string | null; payType: PaymentType
+  invoiceNo: string; invoiceDate: string; percent: string; amount: string; paidAt: string; note: string
+}
 
 const COST_LABEL: Record<string, string> = Object.fromEntries(COST_CATEGORIES.map(c => [c.key, c.label]))
 
@@ -36,6 +42,8 @@ export default function JobDetailPage() {
   const [modal, setModal] = useState<'draw' | 'return' | 'accessory' | 'issue' | 'cancel' | 'edit' | 'budget' | 'swap' | null>(null)
   const [swapForm, setSwapForm] = useState({ allocatedUnitId: '', stockUnitId: '', reason: '' })
   const [budgetOpen, setBudgetOpen] = useState(false)   // ตาราง 7 หมวด (Item 4: เริ่มซ่อน)
+  const [payOpen, setPayOpen] = useState(false)         // ตารางงวดเงิน (0044 · เริ่มซ่อน เหมือน 7 หมวด)
+  const [payForm, setPayForm] = useState<PayForm | null>(null)
   const [drawStock, setDrawStock] = useState('')
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [returnTarget, setReturnTarget] = useState('')
@@ -53,6 +61,8 @@ export default function JobDetailPage() {
   // 0042: Project ทำรายการได้เฉพาะ Job ที่ตัวเองเปิด — ใบอื่นปุ่มหายทั้งหน้า (ข้อมูลยังดูได้ครบ)
   const canManage = canEditJob(user, job)
   const readOnlyJob = can(user, 'job.manage') && !!job && !ownsJob(user, job)
+  // Payment แก้ได้แม้ปิดงานแล้ว (PAC/Retention มาหลังติดตั้ง) — ปิดเฉพาะ Job ที่ยกเลิก ตรงกับ guard ฝั่ง DB
+  const canPay = canManage && !!job && job.terminalStatus !== 'cancelled'
   // Manage (admin) ข้ามขั้นอนุมัติได้ — project ต้องส่งคำขอให้ Division ก่อน (0016)
   const isManage = can(user, 'master.manage')
   const canCleanup = can(user, 'accessory.cleanup')   // Project/Division/Manage ลบรายการวัสดุที่ยกเลิก
@@ -78,6 +88,7 @@ export default function JobDetailPage() {
   if (!job) return <div className="empty">ไม่พบ Job นี้ <Link to="/jobs">กลับหน้า Jobs</Link></div>
 
   const budget = jobBudgetSummary(db, job)
+  const pay = jobPaymentSummary(db, job)
   const itemOf = (id: string) => db.items.find(i => i.id === id)
   const stockOf = (id: string) => db.projectStocks.find(s => s.id === id)
   const userOf = (id: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
@@ -426,6 +437,86 @@ export default function JobDetailPage() {
             <div className="budget-cell"><div className="b-label">ต้นทุนคงเหลือ</div>
               <div className={`b-value ${budget.remainingCost !== undefined && budget.remainingCost < 0 ? 'neg' : 'pos'}`}>{fmtBaht(budget.remainingCost)}</div></div>
           </div>
+          {/* ---------- Payment (0044) — วางก่อนรายละเอียดต้นทุน 7 หมวด สไตล์เดียวกัน ---------- */}
+          <button className="small" onClick={() => setPayOpen(o => !o)}>
+            {payOpen ? '▾' : '▸'} Payment (Advance → Progress/Delivery → PAC/Retention)
+            {pay.rows.length > 0 && <> · ออกใบแล้ว {fmtBaht(pay.billed)}{pay.billedPct !== undefined ? ` (${pay.billedPct.toFixed(1)}%)` : ''}</>}
+          </button>
+          {payOpen && (
+            <div style={{ marginTop: 10, marginBottom: 10 }}>
+              <div className="budget-grid" style={{ marginBottom: 12 }}>
+                <div className="budget-cell"><div className="b-label">ออกใบแจ้งหนี้แล้ว</div><div className="b-value">{fmtBaht(pay.billed)}</div></div>
+                <div className="budget-cell"><div className="b-label">รับเงินแล้ว</div><div className="b-value pos">{fmtBaht(pay.paid)}</div></div>
+                <div className="budget-cell"><div className="b-label">ออกใบแล้วรอรับเงิน</div>
+                  <div className={`b-value ${pay.unpaid > 0 ? 'neg' : ''}`}>{fmtBaht(pay.unpaid)}</div></div>
+                <div className="budget-cell"><div className="b-label">ยังไม่ออกใบ</div>
+                  <div className={`b-value ${pay.unbilled !== undefined && pay.unbilled < 0 ? 'neg' : ''}`}>{fmtBaht(pay.unbilled)}</div></div>
+              </div>
+              {pay.unbilled !== undefined && pay.unbilled < 0 && (
+                <div style={{ color: 'var(--danger)', marginBottom: 8 }}>
+                  ⚠️ ยอดออกใบรวมเกินราคาขาย {fmtBaht(-pay.unbilled)} — ตรวจว่ามีงานเพิ่ม (variation order) หรือกรอกผิด
+                </div>
+              )}
+              {pay.stale && (
+                <div className="muted" style={{ marginBottom: 8 }}>
+                  ⚠️ ราคาขายถูกแก้หลังออกใบบางงวด — ยอดในตารางคือยอดที่คิดไว้ ณ วันออกใบ (ตรงกับเอกสารจริง)
+                  กด "แก้" แล้วบันทึกใหม่ถ้าต้องการคิดตามราคาขายปัจจุบัน
+                </div>
+              )}
+              <div className="table-scroll">
+                <table>
+                  <thead><tr>
+                    <th>งวด</th><th>Invoice No.</th><th>Date</th><th style={{ textAlign: 'right' }}>%</th>
+                    <th style={{ textAlign: 'right' }}>ยอดเงิน</th><th>รับเงิน</th><th>หมายเหตุ</th>{canPay && <th></th>}
+                  </tr></thead>
+                  <tbody>
+                    {pay.rows.length === 0 && (
+                      <tr><td colSpan={canPay ? 8 : 7}><div className="empty">ยังไม่มีงวดเงิน</div></td></tr>
+                    )}
+                    {pay.rows.map(r => (
+                      <tr key={r.id}>
+                        <td>{PAYMENT_TYPE_LABEL[r.payType]} #{r.seq}</td>
+                        <td className="mono">{r.invoiceNo || '-'}</td>
+                        <td>{fmtDate(r.invoiceDate)}</td>
+                        <td style={{ textAlign: 'right' }}>{r.percent !== undefined ? `${r.percent}%` : '-'}</td>
+                        <td style={{ textAlign: 'right' }}>{fmtBaht(r.amount)}</td>
+                        <td>{r.paidAt
+                          ? <span className="badge green">รับแล้ว {fmtDate(r.paidAt)}</span>
+                          : <span className="badge neutral">รอรับเงิน</span>}</td>
+                        <td className="muted">{r.note || '-'}</td>
+                        {canPay && (
+                          <td style={{ whiteSpace: 'nowrap' }}>
+                            <button className="small" onClick={() => setPayForm({
+                              id: r.id, payType: r.payType,
+                              invoiceNo: r.invoiceNo ?? '', invoiceDate: r.invoiceDate ?? '',
+                              percent: r.percent !== undefined ? String(r.percent) : '',
+                              amount: r.percent !== undefined ? '' : String(r.amount),
+                              paidAt: r.paidAt ?? '', note: r.note ?? '',
+                            })}>แก้</button>
+                            <button className="small danger" style={{ marginLeft: 6 }} onClick={() => {
+                              if (confirm(`ลบงวด ${PAYMENT_TYPE_LABEL[r.payType]} #${r.seq} (${fmtBaht(r.amount)})?`))
+                                tryAction(() => act.deleteJobPayment({ paymentId: r.id }), 'ลบงวดเงินแล้ว')
+                            }}>ลบ</button>
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {canPay && (
+                <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {PAYMENT_TYPES.map(t => (
+                    <button key={t} className="small" onClick={() => setPayForm({
+                      id: null, payType: t, invoiceNo: '', invoiceDate: '', percent: '', amount: '', paidAt: '', note: '',
+                    })}>+ {PAYMENT_TYPE_LABEL[t]}</button>
+                  ))}
+                  <span className="muted">ใส่ % ของราคาขาย ({fmtBaht(job.budgetSalePrice)}) แล้วระบบคำนวณยอดให้ · หรือกรอกยอดเงินตรงๆ</span>
+                </div>
+              )}
+            </div>
+          )}
+
           <button className="small" onClick={() => setBudgetOpen(o => !o)}>
             {budgetOpen ? '▾' : '▸'} รายละเอียดต้นทุน 7 หมวด (Raw Material → Finance)
           </button>
@@ -990,7 +1081,6 @@ export default function JobDetailPage() {
                   ? () => act.updateJobBudget({ jobId: job.id, ...budgetPayload })
                   : () => act.updateJob({ jobId: job.id, ...rest, ...budgetPayload, installSites: job.installSites })  // คงจุดติดตั้งเดิม (modal นี้ไม่แก้จุด)
                 if (await tryAction(save, 'บันทึกงบประมาณแล้ว')) close()
-                if (await tryAction(save, 'บันทึกงบประมาณแล้ว')) close()
               }}>บันทึก</button>
           </>}>
           <BudgetFields
@@ -1000,6 +1090,71 @@ export default function JobDetailPage() {
           />
         </Modal>
       )}
+
+      {/* งวดเงิน (0044) — เพิ่ม/แก้ · ใส่ % ให้ระบบคำนวณ หรือกรอกยอดเงินตรงๆ */}
+      {payForm && (() => {
+        const pct = toBudgetNum(payForm.percent)
+        const preview = pct !== undefined && job.budgetSalePrice !== undefined
+          ? Math.round(job.budgetSalePrice * pct) / 100
+          : toBudgetNum(payForm.amount)
+        return (
+          <Modal
+            title={`${payForm.id ? 'แก้' : 'เพิ่ม'}งวด ${PAYMENT_TYPE_LABEL[payForm.payType]} — ${job.jobNo}`}
+            size="wide"
+            onClose={() => setPayForm(null)}
+            footer={<>
+              <button onClick={() => setPayForm(null)}>ยกเลิก</button>
+              <button className="primary" onClick={async () => {
+                const payload = {
+                  invoiceNo: payForm.invoiceNo, invoiceDate: payForm.invoiceDate,
+                  percent: pct, amount: pct !== undefined ? undefined : toBudgetNum(payForm.amount),
+                  paidAt: payForm.paidAt, note: payForm.note,
+                }
+                const save = payForm.id
+                  ? () => act.updateJobPayment({ paymentId: payForm.id!, ...payload })
+                  : () => act.addJobPayment({ jobId: job.id, payType: payForm.payType, ...payload })
+                if (await tryAction(save, payForm.id ? 'แก้งวดเงินแล้ว' : 'บันทึกงวดเงินแล้ว')) setPayForm(null)
+              }}>บันทึก</button>
+            </>}
+          >
+            <div className="muted" style={{ marginBottom: 12 }}>
+              ราคาขายตามสัญญา <b>{fmtBaht(job.budgetSalePrice)}</b> · ใส่ % แล้วระบบคำนวณยอดให้
+              (ถ้าไม่ใส่ % ให้กรอกยอดเงินตรงๆ) · ยอดที่บันทึกจะถูก <b>ตรึงไว้</b> ตามราคาขาย ณ วันนี้ ให้ตรงกับใบแจ้งหนี้จริง
+            </div>
+            <div className="row">
+              <label className="field"><span>Invoice No.</span>
+                <input className="mono" value={payForm.invoiceNo}
+                  onChange={e => setPayForm({ ...payForm, invoiceNo: e.target.value })} placeholder="INV-2026-0001" />
+              </label>
+              <label className="field"><span>Invoice Date</span>
+                <input type="date" value={payForm.invoiceDate}
+                  onChange={e => setPayForm({ ...payForm, invoiceDate: e.target.value })} />
+              </label>
+            </div>
+            <div className="row">
+              <label className="field"><span>% ของราคาขาย</span>
+                <input type="number" min={0} max={100} step="0.01" value={payForm.percent}
+                  onChange={e => setPayForm({ ...payForm, percent: e.target.value })} placeholder="15" />
+              </label>
+              <label className="field"><span>หรือกรอกยอดเงิน (฿)</span>
+                <input type="number" min={0} value={payForm.amount} disabled={pct !== undefined}
+                  onChange={e => setPayForm({ ...payForm, amount: e.target.value })}
+                  placeholder={pct !== undefined ? 'คำนวณจาก % ให้แล้ว' : '720000'} />
+              </label>
+            </div>
+            <div className="budget-legend">ยอดที่จะบันทึก: {fmtBaht(preview)}</div>
+            <div className="row">
+              <label className="field"><span>รับเงินแล้วเมื่อ (เว้นว่าง = รอรับเงิน)</span>
+                <input type="date" value={payForm.paidAt}
+                  onChange={e => setPayForm({ ...payForm, paidAt: e.target.value })} />
+              </label>
+              <label className="field"><span>หมายเหตุ</span>
+                <input value={payForm.note} onChange={e => setPayForm({ ...payForm, note: e.target.value })} />
+              </label>
+            </div>
+          </Modal>
+        )
+      })()}
     </>
   )
 }

@@ -95,7 +95,7 @@ const EMPTY_DB: DB = {
   users: [], items: [], projectStocks: [], lbsUnits: [], jobs: [], allocations: [],
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [],
   auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
-  teamMembers: [], jobAssignments: [], stockMovements: [],
+  teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
 }
 
 // migrate ข้อมูล demo จาก schema เก่า (v1: issued_installed, ไม่มี qtyReceived/notifications)
@@ -131,6 +131,7 @@ function migrateDb(raw: unknown): DB {
     teamMembers: d.teamMembers ?? [],
     jobAssignments: d.jobAssignments ?? [],
     stockMovements: d.stockMovements ?? [],
+    jobPayments: d.jobPayments ?? [],
   }
 }
 
@@ -168,6 +169,7 @@ export interface StoreActions {
   updateJobBudget: (p: Parameters<typeof L.updateJobBudget>[2]) => MaybePromise
   deleteProjectStock: (p: Parameters<typeof L.deleteProjectStock>[2]) => MaybePromise
   updateUnitInfo: (p: Parameters<typeof L.updateUnitInfo>[2]) => MaybePromise
+  updateUnitPlan: (p: Parameters<typeof L.updateUnitPlan>[2]) => MaybePromise
   deleteDraftJob: (p: Parameters<typeof L.deleteDraftJob>[2]) => MaybePromise
   drawLbs: (p: Parameters<typeof L.drawLbs>[2]) => MaybePromise
   returnLbs: (p: Parameters<typeof L.returnLbs>[2]) => MaybePromise
@@ -204,6 +206,9 @@ export interface StoreActions {
   deleteItem: (p: Parameters<typeof L.deleteItem>[2]) => MaybePromise
   adjustAccessoryStock: (p: Parameters<typeof L.adjustAccessoryStock>[2]) => MaybePromise
   transferJobMaterialToStock: (p: Parameters<typeof L.transferJobMaterialToStock>[2]) => MaybePromise
+  addJobPayment: (p: Parameters<typeof L.addJobPayment>[2]) => MaybePromise
+  updateJobPayment: (p: Parameters<typeof L.updateJobPayment>[2]) => MaybePromise
+  deleteJobPayment: (p: Parameters<typeof L.deleteJobPayment>[2]) => MaybePromise
   createUser: (p: Parameters<typeof L.createUser>[2]) => MaybePromise
   updateUser: (p: Parameters<typeof L.updateUser>[2]) => MaybePromise
 }
@@ -326,6 +331,7 @@ function DemoProvider({ children }: { children: ReactNode }) {
         updateJobBudget: run('master.manage', L.updateJobBudget),
         deleteProjectStock: run('stock.manage', L.deleteProjectStock),
         updateUnitInfo: run('stock.manage', L.updateUnitInfo),
+        updateUnitPlan: run('stock.manage', L.updateUnitPlan),
         deleteDraftJob: run('job.manage', L.deleteDraftJob),
         drawLbs: run('job.manage', L.drawLbs),
         returnLbs: run('job.manage', L.returnLbs),
@@ -367,6 +373,10 @@ function DemoProvider({ children }: { children: ReactNode }) {
         adjustAccessoryStock: run('stock.manage', L.adjustAccessoryStock),
         // โอนวัสดุเหลือจาก Job เข้าคลังคงเหลือ — Project เป็นเจ้าของวัสดุใน Job
         transferJobMaterialToStock: run('job.manage', L.transferJobMaterialToStock),
+        // Payment — Project (เจ้าของงาน ตาม 0042) + Manage
+        addJobPayment: run('job.manage', L.addJobPayment),
+        updateJobPayment: run('job.manage', L.updateJobPayment),
+        deleteJobPayment: run('job.manage', L.deleteJobPayment),
         createUser: run('master.manage', L.createUser),
         updateUser: run('master.manage', L.updateUser),
       },

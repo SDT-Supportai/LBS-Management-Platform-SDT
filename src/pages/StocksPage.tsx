@@ -1,9 +1,16 @@
 import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { stockSummary } from '../data/logic'
+import { stockSummary, unitInstallState, unitInstallDate } from '../data/logic'
 import { Modal, useToast, useTryAction, toBudgetNum } from '../ui/components'
 import { fmtBaht, fmtDate } from '../ui/format'
+
+// ฟอร์มแก้ข้อมูลรายเครื่อง (0043) — ต้นทุน + ข้อมูลแผน + Plan PO receipt / Plan Delivery
+interface PlanForm {
+  id: string; serial: string; cost: string
+  customerName: string; contactPhone: string; installLocation: string
+  planPoReceiptDate: string; planDeliveryDate: string
+}
 
 interface UnitRow { lvb: string; om: string; cost: string }
 const emptyRow = (): UnitRow => ({ lvb: '', om: '', cost: '' })
@@ -76,6 +83,7 @@ export default function StocksPage() {
   const [editPoNo, setEditPoNo] = useState('')
   const [editStatus, setEditStatus] = useState<'open' | 'closed'>('open')
   const [editUnit, setEditUnit] = useState<{ id: string; lvb: string; om: string } | null>(null)
+  const [editPlan, setEditPlan] = useState<PlanForm | null>(null)
   const [importPreview, setImportPreview] = useState<{
     stockId: string; stockNo: string
     newUnits: UnitRow[]
@@ -135,15 +143,20 @@ export default function StocksPage() {
         'Serial.LVB': u.serialLvb,
         'Serial.OM': u.serialOm,
         'ต้นทุน/เครื่อง': u.unitCost ?? '',
-        'สถานะ': UNIT_STATUS_LABEL[u.status] ?? u.status,
+        'สถานะ': u.status === 'issued'
+          ? { pending: 'เบิกแล้ว รอติดตั้ง', installed: 'ติดตั้งแล้ว', blocked: 'ติดตั้งไม่ได้' }[unitInstallState(db, u.id)]
+          : UNIT_STATUS_LABEL[u.status] ?? u.status,
         'Job No.': job?.jobNo ?? '',
-        'ชื่อลูกค้า': job?.customerName ?? '',
-        'เบอร์ติดต่อ': job?.contactPhone ?? '',
-        'สถานที่ติดตั้ง': job?.installLocation ?? '',
+        'ชื่อลูกค้า': job?.customerName ?? u.planCustomerName ?? '',
+        'เบอร์ติดต่อ': job?.contactPhone ?? u.planContactPhone ?? '',
+        'สถานที่ติดตั้ง': job?.installLocation || u.planInstallLocation || '',
+        'Plan PO receipt': u.planPoReceiptDate ?? '',
+        'Plan Delivery': u.planDeliveryDate ?? '',
+        'Actual Delivery': unitInstallDate(db, u.id) ?? '',
       }
     })
     const ws = XLSX.utils.json_to_sheet(rows)
-    ws['!cols'] = [{ wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 24 }, { wch: 14 }, { wch: 28 }]
+    ws['!cols'] = [{ wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 24 }, { wch: 14 }, { wch: 28 }, { wch: 15 }, { wch: 14 }, { wch: 14 }]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, s.stockNo.slice(0, 31))
     XLSX.writeFile(wb, `${s.stockNo.replace(/[\\/:*?"<>|]/g, '-')}-${new Date().toISOString().slice(0, 10)}.xlsx`)
@@ -275,11 +288,19 @@ export default function StocksPage() {
             {expanded && (
               <div className="table-scroll">
                 <table>
-                  <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>ต้นทุน/เครื่อง</th><th>สถานะ</th><th>ชื่อลูกค้า</th><th>เบอร์ติดต่อ</th><th>สถานที่ติดตั้ง</th><th>Job No.</th>{canManage && <th></th>}</tr></thead>
+                  <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>ต้นทุน/เครื่อง</th><th>สถานะ</th><th>ชื่อลูกค้า</th><th>เบอร์ติดต่อ</th><th>สถานที่ติดตั้ง</th><th>Job No.</th><th>Plan PO receipt</th><th>Plan Delivery</th><th>Actual Delivery</th>{canManage && <th></th>}</tr></thead>
                   <tbody>
                     {units.map(u => {
-                      // ข้อมูลลูกค้า ref จาก Job ที่เครื่องถูกดึงเข้า — เครื่องยังไม่เข้า Job = '-'
+                      // ข้อมูลลูกค้า "จริง" ref จาก Job ที่เครื่องถูกดึงเข้า (0014) — ยังไม่เข้า Job ใช้ค่าแผน (0043)
                       const job = u.jobId ? db.jobs.find(j => j.id === u.jobId) : undefined
+                      // ค่าจาก Job ชนะ · ถ้าไม่มี Job ใช้ค่าแผนแล้วติดป้าย "แผน" ให้เห็นว่ายังไม่ผูกงาน
+                      const planned = !job
+                      const cust = job?.customerName ?? u.planCustomerName
+                      const phone = job?.contactPhone ?? u.planContactPhone
+                      const loc = job?.installLocation || u.planInstallLocation
+                      // สถานะ + Actual Delivery = auto ตาม flow Service (0035) ไม่มีคอลัมน์เก็บซ้ำ
+                      const installState = u.status === 'issued' ? unitInstallState(db, u.id) : 'pending'
+                      const actualDelivery = unitInstallDate(db, u.id)
                       return (
                         <tr key={u.id}>
                           <td className="mono">{u.serialLvb}</td>
@@ -288,17 +309,34 @@ export default function StocksPage() {
                           <td>
                             {u.status === 'in_stock' && <span className="badge green">อยู่ในสต็อก</span>}
                             {u.status === 'allocated' && <span className="badge blue">ถูกดึงเข้า Job</span>}
-                            {u.status === 'issued' && <span className="badge neutral">เบิกติดตั้งแล้ว</span>}
+                            {u.status === 'issued' && installState === 'pending' && <span className="badge neutral">เบิกแล้ว รอติดตั้ง</span>}
+                            {u.status === 'issued' && installState === 'installed' && <span className="badge green">ติดตั้งแล้ว</span>}
+                            {u.status === 'issued' && installState === 'blocked' && <span className="badge red">ติดตั้งไม่ได้</span>}
                           </td>
-                          <td>{job?.customerName ?? '-'}</td>
-                          <td>{job?.contactPhone ?? '-'}</td>
-                          <td>{job?.installLocation || '-'}</td>
+                          <td>{cust ?? '-'}{planned && cust && <span className="badge neutral" style={{ marginLeft: 6 }}>แผน</span>}</td>
+                          <td>{phone ?? '-'}</td>
+                          <td>{loc || '-'}</td>
                           <td>{u.jobId ? <Link to={`/jobs/${u.jobId}`}>{jobNo(u.jobId)}</Link> : '-'}</td>
+                          <td>{fmtDate(u.planPoReceiptDate)}</td>
+                          <td>{fmtDate(u.planDeliveryDate)}</td>
+                          <td>{actualDelivery ? fmtDate(actualDelivery) : '-'}</td>
                           {canManage && (
                             <td style={{ whiteSpace: 'nowrap' }}>
-                              {u.status === 'in_stock'
-                                ? <button className="small" onClick={() => setEditUnit({ id: u.id, lvb: u.serialLvb, om: u.serialOm })}>แก้ Serial</button>
-                                : <span className="muted" title="แก้ Serial ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก">🔒</span>}
+                              {u.status === 'issued'
+                                ? <span className="muted" title="เบิกให้ Service แล้ว — allocation ถูกล็อก แก้ข้อมูลรายเครื่องไม่ได้">🔒</span>
+                                : <>
+                                    <button className="small" onClick={() => setEditPlan({
+                                      id: u.id, serial: `${u.serialLvb} / ${u.serialOm}`,
+                                      cost: u.unitCost !== undefined ? String(u.unitCost) : '',
+                                      customerName: u.planCustomerName ?? '', contactPhone: u.planContactPhone ?? '',
+                                      installLocation: u.planInstallLocation ?? '',
+                                      planPoReceiptDate: u.planPoReceiptDate ?? '', planDeliveryDate: u.planDeliveryDate ?? '',
+                                    })}>แก้ข้อมูล</button>
+                                    {u.status === 'in_stock' && (
+                                      <button className="small" style={{ marginLeft: 6 }}
+                                        onClick={() => setEditUnit({ id: u.id, lvb: u.serialLvb, om: u.serialOm })}>แก้ Serial</button>
+                                    )}
+                                  </>}
                             </td>
                           )}
                         </tr>
@@ -446,6 +484,68 @@ export default function StocksPage() {
             </label>
             <label className="field"><span>Serial.OM *</span>
               <input className="mono" value={editUnit.om} onChange={e => setEditUnit({ ...editUnit, om: e.target.value })} />
+            </label>
+          </div>
+        </Modal>
+      )}
+
+      {/* แก้ข้อมูลรายเครื่อง (0043) — Division/Manage · ทำได้ก่อนเบิกให้ Service */}
+      {editPlan && (
+        <Modal
+          title="แก้ข้อมูลรายเครื่อง"
+          size="wide"
+          onClose={() => setEditPlan(null)}
+          footer={<>
+            <button onClick={() => setEditPlan(null)}>ยกเลิก</button>
+            <button className="primary" onClick={async () => {
+              if (await tryAction(
+                () => act.updateUnitPlan({
+                  unitId: editPlan.id,
+                  unitCost: toBudgetNum(editPlan.cost),
+                  planCustomerName: editPlan.customerName,
+                  planContactPhone: editPlan.contactPhone,
+                  planInstallLocation: editPlan.installLocation,
+                  planPoReceiptDate: editPlan.planPoReceiptDate,
+                  planDeliveryDate: editPlan.planDeliveryDate,
+                }),
+                'บันทึกข้อมูลรายเครื่องแล้ว',
+              )) setEditPlan(null)
+            }}>บันทึก</button>
+          </>}
+        >
+          <div className="muted" style={{ marginBottom: 12 }}>
+            Serial <b className="mono">{editPlan.serial}</b> · ช่องที่เว้นว่าง = ล้างค่าเดิม<br />
+            ลูกค้า/เบอร์/สถานที่ ที่กรอกที่นี่คือ <b>ข้อมูลแผน</b> — เมื่อเครื่องถูกดึงเข้า Job ตารางจะแสดงค่าจาก Job แทน
+            (Job เป็นแหล่งข้อมูลจริงตามกติกาเดิมของระบบ) · <b>Actual Delivery กับสถานะไม่ต้องกรอก</b> ระบบเติมเองตาม flow ติดตั้ง
+          </div>
+          <div className="row">
+            <label className="field"><span>ต้นทุน/เครื่อง (฿)</span>
+              <input type="number" min={0} value={editPlan.cost}
+                onChange={e => setEditPlan({ ...editPlan, cost: e.target.value })} />
+            </label>
+            <label className="field"><span>ชื่อลูกค้า (แผน)</span>
+              <input value={editPlan.customerName}
+                onChange={e => setEditPlan({ ...editPlan, customerName: e.target.value })} placeholder="PEA เชียงใหม่" />
+            </label>
+          </div>
+          <div className="row">
+            <label className="field"><span>เบอร์ติดต่อ (แผน)</span>
+              <input value={editPlan.contactPhone}
+                onChange={e => setEditPlan({ ...editPlan, contactPhone: e.target.value })} placeholder="08x-xxx-xxxx" />
+            </label>
+            <label className="field"><span>สถานที่ติดตั้ง (แผน)</span>
+              <input value={editPlan.installLocation}
+                onChange={e => setEditPlan({ ...editPlan, installLocation: e.target.value })} />
+            </label>
+          </div>
+          <div className="row">
+            <label className="field"><span>Plan PO receipt</span>
+              <input type="date" value={editPlan.planPoReceiptDate}
+                onChange={e => setEditPlan({ ...editPlan, planPoReceiptDate: e.target.value })} />
+            </label>
+            <label className="field"><span>Plan Delivery</span>
+              <input type="date" value={editPlan.planDeliveryDate}
+                onChange={e => setEditPlan({ ...editPlan, planDeliveryDate: e.target.value })} />
             </label>
           </div>
         </Modal>

@@ -2,7 +2,7 @@ import type {
   DB, Job, JobStatus, User, AccessoryRequest, Department,
   ApprovalType, ApprovalPayload, BudgetCosts, CostCategoryKey,
   SiteVisit, SiteVisitOutcome, UnitInstallOutcome, TeamMember, JobAssignment,
-  StockMovementType,
+  StockMovementType, PaymentType,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -315,6 +315,43 @@ export function updateUnitInfo(
     `แก้ Serial: ${unit.serialLvb}/${unit.serialOm} → ${lvb}/${om}`)
 }
 
+// แก้ข้อมูลรายเครื่อง: ต้นทุน + ข้อมูลแผน (ลูกค้า/เบอร์/สถานที่) + Plan PO receipt / Plan Delivery
+// (sync 0043) ฟอร์มส่งค่าครบทุกช่อง → ค่าว่าง = ล้างค่า ไม่ใช่ "ไม่เปลี่ยน"
+// แก้ได้เฉพาะเครื่องที่ยังไม่ถูกเบิก — LIVE มี trigger trg_block_issued_edit บล็อกอยู่แล้ว
+export function updateUnitPlan(
+  db: DB, actor: User,
+  p: {
+    unitId: string; unitCost?: number
+    planCustomerName?: string; planContactPhone?: string; planInstallLocation?: string
+    planPoReceiptDate?: string; planDeliveryDate?: string
+  },
+): DB {
+  const unit = db.lbsUnits.find(u => u.id === p.unitId)
+  if (!unit) throw new Error('ไม่พบเครื่อง LBS')
+  if (unit.status === 'issued')
+    throw new Error(`Serial ${unit.serialLvb} ถูกเบิกให้ Service แล้ว — แก้ข้อมูลรายเครื่องไม่ได้ (allocation ถูกล็อก)`)
+  if (p.unitCost !== undefined && p.unitCost < 0) throw new Error('ต้นทุน/เครื่องต้องไม่ติดลบ')
+  const clean = (s?: string) => { const t = s?.trim(); return t ? t : undefined }
+  const stock = db.projectStocks.find(s => s.id === unit.projectStockId)
+  const next: DB = {
+    ...db,
+    lbsUnits: db.lbsUnits.map(u => u.id === p.unitId ? {
+      ...u,
+      unitCost: p.unitCost,
+      planCustomerName: clean(p.planCustomerName),
+      planContactPhone: clean(p.planContactPhone),
+      planInstallLocation: clean(p.planInstallLocation),
+      planPoReceiptDate: clean(p.planPoReceiptDate),
+      planDeliveryDate: clean(p.planDeliveryDate),
+    } : u),
+  }
+  return audit(next, actor, 'lbs_unit', p.unitId, 'update_unit_plan',
+    `${stock?.stockNo ?? ''} · ${unit.serialLvb}/${unit.serialOm} → ต้นทุน ${p.unitCost ?? '-'} ฿` +
+    ` · ลูกค้า(แผน) ${clean(p.planCustomerName) ?? '-'}` +
+    ` · Plan PO receipt ${clean(p.planPoReceiptDate) ?? '-'}` +
+    ` · Plan Delivery ${clean(p.planDeliveryDate) ?? '-'}`)
+}
+
 // ---------------- Job (Project Dept) ----------------
 
 // budget: undefined = ไม่ระบุ; ค่าติดลบไม่ยอมรับ
@@ -430,6 +467,105 @@ export function updateJobBudget(
   }
   return audit(next, actor, 'job', p.jobId, 'update_job',
     `แก้ไขงบประมาณ ${job.jobNo}`)
+}
+
+// ---------------- Payment ต่อ Job (sync 0044) ----------------
+// Advance / Progress or Delivery / PAC or Retention — หลายงวดต่อประเภทได้
+// guard = assertJobCostEditable (แก้ได้แม้ปิดงานแล้ว) เพราะ PAC/Retention เกิดหลังติดตั้งเสมอ
+// และ guard ตัวนี้เรียก assertJobOwner (0042) ให้แล้ว = สิทธิ์เจ้าของงานมาฟรี
+export const PAYMENT_TYPES: PaymentType[] = ['advance', 'progress', 'retention']
+
+function paymentAmount(job: Job, percent?: number, amount?: number): number {
+  if (percent !== undefined) {
+    if (percent <= 0 || percent > 100) throw new Error(`เปอร์เซ็นต์ต้องอยู่ระหว่าง 0–100 (ได้รับ ${percent})`)
+    if (job.budgetSalePrice === undefined)
+      throw new Error(`ยังไม่ได้กรอกราคาขายใน Project Budget ของ ${job.jobNo} — ใส่ % คำนวณยอดไม่ได้ (กรอกยอดเงินตรงๆ ได้)`)
+    return Math.round(job.budgetSalePrice * percent) / 100
+  }
+  if (amount === undefined || amount < 0) throw new Error('กรุณาระบุ % ของราคาขาย หรือยอดเงิน')
+  return Math.round(amount * 100) / 100
+}
+
+export interface PaymentInput {
+  invoiceNo?: string; invoiceDate?: string
+  percent?: number; amount?: number
+  paidAt?: string; note?: string
+}
+
+export function addJobPayment(
+  db: DB, actor: User,
+  p: { jobId: string; payType: PaymentType } & PaymentInput,
+): DB {
+  const job = assertJobCostEditable(db, p.jobId, actor)
+  if (!PAYMENT_TYPES.includes(p.payType)) throw new Error('ประเภทงวดเงินไม่ถูกต้อง')
+  const amount = paymentAmount(job, p.percent, p.amount)
+  const seq = Math.max(0, ...db.jobPayments.filter(x => x.jobId === p.jobId && x.payType === p.payType).map(x => x.seq)) + 1
+  const clean = (s?: string) => { const t = s?.trim(); return t ? t : undefined }
+  const next: DB = {
+    ...db,
+    jobPayments: [...db.jobPayments, {
+      id: uid(), jobId: p.jobId, payType: p.payType, seq,
+      invoiceNo: clean(p.invoiceNo), invoiceDate: clean(p.invoiceDate),
+      percent: p.percent, amount, baseSalePrice: job.budgetSalePrice,
+      paidAt: clean(p.paidAt), note: clean(p.note),
+      createdBy: actor.id, createdAt: now(),
+    }],
+  }
+  return audit(next, actor, 'job_payment', p.jobId, 'add_job_payment',
+    `${job.jobNo} บันทึกงวด ${p.payType} #${seq} · Invoice ${clean(p.invoiceNo) ?? '-'}` +
+    ` · ${p.percent !== undefined ? `${p.percent}%` : 'ยอดกรอกเอง'} = ${amount} ฿`)
+}
+
+export function updateJobPayment(
+  db: DB, actor: User,
+  p: { paymentId: string } & PaymentInput,
+): DB {
+  const pm = db.jobPayments.find(x => x.id === p.paymentId)
+  if (!pm) throw new Error('ไม่พบงวดเงินนี้')
+  const job = assertJobCostEditable(db, pm.jobId, actor)
+  const amount = paymentAmount(job, p.percent, p.amount)
+  const clean = (s?: string) => { const t = s?.trim(); return t ? t : undefined }
+  const next: DB = {
+    ...db,
+    jobPayments: db.jobPayments.map(x => x.id === p.paymentId ? {
+      ...x,
+      invoiceNo: clean(p.invoiceNo), invoiceDate: clean(p.invoiceDate),
+      percent: p.percent, amount, baseSalePrice: job.budgetSalePrice,
+      paidAt: clean(p.paidAt), note: clean(p.note),
+    } : x),
+  }
+  return audit(next, actor, 'job_payment', pm.jobId, 'update_job_payment',
+    `${job.jobNo} แก้งวด ${pm.payType} #${pm.seq} · Invoice ${clean(p.invoiceNo) ?? '-'} · ${pm.amount} → ${amount} ฿` +
+    (clean(p.paidAt) ? ` · รับเงิน ${clean(p.paidAt)}` : ' · ยังไม่รับเงิน'))
+}
+
+export function deleteJobPayment(db: DB, actor: User, p: { paymentId: string }): DB {
+  const pm = db.jobPayments.find(x => x.id === p.paymentId)
+  if (!pm) throw new Error('ไม่พบงวดเงินนี้')
+  const job = assertJobCostEditable(db, pm.jobId, actor)
+  if (pm.paidAt)
+    throw new Error(`งวดนี้บันทึกว่ารับเงินแล้ว (${pm.paidAt}) ลบไม่ได้ — ถ้าบันทึกผิดให้แก้ไขแล้วล้างวันที่รับเงินก่อน`)
+  const next: DB = { ...db, jobPayments: db.jobPayments.filter(x => x.id !== p.paymentId) }
+  return audit(next, actor, 'job_payment', pm.jobId, 'delete_job_payment',
+    `${job.jobNo} ลบงวด ${pm.payType} #${pm.seq} (Invoice ${pm.invoiceNo ?? '-'} · ${pm.amount} ฿)`)
+}
+
+// สรุปยอดสำหรับการ์ด Payment — ยอดออกใบแล้ว / รับเงินแล้ว / ยังไม่ออกใบ
+export function jobPaymentSummary(db: DB, job: Job) {
+  const rows = db.jobPayments
+    .filter(p => p.jobId === job.id)
+    .sort((a, b) => PAYMENT_TYPES.indexOf(a.payType) - PAYMENT_TYPES.indexOf(b.payType) || a.seq - b.seq)
+  const billed = rows.reduce((s, r) => s + r.amount, 0)
+  const paid = rows.filter(r => r.paidAt).reduce((s, r) => s + r.amount, 0)
+  const sale = job.budgetSalePrice
+  return {
+    rows, billed, paid,
+    unpaid: billed - paid,
+    unbilled: sale !== undefined ? sale - billed : undefined,
+    billedPct: sale ? (billed / sale) * 100 : undefined,
+    // ราคาขายเปลี่ยนหลังออกใบ → ยอดที่ freeze ไว้ไม่ตรงกับ % แล้ว (โชว์ป้ายเตือน)
+    stale: rows.some(r => r.percent !== undefined && r.baseSalePrice !== undefined && r.baseSalePrice !== sale),
+  }
 }
 
 // ลบได้เฉพาะ Job เปล่า (Draft ที่ยังไม่เคยมี transaction ใดๆ)
@@ -1077,6 +1213,14 @@ export function confirmInstall(
 
 // ---------------- Install per-unit (เฟส B · sync 0035) ----------------
 // สถานะติดตั้งของแต่ละเครื่อง = แถวล่าสุดใน unitInstallations (ไม่มีแถว = pending)
+// Actual Delivery รายเครื่อง (sync 0043) — วันที่ยืนยันติดตั้งของแถวล่าสุดที่ outcome = installed
+// reopen (0041) คงแถว unit_installations ไว้ → ค่านี้ยังอยู่ ไม่ต้อง backfill
+export function unitInstallDate(db: DB, unitId: string): string | undefined {
+  return db.unitInstallations
+    .filter(r => r.unitId === unitId && r.outcome === 'installed')
+    .sort((a, b) => b.performedAt.localeCompare(a.performedAt))[0]?.installedDate
+}
+
 export function unitInstallState(db: DB, unitId: string): UnitInstallOutcome | 'pending' {
   const rows = db.unitInstallations
     .filter(r => r.unitId === unitId)

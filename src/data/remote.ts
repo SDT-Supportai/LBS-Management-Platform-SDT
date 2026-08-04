@@ -3,7 +3,7 @@ import type {
   DB, User, Item, ProjectStock, LbsUnit, Job, AllocationTxn,
   AccessoryRequest, PurchaseRequisition, PurchaseOrder, AuditLog, AppNotification,
   Department, ApprovalRequest, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit, UnitInstallation,
-  TeamMember, JobAssignment, StockMovement,
+  TeamMember, JobAssignment, StockMovement, JobPayment, PaymentType,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -35,7 +35,27 @@ function mapStock(r: Row): ProjectStock {
   }
 }
 function mapUnit(r: Row): LbsUnit {
-  return { id: r.id, serialLvb: r.serial_lvb, serialOm: r.serial_om ?? '', projectStockId: r.project_stock_id, status: r.status, jobId: r.job_id, unitCost: r.unit_cost != null ? Number(r.unit_cost) : undefined }
+  return {
+    id: r.id, serialLvb: r.serial_lvb, serialOm: r.serial_om ?? '', projectStockId: r.project_stock_id,
+    status: r.status, jobId: r.job_id, unitCost: r.unit_cost != null ? Number(r.unit_cost) : undefined,
+    // ข้อมูลแผนรายเครื่อง (0043) — Job ชนะเมื่อผูก Job แล้ว
+    planCustomerName: r.plan_customer_name ?? undefined,
+    planContactPhone: r.plan_contact_phone ?? undefined,
+    planInstallLocation: r.plan_install_location ?? undefined,
+    planPoReceiptDate: r.plan_po_receipt_date ?? undefined,
+    planDeliveryDate: r.plan_delivery_date ?? undefined,
+  }
+}
+function mapJobPayment(r: Row): JobPayment {
+  return {
+    id: r.id, jobId: r.job_id, payType: r.pay_type, seq: r.seq,
+    invoiceNo: r.invoice_no ?? undefined, invoiceDate: r.invoice_date ?? undefined,
+    percent: r.percent != null ? Number(r.percent) : undefined,
+    amount: Number(r.amount),
+    baseSalePrice: r.base_sale_price != null ? Number(r.base_sale_price) : undefined,
+    paidAt: r.paid_at ?? undefined, note: r.note ?? undefined,
+    createdBy: r.created_by ?? '', createdAt: r.created_at,
+  }
 }
 function mapJob(r: Row): Job {
   return {
@@ -177,7 +197,7 @@ async function q(sb: SupabaseClient, table: string, order?: { col: string; asc?:
 }
 
 export async function loadAll(sb: SupabaseClient): Promise<DB> {
-  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, audits, notifs, reads, visits, unitInstalls, members, assigns, movements] =
+  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments] =
     await Promise.all([
       q(sb, 'profiles'),
       q(sb, 'items', { col: 'code', limit: 10000 }),
@@ -198,6 +218,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       q(sb, 'team_members', { col: 'created_at' }),
       q(sb, 'job_assignments', { col: 'assigned_at' }),
       q(sb, 'stock_movements', { col: 'performed_at', asc: false, limit: 1000 }),
+      q(sb, 'job_payments', { col: 'created_at' }),
     ])
 
   const readsByNotif = new Map<string, string[]>()
@@ -236,6 +257,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     teamMembers: members.map(mapTeamMember),
     jobAssignments: assigns.map(mapJobAssignment),
     stockMovements: movements.map(mapStockMovement),
+    jobPayments: payments.map(mapJobPayment),
   }
 }
 
@@ -259,6 +281,14 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_delete_project_stock', { p_stock_id: p.stockId }),
     updateUnitInfo: (p: { unitId: string; serialLvb: string; serialOm: string }) =>
       rpc(sb, 'rpc_update_unit_info', { p_unit_id: p.unitId, p_serial_lvb: p.serialLvb, p_serial_om: p.serialOm }),
+    // 0043 — ฟอร์มส่งครบทุกช่องทุกครั้ง: null = ล้างค่า ไม่ใช่ "ไม่เปลี่ยน"
+    updateUnitPlan: (p: { unitId: string; unitCost?: number; planCustomerName?: string; planContactPhone?: string; planInstallLocation?: string; planPoReceiptDate?: string; planDeliveryDate?: string }) =>
+      rpc(sb, 'rpc_update_unit_plan', {
+        p_unit_id: p.unitId, p_unit_cost: p.unitCost ?? null,
+        p_customer_name: p.planCustomerName ?? null, p_contact_phone: p.planContactPhone ?? null,
+        p_install_location: p.planInstallLocation ?? null,
+        p_plan_po_receipt: p.planPoReceiptDate || null, p_plan_delivery: p.planDeliveryDate || null,
+      }),
     createJob: (p: { jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCosts?: BudgetCosts; installSites?: { location: string; requiredDate: string }[] }) =>
       rpc(sb, 'rpc_create_job', { p_job_no: p.jobNo, p_customer: p.customerName, p_phone: p.contactPhone ?? null, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_costs: p.budgetCosts ?? null, p_install_sites: p.installSites ?? null }),
     updateJob: (p: { jobId: string; jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCosts?: BudgetCosts; installSites?: { location: string; requiredDate: string }[] }) =>
@@ -283,6 +313,20 @@ export function remoteActions(sb: SupabaseClient) {
     returnAccessory: (p: { requestId: string }) => rpc(sb, 'rpc_return_accessory', { p_request_id: p.requestId }),
     transferJobMaterialToStock: (p: { requestId: string; qty: number; note?: string }) =>
       rpc(sb, 'rpc_transfer_job_material_to_stock', { p_request_id: p.requestId, p_qty: p.qty, p_note: p.note ?? null }),
+    // Payment ต่อ Job (0044) — Project เจ้าของงาน + Manage
+    addJobPayment: (p: { jobId: string; payType: PaymentType; invoiceNo?: string; invoiceDate?: string; percent?: number; amount?: number; paidAt?: string; note?: string }) =>
+      rpc(sb, 'rpc_add_job_payment', {
+        p_job_id: p.jobId, p_type: p.payType, p_invoice_no: p.invoiceNo ?? null,
+        p_invoice_date: p.invoiceDate || null, p_percent: p.percent ?? null, p_amount: p.amount ?? null,
+        p_paid_at: p.paidAt || null, p_note: p.note ?? null,
+      }),
+    updateJobPayment: (p: { paymentId: string; invoiceNo?: string; invoiceDate?: string; percent?: number; amount?: number; paidAt?: string; note?: string }) =>
+      rpc(sb, 'rpc_update_job_payment', {
+        p_payment_id: p.paymentId, p_invoice_no: p.invoiceNo ?? null,
+        p_invoice_date: p.invoiceDate || null, p_percent: p.percent ?? null, p_amount: p.amount ?? null,
+        p_paid_at: p.paidAt || null, p_note: p.note ?? null,
+      }),
+    deleteJobPayment: (p: { paymentId: string }) => rpc(sb, 'rpc_delete_job_payment', { p_payment_id: p.paymentId }),
     cancelAccessoryRequest: (p: { requestId: string }) => rpc(sb, 'rpc_cancel_accessory_request', { p_request_id: p.requestId }),
     deleteAccessoryRequest: (p: { requestId: string }) => rpc(sb, 'rpc_delete_accessory_request', { p_request_id: p.requestId }),
     createPR: (p: { jobId: string; requestIds: string[] }) =>

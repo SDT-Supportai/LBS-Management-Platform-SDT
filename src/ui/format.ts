@@ -48,6 +48,13 @@ export const APPROVAL_TYPE_LABEL: Record<string, string> = {
   reopen_job: 'เปิดงานใหม่',
 }
 
+// งวดเงินต่อ Job (0044) — ชื่อตามที่ใช้ในสัญญางานติดตั้ง
+export const PAYMENT_TYPE_LABEL: Record<string, string> = {
+  advance: 'Advance',
+  progress: 'Progress / Delivery',
+  retention: 'PAC / Retention',
+}
+
 export const APPROVAL_STATUS_LABEL: Record<string, string> = {
   pending: 'รออนุมัติ',
   approved: 'อนุมัติแล้ว',

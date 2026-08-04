@@ -43,7 +43,7 @@ export function buildSeedDb(): DB {
         type: 'initial', note: 'ยอดตั้งต้นข้อมูลตัวอย่าง', performedBy: 'u-admin', performedAt: '2026-06-01T09:00:00.000Z' },
     ],
     accessoryRequests: [], prs: [], pos: [], approvalRequests: [], auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
-    teamMembers: [], jobAssignments: [],
+    teamMembers: [], jobAssignments: [], jobPayments: [],
   }
 
   const sales = USERS[0], project = USERS[1], purchasing = USERS[2]

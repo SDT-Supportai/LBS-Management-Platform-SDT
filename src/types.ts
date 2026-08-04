@@ -42,7 +42,14 @@ export interface LbsUnit {
   jobId: string | null
   unitCost?: number            // ต้นทุนตัว LBS ต่อเครื่อง (บาท) — กรอกตอนสร้าง/รับเข้า Stock
                                // ดึงเข้า Job → บวกเข้า actual หมวด Raw Material (jobBudgetSummary)
-  // ข้อมูลลูกค้า/สถานที่ ref จาก Job ที่เครื่องถูกดึงเข้า (single source of truth — ไม่เก็บซ้ำที่นี่)
+  // ข้อมูลลูกค้า/สถานที่ "จริง" ref จาก Job ที่เครื่องถูกดึงเข้า (single source of truth ตาม 0014)
+  // ข้างล่างคือ "ข้อมูลแผน" ที่ Division กรอกได้ก่อนเครื่องถูกผูก Job (0043) — Job ชนะเมื่อผูกแล้ว
+  planCustomerName?: string
+  planContactPhone?: string
+  planInstallLocation?: string
+  planPoReceiptDate?: string   // Plan PO receipt — วันที่คาดว่าของจะเข้าคลัง (YYYY-MM-DD)
+  planDeliveryDate?: string    // Plan Delivery — วันที่คาดว่าจะส่งมอบ/ติดตั้ง (YYYY-MM-DD)
+  // Actual Delivery + สถานะติดตั้ง = derive จาก unitInstallations (0035) ไม่เก็บซ้ำ
 }
 
 // Project Budget — ต้นทุนแยก 7 หมวด (0021)
@@ -301,6 +308,27 @@ export interface UnitInstallation {
   performedAt: string
 }
 
+// งวดเงินต่อ Job (0044) — Advance / Progress or Delivery / PAC or Retention
+// หลายงวดต่อประเภทได้ (Progress 1, 2, 3…) · seq = ลำดับงวดในประเภทนั้น
+// เก็บทั้ง percent และ amount: amount freeze ณ เวลาบันทึก พร้อม baseSalePrice
+// (ราคาขายแก้ย้อนหลังได้ 0023 — ถ้าเก็บแค่ % ยอดในใบแจ้งหนี้ที่ออกไปแล้วจะขยับเอง)
+export type PaymentType = 'advance' | 'progress' | 'retention'
+export interface JobPayment {
+  id: string
+  jobId: string
+  payType: PaymentType
+  seq: number
+  invoiceNo?: string
+  invoiceDate?: string
+  percent?: number             // % ของราคาขาย (ว่าง = กรอกยอดเงินตรงๆ)
+  amount: number               // ยอดเงินที่คิดได้ ณ เวลาบันทึก
+  baseSalePrice?: number       // ราคาขาย ณ เวลาบันทึก — ต่างจากปัจจุบัน = โชว์ป้ายเตือน
+  paidAt?: string              // รับเงินแล้วเมื่อ (ว่าง = รอรับเงิน)
+  note?: string
+  createdBy: string
+  createdAt: string
+}
+
 // บันทึกการออกหน้างานที่ "ยังไม่จบ" — เลื่อนนัด หรือ ติดปัญหา (Job ยังอยู่ issued)
 // path สำเร็จใช้ confirmInstall แยกต่างหาก — ที่นี่เก็บเฉพาะ attempt ที่ทำไม่สำเร็จ/ต้องเลื่อน
 export type SiteVisitOutcome = 'rescheduled' | 'failed'
@@ -334,6 +362,7 @@ export interface DB {
   teamMembers: TeamMember[]
   jobAssignments: JobAssignment[]
   stockMovements: StockMovement[]
+  jobPayments: JobPayment[]
 }
 
 export interface AppSettings {
