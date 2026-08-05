@@ -4,6 +4,7 @@ import type {
   AccessoryRequest, PurchaseRequisition, PurchaseOrder, AuditLog, AppNotification,
   Department, ApprovalRequest, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit, UnitInstallation,
   TeamMember, JobAssignment, StockMovement, JobPayment, PaymentType,
+  StdDrawing, StdBom, StdBomLine,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -44,6 +45,32 @@ function mapUnit(r: Row): LbsUnit {
     planInstallLocation: r.plan_install_location ?? undefined,
     planPoReceiptDate: r.plan_po_receipt_date ?? undefined,
     planDeliveryDate: r.plan_delivery_date ?? undefined,
+  }
+}
+function mapStdDrawing(r: Row): StdDrawing {
+  return {
+    id: r.id, title: r.title, drawingNo: r.drawing_no ?? undefined,
+    description: r.description ?? undefined,
+    fileUrl: r.file_url ?? undefined, fileName: r.file_name ?? undefined,
+    revNote: r.rev_note ?? undefined,
+    createdBy: r.created_by ?? '', createdAt: r.created_at,
+    updatedBy: r.updated_by ?? undefined, updatedAt: r.updated_at ?? undefined,
+  }
+}
+function mapStdBom(r: Row): StdBom {
+  return {
+    id: r.id, title: r.title, bomNo: r.bom_no ?? undefined, description: r.description ?? undefined,
+    createdBy: r.created_by ?? '', createdAt: r.created_at,
+    updatedBy: r.updated_by ?? undefined, updatedAt: r.updated_at ?? undefined,
+  }
+}
+function mapStdBomLine(r: Row): StdBomLine {
+  return {
+    id: r.id, bomId: r.bom_id, itemId: r.item_id ?? undefined,
+    epicorCode: r.epicor_code ?? undefined, name: r.name,
+    qty: Number(r.qty), uom: r.uom ?? undefined,
+    estUnitCost: r.est_unit_cost != null ? Number(r.est_unit_cost) : undefined,
+    note: r.note ?? undefined,
   }
 }
 function mapJobPayment(r: Row): JobPayment {
@@ -197,7 +224,7 @@ async function q(sb: SupabaseClient, table: string, order?: { col: string; asc?:
 }
 
 export async function loadAll(sb: SupabaseClient): Promise<DB> {
-  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments] =
+  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, boms, bomLines] =
     await Promise.all([
       q(sb, 'profiles'),
       q(sb, 'items', { col: 'code', limit: 10000 }),
@@ -219,6 +246,9 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       q(sb, 'job_assignments', { col: 'assigned_at' }),
       q(sb, 'stock_movements', { col: 'performed_at', asc: false, limit: 1000 }),
       q(sb, 'job_payments', { col: 'created_at' }),
+      q(sb, 'std_drawings', { col: 'title' }),
+      q(sb, 'std_boms', { col: 'title' }),
+      q(sb, 'std_bom_lines', { col: 'created_at' }),
     ])
 
   const readsByNotif = new Map<string, string[]>()
@@ -258,6 +288,9 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     jobAssignments: assigns.map(mapJobAssignment),
     stockMovements: movements.map(mapStockMovement),
     jobPayments: payments.map(mapJobPayment),
+    stdDrawings: drawings.map(mapStdDrawing),
+    stdBoms: boms.map(mapStdBom),
+    stdBomLines: bomLines.map(mapStdBomLine),
   }
 }
 
@@ -396,6 +429,47 @@ export function remoteActions(sb: SupabaseClient) {
     deleteItem: (p: { itemId: string }) => rpc(sb, 'rpc_delete_item', { p_item_id: p.itemId }),
     adjustAccessoryStock: (p: { itemId: string; newQty: number; note: string; unitCost?: number }) =>
       rpc(sb, 'rpc_adjust_accessory_stock', { p_item_id: p.itemId, p_new_qty: p.newQty, p_note: p.note, p_unit_cost: p.unitCost ?? null }),
+    // Standard Drawing / BOM (0045) — แก้ได้ Project/Division/Manage
+    createStdDrawing: (p: { title: string; drawingNo?: string; description?: string; fileUrl?: string; fileName?: string }) =>
+      rpc(sb, 'rpc_create_std_drawing', {
+        p_title: p.title, p_drawing_no: p.drawingNo ?? null, p_description: p.description ?? null,
+        p_file_url: p.fileUrl ?? null, p_file_name: p.fileName ?? null,
+      }),
+    // p_file_url ว่าง = ไม่ได้อัปโหลดใหม่ → ฝั่ง DB คงไฟล์เดิม
+    updateStdDrawing: (p: { id: string; title: string; drawingNo?: string; description?: string; fileUrl?: string; fileName?: string; revNote?: string }) =>
+      rpc(sb, 'rpc_update_std_drawing', {
+        p_id: p.id, p_title: p.title, p_drawing_no: p.drawingNo ?? null, p_description: p.description ?? null,
+        p_file_url: p.fileUrl ?? null, p_file_name: p.fileName ?? null, p_rev_note: p.revNote ?? null,
+      }),
+    deleteStdDrawing: (p: { id: string }) => rpc(sb, 'rpc_delete_std_drawing', { p_id: p.id }),
+    createStdBom: (p: { title: string; bomNo?: string; description?: string }) =>
+      rpc(sb, 'rpc_create_std_bom', { p_title: p.title, p_bom_no: p.bomNo ?? null, p_description: p.description ?? null }),
+    updateStdBom: (p: { id: string; title: string; bomNo?: string; description?: string }) =>
+      rpc(sb, 'rpc_update_std_bom', { p_id: p.id, p_title: p.title, p_bom_no: p.bomNo ?? null, p_description: p.description ?? null }),
+    deleteStdBom: (p: { id: string }) => rpc(sb, 'rpc_delete_std_bom', { p_id: p.id }),
+    addStdBomLine: (p: { bomId: string; itemId?: string; epicorCode?: string; name?: string; qty?: number; uom?: string; estUnitCost?: number; note?: string }) =>
+      rpc(sb, 'rpc_add_std_bom_line', {
+        p_bom_id: p.bomId, p_item_id: p.itemId ?? null, p_epicor_code: p.epicorCode ?? null,
+        p_name: p.name ?? null, p_qty: p.qty ?? null, p_uom: p.uom ?? null,
+        p_est_unit_cost: p.estUnitCost ?? null, p_note: p.note ?? null,
+      }),
+    updateStdBomLine: (p: { lineId: string; itemId?: string; epicorCode?: string; name?: string; qty?: number; uom?: string; estUnitCost?: number; note?: string }) =>
+      rpc(sb, 'rpc_update_std_bom_line', {
+        p_line_id: p.lineId, p_item_id: p.itemId ?? null, p_epicor_code: p.epicorCode ?? null,
+        p_name: p.name ?? null, p_qty: p.qty ?? null, p_uom: p.uom ?? null,
+        p_est_unit_cost: p.estUnitCost ?? null, p_note: p.note ?? null,
+      }),
+    deleteStdBomLine: (p: { lineId: string }) => rpc(sb, 'rpc_delete_std_bom_line', { p_line_id: p.lineId }),
+    // Import Excel เข้า BOM (0046) — atomic ทั้งชุดใน RPC เดียว · replace = ลบรายการเดิมก่อน
+    importStdBomLines: (p: { bomId: string; replace?: boolean; lines: { itemId?: string; epicorCode?: string; name?: string; qty?: number; uom?: string; estUnitCost?: number; note?: string }[] }) =>
+      rpc(sb, 'rpc_import_std_bom_lines', {
+        p_bom_id: p.bomId, p_replace: p.replace ?? false,
+        p_lines: p.lines.map(l => ({
+          item_id: l.itemId ?? null, epicor_code: l.epicorCode ?? null, name: l.name ?? null,
+          qty: l.qty ?? null, uom: l.uom ?? null,
+          est_unit_cost: l.estUnitCost ?? null, note: l.note ?? null,
+        })),
+      }),
     // สร้าง user + เปลี่ยนรหัสผ่านต้องใช้ service role → ผ่าน netlify function
     createUser: async (p: { email: string; fullName: string; department: Department; password: string }) => {
       await callAdminFn(sb, { action: 'create', ...p })

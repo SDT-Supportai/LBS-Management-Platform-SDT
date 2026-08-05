@@ -329,6 +329,47 @@ export interface JobPayment {
   createdAt: string
 }
 
+// Standard Drawing (0045) — 1 แบบ = 1 แถว + PDF ล่าสุด
+// แก้ไข = ทับข้อมูลเดิม + stamp updatedAt/updatedBy (ไม่เก็บตาราง revision ตามมติ 2026-08-04)
+// ไฟล์เก่าไม่ถูกลบจาก Storage และ audit บันทึก URL เก่า→ใหม่ไว้ ถ้าต้องย้อนดู
+export interface StdDrawing {
+  id: string
+  title: string
+  drawingNo?: string
+  description?: string
+  fileUrl?: string             // ว่าง = ยังไม่แนบไฟล์
+  fileName?: string
+  revNote?: string             // หมายเหตุการแก้ไขครั้งล่าสุด
+  createdBy: string
+  createdAt: string
+  updatedBy?: string
+  updatedAt?: string
+}
+
+// Standard BOM List (0045) — หัวข้อ BOM + รายการวัสดุ · ตารางอ้างอิง/Export ยังไม่ต่อเข้า Job
+export interface StdBom {
+  id: string
+  title: string
+  bomNo?: string
+  description?: string
+  createdBy: string
+  createdAt: string
+  updatedBy?: string
+  updatedAt?: string
+}
+
+export interface StdBomLine {
+  id: string
+  bomId: string
+  itemId?: string              // ผูกฐานข้อมูลวัสดุ (ว่าง = ของที่ยังไม่เข้า master → free text)
+  epicorCode?: string
+  name: string
+  qty: number
+  uom?: string
+  estUnitCost?: number         // ต้นทุนประมาณการต่อหน่วย
+  note?: string
+}
+
 // บันทึกการออกหน้างานที่ "ยังไม่จบ" — เลื่อนนัด หรือ ติดปัญหา (Job ยังอยู่ issued)
 // path สำเร็จใช้ confirmInstall แยกต่างหาก — ที่นี่เก็บเฉพาะ attempt ที่ทำไม่สำเร็จ/ต้องเลื่อน
 export type SiteVisitOutcome = 'rescheduled' | 'failed'
@@ -363,6 +404,9 @@ export interface DB {
   jobAssignments: JobAssignment[]
   stockMovements: StockMovement[]
   jobPayments: JobPayment[]
+  stdDrawings: StdDrawing[]
+  stdBoms: StdBom[]
+  stdBomLines: StdBomLine[]
 }
 
 export interface AppSettings {

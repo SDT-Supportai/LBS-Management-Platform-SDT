@@ -2128,3 +2128,220 @@ export function unreadNotifications(db: DB, user: User) {
   return db.notifications.filter(n =>
     (n.dept === 'all' || n.dept === user.department || user.department === 'admin') && !n.readBy.includes(user.id))
 }
+
+// ---------------- Standard Drawing and BOM List (sync 0045) ----------------
+// เอกสารมาตรฐานที่ทุกแผนกใช้ร่วมกัน — แก้ได้ Project/Division/Manage · อ่าน/โหลดได้ทุกแผนก
+// Drawing: แก้ไข = ทับข้อมูลเดิม + stamp ผู้แก้/วันที่ (ไม่เก็บ revision) · fileUrl ว่างตอนแก้ = คงไฟล์เดิม
+const clean = (s?: string) => { const t = s?.trim(); return t ? t : undefined }
+
+export function createStdDrawing(
+  db: DB, actor: User,
+  p: { title: string; drawingNo?: string; description?: string; fileUrl?: string; fileName?: string },
+): DB {
+  const title = p.title.trim()
+  if (!title) throw new Error('กรุณาระบุหัวข้อ/ชื่อ Drawing')
+  const no = clean(p.drawingNo)
+  if (no && db.stdDrawings.some(d => d.drawingNo === no))
+    throw new Error(`เลขแบบ "${no}" มีอยู่แล้ว`)
+  const id = uid()
+  const next: DB = {
+    ...db,
+    stdDrawings: [...db.stdDrawings, {
+      id, title, drawingNo: no, description: clean(p.description),
+      fileUrl: clean(p.fileUrl), fileName: clean(p.fileName),
+      createdBy: actor.id, createdAt: now(), updatedBy: actor.id, updatedAt: now(),
+    }],
+  }
+  return audit(next, actor, 'std_drawing', id, 'create_std_drawing',
+    `เพิ่ม Standard Drawing "${title}"${clean(p.fileName) ? ` · ไฟล์ ${p.fileName}` : ' · ยังไม่แนบไฟล์'}`)
+}
+
+export function updateStdDrawing(
+  db: DB, actor: User,
+  p: { id: string; title: string; drawingNo?: string; description?: string; fileUrl?: string; fileName?: string; revNote?: string },
+): DB {
+  const d = db.stdDrawings.find(x => x.id === p.id)
+  if (!d) throw new Error('ไม่พบ Drawing นี้')
+  const title = p.title.trim()
+  if (!title) throw new Error('กรุณาระบุหัวข้อ/ชื่อ Drawing')
+  const no = clean(p.drawingNo)
+  if (no && db.stdDrawings.some(x => x.id !== p.id && x.drawingNo === no))
+    throw new Error(`เลขแบบ "${no}" มีอยู่แล้ว`)
+  // อัปโหลดใหม่ = เปลี่ยนไฟล์ · ไม่ได้อัปโหลด = คงไฟล์เดิม
+  const newUrl = clean(p.fileUrl) ?? d.fileUrl
+  const newName = clean(p.fileUrl) ? clean(p.fileName) : d.fileName
+  const next: DB = {
+    ...db,
+    stdDrawings: db.stdDrawings.map(x => x.id === p.id ? {
+      ...x, title, drawingNo: no, description: clean(p.description),
+      fileUrl: newUrl, fileName: newName, revNote: clean(p.revNote),
+      updatedBy: actor.id, updatedAt: now(),
+    } : x),
+  }
+  return audit(next, actor, 'std_drawing', p.id, 'update_std_drawing',
+    `แก้ Standard Drawing "${d.title}" → "${title}"` +
+    (newUrl !== d.fileUrl ? ` · เปลี่ยนไฟล์: ${d.fileName ?? '-'} → ${newName ?? '-'}` : ' · ไฟล์เดิม') +
+    (clean(p.revNote) ? ` · หมายเหตุ: ${clean(p.revNote)}` : ''))
+}
+
+export function deleteStdDrawing(db: DB, actor: User, p: { id: string }): DB {
+  const d = db.stdDrawings.find(x => x.id === p.id)
+  if (!d) throw new Error('ไม่พบ Drawing นี้')
+  const next: DB = { ...db, stdDrawings: db.stdDrawings.filter(x => x.id !== p.id) }
+  return audit(next, actor, 'std_drawing', p.id, 'delete_std_drawing',
+    `ลบ Standard Drawing "${d.title}" (ไฟล์ ${d.fileName ?? '-'} ยังอยู่ใน Storage)`)
+}
+
+export function createStdBom(
+  db: DB, actor: User,
+  p: { title: string; bomNo?: string; description?: string },
+): DB {
+  const title = p.title.trim()
+  if (!title) throw new Error('กรุณาระบุหัวข้อ/ชื่อ BOM')
+  const no = clean(p.bomNo)
+  if (no && db.stdBoms.some(b => b.bomNo === no)) throw new Error(`เลข BOM "${no}" มีอยู่แล้ว`)
+  const id = uid()
+  const next: DB = {
+    ...db,
+    stdBoms: [...db.stdBoms, {
+      id, title, bomNo: no, description: clean(p.description),
+      createdBy: actor.id, createdAt: now(), updatedBy: actor.id, updatedAt: now(),
+    }],
+  }
+  return audit(next, actor, 'std_bom', id, 'create_std_bom', `เพิ่ม Standard BOM "${title}"`)
+}
+
+export function updateStdBom(
+  db: DB, actor: User,
+  p: { id: string; title: string; bomNo?: string; description?: string },
+): DB {
+  const b = db.stdBoms.find(x => x.id === p.id)
+  if (!b) throw new Error('ไม่พบ BOM นี้')
+  const title = p.title.trim()
+  if (!title) throw new Error('กรุณาระบุหัวข้อ/ชื่อ BOM')
+  const no = clean(p.bomNo)
+  if (no && db.stdBoms.some(x => x.id !== p.id && x.bomNo === no)) throw new Error(`เลข BOM "${no}" มีอยู่แล้ว`)
+  const next: DB = {
+    ...db,
+    stdBoms: db.stdBoms.map(x => x.id === p.id
+      ? { ...x, title, bomNo: no, description: clean(p.description), updatedBy: actor.id, updatedAt: now() }
+      : x),
+  }
+  return audit(next, actor, 'std_bom', p.id, 'update_std_bom', `แก้ Standard BOM "${b.title}" → "${title}"`)
+}
+
+export function deleteStdBom(db: DB, actor: User, p: { id: string }): DB {
+  const b = db.stdBoms.find(x => x.id === p.id)
+  if (!b) throw new Error('ไม่พบ BOM นี้')
+  const n = db.stdBomLines.filter(l => l.bomId === p.id).length
+  const next: DB = {
+    ...db,
+    stdBoms: db.stdBoms.filter(x => x.id !== p.id),
+    stdBomLines: db.stdBomLines.filter(l => l.bomId !== p.id),   // cascade
+  }
+  return audit(next, actor, 'std_bom', p.id, 'delete_std_bom',
+    `ลบ Standard BOM "${b.title}" พร้อมรายการวัสดุ ${n} รายการ`)
+}
+
+export interface StdBomLineInput {
+  itemId?: string; epicorCode?: string; name?: string
+  qty?: number; uom?: string; estUnitCost?: number; note?: string
+}
+
+// เลือกวัสดุจากฐานข้อมูล → เติม Epicor/ชื่อ/หน่วยให้เอง (snapshot กันชื่อเพี้ยนภายหลัง)
+function resolveBomLine(db: DB, p: StdBomLineInput) {
+  const it = p.itemId ? db.items.find(i => i.id === p.itemId) : undefined
+  if (p.itemId && !it) throw new Error('ไม่พบวัสดุในฐานข้อมูล')
+  if (p.qty === undefined || p.qty <= 0) throw new Error('จำนวนต้องมากกว่า 0')
+  const name = clean(p.name) ?? it?.name
+  if (!name) throw new Error('กรุณาเลือกวัสดุจากฐานข้อมูล หรือกรอกชื่ออุปกรณ์')
+  if (p.estUnitCost !== undefined && p.estUnitCost < 0) throw new Error('ต้นทุนประมาณการต้องไม่ติดลบ')
+  return {
+    itemId: p.itemId,
+    epicorCode: clean(p.epicorCode) ?? it?.epicorCode ?? it?.code,
+    name, qty: p.qty, uom: clean(p.uom) ?? it?.uom,
+    estUnitCost: p.estUnitCost, note: clean(p.note),
+  }
+}
+
+const touchBom = (db: DB, bomId: string, actor: User): DB => ({
+  ...db,
+  stdBoms: db.stdBoms.map(b => b.id === bomId ? { ...b, updatedBy: actor.id, updatedAt: now() } : b),
+})
+
+export function addStdBomLine(db: DB, actor: User, p: { bomId: string } & StdBomLineInput): DB {
+  const bom = db.stdBoms.find(b => b.id === p.bomId)
+  if (!bom) throw new Error('ไม่พบ BOM นี้')
+  const line = resolveBomLine(db, p)
+  let next: DB = { ...db, stdBomLines: [...db.stdBomLines, { id: uid(), bomId: p.bomId, ...line }] }
+  next = touchBom(next, p.bomId, actor)
+  return audit(next, actor, 'std_bom', p.bomId, 'add_std_bom_line',
+    `${bom.title} เพิ่มรายการ ${line.epicorCode ?? '-'} ${line.name} × ${line.qty} ${line.uom ?? ''}`)
+}
+
+export function updateStdBomLine(db: DB, actor: User, p: { lineId: string } & StdBomLineInput): DB {
+  const old = db.stdBomLines.find(l => l.id === p.lineId)
+  if (!old) throw new Error('ไม่พบรายการวัสดุใน BOM')
+  const line = resolveBomLine(db, p)
+  let next: DB = {
+    ...db,
+    stdBomLines: db.stdBomLines.map(l => l.id === p.lineId ? { ...l, ...line } : l),
+  }
+  next = touchBom(next, old.bomId, actor)
+  return audit(next, actor, 'std_bom', old.bomId, 'update_std_bom_line',
+    `แก้รายการ ${old.name} × ${old.qty} → ${line.name} × ${line.qty} ${line.uom ?? ''}`)
+}
+
+export function deleteStdBomLine(db: DB, actor: User, p: { lineId: string }): DB {
+  const line = db.stdBomLines.find(l => l.id === p.lineId)
+  if (!line) throw new Error('ไม่พบรายการวัสดุใน BOM')
+  let next: DB = { ...db, stdBomLines: db.stdBomLines.filter(l => l.id !== p.lineId) }
+  next = touchBom(next, line.bomId, actor)
+  return audit(next, actor, 'std_bom', line.bomId, 'delete_std_bom_line',
+    `ลบรายการ ${line.epicorCode ?? '-'} ${line.name} × ${line.qty}`)
+}
+
+// Import รายการวัสดุเข้า BOM จาก Excel (sync 0046) — atomic ทั้งชุด
+// replace = ลบรายการเดิมทั้งหมดก่อนใส่ใหม่ (ไฟล์เป็น source of truth) · false = เพิ่มต่อท้าย
+// ไม่ส่ง itemId มา → ผูกจากรหัส Epicor ให้เอง (แล้วค่อย code) เหมือนฝั่ง RPC
+export function importStdBomLines(
+  db: DB, actor: User,
+  p: { bomId: string; replace?: boolean; lines: StdBomLineInput[] },
+): DB {
+  const bom = db.stdBoms.find(b => b.id === p.bomId)
+  if (!bom) throw new Error('ไม่พบ BOM นี้')
+  if (p.lines.length === 0) throw new Error('ไม่มีรายการวัสดุในไฟล์')
+
+  let linked = 0
+  const resolved = p.lines.map((raw, i) => {
+    const ep = clean(raw.epicorCode)
+    const itemId = raw.itemId
+      ?? (ep ? db.items.find(x => x.epicorCode === ep)?.id ?? db.items.find(x => x.code === ep)?.id : undefined)
+    if (itemId) linked++
+    try {
+      return { id: uid(), bomId: p.bomId, ...resolveBomLine(db, { ...raw, itemId }) }
+    } catch (e) {
+      throw new Error(`แถวที่ ${i + 1} : ${(e as Error).message}`)
+    }
+  })
+
+  const removed = p.replace ? db.stdBomLines.filter(l => l.bomId === p.bomId).length : 0
+  const kept = p.replace ? db.stdBomLines.filter(l => l.bomId !== p.bomId) : db.stdBomLines
+  let next: DB = { ...db, stdBomLines: [...kept, ...resolved] }
+  next = touchBom(next, p.bomId, actor)
+  return audit(next, actor, 'std_bom', p.bomId, 'import_std_bom_lines',
+    `${bom.title} Import Excel: ` +
+    (p.replace ? `แทนที่ทั้งหมด (ลบเดิม ${removed} รายการ) ` : 'เพิ่มต่อท้าย ') +
+    `${resolved.length} รายการ (ผูกฐานข้อมูลวัสดุได้ ${linked})`)
+}
+
+// รวมมูลค่าประมาณการของ BOM (ต้นทุน/หน่วย × จำนวน) — ใช้โชว์ในหัวการ์ดและ Export
+export function stdBomSummary(db: DB, bomId: string) {
+  const lines = db.stdBomLines.filter(l => l.bomId === bomId)
+  const total = lines.reduce((s, l) => s + (l.estUnitCost ?? 0) * l.qty, 0)
+  return {
+    lines,
+    total: lines.some(l => l.estUnitCost !== undefined) ? total : undefined,
+    unlinked: lines.filter(l => !l.itemId).length,   // ยังไม่ผูกฐานข้อมูลวัสดุ
+  }
+}

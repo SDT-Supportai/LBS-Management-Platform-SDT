@@ -64,6 +64,8 @@ export const PERMISSIONS: Record<string, Department[]> = {
   'master.manage': ['admin'],
   'approval.decide': ['sales', 'admin'],   // Division อนุมัติ/ตีกลับคำขอจาก project
   'accessory.cleanup': ['project', 'sales', 'admin'],   // ลบรายการวัสดุที่ยกเลิกออกจากการ์ด (Project/Division/Manage)
+  // Standard Drawing / BOM (0045) — แก้ได้ Project/Division/Manage · ดู+ดาวน์โหลดได้ทุกแผนก
+  'standards.manage': ['project', 'sales', 'admin'],
 }
 
 export function can(user: User | null, perm: keyof typeof PERMISSIONS): boolean {
@@ -96,6 +98,7 @@ const EMPTY_DB: DB = {
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [],
   auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
+  stdDrawings: [], stdBoms: [], stdBomLines: [],
 }
 
 // migrate ข้อมูล demo จาก schema เก่า (v1: issued_installed, ไม่มี qtyReceived/notifications)
@@ -132,6 +135,9 @@ function migrateDb(raw: unknown): DB {
     jobAssignments: d.jobAssignments ?? [],
     stockMovements: d.stockMovements ?? [],
     jobPayments: d.jobPayments ?? [],
+    stdDrawings: d.stdDrawings ?? [],
+    stdBoms: d.stdBoms ?? [],
+    stdBomLines: d.stdBomLines ?? [],
   }
 }
 
@@ -209,6 +215,16 @@ export interface StoreActions {
   addJobPayment: (p: Parameters<typeof L.addJobPayment>[2]) => MaybePromise
   updateJobPayment: (p: Parameters<typeof L.updateJobPayment>[2]) => MaybePromise
   deleteJobPayment: (p: Parameters<typeof L.deleteJobPayment>[2]) => MaybePromise
+  createStdDrawing: (p: Parameters<typeof L.createStdDrawing>[2]) => MaybePromise
+  updateStdDrawing: (p: Parameters<typeof L.updateStdDrawing>[2]) => MaybePromise
+  deleteStdDrawing: (p: Parameters<typeof L.deleteStdDrawing>[2]) => MaybePromise
+  createStdBom: (p: Parameters<typeof L.createStdBom>[2]) => MaybePromise
+  updateStdBom: (p: Parameters<typeof L.updateStdBom>[2]) => MaybePromise
+  deleteStdBom: (p: Parameters<typeof L.deleteStdBom>[2]) => MaybePromise
+  addStdBomLine: (p: Parameters<typeof L.addStdBomLine>[2]) => MaybePromise
+  updateStdBomLine: (p: Parameters<typeof L.updateStdBomLine>[2]) => MaybePromise
+  deleteStdBomLine: (p: Parameters<typeof L.deleteStdBomLine>[2]) => MaybePromise
+  importStdBomLines: (p: Parameters<typeof L.importStdBomLines>[2]) => MaybePromise
   createUser: (p: Parameters<typeof L.createUser>[2]) => MaybePromise
   updateUser: (p: Parameters<typeof L.updateUser>[2]) => MaybePromise
 }
@@ -377,6 +393,17 @@ function DemoProvider({ children }: { children: ReactNode }) {
         addJobPayment: run('job.manage', L.addJobPayment),
         updateJobPayment: run('job.manage', L.updateJobPayment),
         deleteJobPayment: run('job.manage', L.deleteJobPayment),
+        // Standard Drawing / BOM (0045)
+        createStdDrawing: run('standards.manage', L.createStdDrawing),
+        updateStdDrawing: run('standards.manage', L.updateStdDrawing),
+        deleteStdDrawing: run('standards.manage', L.deleteStdDrawing),
+        createStdBom: run('standards.manage', L.createStdBom),
+        updateStdBom: run('standards.manage', L.updateStdBom),
+        deleteStdBom: run('standards.manage', L.deleteStdBom),
+        addStdBomLine: run('standards.manage', L.addStdBomLine),
+        updateStdBomLine: run('standards.manage', L.updateStdBomLine),
+        deleteStdBomLine: run('standards.manage', L.deleteStdBomLine),
+        importStdBomLines: run('standards.manage', L.importStdBomLines),
         createUser: run('master.manage', L.createUser),
         updateUser: run('master.manage', L.updateUser),
       },

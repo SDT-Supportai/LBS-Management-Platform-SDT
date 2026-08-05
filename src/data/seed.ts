@@ -44,6 +44,32 @@ export function buildSeedDb(): DB {
     ],
     accessoryRequests: [], prs: [], pos: [], approvalRequests: [], auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
     teamMembers: [], jobAssignments: [], jobPayments: [],
+    // Standard Drawing / BOM ตัวอย่าง (0045) — drawing ตัวที่ 2 ยังไม่แนบไฟล์ ให้เห็นสถานะนั้นด้วย
+    stdDrawings: [
+      { id: 's-dwg-1', title: 'Single Line Diagram — 115kV LBS Standard', drawingNo: 'STD-SLD-001',
+        description: 'แบบมาตรฐานวงจรหลักของ LBS 115kV (ใช้อ้างอิงทุกโครงการ)',
+        createdBy: 'u-admin', createdAt: '2026-06-10T02:00:00.000Z',
+        updatedBy: 'u-admin', updatedAt: '2026-06-10T02:00:00.000Z' },
+      { id: 's-dwg-2', title: 'Foundation & Structure Detail', drawingNo: 'STD-FDN-002',
+        description: 'รายละเอียดฐานรากและโครงเหล็กรองรับ LBS',
+        createdBy: 'u-admin', createdAt: '2026-06-12T02:00:00.000Z',
+        updatedBy: 'u-admin', updatedAt: '2026-06-12T02:00:00.000Z' },
+    ],
+    stdBoms: [
+      { id: 's-bom-1', title: 'BOM มาตรฐาน — ติดตั้ง LBS 1 ชุด (Outdoor)', bomNo: 'STD-BOM-001',
+        description: 'รายการวัสดุมาตรฐานต่อการติดตั้ง LBS 1 เครื่อง',
+        createdBy: 'u-admin', createdAt: '2026-06-10T02:00:00.000Z',
+        updatedBy: 'u-admin', updatedAt: '2026-06-10T02:00:00.000Z' },
+    ],
+    stdBomLines: [
+      { id: 's-bl-1', bomId: 's-bom-1', itemId: 'i-ct', epicorCode: 'EPC-CT-115',
+        name: 'Current Transformer', qty: 3, uom: 'ชุด', estUnitCost: 80000 },
+      { id: 's-bl-2', bomId: 's-bom-1', itemId: 'i-bracket', epicorCode: 'EPC-BRK-01',
+        name: 'Mounting Bracket', qty: 4, uom: 'ชุด', estUnitCost: 4500 },
+      { id: 's-bl-3', bomId: 's-bom-1', itemId: 'i-cable', epicorCode: 'EPC-CBL-25',
+        name: 'Control Cable 25m', qty: 2, uom: 'ม้วน', estUnitCost: 12000,
+        note: 'เผื่อความยาวตามระยะจริงหน้างาน' },
+    ],
   }
 
   const sales = USERS[0], project = USERS[1], purchasing = USERS[2]

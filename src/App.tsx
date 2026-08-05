@@ -14,6 +14,7 @@ import ServiceSchedulingPage from './pages/ServiceSchedulingPage'
 import AuditPage from './pages/AuditPage'
 import NotificationsPage from './pages/NotificationsPage'
 import MasterDataPage from './pages/MasterDataPage'
+import StandardsPage from './pages/StandardsPage'
 import DevSettingsPage from './pages/DevSettingsPage'
 import ApprovalsPage from './pages/ApprovalsPage'
 import { deriveJobStatus, unreadNotifications, serviceIssues } from './data/logic'
@@ -51,6 +52,8 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
         : awaitingInstall > 0 ? { text: `${awaitingInstall} รอติดตั้ง`, cls: 'blue' } : undefined },
     { to: '/scheduling', icon: '👷', label: 'Service & Scheduling', badge: unassignedJobs > 0 ? { text: `${unassignedJobs} ยังไม่มอบหมาย`, cls: 'amber' } : undefined },
     { to: '/master', icon: '🗄️', label: 'Material Database' },
+    // เอกสารมาตรฐาน (0045) — ข้อมูลอ้างอิงเหมือน Material Database จึงวางต่อกัน · ทุกแผนกเปิดดูได้
+    { to: '/standards', icon: '📐', label: 'Standard Drawing & BOM' },
     // Awaiting Approval ย้ายมาอยู่ล่าง Material Database (มติ 2026-07-19)
     { to: '/approvals', icon: '✅', label: 'Awaiting Approval', badge: pendingApprovals > 0 ? { text: `${pendingApprovals}`, cls: 'amber' } : undefined },
     // Dev Settings เฉพาะ Manage (admin) — แผนกอื่น "not can DevSettings"
@@ -210,6 +213,7 @@ export default function App() {
               <Route path="/approvals" element={<ApprovalsPage />} />
               <Route path="/notifications" element={<NotificationsPage />} />
               <Route path="/master" element={<MasterDataPage />} />
+              <Route path="/standards" element={<StandardsPage />} />
               <Route path="/audit" element={<AuditPage />} />
               <Route path="/dev" element={isManage ? <DevSettingsPage /> : <Navigate to="/dashboard" replace />} />
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
