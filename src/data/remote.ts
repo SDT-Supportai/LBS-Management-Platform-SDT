@@ -294,6 +294,18 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
   }
 }
 
+// payload รายเครื่องที่ส่งเข้า rpc_import_units_to_stock (0048) — key ต้องตรงกับที่ SQL อ่าน
+interface UnitPayload {
+  lvb: string; om: string; cost?: number
+  customer?: string; phone?: string; location?: string
+  planPoReceipt?: string; planDelivery?: string
+}
+const toUnitJson = (u: UnitPayload) => ({
+  lvb: u.lvb, om: u.om, cost: u.cost ?? null,
+  customer: u.customer ?? null, phone: u.phone ?? null, location: u.location ?? null,
+  plan_po_receipt: u.planPoReceipt ?? null, plan_delivery: u.planDelivery ?? null,
+})
+
 async function rpc(sb: SupabaseClient, fn: string, params: Record<string, unknown>): Promise<void> {
   const { error } = await sb.rpc(fn, params)
   if (error) throw new Error(error.message)
@@ -306,8 +318,13 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_create_project_stock', { p_stock_no: p.stockNo, p_item_id: p.itemId, p_units: p.units, p_notes: p.notes ?? null, p_po_no: p.poNo ?? null }),
     addUnitsToStock: (p: { stockId: string; units: { lvb: string; om: string; cost?: number }[] }) =>
       rpc(sb, 'rpc_add_units_to_stock', { p_stock_id: p.stockId, p_units: p.units }),
-    importUnitsToStock: (p: { stockId: string; newUnits: { lvb: string; om: string; cost?: number }[]; updateUnits: { lvb: string; om: string; cost?: number }[] }) =>
-      rpc(sb, 'rpc_import_units_to_stock', { p_stock_id: p.stockId, p_new_units: p.newUnits, p_update_units: p.updateUnits }),
+    // 0048: payload เดิม (lvb/om/cost) + ข้อมูลแผน · key ต้องตรงกับที่ RPC อ่าน (u->>'...')
+    importUnitsToStock: (p: { stockId: string; newUnits: UnitPayload[]; updateUnits: UnitPayload[] }) =>
+      rpc(sb, 'rpc_import_units_to_stock', {
+        p_stock_id: p.stockId,
+        p_new_units: p.newUnits.map(toUnitJson),
+        p_update_units: p.updateUnits.map(toUnitJson),
+      }),
     updateProjectStock: (p: { stockId: string; notes: string; status: 'open' | 'closed'; poNo?: string }) =>
       rpc(sb, 'rpc_update_project_stock', { p_stock_id: p.stockId, p_notes: p.notes, p_status: p.status, p_po_no: p.poNo ?? null }),
     deleteProjectStock: (p: { stockId: string }) =>
@@ -364,6 +381,8 @@ export function remoteActions(sb: SupabaseClient) {
     deleteAccessoryRequest: (p: { requestId: string }) => rpc(sb, 'rpc_delete_accessory_request', { p_request_id: p.requestId }),
     createPR: (p: { jobId: string; requestIds: string[] }) =>
       rpc(sb, 'rpc_create_pr', { p_job_id: p.jobId, p_request_ids: p.requestIds }),
+    // แก้เลข PR ให้ตรงเอกสารจริง (0047) — เฉพาะใบที่ยังไม่ออก PO
+    updatePrNo: (p: { prId: string; prNo: string }) => rpc(sb, 'rpc_update_pr_no', { p_pr_id: p.prId, p_pr_no: p.prNo }),
     rejectPR: (p: { prId: string; reason: string }) => rpc(sb, 'rpc_reject_pr', { p_pr_id: p.prId, p_reason: p.reason }),
     createPO: (p: { prId: string; poNo: string; supplierName: string; expectedDate: string; requestIds?: string[] }) =>
       rpc(sb, 'rpc_create_po', { p_pr_id: p.prId, p_po_no: p.poNo, p_supplier: p.supplierName, p_expected_date: p.expectedDate || null, p_request_ids: p.requestIds && p.requestIds.length ? p.requestIds : null }),

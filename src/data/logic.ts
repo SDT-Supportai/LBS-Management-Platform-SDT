@@ -127,11 +127,21 @@ function notifyIfBecameReady(_before: DB, after: DB, _jobId: string): DB {
 // ---------------- Project Stock (Sales) ----------------
 
 // รับคู่ serial (LVB + OM) ต่อเครื่อง — ตรวจครบถ้วน + unique ทั้งสอง field
-export interface UnitSerialInput { lvb: string; om: string; cost?: number }
+// ข้อมูลแผน (sync 0048) มาได้จาก Import Excel ด้วย · ทุกช่อง optional
+export interface UnitSerialInput {
+  lvb: string; om: string; cost?: number
+  customer?: string; phone?: string; location?: string
+  planPoReceipt?: string; planDelivery?: string
+}
 
 function normalizeUnits(rows: UnitSerialInput[]): UnitSerialInput[] {
+  const t = (s?: string) => { const v = s?.trim(); return v ? v : undefined }
   return rows
-    .map(r => ({ lvb: r.lvb.trim(), om: r.om.trim(), cost: r.cost }))
+    .map(r => ({
+      lvb: r.lvb.trim(), om: r.om.trim(), cost: r.cost,
+      customer: t(r.customer), phone: t(r.phone), location: t(r.location),
+      planPoReceipt: t(r.planPoReceipt), planDelivery: t(r.planDelivery),
+    }))
     .filter(r => r.lvb || r.om)
 }
 
@@ -231,23 +241,41 @@ export function importUnitsToStock(
   if (badCost) throw new Error('ต้นทุนตัว LBS ต้องเป็นตัวเลขไม่ติดลบ')
   if (newUnits.length === 0 && updateUnits.length === 0) throw new Error('ไม่มีรายการให้นำเข้า')
 
-  // อัพเดทต้นทุน: match คู่ Serial (lvb+om) เฉพาะเครื่องในคลังนี้ · cost ว่าง = คงค่าเดิม (ไม่ลบทิ้ง)
-  const costByKey = new Map<string, number>()
-  for (const u of updateUnits) if (u.cost !== undefined) costByKey.set(`${u.lvb}|${u.om}`, u.cost)
+  // อัพเดทเครื่องเดิม: match คู่ Serial (lvb+om) เฉพาะเครื่องในคลังนี้ (sync 0048)
+  //  · ช่องว่างในไฟล์ = คงค่าเดิม (ไม่ลบทิ้ง) · ลูกค้า/เบอร์/สถานที่ เขียนเฉพาะเครื่องที่ยังไม่มี Job (กฎ 0014)
+  //  · เครื่องที่เบิกแล้ว (issued) ข้าม — LIVE มี trigger trg_block_issued_edit บล็อกอยู่
+  const upByKey = new Map<string, UnitSerialInput>()
+  for (const u of updateUnits) upByKey.set(`${u.lvb}|${u.om}`, u)
   let updatedCount = 0
+  let lockedCount = 0
   let lbsUnits = db.lbsUnits.map(x => {
-    if (x.projectStockId === p.stockId) {
-      const c = costByKey.get(`${x.serialLvb}|${x.serialOm}`)
-      if (c !== undefined) { updatedCount++; return { ...x, unitCost: c } }
+    if (x.projectStockId !== p.stockId) return x
+    const u = upByKey.get(`${x.serialLvb}|${x.serialOm}`)
+    if (!u) return x
+    const hasAny = u.cost !== undefined || u.customer || u.phone || u.location || u.planPoReceipt || u.planDelivery
+    if (!hasAny) return x
+    if (x.status === 'issued') { lockedCount++; return x }
+    updatedCount++
+    return {
+      ...x,
+      unitCost: u.cost ?? x.unitCost,
+      planPoReceiptDate: u.planPoReceipt ?? x.planPoReceiptDate,
+      planDeliveryDate: u.planDelivery ?? x.planDeliveryDate,
+      planCustomerName: x.jobId ? x.planCustomerName : (u.customer ?? x.planCustomerName),
+      planContactPhone: x.jobId ? x.planContactPhone : (u.phone ?? x.planContactPhone),
+      planInstallLocation: x.jobId ? x.planInstallLocation : (u.location ?? x.planInstallLocation),
     }
-    return x
   })
-  // รับเครื่องใหม่เข้าคลัง
+  if (newUnits.length === 0 && updatedCount === 0 && lockedCount > 0)
+    throw new Error(`ทุกเครื่องในไฟล์ถูกเบิกให้ Service แล้ว (${lockedCount} เครื่อง) แก้ข้อมูลไม่ได้`)
+  // รับเครื่องใหม่เข้าคลัง — ยังไม่มี Job แน่นอน จึงใส่ข้อมูลแผนได้ทุกช่อง
   lbsUnits = [
     ...lbsUnits,
     ...newUnits.map(u => ({
       id: uid(), serialLvb: u.lvb, serialOm: u.om, projectStockId: p.stockId,
       status: 'in_stock' as const, jobId: null, unitCost: u.cost,
+      planCustomerName: u.customer, planContactPhone: u.phone, planInstallLocation: u.location,
+      planPoReceiptDate: u.planPoReceipt, planDeliveryDate: u.planDelivery,
     })),
   ]
   let next: DB = { ...db, lbsUnits }
@@ -256,7 +284,9 @@ export function importUnitsToStock(
     message: `📦 เพิ่ม LBS เข้า ${stock.stockNo} +${newUnits.length} เครื่อง (พร้อมดึงเข้า Job)`,
   })
   return audit(next, actor, 'project_stock', p.stockId, 'import_units',
-    `Import เข้า ${stock.stockNo}: รับใหม่ ${newUnits.length} เครื่อง${updatedCount ? ` · อัพเดทต้นทุน ${updatedCount} เครื่อง` : ''}`)
+    `Import เข้า ${stock.stockNo}: รับใหม่ ${newUnits.length} เครื่อง` +
+    (updatedCount ? ` · อัพเดทข้อมูลเครื่องเดิม ${updatedCount} เครื่อง` : '') +
+    (lockedCount ? ` · ข้ามเครื่องที่เบิกแล้ว ${lockedCount} เครื่อง` : ''))
 }
 
 export function updateProjectStock(
@@ -988,6 +1018,26 @@ export function createPR(db: DB, actor: User, p: { jobId: string; requestIds: st
 }
 
 // Purchasing ตีกลับ PR พร้อมเหตุผล → รายการเด้งกลับเป็น pending ให้ Project แก้/ออกใหม่
+// Purchasing แก้เลข PR ให้ตรงเอกสารจริงจาก Epicor (sync 0047)
+// แก้ได้เฉพาะใบที่ยังไม่ออก PO · หน้า Project อ่าน prNo จากแถวเดียวกันจึงเห็นเลขใหม่เอง
+// ไม่แจ้งเตือน (มติ) · ข้อความแจ้งเตือน/audit เก่าคงเลขเดิมไว้ตามเจตนา = บันทึกประวัติ
+export function updatePrNo(db: DB, actor: User, p: { prId: string; prNo: string }): DB {
+  const pr = db.prs.find(x => x.id === p.prId)
+  if (!pr) throw new Error('ไม่พบ PR นี้')
+  const newNo = p.prNo.trim()
+  if (!newNo) throw new Error('กรุณาระบุเลข PR')
+  if (newNo.length > 50) throw new Error('เลข PR ยาวเกิน 50 ตัวอักษร')
+  if (newNo === pr.prNo) return db
+  if (pr.status !== 'pending')
+    throw new Error(`แก้เลข PR ได้เฉพาะใบที่ยังไม่ออก PO — ${pr.prNo} อยู่สถานะ ${pr.status}`)
+  if (db.prs.some(x => x.id !== p.prId && x.prNo === newNo))
+    throw new Error(`เลข PR "${newNo}" มีอยู่ในระบบแล้ว`)
+  const job = db.jobs.find(j => j.id === pr.jobId)
+  const next: DB = { ...db, prs: db.prs.map(x => x.id === p.prId ? { ...x, prNo: newNo } : x) }
+  return audit(next, actor, 'purchase_requisition', p.prId, 'update_pr_no',
+    `แก้เลข PR: ${pr.prNo} → ${newNo} (${job?.jobNo ?? '-'})`)
+}
+
 export function rejectPR(db: DB, actor: User, p: { prId: string; reason: string }): DB {
   const pr = db.prs.find(x => x.id === p.prId)
   if (!pr) throw new Error('ไม่พบ PR')

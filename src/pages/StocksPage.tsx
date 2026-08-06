@@ -12,12 +12,33 @@ interface PlanForm {
   planPoReceiptDate: string; planDeliveryDate: string
 }
 
-interface UnitRow { lvb: string; om: string; cost: string }
+// ฟอร์มกรอกมือใช้แค่ 3 ช่องแรก · ช่องข้อมูลแผน (0048) มาจาก Import Excel เท่านั้น
+interface UnitRow {
+  lvb: string; om: string; cost: string
+  customer?: string; phone?: string; location?: string
+  planPoReceipt?: string; planDelivery?: string
+}
 const emptyRow = (): UnitRow => ({ lvb: '', om: '', cost: '' })
 
-// UnitRow (ฟอร์ม string) → payload logic/RPC ({ lvb, om, cost? })
+// UnitRow (ฟอร์ม string) → payload logic/RPC · ช่องว่าง = ไม่ส่งไป (คงค่าเดิมฝั่ง server)
 const rowsToUnits = (rows: UnitRow[]) =>
-  rows.map(r => ({ lvb: r.lvb, om: r.om, cost: toBudgetNum(r.cost) }))
+  rows.map(r => ({
+    lvb: r.lvb, om: r.om, cost: toBudgetNum(r.cost),
+    customer: r.customer, phone: r.phone, location: r.location,
+    planPoReceipt: r.planPoReceipt, planDelivery: r.planDelivery,
+  }))
+
+// Excel: เซลล์วันที่อ่านมาเป็น Date (อ่านด้วย cellDates) หรือเป็นข้อความ YYYY-MM-DD จากไฟล์ Export
+// คืน '' ถ้าอ่านไม่ได้ → ถือว่าไม่ได้กรอก (คงค่าเดิม) ไม่ใช่ error
+function toIsoDate(v: unknown): string {
+  if (v instanceof Date && !Number.isNaN(v.getTime())) {
+    const p = (n: number) => String(n).padStart(2, '0')
+    return `${v.getFullYear()}-${p(v.getMonth() + 1)}-${p(v.getDate())}`   // local time กัน timezone เลื่อนวัน
+  }
+  const s = String(v ?? '').trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
+  return ''
+}
 
 // สเปกคงที่ของ LBS ที่รับเข้าคลัง (แสดงเป็น Description ทุกคลัง)
 const LBS_DESCRIPTION = '115 kV Load Break Switch with SF6 Gas Interrupters, 2000A'
@@ -27,12 +48,15 @@ const UNIT_STATUS_LABEL: Record<string, string> = {
 }
 
 // อ่านค่าจากหัวตารางหลายรูปแบบ (ไทยตามไฟล์ export / อังกฤษ)
-function cell(row: Record<string, unknown>, keys: string[]): string {
+function rawCell(row: Record<string, unknown>, keys: string[]): unknown {
   for (const [k, v] of Object.entries(row)) {
-    if (keys.some(key => k.trim().toLowerCase() === key.toLowerCase()))
-      return String(v ?? '').trim()
+    if (keys.some(key => k.trim().toLowerCase() === key.toLowerCase())) return v
   }
-  return ''
+  return undefined
+}
+function cell(row: Record<string, unknown>, keys: string[]): string {
+  const v = rawCell(row, keys)
+  return v === undefined ? '' : String(v ?? '').trim()
 }
 
 // ตัวแก้ไขรายเครื่อง: กรอก Serial.LVB + Serial.OM ต่อแถว (บังคับทั้งคู่)
@@ -87,7 +111,9 @@ export default function StocksPage() {
   const [importPreview, setImportPreview] = useState<{
     stockId: string; stockNo: string
     newUnits: UnitRow[]
-    dupUnits: { row: UnitRow; oldCost?: number }[]   // ซ้ำในคลังนี้ (คู่ Serial ตรง) — เลือกอัพเดทต้นทุน/ข้าม
+    // ซ้ำในคลังนี้ (คู่ Serial ตรง) — เลือกอัพเดท/ข้าม · hasJob = ข้ามช่องลูกค้า (ค่าจริงจาก Job)
+    // locked = เบิกแล้ว trigger ล็อกทั้งแถว
+    dupUnits: { row: UnitRow; oldCost?: number; hasJob?: boolean; locked?: boolean }[]
     errors: string[]
   } | null>(null)
   const [dupAction, setDupAction] = useState<'update' | 'skip'>('update')
@@ -167,12 +193,13 @@ export default function StocksPage() {
     if (!target) return
     try {
       const XLSX = await import('xlsx')
-      const wb = XLSX.read(await file.arrayBuffer())
+      // cellDates: เซลล์วันที่ (Plan PO receipt / Plan Delivery) จะได้เป็น Date ไม่ใช่ serial number
+      const wb = XLSX.read(await file.arrayBuffer(), { cellDates: true })
       const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[wb.SheetNames[0]], { defval: '' })
       if (raw.length === 0) return show('ไฟล์ไม่มีข้อมูล — ต้องมีหัวตาราง Serial.LVB, Serial.OM', true)
 
       const newUnits: UnitRow[] = []
-      const dupUnits: { row: UnitRow; oldCost?: number }[] = []
+      const dupUnits: { row: UnitRow; oldCost?: number; hasJob?: boolean; locked?: boolean }[] = []
       const errors: string[] = []
       const stockNoOf = (id: string) => db.projectStocks.find(s => s.id === id)?.stockNo ?? '?'
       const seenInFile = new Set<string>()          // กันซ้ำภายในไฟล์ (ข้าม field ด้วย)
@@ -180,6 +207,14 @@ export default function StocksPage() {
         const lvb = cell(row, ['Serial.LVB', 'serial.lvb', 'serial_lvb', 'lvb'])
         const om = cell(row, ['Serial.OM', 'serial.om', 'serial_om', 'om'])
         const costStr = cell(row, ['ต้นทุน/เครื่อง', 'ต้นทุน', 'unit_cost', 'cost'])
+        // ข้อมูลแผนรายเครื่อง (0048) — ช่องว่าง = คงค่าเดิม
+        const plan = {
+          customer: cell(row, ['ชื่อลูกค้า', 'ลูกค้า', 'customer', 'customer_name']) || undefined,
+          phone: cell(row, ['เบอร์ติดต่อ', 'เบอร์', 'phone', 'contact_phone']) || undefined,
+          location: cell(row, ['สถานที่ติดตั้ง', 'สถานที่', 'location', 'install_location']) || undefined,
+          planPoReceipt: toIsoDate(rawCell(row, ['Plan PO receipt', 'plan po receipt', 'plan_po_receipt'])) || undefined,
+          planDelivery: toIsoDate(rawCell(row, ['Plan Delivery', 'plan delivery', 'plan_delivery'])) || undefined,
+        }
         if (!lvb && !om) return                       // ข้ามแถวว่าง
         const no = `แถว ${i + 2}`
         if (!lvb || !om) return void errors.push(`${no}: ต้องมีทั้ง Serial.LVB และ Serial.OM`)
@@ -192,7 +227,12 @@ export default function StocksPage() {
         const exact = db.lbsUnits.find(u => u.projectStockId === target.id && u.serialLvb === lvb && u.serialOm === om)
         if (exact) {
           seenInFile.add(lvb); seenInFile.add(om)
-          dupUnits.push({ row: { lvb, om, cost: costStr }, oldCost: exact.unitCost })
+          dupUnits.push({
+            row: { lvb, om, cost: costStr, ...plan },
+            oldCost: exact.unitCost,
+            hasJob: !!exact.jobId,               // มี Job แล้ว → ข้อมูลลูกค้าใช้ค่าจาก Job (กฎ 0014)
+            locked: exact.status === 'issued',   // เบิกแล้ว → trigger ล็อก แก้ไม่ได้
+          })
           return
         }
         // ชน Serial กับเครื่องอื่น (คลังอื่น หรือคู่ไม่ตรงในคลังนี้) → กรอกผิด/ซ้ำ (error)
@@ -203,9 +243,9 @@ export default function StocksPage() {
             : `เครื่องในคลังอื่น (${stockNoOf(collide.projectStockId)})`
           return void errors.push(`${no}: "${lvb}" / "${om}" ชนกับ${where} — ตรวจว่ากรอกถูกไหม`)
         }
-        // เครื่องใหม่
+        // เครื่องใหม่ — ยังไม่มี Job ใส่ข้อมูลแผนได้ทุกช่อง
         seenInFile.add(lvb); seenInFile.add(om)
-        newUnits.push({ lvb, om, cost: costStr })
+        newUnits.push({ lvb, om, cost: costStr, ...plan })
       })
       if (newUnits.length === 0 && dupUnits.length === 0 && errors.length === 0)
         return show('ไม่พบแถวที่กรอก Serial ในไฟล์', true)
@@ -220,10 +260,18 @@ export default function StocksPage() {
     if (!importPreview) return
     setImporting(true)
     const newUnits = rowsToUnits(importPreview.newUnits)
-    const updateUnits = dupAction === 'update' ? rowsToUnits(importPreview.dupUnits.map(d => d.row)) : []
+    // ส่งเครื่องที่เบิกแล้วไปด้วย ให้ฝั่ง server/logic เป็นคนข้าม+นับ → audit บันทึกครบว่าข้ามกี่เครื่อง
+    // (กติกาอยู่ที่เดียว ไม่ต้อง maintain 2 ที่) · เครื่องที่มี Job ตัดเฉพาะช่องลูกค้าออกก่อนส่ง
+    const updateUnits = dupAction === 'update'
+      ? rowsToUnits(importPreview.dupUnits.map(d => d.hasJob
+          ? { ...d.row, customer: undefined, phone: undefined, location: undefined }
+          : d.row))
+      : []
+    const lockedCount = dupAction === 'update' ? importPreview.dupUnits.filter(d => d.locked).length : 0
     const msg = [
       newUnits.length ? `รับเข้า ${newUnits.length} เครื่อง` : '',
-      updateUnits.length ? `อัพเดทต้นทุน ${updateUnits.length} เครื่อง` : '',
+      updateUnits.length - lockedCount > 0 ? `อัพเดทข้อมูล ${updateUnits.length - lockedCount} เครื่อง` : '',
+      lockedCount ? `ข้ามเครื่องที่เบิกแล้ว ${lockedCount} เครื่อง` : '',
     ].filter(Boolean).join(' · ')
     const ok = await tryAction(
       () => act.importUnitsToStock({ stockId: importPreview.stockId, newUnits, updateUnits }),
@@ -557,9 +605,11 @@ export default function StocksPage() {
 
       {importPreview && (() => {
         const { newUnits, dupUnits, errors } = importPreview
-        const nothingToDo = newUnits.length === 0 && (dupUnits.length === 0 || dupAction === 'skip')
+        const updatable = dupUnits.filter(d => !d.locked)
+        const lockedCount = dupUnits.length - updatable.length
+        const nothingToDo = newUnits.length === 0 && (updatable.length === 0 || dupAction === 'skip')
         const confirmLabel = importing ? 'กำลังนำเข้า…'
-          : `ยืนยัน — รับใหม่ ${newUnits.length}${dupAction === 'update' && dupUnits.length ? ` · อัพเดท ${dupUnits.length}` : ''} เครื่อง`
+          : `ยืนยัน — รับใหม่ ${newUnits.length}${dupAction === 'update' && updatable.length ? ` · อัพเดท ${updatable.length}` : ''} เครื่อง`
         return (
         <Modal title={`Import Serial เข้า ${importPreview.stockNo} — ตรวจสอบก่อนยืนยัน`} size="wide" onClose={() => setImportPreview(null)}
           footer={<>
@@ -586,18 +636,37 @@ export default function StocksPage() {
                 </div>
                 <label className="field" style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-start', marginBottom: 6 }}>
                   <input type="radio" name="dupAction" checked={dupAction === 'update'} onChange={() => setDupAction('update')} style={{ marginTop: 3 }} />
-                  <span><b>อัพเดทข้อมูล (ต้นทุน/เครื่อง) ของเครื่องเดิม</b> — ใช้ค่าจากไฟล์ทับของเดิม (ช่องต้นทุนว่าง = คงค่าเดิม)</span>
+                  <span><b>อัพเดทข้อมูลเครื่องเดิม</b> — ต้นทุน · ลูกค้า/เบอร์/สถานที่ (แผน) · Plan PO receipt · Plan Delivery
+                    <div className="muted">ช่องที่เว้นว่างในไฟล์ = คงค่าเดิม (ไม่ล้างค่า) · ถ้าต้องการล้างค่าให้ใช้ปุ่ม "แก้ข้อมูล" รายเครื่อง</div>
+                  </span>
                 </label>
                 <label className="field" style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-start' }}>
                   <input type="radio" name="dupAction" checked={dupAction === 'skip'} onChange={() => setDupAction('skip')} style={{ marginTop: 3 }} />
                   <span><b>ข้าม — ฉันกรอกซ้ำผิด</b> ไม่แตะเครื่องเดิม (รับเข้าเฉพาะเครื่องใหม่ {newUnits.length} เครื่อง)</span>
                 </label>
-                <div className="table-scroll" style={{ maxHeight: 220, overflowY: 'auto', marginTop: 10 }}>
+                {lockedCount > 0 && (
+                  <div style={{ color: 'var(--danger)', marginTop: 8 }}>
+                    🔒 มี {lockedCount} เครื่องที่ <b>เบิกให้ Service แล้ว</b> — ระบบล็อกการแก้ไข จะถูกข้ามทั้งแถว
+                  </div>
+                )}
+                {dupUnits.some(d => d.hasJob && !d.locked && (d.row.customer || d.row.phone || d.row.location)) && (
+                  <div className="muted" style={{ marginTop: 6 }}>
+                    ℹ️ เครื่องที่ดึงเข้า Job แล้ว ระบบจะ<b>ข้ามช่องลูกค้า/เบอร์/สถานที่</b> — ข้อมูลจริงมาจาก Job
+                    (แก้ที่หน้า Job) · ส่วนต้นทุนกับวันแผนยังอัพเดทให้ตามไฟล์
+                  </div>
+                )}
+                <div className="table-scroll" style={{ maxHeight: 260, overflowY: 'auto', marginTop: 10 }}>
                   <table>
-                    <thead><tr><th>#</th><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>ต้นทุนเดิม</th><th style={{ textAlign: 'right' }}>ต้นทุนใหม่ (จากไฟล์)</th></tr></thead>
+                    <thead><tr>
+                      <th>#</th><th>Serial.LVB</th><th>Serial.OM</th>
+                      <th style={{ textAlign: 'right' }}>ต้นทุนเดิม</th><th style={{ textAlign: 'right' }}>ต้นทุนใหม่</th>
+                      <th>ลูกค้า/เบอร์/สถานที่ (แผน)</th><th>Plan PO receipt</th><th>Plan Delivery</th><th>ผล</th>
+                    </tr></thead>
                     <tbody>
                       {dupUnits.map((d, i) => {
-                        const hasNew = d.row.cost.trim() !== ''
+                        const hasNewCost = d.row.cost.trim() !== ''
+                        const skip = dupAction === 'skip' || d.locked
+                        const custParts = [d.row.customer, d.row.phone, d.row.location].filter(Boolean)
                         return (
                           <tr key={i}>
                             <td className="muted">{i + 1}</td>
@@ -605,9 +674,22 @@ export default function StocksPage() {
                             <td className="mono">{d.row.om}</td>
                             <td style={{ textAlign: 'right' }}>{fmtBaht(d.oldCost)}</td>
                             <td style={{ textAlign: 'right' }}>
-                              {dupAction === 'skip' ? <span className="muted">— (ข้าม)</span>
-                                : hasNew ? fmtBaht(Number(d.row.cost))
+                              {skip ? <span className="muted">—</span>
+                                : hasNewCost ? fmtBaht(Number(d.row.cost))
                                 : <span className="muted">คงเดิม</span>}
+                            </td>
+                            <td>
+                              {custParts.length === 0 ? <span className="muted">คงเดิม</span>
+                                : skip ? <span className="muted">—</span>
+                                : d.hasJob ? <span className="muted">ข้าม (ใช้ค่าจาก Job)</span>
+                                : custParts.join(' · ')}
+                            </td>
+                            <td>{skip ? <span className="muted">—</span> : (d.row.planPoReceipt ?? <span className="muted">คงเดิม</span>)}</td>
+                            <td>{skip ? <span className="muted">—</span> : (d.row.planDelivery ?? <span className="muted">คงเดิม</span>)}</td>
+                            <td>
+                              {d.locked ? <span className="badge red">🔒 เบิกแล้ว ข้าม</span>
+                                : dupAction === 'skip' ? <span className="badge neutral">ข้าม</span>
+                                : <span className="badge green">อัพเดท</span>}
                             </td>
                           </tr>
                         )

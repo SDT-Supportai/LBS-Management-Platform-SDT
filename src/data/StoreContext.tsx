@@ -188,6 +188,7 @@ export interface StoreActions {
   cancelAccessoryRequest: (p: Parameters<typeof L.cancelAccessoryRequest>[2]) => MaybePromise
   deleteAccessoryRequest: (p: Parameters<typeof L.deleteAccessoryRequest>[2]) => MaybePromise
   createPR: (p: Parameters<typeof L.createPR>[2]) => MaybePromise
+  updatePrNo: (p: Parameters<typeof L.updatePrNo>[2]) => MaybePromise
   rejectPR: (p: Parameters<typeof L.rejectPR>[2]) => MaybePromise
   createPO: (p: Parameters<typeof L.createPO>[2]) => MaybePromise
   cancelPO: (p: Parameters<typeof L.cancelPO>[2]) => MaybePromise
@@ -362,6 +363,7 @@ function DemoProvider({ children }: { children: ReactNode }) {
         deleteAccessoryRequest: run('accessory.cleanup', L.deleteAccessoryRequest),
         // 3 action นี้ต้องผ่านการอนุมัติจาก Division — เรียกตรงได้เฉพาะ admin (ข้ามขั้นอนุมัติ)
         createPR: run('master.manage', L.createPR),
+        updatePrNo: run('purchasing.manage', L.updatePrNo),
         rejectPR: run('purchasing.manage', L.rejectPR),
         createPO: run('purchasing.manage', L.createPO),
         cancelPO: run('purchasing.manage', L.cancelPO),

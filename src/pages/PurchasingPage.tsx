@@ -13,6 +13,7 @@ export default function PurchasingPage() {
   const canManage = can(user, 'purchasing.manage')
   const [poFor, setPoFor] = useState<string | null>(null)
   const [rejectFor, setRejectFor] = useState<string | null>(null)
+  const [prNoFor, setPrNoFor] = useState<{ id: string; prNo: string } | null>(null)   // แก้เลข PR (0047)
   const [receiveFor, setReceiveFor] = useState<string | null>(null)
   const [poNo, setPoNo] = useState('')
   const [supplier, setSupplier] = useState('')
@@ -156,6 +157,12 @@ export default function PurchasingPage() {
                             {idx === 0 && (
                               <td className="mono" rowSpan={lines.length}>
                                 <b>{pr.prNo}</b>{pr.status === 'po_issued' && <div className="muted" style={{ fontSize: 11 }}>ออก PO บางส่วนแล้ว</div>}
+                                {/* แก้เลข PR ให้ตรงเอกสารจริงจาก Epicor (0047) — เฉพาะใบที่ยังไม่ออก PO */}
+                                {canManage && pr.status === 'pending' && (
+                                  <div style={{ marginTop: 4 }}>
+                                    <button className="small" onClick={() => setPrNoFor({ id: pr.id, prNo: pr.prNo })}>✏️ แก้เลข PR</button>
+                                  </div>
+                                )}
                               </td>
                             )}
                             <td className="mono">{it.epicorCode || '-'}</td>
@@ -332,6 +339,32 @@ export default function PurchasingPage() {
         </Modal>
         )
       })()}
+
+      {/* แก้เลข PR ให้ตรงเอกสารจริง (0047) — หน้า Project อ่านจากแถวเดียวกัน จึงเห็นเลขใหม่เอง */}
+      {prNoFor && (
+        <Modal title="แก้เลข PR" onClose={() => setPrNoFor(null)}
+          footer={<>
+            <button onClick={() => setPrNoFor(null)}>ยกเลิก</button>
+            <button className="primary" disabled={!prNoFor.prNo.trim()} onClick={async () => {
+              if (await tryAction(
+                () => act.updatePrNo({ prId: prNoFor.id, prNo: prNoFor.prNo }),
+                `แก้เลข PR เป็น ${prNoFor.prNo.trim()} แล้ว`,
+              )) setPrNoFor(null)
+            }}>บันทึก</button>
+          </>}>
+          <div className="muted" style={{ marginBottom: 10 }}>
+            ใช้เมื่อเลข PR จริงจาก Epicor ไม่ตรงกับเลขที่ระบบรันให้ · แก้ได้เฉพาะใบที่ยังไม่ออก PO ·
+            ห้ามซ้ำกับ PR ใบอื่น · <b>หน้า Project จะเห็นเลขใหม่ทันที</b> (อ่านจากข้อมูลชุดเดียวกัน)
+            <div style={{ marginTop: 4 }}>
+              หมายเหตุ: ข้อความแจ้งเตือน/ประวัติที่ส่งไปก่อนหน้ายังเป็นเลขเดิม — เป็นบันทึก ณ เวลานั้น ไม่แก้ย้อนหลัง
+            </div>
+          </div>
+          <label className="field"><span>เลข PR *</span>
+            <input className="mono" value={prNoFor.prNo}
+              onChange={e => setPrNoFor({ ...prNoFor, prNo: e.target.value })} placeholder="PR-2026-0001" />
+          </label>
+        </Modal>
+      )}
 
       {rejectFor && (
         <Modal title={`ตีกลับ ${db.prs.find(p => p.id === rejectFor)?.prNo}`} onClose={() => setRejectFor(null)}
