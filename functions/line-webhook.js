@@ -1,9 +1,22 @@
-// Cloudflare Pages Function — LINE Webhook (ตอบสถานะ Job จริง + ช่วยหา Group ID)
+// Cloudflare Pages Function — LINE Webhook
 // route: POST /line-webhook   ตั้ง Webhook URL ใน LINE Developers Console เป็น:
 //   https://lbs-platform-sdt.pages.dev/line-webhook
+//
+// ⚠️ กลุ่ม = "แจ้งเตือนเท่านั้น" (มติ 2026-08-05)
+//   บอท **ไม่ตอบข้อความใดๆ ในกลุ่ม/ห้องแชท** — ก่อนหน้านี้มี fallback ตอบทุกข้อความ
+//   ทำให้บอทแทรกทุกบทสนทนาในกลุ่มทีม · การแจ้งเตือนใช้ push ผ่าน /line-notify
+//   (คนละทางกับ webhook) จึงไม่กระทบเลย
+//   ต้องปิดที่ LINE Official Account Manager → Response settings ด้วย:
+//     Chat = ปิด · Webhook = เปิด · Auto-response = ปิด · Greeting message = ปิด
+//     (LINE ตอบเองจากฝั่งนั้นได้แม้โค้ดนี้ไม่ตอบ)
+//   ต้องการหา Group ID ของกลุ่มใหม่: พิมพ์ "id" ในกลุ่ม → บอทไม่ตอบในแชท แต่ log ค่าไว้
+//     ดูที่ Cloudflare → Workers & Pages → project → Functions → Real-time logs
+//     หรือถ้าจำเป็นจริง ตั้ง env LINE_BOT_REPLY_IN_GROUP=1 ชั่วคราวเพื่อให้ตอบในกลุ่มได้
+//
+// แชท 1:1 ยังตอบตามเดิม (จำเป็นกับ flow อนุมัติ 0033): โค้ด 6 หลักผูกบัญชี · ปุ่ม ✅ อนุมัติ
 // env ที่ใช้: LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET,
 //   SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (อ่านสถานะ Job — ชุดเดียวกับ admin-users),
-//   LINE_GROUP_ID (ถ้าตั้งแล้ว: ตอบสถานะ Job เฉพาะในกลุ่มนี้ กันข้อมูลรั่วไปแชทอื่น)
+//   LINE_GROUP_ID (กันข้อมูลรั่ว: ตอบสถานะ Job ได้เฉพาะกลุ่มนี้ เมื่อเปิด LINE_BOT_REPLY_IN_GROUP)
 // หมายเหตุ: ตรวจ signature ด้วย Web Crypto → ไม่ต้องเปิด nodejs_compat
 import { createClient } from '@supabase/supabase-js'
 
@@ -150,8 +163,19 @@ export async function onRequestPost(context) {
     if (ev.type === 'message' && ev.message?.type === 'text') {
       const text = ev.message.text.trim()
       const src = ev.source ?? {}
+      const inGroup = !!(src.groupId || src.roomId)
 
-      // ช่วยตั้งค่า: พิมพ์ "id" ในกลุ่ม -> บอทตอบ Group ID (เอาไปใส่ LINE_GROUP_ID)
+      // ---- กลุ่ม/ห้องแชท = แจ้งเตือนเท่านั้น: ไม่ตอบอะไรเลย ----
+      // (เปิดชั่วคราวได้ด้วย env LINE_BOT_REPLY_IN_GROUP=1 เวลาต้องตั้งค่ากลุ่มใหม่)
+      if (inGroup && env.LINE_BOT_REPLY_IN_GROUP !== '1') {
+        // ยังช่วยหา Group ID ได้โดยไม่กวนในแชท — พิมพ์ "id" แล้วไปอ่านค่าจาก Real-time logs
+        if (/^\/?(id|groupid|group id)$/i.test(text)) {
+          console.log('[line-webhook] Group/Room ID =', src.groupId ?? src.roomId)
+        }
+        continue
+      }
+
+      // ช่วยตั้งค่า: พิมพ์ "id" -> บอทตอบ Group ID (เอาไปใส่ LINE_GROUP_ID)
       if (/^\/?(id|groupid|group id)$/i.test(text)) {
         const id = src.groupId ?? src.roomId ?? src.userId ?? '(ไม่พบ)'
         const label = src.groupId ? 'Group ID' : src.roomId ? 'Room ID' : 'User ID'
@@ -182,8 +206,12 @@ export async function onRequestPost(context) {
         continue
       }
 
-      await reply(accessToken, ev.replyToken,
-        'สวัสดีครับ 115kV LBS Platform 🙏\nพิมพ์ "สถานะ <Job No.>" เช่น "สถานะ JOB-2026-0002" เพื่อดูสถานะงาน\nพิมพ์ "id" เพื่อดู Group ID (สำหรับตั้งค่าแจ้งเตือน)')
+      // ข้อความอื่นที่ไม่ใช่คำสั่ง — ตอบเฉพาะแชท 1:1 (ในกลุ่มถูก return ไปข้างบนแล้ว)
+      // เดิมบรรทัดนี้ตอบทุกที่รวมกลุ่ม = บอทแทรกทุกบทสนทนา (แก้ 2026-08-05)
+      if (!inGroup) {
+        await reply(accessToken, ev.replyToken,
+          'สวัสดีครับ 115kV LBS Platform 🙏\nพิมพ์ "โค้ด 6 หลัก" จากแอป (ตั้งค่า > เชื่อมบัญชี LINE) เพื่อผูกบัญชี — จากนั้นคำขออนุมัติจะส่งมาที่นี่ กดปุ่มอนุมัติได้เลย\nดูสถานะงานทั้งหมดได้ในเว็บระบบ')
+      }
     }
   }
   return Response.json({ ok: true })

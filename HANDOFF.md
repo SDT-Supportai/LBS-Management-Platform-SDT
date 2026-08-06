@@ -66,7 +66,7 @@ lbs-platform/
   functions/                 Cloudflare Pages Functions (route = ชื่อไฟล์)
     admin-users.js           POST /admin-users — สร้าง user/เปลี่ยนรหัส/อีเมล (service role)
     line-notify.js           POST /line-notify — push แจ้งเตือนเข้ากลุ่ม LINE (บังคับ JWT)
-    line-webhook.js          POST /line-webhook — bot ตอบลูกค้า + คำสั่ง "id" ดู Group ID
+    line-webhook.js          POST /line-webhook — **ในกลุ่มไม่ตอบอะไรเลย (แจ้งเตือนเท่านั้น)** · 1:1 ผูกบัญชี/อนุมัติ
   public/
     _redirects               SPA fallback (/* → /index.html 200)
     logo.jpg                 โลโก้จริง (เสาส่งไฟในวงกลม) — ใช้ทั้ง login/sidebar/favicon (refs = /logo.jpg)
@@ -144,6 +144,7 @@ lbs-platform/
 | `LINE_CHANNEL_ACCESS_TOKEN` | functions | (optional) แจ้งเตือน LINE — จาก LINE Developers → Messaging API |
 | `LINE_GROUP_ID` | functions | (optional) กลุ่มปลายทาง — กลุ่มทีมจริง = `C30dde10e5b1d4ce984a85016b79204cd` (ได้จากพิมพ์ `id` ในกลุ่ม 2026-07-16) |
 | `LINE_CHANNEL_SECRET` | functions | (optional) ตรวจ signature webhook |
+| `LINE_BOT_REPLY_IN_GROUP` | functions | (optional) **ไม่ต้องตั้งในการใช้งานปกติ** — ตั้งเป็น `1` ชั่วคราวเมื่อต้องให้บอทตอบในกลุ่ม (หา Group ID กลุ่มใหม่ / ใช้คำสั่ง `สถานะ <Job No.>`) แล้วลบทิ้งเมื่อเสร็จ |
 | `APP_URL` | functions | ลิงก์ "🔎 ตรวจสอบในระบบ" ในการ์ด Flex (0033) — ตั้งเป็น `https://lbs-platform-sdt.pages.dev` หรือ custom domain · ไม่ตั้งก็ fallback เป็น pages.dev |
 
 ⚠️ Cloudflare Pages ทำ env ทั้งหมดให้ทั้งตอน **build** (VITE_* baked เข้า bundle) และให้ **Functions** ตอน runtime (`context.env`)
@@ -164,8 +165,12 @@ lbs-platform/
 
 - `POST /line-notify` — `{message}` → push เข้ากลุ่ม LINE (frontend เรียกอัตโนมัติเมื่อเปิดสวิตช์ใน Dev Settings) · ต้องมี JWT
 - `POST /line-webhook` — ตั้งเป็น Webhook URL ใน LINE Developers (ต้องเปิด **Use webhook** ด้วย); ตรวจ signature ด้วย Web Crypto
-  - พิมพ์ `id` ในกลุ่ม → ดู Group ID · พิมพ์ **โค้ด 6 หลัก** ในแชท 1:1 → ผูกบัญชี LINE (0033)
-  - พิมพ์ `สถานะ <Job No.>` → สถานะงานจริงจาก Supabase (ตอบเฉพาะกลุ่มที่ตรง LINE_GROUP_ID) · **รายงานคืบหน้ารายเครื่อง `🔧 ติดตั้งแล้ว x/y` + ทีม/หัวหน้าทีม** ด้วย
+  - ⚠️ **กลุ่ม = แจ้งเตือนเท่านั้น (มติ 2026-08-05)** — บอท**ไม่ตอบข้อความใดๆ ในกลุ่ม/ห้องแชท**
+    (เดิมมี fallback ตอบทุกข้อความ → บอทแทรกทุกบทสนทนาในกลุ่มทีม) · การแจ้งเตือนใช้ **push** ผ่าน `/line-notify` คนละทางกับ webhook จึงไม่กระทบ
+    · **ต้องปิดฝั่ง LINE ด้วย**: LINE Official Account Manager → Response settings → `Chat = ปิด · Webhook = เปิด · Auto-response = ปิด · Greeting message = ปิด` (ไม่งั้น LINE ตอบเองแม้โค้ดไม่ตอบ)
+    · หา Group ID ของกลุ่มใหม่: พิมพ์ `id` ในกลุ่ม → บอทไม่ตอบในแชท แต่ log ค่าไว้ที่ **Cloudflare → Functions → Real-time logs** · หรือตั้ง env `LINE_BOT_REPLY_IN_GROUP=1` ชั่วคราวให้ตอบในกลุ่มได้
+  - **แชท 1:1 ยังตอบตามเดิม** (จำเป็นกับ flow อนุมัติ 0033): พิมพ์ **โค้ด 6 หลัก** → ผูกบัญชี LINE · ปุ่ม ✅ อนุมัติ (postback) · ข้อความอื่นตอบข้อความช่วยเหลือสั้นๆ
+  - คำสั่ง `สถานะ <Job No.>` (สถานะจริงจาก Supabase + คืบหน้ารายเครื่อง + ทีม) **ยังอยู่ในโค้ดแต่ใช้ไม่ได้แล้ว** เพราะถูกจำกัดให้ตอบเฉพาะในกลุ่ม `LINE_GROUP_ID` ซึ่งตอนนี้เงียบ — เปิดคืนได้ด้วย env `LINE_BOT_REPLY_IN_GROUP=1`
   - รับ **postback** จากปุ่ม ✅ อนุมัติ ในการ์ด Flex → `rpc_line_approve` (map `line_user_id` → user → เช็ค role sales/admin)
 - `POST /line-approval-push` — `{requestId}` หรือ `{jobId, type}` → ดันการ์ด **Flex (ปุ่ม ✅ อนุมัติ + 🔎 ตรวจสอบ)** เข้าแชท 1:1 ของผู้อนุมัติที่ผูก LINE แล้ว · StoreContext ยิงหลัง `requestApproval` สำเร็จ (LIVE + เปิดสวิตช์ LINE) · ต้องมี JWT
 - `GET /line-quota` — โควตา push ของ Messaging API (ปุ่ม 📊 ใน Dev Settings)
@@ -242,7 +247,8 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
       ต้องได้ `true` ทั้ง 6 แถว — ถ้าแถวไหน false ให้รัน `0042` ซ้ำ (idempotent)
 
 ### 🟡 ฟีเจอร์เสริม (ตั้งค่าค้างอยู่)
-- [ ] **เปิดสวิตช์ LINE** — env + code + migration 0017 พร้อมหมด · เหลือ: login **Manage** → Dev Settings → เปิดสวิตช์แจ้งเตือน LINE (global มีผลทุกเครื่อง) → "ส่งข้อความทดสอบ" · bot `สถานะ <Job No.>` ใช้ได้แล้ว
+- [ ] **เปิดสวิตช์ LINE** — env + code + migration 0017 พร้อมหมด · เหลือ: login **Manage** → Dev Settings → เปิดสวิตช์แจ้งเตือน LINE (global มีผลทุกเครื่อง) → "ส่งข้อความทดสอบ"
+- [ ] 🆕 **ปิด Auto-response / Greeting ที่ LINE Official Account Manager** (2026-08-05) — โค้ดไม่ตอบในกลุ่มแล้ว แต่ LINE ตอบเองได้จาก Response settings: ตั้ง `Chat = ปิด · Webhook = เปิด · Auto-response = ปิด · Greeting message = ปิด` แล้วทดสอบพิมพ์ในกลุ่มว่าบอทเงียบจริง
 - [ ] **เปิดใช้อนุมัติผ่าน LINE 1:1** (0033) — ต้องทำ 3 อย่าง: (1) ตั้ง env `APP_URL` (2) LINE Developers → เปิด **Use webhook** + Webhook URL `https://lbs-platform-sdt.pages.dev/line-webhook` (postback มาที่ URL เดียวกัน ไม่ต้องตั้งแยก) (3) ผู้อนุมัติแต่ละคน: **เพิ่มบอทเป็นเพื่อน** → หน้า Awaiting Approval กด "สร้างโค้ดเชื่อม LINE" → **พิมพ์โค้ด 6 หลักในแชท 1:1** ภายใน 10 นาที (หน้านั้นจะโชว์ badge "✅ เชื่อมต่อแล้ว" เมื่อผูกสำเร็จ)
 - [ ] **ตั้งต้นทุนย้อนหลังให้วัสดุที่มีของค้างอยู่ก่อน 0039** — คอลัมน์ต้นทุนถัวเฉลี่ย/มูลค่าจะขึ้น `-` จนกว่าจะมีของเข้าใหม่พร้อมต้นทุน · วิธีชั่วคราว: ปรับยอดขึ้น 1 หน่วยพร้อมใส่ต้นทุน แล้วปรับกลับลง (ledger บันทึกทั้ง 2 รายการพร้อมเหตุผล) — ถ้าต้องทำหลายรายการ ควรทำปุ่ม "ตั้งต้นทุนตั้งต้น" ให้ตรงๆ
 - [ ] **Custom domain** — `lbs.precise.co.th` (ขอ IT เพิ่ม CNAME → `lbs-platform-sdt.pages.dev`) แล้ว Add ใน Cloudflare Pages → Custom domains
