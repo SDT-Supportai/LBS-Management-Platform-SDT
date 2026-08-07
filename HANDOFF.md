@@ -213,6 +213,12 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 8. **เปลี่ยน signature RPC = ต้องรัน migration ก่อน push** — PostgREST หา signature ใหม่ไม่เจอจะ 404 ทันที (`PGRST202`) ทำให้ปุ่มนั้นใช้ไม่ได้บน LIVE · ถ้าอยากปลอดภัยกว่า ให้พารามิเตอร์ใหม่มี `DEFAULT` (เรียกแบบเดิมยังได้) แบบที่ 0039/0040/0041 ทำ · **และตรวจว่า signature เก่าถูก DROP แล้ว** — ถ้าเหลือทั้งคู่ PostgREST จะ error ambiguous (`PGRST203`)
 9. **ALTER CHECK constraint ต้องใช้ชื่อเดิม** — Postgres ตั้งชื่อ inline CHECK เป็น `<table>_<column>_check` · 0028/0041 จึง `DROP CONSTRAINT IF EXISTS approval_requests_req_type_check` แล้ว ADD ชื่อเดิม — ถ้าใช้ชื่อใหม่จะเหลือ CHECK เก่าค้างและ insert ยังพัง
 
+10. **ความทนทานฝั่ง UI (ชุด A — 2026-08-06)** — 4 จุดที่ทำให้ระบบ "ดูพัง" ทั้งที่ข้อมูลปกติ แก้ที่ส่วนกลาง ไม่ต้องแตะทีละหน้า:
+    (1) **โหลดข้อมูลไม่สำเร็จแล้วเงียบ** — เดิม `init()` catch แล้ว `console.error` เฉยๆ → เรนเดอร์ต่อด้วย `EMPTY_DB` ผู้ใช้เห็น "ไม่มี Job / คลังว่าง" เหมือนข้อมูลถูกลบ → ตอนนี้ `reload()` เก็บ `loadError` แล้ว `<ConnectionBanner>` แจ้ง + ปุ่มลองใหม่
+    (2) **บันทึกสำเร็จแต่ reload พัง = toast แดงเหมือนบันทึกล้มเหลว** → ผู้ใช้กดซ้ำ ได้ PR/งวดเงินซ้ำ · แก้: `wrap()` แยก `await fn(p)` (ล้มจริง → toast) ออกจาก `reload()` (ล้ม → `stale` แบนเนอร์ "ไม่ต้องกดบันทึกซ้ำ")
+    (3) **ไม่มี ErrorBoundary** — render พังที่เดียว = จอขาวทั้งแอป · แก้: ครอบ `<Routes>` + `resetKey={pathname}` ให้เปลี่ยนหน้าแล้วหายเอง · sidebar/topbar ยังใช้ได้ระหว่าง error
+    (4) **กดปุ่มซ้ำตอนเน็ตช้า = ข้อมูลซ้ำ** — แก้ที่ `useTryAction` ชั้นเดียว: `runExclusive` ใช้ ref กันซ้ำแบบ synchronous (คลิกที่ 2 ถูกทิ้ง คืน false) + `body.is-busy` ทำให้ปุ่ม `.primary/.danger` กดไม่ได้ + แถบ `.busy-bar` บนสุด — **ไม่ต้องแก้ปุ่มทีละตัว 30 จุด**
+
 > demo mode ไม่มี trigger/RLS/functions/plpgsql จึงไม่เจอบั๊กพวกนี้ — ต้องทดสอบบน DB จริงเท่านั้น
 
 ## 10. งานค้าง (TODO)

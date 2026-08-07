@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
+import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { useStore, can } from './data/StoreContext'
-import { ToastProvider, useTryAction } from './ui/components'
+import { ErrorBoundary, ToastProvider, useTryAction } from './ui/components'
 import { DEPT_LABEL, fmtDateTime } from './ui/format'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
@@ -98,6 +98,32 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
 }
 
 // การแจ้งเตือน + Refresh ย้ายมามุมบนขวา (bell dropdown)
+// แบนเนอร์สถานะการเชื่อมต่อ — ต้องบอกให้ชัดว่า "โหลดไม่ได้" ไม่ใช่ "ไม่มีข้อมูล"
+function ConnectionBanner() {
+  const { loadError, stale, refresh } = useStore()
+  const tryAction = useTryAction()
+  const [retrying, setRetrying] = useState(false)
+  if (!loadError && !stale) return null
+
+  const retry = async () => {
+    setRetrying(true)
+    await tryAction(async () => { await refresh() }, 'เชื่อมต่อได้แล้ว — ข้อมูลล่าสุด')
+    setRetrying(false)
+  }
+  return (
+    <div className={`conn-banner${loadError ? ' error' : ''}`}>
+      <span>
+        {loadError
+          ? <>⚠️ <b>โหลดข้อมูลจากเซิร์ฟเวอร์ไม่สำเร็จ</b> — ตัวเลขและรายการที่เห็นอาจไม่ครบ <b>ข้อมูลไม่ได้หายไป</b> ลองเช็คอินเทอร์เน็ตแล้วกดลองใหม่</>
+          : <>🕓 <b>บันทึกสำเร็จแล้ว</b> แต่ดึงข้อมูลใหม่ไม่สำเร็จ — ตัวเลขบนจออาจยังไม่อัปเดต <b>ไม่ต้องกดบันทึกซ้ำ</b></>}
+      </span>
+      <button className="small" onClick={retry} disabled={retrying}>
+        {retrying ? 'กำลังลองใหม่…' : 'ลองใหม่'}
+      </button>
+    </div>
+  )
+}
+
 function TopBar() {
   const { db, user, markNotificationsRead, refresh } = useStore()
   const tryAction = useTryAction()
@@ -174,6 +200,7 @@ export default function App() {
   const { user, loading } = useStore()
   const [navOpen, setNavOpen] = useState(false)   // mobile drawer
   const isManage = can(user, 'master.manage')     // Dev Settings เฉพาะ Manage (admin)
+  const { pathname } = useLocation()              // reset ErrorBoundary เมื่อเปลี่ยนหน้า
 
   if (loading) {
     return (
@@ -202,6 +229,9 @@ export default function App() {
           <Sidebar open={navOpen} onClose={() => setNavOpen(false)} />
           <main className="main">
             <TopBar />
+            <ConnectionBanner />
+            {/* render พังที่หน้าใดหน้าหนึ่ง ต้องไม่ทำให้ทั้งแอปเป็นจอขาว · เปลี่ยนหน้าแล้ว reset ให้ลองใหม่ */}
+            <ErrorBoundary resetKey={pathname}>
             <Routes>
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/stocks" element={<StocksPage />} />
@@ -218,6 +248,7 @@ export default function App() {
               <Route path="/dev" element={isManage ? <DevSettingsPage /> : <Navigate to="/dashboard" replace />} />
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>
+            </ErrorBoundary>
           </main>
         </div>
       )}

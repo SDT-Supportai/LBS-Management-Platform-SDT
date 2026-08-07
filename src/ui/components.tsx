@@ -1,22 +1,53 @@
-import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from 'react'
+import { Component, createContext, useCallback, useContext, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react'
 import type { JobStatus, BudgetCosts, CostCategoryKey } from '../types'
 import { JOB_STATUS_LABEL, fmtBaht, COST_CATEGORIES } from './format'
 
-// ---------------- Toast ----------------
+// ---------------- Toast + สถานะกำลังบันทึก ----------------
+// busy เป็น "ทั้งแอป" ไม่ใช่ต่อปุ่ม — ระหว่างมี action ค้างอยู่ ห้ามยิง action ใหม่
+// (กันกดปุ่มซ้ำตอนเน็ตช้าแล้วได้ PR / งวดเงิน / รายการวัสดุซ้ำ)
 
 interface Toast { message: string; error?: boolean }
-const ToastCtx = createContext<{ show: (msg: string, error?: boolean) => void } | null>(null)
+interface UiCtxValue {
+  show: (msg: string, error?: boolean) => void
+  busy: boolean
+  runExclusive: <T>(fn: () => Promise<T> | T) => Promise<T | typeof SKIPPED>
+}
+const SKIPPED = Symbol('skipped')
+const ToastCtx = createContext<UiCtxValue | null>(null)
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toast, setToast] = useState<Toast | null>(null)
+  const [busy, setBusy] = useState(false)
+  const busyRef = useRef(false)      // ref = กันกดรัวก่อน state จะ re-render ทัน
   const timer = useRef<number | undefined>(undefined)
+
   const show = useCallback((message: string, error = false) => {
     setToast({ message, error })
     window.clearTimeout(timer.current)
     timer.current = window.setTimeout(() => setToast(null), error ? 5000 : 3200)
   }, [])
+
+  const runExclusive = useCallback(async <T,>(fn: () => Promise<T> | T) => {
+    if (busyRef.current) return SKIPPED          // มี action ค้างอยู่ → ทิ้งคลิกซ้ำ
+    busyRef.current = true
+    setBusy(true)
+    try {
+      return await fn()
+    } finally {
+      busyRef.current = false
+      setBusy(false)
+    }
+  }, [])
+
+  // ทำให้ปุ่มยืนยันดู "กำลังทำงาน" ทั้งแอปโดยไม่ต้องแก้ปุ่มทีละตัว (ดู .is-busy ใน styles.css)
+  useEffect(() => {
+    document.body.classList.toggle('is-busy', busy)
+    return () => document.body.classList.remove('is-busy')
+  }, [busy])
+
   return (
-    <ToastCtx.Provider value={{ show }}>
+    <ToastCtx.Provider value={{ show, busy, runExclusive }}>
+      {busy && <div className="busy-bar" aria-hidden="true" />}
       {children}
       {toast && <div className={`toast${toast.error ? ' error' : ''}`}>{toast.message}</div>}
     </ToastCtx.Provider>
@@ -29,20 +60,71 @@ export function useToast() {
   return v
 }
 
+/** true ระหว่างที่มี action กำลังทำงาน — ใช้ disable ปุ่ม/แสดงสถานะ */
+export function useBusy(): boolean {
+  return useContext(ToastCtx)?.busy ?? false
+}
+
+// ---------------- Error Boundary ----------------
+// render พังที่เดียวไม่ควรทำให้ทั้งแอปเป็นจอขาวจนผู้ใช้ต้องเดาว่าให้ refresh
+class ErrorBoundaryInner extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null }
+  static getDerivedStateFromError(error: Error) { return { error } }
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('[LBS] หน้าจอเกิดข้อผิดพลาด', error, info.componentStack)
+  }
+  render() {
+    if (!this.state.error) return this.props.children
+    return (
+      <div className="panel" style={{ margin: 24 }}>
+        <div className="panel-body">
+          <h3 style={{ marginTop: 0 }}>⚠️ หน้านี้เกิดข้อผิดพลาด</h3>
+          <p className="muted">
+            ข้อมูลของคุณไม่ได้หายไป — เป็นความผิดพลาดตอนแสดงผลเท่านั้น
+            ลองกลับหน้าแรกหรือโหลดหน้าใหม่ ถ้ายังเจอซ้ำให้แจ้งผู้ดูแลระบบพร้อมข้อความด้านล่าง
+          </p>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+            <button className="primary" onClick={() => { location.hash = '#/dashboard'; location.reload() }}>
+              กลับหน้าแรก
+            </button>
+            <button onClick={() => location.reload()}>โหลดหน้าใหม่</button>
+          </div>
+          <details>
+            <summary className="muted">รายละเอียดสำหรับผู้ดูแลระบบ</summary>
+            <pre className="mono" style={{ whiteSpace: 'pre-wrap', fontSize: 12, marginTop: 8 }}>
+              {this.state.error.message}
+            </pre>
+          </details>
+        </div>
+      </div>
+    )
+  }
+}
+
+/** key = เปลี่ยนหน้าแล้วให้ลองเรนเดอร์ใหม่ (ไม่ค้างที่หน้า error เดิม) */
+export function ErrorBoundary({ children, resetKey }: { children: ReactNode; resetKey?: string }) {
+  return <ErrorBoundaryInner key={resetKey}>{children}</ErrorBoundaryInner>
+}
+
 /** เรียก action ที่อาจ throw business rule error (sync ใน demo / async RPC ใน Supabase)
  *  → แสดงเป็น toast แทน crash — คืน Promise<boolean> ให้ caller await เพื่อปิด modal เมื่อสำเร็จ */
+// เรียก action + จัดการ toast ให้ครบในที่เดียว
+// กันกดซ้ำ: ระหว่างมี action ค้างอยู่ คลิกถัดไปจะถูกทิ้ง (คืน false) ไม่ยิงซ้ำเข้าเซิร์ฟเวอร์
 export function useTryAction() {
-  const { show } = useToast()
+  const { show, runExclusive } = useToast()
   return useCallback(async (fn: () => void | Promise<void>, successMsg?: string): Promise<boolean> => {
-    try {
-      await fn()
-      if (successMsg) show(successMsg)
-      return true
-    } catch (e) {
-      show(e instanceof Error ? e.message : String(e), true)
-      return false
-    }
-  }, [show])
+    const result = await runExclusive(async () => {
+      try {
+        await fn()
+        if (successMsg) show(successMsg)
+        return true
+      } catch (e) {
+        show(e instanceof Error ? e.message : String(e), true)
+        return false
+      }
+    })
+    return result === SKIPPED ? false : result
+  }, [show, runExclusive])
 }
 
 // ---------------- Modal ----------------

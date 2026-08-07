@@ -309,6 +309,33 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary-sof
   box-shadow: 0 8px 30px rgba(0,0,0,.3); max-width: 420px;
 }
 .toast.error { background: #8c2626; }
+
+/* ---------- แถบกำลังบันทึก (global) — บอกว่าคลิกติดแล้ว ผู้ใช้จะได้ไม่กดซ้ำ ---------- */
+.busy-bar {
+  position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 200;
+  background: linear-gradient(90deg, transparent, var(--primary), #38bdf8, transparent);
+  background-size: 40% 100%; background-repeat: no-repeat;
+  animation: busy-slide 1.1s ease-in-out infinite;
+}
+@keyframes busy-slide {
+  0%   { background-position: -40% 0; }
+  100% { background-position: 140% 0; }
+}
+@media (prefers-reduced-motion: reduce) { .busy-bar { animation: none; background-position: 0 0; } }
+
+/* ---------- แบนเนอร์สถานะการเชื่อมต่อ ---------- */
+.conn-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  margin: 0 0 14px; padding: 10px 14px; border-radius: 10px; font-size: 13px;
+  background: var(--amber-soft); color: var(--amber); border: 1px solid rgba(146,96,10,.28);
+}
+.conn-banner.error { background: var(--red-soft); color: var(--red); border-color: rgba(163,45,45,.28); }
+.conn-banner button { flex: none; }
+@media print { .busy-bar, .conn-banner { display: none; } }
+
+/* ระหว่างมี action ค้าง: ปุ่มยืนยัน/ปุ่มอันตรายกดไม่ได้ (กันกดซ้ำ) — ปุ่มยกเลิก/ปิด ยังกดได้ */
+body.is-busy button.primary,
+body.is-busy button.danger { opacity: .55; pointer-events: none; cursor: progress; }
 .muted { color: var(--muted); font-size: 12.5px; }
 .mono { font-family: Consolas, monospace; font-size: 12.5px; }
 

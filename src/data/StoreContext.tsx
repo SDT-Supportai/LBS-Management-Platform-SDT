@@ -236,6 +236,10 @@ interface StoreValue {
   settings: AppSettings
   mode: 'demo' | 'supabase'
   loading: boolean
+  /** โหลดข้อมูลจากเซิร์ฟเวอร์ไม่สำเร็จ — ต้องบอกผู้ใช้ ไม่ใช่โชว์ตารางว่างเหมือนข้อมูลหาย */
+  loadError: string | null
+  /** บันทึกสำเร็จแล้ว แต่ดึงข้อมูลใหม่ไม่สำเร็จ → ตัวเลขบนจออาจไม่ล่าสุด (ไม่ใช่ error ของการบันทึก) */
+  stale: boolean
   login: (email: string, password: string) => MaybePromise
   logout: () => MaybePromise
   resetDemo: () => void
@@ -310,7 +314,7 @@ function DemoProvider({ children }: { children: ReactNode }) {
       }
 
     return {
-      db, user, settings, mode: 'demo', loading: false,
+      db, user, settings, mode: 'demo', loading: false, loadError: null, stale: false,
       login: (email, password) => {
         const u = db.users.find(x => x.email.toLowerCase() === email.trim().toLowerCase())
         if (!u || u.password !== password) throw new Error('อีเมลหรือรหัสผ่านไม่ถูกต้อง')
@@ -423,6 +427,8 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
   const [db, setDb] = useState<DB>(EMPTY_DB)
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [stale, setStale] = useState(false)
   const [settings, setSettings] = useState<AppSettings>(loadSettings)
   const settingsRef = useRef(settings)
   settingsRef.current = settings
@@ -433,7 +439,16 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
   useEffect(() => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)) }, [settings])
 
   const reload = useCallback(async (): Promise<DB> => {
-    const data = await loadAll(sb)
+    let data: DB
+    try {
+      data = await loadAll(sb)
+    } catch (e) {
+      // โหลดไม่สำเร็จ → เก็บไว้โชว์เป็นแบนเนอร์ แล้วโยนต่อให้ผู้เรียกตัดสินใจ
+      setLoadError(e instanceof Error ? e.message : String(e))
+      throw e
+    }
+    setLoadError(null)
+    setStale(false)
     setDb(data)
     if (userIdRef.current) setUser(data.users.find(u => u.id === userIdRef.current) ?? null)
     // สวิตช์ LINE เป็น global ใน DB (0017) — ถ้าตารางยังไม่มี (ยังไม่รัน migration) คงค่า local เดิม
@@ -492,6 +507,8 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
       try {
         await reload()
       } catch (e) {
+        // reload() ตั้ง loadError ให้แล้ว → App แสดงแบนเนอร์ + ปุ่มลองใหม่
+        // (เดิม console.error เฉยๆ ทำให้ผู้ใช้เห็นตารางว่างเหมือนข้อมูลถูกลบ)
         console.error('โหลดข้อมูลจาก Supabase ไม่สำเร็จ', e)
       }
       if (!cancelled) setLoading(false)
@@ -522,10 +539,18 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<StoreValue>(() => {
     const remote = remoteActions(sb)
+    // ⚠️ แยก 2 ความล้มเหลวออกจากกัน:
+    //   fn(p) พัง = "บันทึกไม่สำเร็จ" จริง → โยนต่อให้ useTryAction ขึ้น toast แดง
+    //   reload() พัง = บันทึก "สำเร็จแล้ว" แต่ดึงข้อมูลใหม่ไม่ได้ → ห้ามขึ้น toast ว่าบันทึกล้มเหลว
+    //   ไม่งั้นผู้ใช้กดบันทึกซ้ำ → ได้ PR / งวดเงิน / รายการวัสดุซ้ำ
     const wrap = <P,>(fn: (p: P) => Promise<void>) => async (p: P) => {
-      await fn(p)                        // error จาก RPC → useTryAction จับได้
-      const data = await reload()
-      dispatchLine(data).catch(() => undefined)
+      await fn(p)
+      try {
+        const data = await reload()
+        dispatchLine(data).catch(() => undefined)
+      } catch {
+        setStale(true)                   // แบนเนอร์ "ข้อมูลบนจออาจไม่ล่าสุด · กดโหลดใหม่"
+      }
     }
     const act = Object.fromEntries(
       Object.entries(remote).map(([k, fn]) => [k, wrap(fn as (p: unknown) => Promise<void>)]),
@@ -548,7 +573,7 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
     }
 
     return {
-      db, user, settings, mode: 'supabase', loading,
+      db, user, settings, mode: 'supabase', loading, loadError, stale,
       login: async (email, password) => {
         const { data, error } = await sb.auth.signInWithPassword({ email: email.trim(), password })
         if (error) throw new Error('อีเมลหรือรหัสผ่านไม่ถูกต้อง')
