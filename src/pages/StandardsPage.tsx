@@ -3,7 +3,7 @@ import { useStore, can } from '../data/StoreContext'
 import { stdBomSummary } from '../data/logic'
 import type { StdBomLineInput } from '../data/logic'
 import { supabase } from '../lib/supabase'
-import { Modal, useToast, useTryAction, toBudgetNum } from '../ui/components'
+import { Modal, useConfirm, useToast, useTryAction, toBudgetNum } from '../ui/components'
 import { fmtBaht, fmtDateTime } from '../ui/format'
 
 // PDF ที่แนบเก็บใน bucket เดิม install-photos prefix standard-drawings/ (0045)
@@ -48,6 +48,7 @@ function cell(row: Record<string, unknown>, keys: string[]): string {
 export default function StandardsPage() {
   const { db, user, act } = useStore()
   const tryAction = useTryAction()
+  const { ask: askConfirm, element: confirmEl } = useConfirm()
   const { show } = useToast()
   const canManage = can(user, 'standards.manage')
 
@@ -301,9 +302,15 @@ export default function StandardsPage() {
                               currentFileName: d.fileName,
                             })
                           }}>แก้ไข</button>
-                          <button className="small danger" style={{ marginLeft: 6 }} onClick={() => {
-                            if (confirm(`ลบ Drawing "${d.title}"? (ไฟล์ยังอยู่ใน Storage)`))
-                              tryAction(() => act.deleteStdDrawing({ id: d.id }), 'ลบ Drawing แล้ว')
+                          <button className="small danger" style={{ marginLeft: 6 }} onClick={async () => {
+                            if (await askConfirm({
+                              title: `ลบ Drawing "${d.title}"`,
+                              description: <>
+                                {d.drawingNo && <>เลขแบบ <b className="mono">{d.drawingNo}</b> · </>}
+                                ทุกแผนกจะโหลดแบบนี้จากระบบไม่ได้อีก · <b>ไฟล์ PDF ยังอยู่ใน Storage</b> และ URL เดิมยังเปิดได้ (ลบรายการออกจากทะเบียนเท่านั้น)
+                              </>,
+                              confirmLabel: 'ลบ Drawing',
+                            })) tryAction(() => act.deleteStdDrawing({ id: d.id }), 'ลบ Drawing แล้ว')
                           }}>ลบ</button>
                         </td>
                       )}
@@ -353,9 +360,12 @@ export default function StandardsPage() {
                       <button className="small" onClick={() => setBomForm({
                         id: b.id, title: b.title, bomNo: b.bomNo ?? '', description: b.description ?? '',
                       })}>แก้ไขหัวข้อ</button>
-                      <button className="small danger" onClick={() => {
-                        if (confirm(`ลบ BOM "${b.title}" พร้อมรายการวัสดุ ${lines.length} รายการ?`))
-                          tryAction(() => act.deleteStdBom({ id: b.id }), 'ลบ BOM แล้ว')
+                      <button className="small danger" onClick={async () => {
+                        if (await askConfirm({
+                          title: `ลบ BOM "${b.title}"`,
+                          description: <><b>รายการวัสดุ {lines.length} รายการในชุดนี้จะถูกลบไปด้วย</b> · กู้คืนไม่ได้ — ถ้าต้องการเก็บไว้ ให้กด ⬇ Export Excel ก่อนลบ</>,
+                          confirmLabel: 'ลบ BOM ทั้งชุด',
+                        })) tryAction(() => act.deleteStdBom({ id: b.id }), 'ลบ BOM แล้ว')
                       }}>ลบ</button>
                     </>}
                   </div>
@@ -398,9 +408,12 @@ export default function StandardsPage() {
                                     uom: l.uom ?? '', estUnitCost: l.estUnitCost !== undefined ? String(l.estUnitCost) : '',
                                     note: l.note ?? '',
                                   })}>แก้</button>
-                                  <button className="small danger" style={{ marginLeft: 6 }} onClick={() => {
-                                    if (confirm(`ลบรายการ ${l.name}?`))
-                                      tryAction(() => act.deleteStdBomLine({ lineId: l.id }), 'ลบรายการแล้ว')
+                                  <button className="small danger" style={{ marginLeft: 6 }} onClick={async () => {
+                                    if (await askConfirm({
+                                      title: `ลบรายการ "${l.name}"`,
+                                      description: <>{l.epicorCode && <><b className="mono">{l.epicorCode}</b> · </>}จำนวน {l.qty} {l.uom ?? ''} — ลบออกจาก BOM "{b.title}"</>,
+                                      confirmLabel: 'ลบรายการ',
+                                    })) tryAction(() => act.deleteStdBomLine({ lineId: l.id }), 'ลบรายการแล้ว')
                                   }}>ลบ</button>
                                 </td>
                               )}
@@ -645,6 +658,7 @@ export default function StandardsPage() {
           </div>
         </Modal>
       )}
+      {confirmEl}
     </>
   )
 }

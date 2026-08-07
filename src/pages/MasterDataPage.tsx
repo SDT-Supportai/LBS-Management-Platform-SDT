@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useStore, can } from '../data/StoreContext'
-import { Modal, usePrompt, useToast, useTryAction } from '../ui/components'
+import { Modal, useConfirm, usePrompt, useToast, useTryAction } from '../ui/components'
 import { fmtBaht, fmtDateTime } from '../ui/format'
 import type { Item, StockMovementType } from '../types'
 
@@ -80,6 +80,7 @@ export default function MasterDataPage() {
   const { db, user, act } = useStore()
   const tryAction = useTryAction()
   const { ask: askPrompt, element: promptEl } = usePrompt()
+  const { ask: askConfirm, element: confirmEl } = useConfirm()
   const { show } = useToast()
   const canMaster = can(user, 'master.manage')
   const canStock = can(user, 'stock.manage')
@@ -277,8 +278,15 @@ export default function MasterDataPage() {
                     <td style={{ whiteSpace: 'nowrap' }}>
                       {canMaster && <>
                         <button className="small" onClick={() => openEditItem(i)}>แก้ไข</button>{' '}
-                        <button className="small danger" onClick={() => {
-                          if (confirm(`ลบ ${i.name}?`)) tryAction(() => act.deleteItem({ itemId: i.id }), 'ลบแล้ว')
+                        <button className="small danger" onClick={async () => {
+                          if (await askConfirm({
+                            title: `ลบวัสดุ "${i.name}"`,
+                            description: <>
+                              รหัส Epicor <b className="mono">{i.epicorCode || i.code}</b> · ลบออกจากฐานข้อมูลวัสดุ
+                              จะทำให้เลือกใช้ในการขอวัสดุ/BOM ไม่ได้อีก · <b>ระบบจะไม่ให้ลบถ้าเคยถูกใช้ใน Job หรือมียอดคงเหลือ</b>
+                            </>,
+                            confirmLabel: 'ลบวัสดุ',
+                          })) tryAction(() => act.deleteItem({ itemId: i.id }), 'ลบแล้ว')
                         }}>ลบ</button>
                       </>}
                     </td>
@@ -480,6 +488,7 @@ export default function MasterDataPage() {
       )}
 
       {promptEl}
+      {confirmEl}
     </>
   )
 }

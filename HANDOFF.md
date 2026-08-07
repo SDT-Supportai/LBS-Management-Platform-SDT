@@ -221,7 +221,8 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 
 11. **`window.prompt` ใช้ไม่ได้บน LINE in-app browser (ชุด B — 2026-08-06)** — ทีมเข้าระบบจากการ์ด Flex ใน LINE เป็นหลัก แต่ **iOS in-app webview บล็อก `prompt()`** → กดปุ่มแล้วไม่มีอะไรเกิดขึ้น ผู้ใช้คิดว่าระบบเสีย · เดิมมี 13 จุดรวม**ช่องกรอกเงิน** (ราคาจริงจาก Supplier, ปรับยอดคลัง) และการปรับยอดคลังถาม `prompt` **ซ้อน 3 ชั้น** กด Cancel กลางทางแล้วหลุดทั้งชุดแบบเงียบ
     → แก้ด้วย `usePrompt()` ใน `ui/components.tsx` (Modal + promise API แทน `prompt()` ได้ตรงๆ: `const v = await ask({...}); if (!v) return`) · รองรับหลายช่องในหน้าเดียว · validation inline (required / ตัวเลข / min / `validate()` ต่อช่อง) · Enter = ยืนยัน · **ไม่เหลือ `window.prompt` ในระบบแล้ว**
-    ⚠️ `window.confirm` (ยืนยันการลบ 9 จุด) ยังใช้ native อยู่ — ถ้าถูกบล็อกจะ "ไม่ลบ" ซึ่งปลอดภัย แต่หน้าตาไม่เข้าชุดกับ modal อื่น (งานต่อยอดถ้าต้องการ)
+    → ตามด้วย `useConfirm()` แทน `window.confirm` อีก 11 จุด (ยืนยันการลบ/รีเซ็ต) · ได้เขียน **"ผลของการลบ" ได้เต็ม** ซึ่ง `confirm()` บรรทัดเดียวทำไม่ได้ เช่น "Serial ทั้ง 30 เครื่องในคลังนี้จะถูกลบไปด้วย" · "รายการวัสดุ 3 รายการในชุดนี้จะถูกลบไปด้วย — ถ้าต้องการเก็บให้ Export ก่อน" · "ไฟล์ PDF ยังอยู่ใน Storage"
+    ✅ **ไม่เหลือ native dialog (`prompt`/`confirm`/`alert`) ในระบบแล้ว** — ทดสอบด้วยการ override ให้ throw ทั้ง session แล้วเดินทุกปุ่มลบ ไม่มีจุดไหนทริกเกอร์
 
 > demo mode ไม่มี trigger/RLS/functions/plpgsql จึงไม่เจอบั๊กพวกนี้ — ต้องทดสอบบน DB จริงเท่านั้น
 

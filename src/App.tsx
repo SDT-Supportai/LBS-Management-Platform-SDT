@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { useStore, can } from './data/StoreContext'
-import { ErrorBoundary, ToastProvider, useTryAction } from './ui/components'
+import { ErrorBoundary, ToastProvider, useConfirm, useTryAction } from './ui/components'
 import { DEPT_LABEL, fmtDateTime } from './ui/format'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
@@ -29,6 +29,7 @@ function BrandLogo() {
 function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { db, user, logout, resetDemo, mode } = useStore()
   const navigate = useNavigate()
+  const { ask: askConfirm, element: confirmEl } = useConfirm()
   if (!user) return null
   const pendingPrs = db.prs.filter(p => p.status === 'pending').length
   const openPos = db.pos.filter(p => p.status === 'issued').length
@@ -89,10 +90,17 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
           <button className="small" onClick={() => { navigate('/audit'); onClose() }}>📜 Audit Log</button>
           <button className="small" onClick={() => logout()}>ออกจากระบบ</button>
           {mode === 'demo' && (
-            <button className="small" onClick={() => { if (confirm('รีเซ็ตข้อมูล demo ทั้งหมด?')) resetDemo() }}>รีเซ็ต demo</button>
+            <button className="small" onClick={async () => {
+              if (await askConfirm({
+                title: 'รีเซ็ตข้อมูล demo',
+                description: <>ข้อมูลทดลองทั้งหมดในเครื่องนี้จะถูกล้างและสร้างใหม่จากชุดตัวอย่าง — <b>ย้อนกลับไม่ได้</b></>,
+                confirmLabel: 'รีเซ็ต',
+              })) resetDemo()
+            }}>รีเซ็ต demo</button>
           )}
         </div>
       </div>
+      {confirmEl}
     </aside>
   )
 }

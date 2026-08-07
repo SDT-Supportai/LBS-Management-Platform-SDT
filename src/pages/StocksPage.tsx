@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import { stockSummary, unitInstallState, unitInstallDate } from '../data/logic'
-import { Modal, useToast, useTryAction, toBudgetNum } from '../ui/components'
+import { Modal, useConfirm, useToast, useTryAction, toBudgetNum } from '../ui/components'
 import { fmtBaht, fmtDate } from '../ui/format'
 
 // ฟอร์มแก้ข้อมูลรายเครื่อง (0043) — ต้นทุน + ข้อมูลแผน + Plan PO receipt / Plan Delivery
@@ -97,6 +97,7 @@ function UnitRowsEditor({ rows, setRows }: { rows: UnitRow[]; setRows: (r: UnitR
 export default function StocksPage() {
   const { db, user, act } = useStore()
   const tryAction = useTryAction()
+  const { ask: askConfirm, element: confirmEl } = useConfirm()
   const { show } = useToast()
   const [showCreate, setShowCreate] = useState(false)
   const [addTo, setAddTo] = useState<string | null>(null)
@@ -322,9 +323,15 @@ export default function StocksPage() {
                 {canManage && <button className="small" onClick={() => { setRows([emptyRow()]); setAddTo(s.id) }}>+ รับ LBS เพิ่ม</button>}
                 {canManage && <button className="small" onClick={() => { setEditNotes(s.notes ?? ''); setEditPoNo(s.poNo ?? ''); setEditStatus(s.status); setEditStock(s.id) }}>แก้ไข</button>}
                 {canManage && (
-                  <button className="small danger" onClick={() => {
-                    if (confirm(`ลบ ${s.stockNo}? (ลบได้เฉพาะคลังที่ไม่เคยมีประวัติดึง/คืน — Serial ในคลังจะถูกลบด้วย)`))
-                      tryAction(() => act.deleteProjectStock({ stockId: s.id }), `ลบ ${s.stockNo} แล้ว`)
+                  <button className="small danger" onClick={async () => {
+                    if (await askConfirm({
+                      title: `ลบ ${s.stockNo}`,
+                      description: <>
+                        <b>Serial ทั้ง {sum.total} เครื่องในคลังนี้จะถูกลบไปด้วย</b> · กู้คืนไม่ได้ —
+                        ระบบจะไม่ให้ลบถ้าคลังนี้เคยมีประวัติดึง/คืน LBS (ถ้าเลิกใช้แล้วให้ "ปิดคลัง" แทน)
+                      </>,
+                      confirmLabel: 'ลบคลังนี้',
+                    })) tryAction(() => act.deleteProjectStock({ stockId: s.id }), `ลบ ${s.stockNo} แล้ว`)
                   }}>ลบ</button>
                 )}
                 <button className="small" onClick={() => setOpenStock(expanded ? null : s.id)}>{expanded ? 'ซ่อนรายการ' : `ดูรายเครื่อง (${sum.total})`}</button>
@@ -729,6 +736,7 @@ export default function StocksPage() {
         </Modal>
         )
       })()}
+      {confirmEl}
     </>
   )
 }

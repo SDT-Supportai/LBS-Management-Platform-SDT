@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useStore, can } from '../data/StoreContext'
-import { Modal, useToast, useTryAction } from '../ui/components'
+import { Modal, useConfirm, useToast, useTryAction } from '../ui/components'
 import { DEPT_LABEL } from '../ui/format'
 import { supabase } from '../lib/supabase'
 import type { Department, User } from '../types'
@@ -11,6 +11,7 @@ export default function DevSettingsPage() {
   const { db, user, act, settings, updateSettings, resetDemo, importDb, mode } = useStore()
   const { show } = useToast()
   const tryAction = useTryAction()
+  const { ask: askConfirm, element: confirmEl } = useConfirm()
   const canMaster = can(user, 'master.manage')
   const [form, setForm] = useState(settings)
   const [testing, setTesting] = useState(false)
@@ -208,7 +209,13 @@ export default function DevSettingsPage() {
                 <input type="file" accept=".json" style={{ display: 'none' }}
                   onChange={e => { const f = e.target.files?.[0]; if (f) importJson(f); e.target.value = '' }} />
               </label>
-              <button className="danger" onClick={() => { if (confirm('รีเซ็ตข้อมูลทั้งหมดกลับเป็น demo seed?')) resetDemo() }}>♻️ รีเซ็ต demo</button>
+              <button className="danger" onClick={async () => {
+                if (await askConfirm({
+                  title: 'รีเซ็ตข้อมูลกลับเป็น demo seed',
+                  description: <>ข้อมูลทดลองทั้งหมดในเครื่องนี้ (Job / คลัง / PR-PO / ประวัติ) จะถูกล้างและสร้างใหม่จากชุดตัวอย่าง — <b>ย้อนกลับไม่ได้</b></>,
+                  confirmLabel: 'รีเซ็ตข้อมูล',
+                })) resetDemo()
+              }}>♻️ รีเซ็ต demo</button>
             </>}
           </div>
         </div>
@@ -255,6 +262,7 @@ export default function DevSettingsPage() {
           )}
         </Modal>
       )}
+      {confirmEl}
     </>
   )
 }

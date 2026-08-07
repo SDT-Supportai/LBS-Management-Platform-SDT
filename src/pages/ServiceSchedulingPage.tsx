@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import { jobInstallSummary, memberSchedule, jobTeam } from '../data/logic'
-import { Modal, useTryAction } from '../ui/components'
+import { Modal, useConfirm, useTryAction } from '../ui/components'
 import { fmtDate } from '../ui/format'
 import type { TeamMember } from '../types'
 
@@ -13,6 +13,7 @@ const EMPTY_FORM = { firstName: '', lastName: '', phone: '', position: '', userI
 export default function ServiceSchedulingPage() {
   const { db, user, act } = useStore()
   const tryAction = useTryAction()
+  const { ask: askConfirm, element: confirmEl } = useConfirm()
   const canManage = can(user, 'service.confirm')
   const [modal, setModal] = useState<'create' | 'edit' | null>(null)
   const [target, setTarget] = useState<TeamMember | null>(null)
@@ -91,9 +92,12 @@ export default function ServiceSchedulingPage() {
                       <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                         <button className="small" style={{ marginRight: 6 }} onClick={() => openEdit(m)}>แก้ไข</button>
                         <button className="small danger"
-                          onClick={() => {
-                            if (confirm(`ลบ ${m.firstName} ${m.lastName} ออกจากทะเบียน?`))
-                              tryAction(() => act.deleteTeamMember({ memberId: m.id }), 'ลบช่างออกจากทะเบียนแล้ว')
+                          onClick={async () => {
+                            if (await askConfirm({
+                              title: `ลบ ${m.firstName} ${m.lastName} ออกจากทะเบียนช่าง`,
+                              description: <>ช่างคนนี้จะเลือกมอบหมายงานใหม่ไม่ได้อีก · <b>ประวัติการติดตั้งที่เคยบันทึกไว้ยังอยู่ครบ</b> · ระบบจะไม่ให้ลบถ้ายังถูกมอบหมายงานที่ค้างอยู่</>,
+                              confirmLabel: 'ลบออกจากทะเบียน',
+                            })) tryAction(() => act.deleteTeamMember({ memberId: m.id }), 'ลบช่างออกจากทะเบียนแล้ว')
                           }}>ลบ</button>
                       </td>
                     )}
@@ -228,6 +232,7 @@ export default function ServiceSchedulingPage() {
           )}
         </Modal>
       )}
+      {confirmEl}
     </>
   )
 }

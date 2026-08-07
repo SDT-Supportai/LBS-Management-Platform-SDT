@@ -167,6 +167,44 @@ export function usePrompt() {
   return { ask, element }
 }
 
+// ---------------- Confirm Modal (แทน window.confirm) ----------------
+// เหตุผลเดียวกับ usePrompt: in-app browser บางตัวบล็อก native dialog + หน้าตาไม่เข้าชุดกับ modal อื่น
+// ที่สำคัญกว่า: confirm() เขียนได้แค่บรรทัดเดียว บอก "ผลของการลบ" ไม่ได้
+// (เช่น ลบคลัง = Serial ในคลังหายด้วย · ลบ BOM = รายการวัสดุหายด้วย) → ที่นี่ใส่คำอธิบายได้เต็ม
+export interface ConfirmConfig {
+  title: string
+  description?: ReactNode
+  confirmLabel?: string
+  danger?: boolean            // default = true (ส่วนใหญ่ใช้ยืนยันการลบ)
+}
+
+export function useConfirm() {
+  const [state, setState] = useState<{ cfg: ConfirmConfig; resolve: (ok: boolean) => void } | null>(null)
+
+  const ask = useCallback((cfg: ConfirmConfig) => new Promise<boolean>(resolve => {
+    setState({ cfg, resolve })
+  }), [])
+
+  const close = (ok: boolean) => { state?.resolve(ok); setState(null) }
+
+  const element = state ? (
+    <Modal
+      title={state.cfg.title}
+      onClose={() => close(false)}
+      footer={<>
+        <button onClick={() => close(false)}>ยกเลิก</button>
+        <button className={state.cfg.danger === false ? 'primary' : 'danger'} onClick={() => close(true)}>
+          {state.cfg.confirmLabel ?? 'ยืนยันลบ'}
+        </button>
+      </>}
+    >
+      <div>{state.cfg.description ?? 'ยืนยันการดำเนินการนี้หรือไม่?'}</div>
+    </Modal>
+  ) : null
+
+  return { ask, element }
+}
+
 // ---------------- Error Boundary ----------------
 // render พังที่เดียวไม่ควรทำให้ทั้งแอปเป็นจอขาวจนผู้ใช้ต้องเดาว่าให้ refresh
 class ErrorBoundaryInner extends Component<{ children: ReactNode }, { error: Error | null }> {

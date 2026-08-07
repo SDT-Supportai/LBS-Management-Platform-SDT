@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
 import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, PAYMENT_TYPES } from '../data/logic'
-import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, usePrompt, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
+import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
 import { ACC_STATUS_LABEL, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType } from '../types'
 
@@ -42,7 +42,8 @@ export default function JobDetailPage() {
   const [modal, setModal] = useState<'draw' | 'return' | 'accessory' | 'issue' | 'cancel' | 'edit' | 'budget' | 'swap' | null>(null)
   const [swapForm, setSwapForm] = useState({ allocatedUnitId: '', stockUnitId: '', reason: '' })
   const [budgetOpen, setBudgetOpen] = useState(false)   // ตาราง 7 หมวด (Item 4: เริ่มซ่อน)
-  const { ask: askPrompt, element: promptEl } = usePrompt()   // แทน window.prompt (ชุด B)
+  const { ask: askPrompt, element: promptEl } = usePrompt()      // แทน window.prompt (ชุด B)
+  const { ask: askConfirm, element: confirmEl } = useConfirm()   // แทน window.confirm (ชุด B)
   const [payOpen, setPayOpen] = useState(false)         // ตารางงวดเงิน (0044 · เริ่มซ่อน เหมือน 7 หมวด)
   const [payForm, setPayForm] = useState<PayForm | null>(null)
   const [drawStock, setDrawStock] = useState('')
@@ -405,9 +406,12 @@ export default function JobDetailPage() {
             {isManage ? 'ยกเลิก Job' : 'ขออนุมัติยกเลิก Job'}
           </button>
           {db.allocations.every(a => a.jobId !== job.id) && accReqs.length === 0 && (
-            <button className="danger" onClick={() => {
-              if (confirm(`ลบ ${job.jobNo}? (ลบได้เฉพาะ Draft ที่ไม่มี transaction)`))
-                tryAction(async () => { await act.deleteDraftJob({ jobId: job.id }); navigate('/jobs') }, `ลบ ${job.jobNo} แล้ว`)
+            <button className="danger" onClick={async () => {
+              if (await askConfirm({
+                title: `ลบ ${job.jobNo}`,
+                description: <>ลบได้เพราะยังเป็น Draft ที่ไม่มี transaction (ยังไม่ดึง LBS · ไม่มีรายการวัสดุ) · <b>ลบแล้วกู้คืนไม่ได้</b> — เลข Job No. นี้จะกลับมาใช้ซ้ำได้</>,
+                confirmLabel: 'ลบ Job',
+              })) tryAction(async () => { await act.deleteDraftJob({ jobId: job.id }); navigate('/jobs') }, `ลบ ${job.jobNo} แล้ว`)
             }}>ลบ Draft</button>
           )}
         </div>
@@ -500,9 +504,16 @@ export default function JobDetailPage() {
                               amount: r.percent !== undefined ? '' : String(r.amount),
                               paidAt: r.paidAt ?? '', note: r.note ?? '',
                             })}>แก้</button>
-                            <button className="small danger" style={{ marginLeft: 6 }} onClick={() => {
-                              if (confirm(`ลบงวด ${PAYMENT_TYPE_LABEL[r.payType]} #${r.seq} (${fmtBaht(r.amount)})?`))
-                                tryAction(() => act.deleteJobPayment({ paymentId: r.id }), 'ลบงวดเงินแล้ว')
+                            <button className="small danger" style={{ marginLeft: 6 }} onClick={async () => {
+                              if (await askConfirm({
+                                title: `ลบงวด ${PAYMENT_TYPE_LABEL[r.payType]} #${r.seq}`,
+                                description: <>
+                                  {r.invoiceNo ? <>Invoice <b className="mono">{r.invoiceNo}</b> · </> : null}
+                                  ยอด <b>{fmtBaht(r.amount)}</b> · ยอดรวมที่ออกใบแล้วจะลดลงตามนี้
+                                  {r.paidAt && <> · <span style={{ color: 'var(--red)' }}>งวดนี้บันทึกว่ารับเงินแล้ว ระบบจะไม่ให้ลบ</span></>}
+                                </>,
+                                confirmLabel: 'ลบงวดเงิน',
+                              })) tryAction(() => act.deleteJobPayment({ paymentId: r.id }), 'ลบงวดเงินแล้ว')
                             }}>ลบ</button>
                           </td>
                         )}
@@ -718,7 +729,13 @@ export default function JobDetailPage() {
                       {/* ลบรายการที่ยกเลิก (ยังไม่เคยผูก PR/PO) ออกจากการ์ด — Project/Division/Manage */}
                       {canCleanup && r.status === 'cancelled' && !r.prId && !r.poId && (
                         <button className="small danger" title="ลบรายการที่ยกเลิกออกจากการ์ด"
-                          onClick={() => { if (confirm(`ลบ "${item.name}" (ที่ยกเลิกแล้ว) ออกจากการ์ด?`)) tryAction(() => act.deleteAccessoryRequest({ requestId: r.id }), 'ลบรายการออกจากการ์ดแล้ว') }}>
+                          onClick={async () => {
+                            if (await askConfirm({
+                              title: `ลบ "${item.name}" ออกจากการ์ด`,
+                              description: <>รายการนี้ถูกยกเลิกไปแล้วและยังไม่เคยผูก PR/PO · ลบเพื่อให้การ์ดสะอาด — <b>ประวัติการยกเลิกยังอยู่ใน Audit Log</b></>,
+                              confirmLabel: 'ลบออกจากการ์ด',
+                            })) tryAction(() => act.deleteAccessoryRequest({ requestId: r.id }), 'ลบรายการออกจากการ์ดแล้ว')
+                          }}>
                           🗑️ ลบออกจากการ์ด
                         </button>
                       )}
@@ -1177,6 +1194,7 @@ export default function JobDetailPage() {
         )
       })()}
       {promptEl}
+      {confirmEl}
     </>
   )
 }
