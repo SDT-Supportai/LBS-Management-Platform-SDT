@@ -31,7 +31,7 @@
 | Hosting | **Cloudflare Pages — LIVE แล้ว** https://lbs-platform-sdt.pages.dev (ย้ายจาก Netlify 2026-07-15, auto-deploy จาก `main`) |
 | GitHub repo | https://github.com/SDT-Supportai/LBS-Management-Platform-SDT (root = โฟลเดอร์นี้) |
 | Supabase project ref | `mrdnxajwnvkgvfyaclwv` (region: ตามที่สร้าง) |
-| Migrations ที่รันแล้ว | **0001–0041 รันครบ** (0041 รัน 2026-08-03) · **🆕 0042–0048 รอรัน (รันเรียงลำดับ ก่อน push frontend)** · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูป/ไฟล์แนบไม่ได้ เช็ค bucket `install-photos` (0019 — ไฟล์แนบปัญหาใช้ bucket เดิม prefix `job-issues/`) |
+| Migrations ที่รันแล้ว | **0001–0048 รันครบ** (0041 รัน 2026-08-03 · **0042–0048 รัน 2026-08-07**) · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูป/ไฟล์แนบไม่ได้ เช็ค bucket `install-photos` (0019 — ไฟล์แนบปัญหาใช้ bucket เดิม prefix `job-issues/`) |
 | E2E บน DB จริง | ✅ ผ่านทั้ง flow · demo E2E: approval, LINE dispatch, budget 7 หมวด, 1 PR→N PO (12/12), check-in/photo, ยืนยันรายเครื่อง, โอนวัสดุเข้าคลัง, Import Excel แก้ยอด, ปิดงาน+สรุปปัญหา, reopen |
 | ตรวจ LIVE แบบไม่แตะข้อมูล | probe ผ่าน PostgREST ด้วย anon key: `GET /rest/v1/<table>?select=...` (200 = มีตาราง/คอลัมน์) และ `POST /rest/v1/rpc/<fn>` (ตอบ `กรุณาเข้าสู่ระบบก่อน` = ฟังก์ชันมีจริง+auth gate ทำงาน · `404 PGRST202` = ไม่มี signature นั้น) — RPC ทุกตัวตรวจสิทธิ์ก่อนเขียน จึงไม่มี row ถูกสร้าง |
 | Admin จริง | `siradanai.s@precise.co.th` (department = admin, แสดงเป็น "Manage") |
@@ -237,10 +237,38 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
       ไฟล์ถูกใส่สลักนิรภัย (DO-block RAISE EXCEPTION) กันรันติดมือแล้ว · **หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่**
 - [ ] ตรวจว่า **service_role key ถูก rotate แล้ว** (ระหว่าง setup key เก่าเคยเปิดเผย — ตรวจ repo แล้ว 2026-07-19: **key ไม่เคยหลุดลง git** หลุดเฉพาะนอก repo) — Dashboard → Settings → API → สร้าง/roll secret key ใหม่ → อัปเดต `SUPABASE_SERVICE_ROLE_KEY` บน Cloudflare Pages env → Retry deployment
 
-### 🟠 Migrations — ✅ 0001–0041 รันครบ (0041 รัน 2026-08-03) · 🆕 **0042–0048 รอรัน**
-- [ ] 🆕 **รัน `0043` → `0044` → `0045` → `0046` → `0047` → `0048`** (เรียงตามลำดับ · ต้องรันก่อน push frontend) — 0044 พึ่ง `app_assert_job_cost_editable` ที่ 0042 patch ไว้ (ถ้ายังไม่รัน 0042 ให้รันก่อน) · 0045+0046 เป็นคู่กัน · **0048 พึ่งคอลัมน์ `plan_*` ของ 0043** · 0047 อิสระ รันเดี่ยวได้
-- [ ] 🆕 **รัน `supabase/migrations/0042_job_ownership.sql`** (สิทธิ์ระดับแถว Project — **ต้องรันก่อน push frontend** ไม่งั้น UI ซ่อนปุ่มให้แล้วแต่ DB ยังไม่ล็อก คนที่ยิง API ตรงยังแก้งานคนอื่นได้) · หลังรันดู NOTICE ท้ายสุด จะบอกจำนวน Job ที่ `opened_by` ว่าง = งานเก่าที่ยังไม่ถูกล็อก (grandfather)
-- [x] ~~0011–0041~~ รันครบ · **กติกา: หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่ (ผมจะบอกชื่อไฟล์)**
+### 🟠 Migrations — ✅ **0001–0048 รันครบ** (0042–0048 รัน 2026-08-07)
+- [x] ~~0011–0048~~ **รันครบแล้ว** (0042–0048 รัน 2026-08-07) · **กติกา: หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่ (ผมจะบอกชื่อไฟล์)**
+- [ ] **ตรวจครั้งเดียวว่า 0042–0048 ลงครบจริง** (รันได้ตลอด ไม่แตะข้อมูล — ต้องได้ `true` ทุกแถว):
+      ```sql
+      with f as (select proname, pg_get_functiondef(p.oid) def from pg_proc p
+                 join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public')
+      select * from (values
+        ('0042 สิทธิ์ระดับแถว (guard 6 ตัว)', (select count(*) = 6 from f where proname in
+            ('app_assert_job_editable','app_assert_job_procurable','app_assert_job_cost_editable',
+             'app_assert_job_reopenable','rpc_delete_accessory_request','rpc_transfer_job_material_to_stock')
+            and def like '%app_assert_job_owner%')),
+        ('0043 คอลัมน์ plan_* + rpc_update_unit_plan', (
+            (select count(*) = 5 from information_schema.columns where table_name = 'lbs_units'
+               and column_name in ('plan_customer_name','plan_contact_phone','plan_install_location',
+                                   'plan_po_receipt_date','plan_delivery_date'))
+            and exists (select 1 from f where proname = 'rpc_update_unit_plan'))),
+        ('0044 job_payments + RPC', (to_regclass('public.job_payments') is not null
+            and exists (select 1 from f where proname = 'rpc_add_job_payment'))),
+        ('0045 std_drawings / std_boms / std_bom_lines', (to_regclass('public.std_drawings') is not null
+            and to_regclass('public.std_boms') is not null and to_regclass('public.std_bom_lines') is not null
+            and exists (select 1 from f where proname = 'rpc_create_std_drawing'))),
+        ('0046 import BOM จาก Excel', exists (select 1 from f where proname = 'rpc_import_std_bom_lines')),
+        ('0047 แก้เลข PR', exists (select 1 from f where proname = 'rpc_update_pr_no')),
+        ('0048 import ข้อมูลแผนรายเครื่อง', exists (select 1 from f
+            where proname = 'rpc_import_units_to_stock' and def like '%plan_po_receipt%')),
+        ('realtime: job_payments + std_* อยู่ใน publication', (
+            select count(*) = 4 from pg_publication_tables where pubname = 'supabase_realtime'
+              and schemaname = 'public'
+              and tablename in ('job_payments','std_drawings','std_boms','std_bom_lines')))
+      ) t(migration, ok) order by 1;
+      ```
+      แถวไหน `false` → รัน migration ไฟล์นั้นซ้ำได้เลย (ทุกไฟล์ idempotent)
 - [ ] ยืนยัน bucket **`install-photos`** (public) มีจริง — ใช้ทั้งรูปยืนยันติดตั้ง (0019/0035) และไฟล์แนบปัญหา prefix `job-issues/` (0040) · ถ้าอัปโหลดไม่ได้ให้สร้างที่ Dashboard→Storage
 - [ ] ตรวจว่า string patch ของ 0041 ลงจริง (ตรวจผ่าน REST ไม่ได้เพราะ auth gate มาก่อน):
       ```sql
@@ -249,15 +277,11 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
       where n.nspname='public' and p.proname in ('rpc_request_approval','rpc_reject_request');
       ```
       ต้องได้ `patched = true` ทั้ง 2 แถว — ถ้า false ให้รัน `0041` ซ้ำ (idempotent) · อาการถ้าไม่ลง: กด "ขออนุมัติเปิดงานใหม่" แล้ว error `ประเภทคำขอไม่ถูกต้อง`
-- [ ] หลังรัน 0042 ตรวจว่า guard เจ้าของงานลงครบ 6 ฟังก์ชัน (5 ตัวแรกเป็น recreate · ตัวที่ 6 เป็น string patch จึงพลาดได้):
-      ```sql
-      select p.proname, position('app_assert_job_owner' in pg_get_functiondef(p.oid)) > 0 as has_owner_guard
-      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-      where n.nspname='public' and p.proname in ('app_assert_job_editable','app_assert_job_procurable',
-        'app_assert_job_cost_editable','app_assert_job_reopenable','rpc_delete_accessory_request',
-        'rpc_transfer_job_material_to_stock') order by 1;
-      ```
-      ต้องได้ `true` ทั้ง 6 แถว — ถ้าแถวไหน false ให้รัน `0042` ซ้ำ (idempotent)
+      (แถว 0042 ในตารางข้างบนครอบการตรวจ string patch ของ `rpc_transfer_job_material_to_stock` ไว้แล้ว —
+      ตัวนี้เป็น `app_swap_guard` patch จึงเป็นตัวเดียวใน 6 ที่มีโอกาสไม่ลง)
+- [ ] **ทดสอบใช้งานจริง 1 รอบหลังรัน SQL** (ของใหม่ที่เพิ่งเปิด): Project เปิด Job คนอื่น → ต้องเห็นแบนเนอร์ 🔒 โหมดดูอย่างเดียว ·
+      Division กด "แก้ข้อมูล" รายเครื่องในคลัง · Project กด `+ Advance` ในการ์ด Payment · เมนู Standard Drawing & BOM อัปโหลด PDF 1 ไฟล์ ·
+      Purchasing กด "✏️ แก้เลข PR" — ถ้าจุดไหนขึ้น `404 PGRST202` แปลว่า migration ตัวนั้นยังไม่ลง
 
 ### 🟡 ฟีเจอร์เสริม (ตั้งค่าค้างอยู่)
 - [ ] **เปิดสวิตช์ LINE** — env + code + migration 0017 พร้อมหมด · เหลือ: login **Manage** → Dev Settings → เปิดสวิตช์แจ้งเตือน LINE (global มีผลทุกเครื่อง) → "ส่งข้อความทดสอบ"
