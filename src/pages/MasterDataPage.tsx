@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useStore, can } from '../data/StoreContext'
-import { Modal, useToast, useTryAction } from '../ui/components'
+import { Modal, usePrompt, useToast, useTryAction } from '../ui/components'
 import { fmtBaht, fmtDateTime } from '../ui/format'
 import type { Item, StockMovementType } from '../types'
 
@@ -79,6 +79,7 @@ function parseImportRows(rows: Record<string, unknown>[], items: Item[], stockOf
 export default function MasterDataPage() {
   const { db, user, act } = useStore()
   const tryAction = useTryAction()
+  const { ask: askPrompt, element: promptEl } = usePrompt()
   const { show } = useToast()
   const canMaster = can(user, 'master.manage')
   const canStock = can(user, 'stock.manage')
@@ -209,29 +210,30 @@ export default function MasterDataPage() {
     else show(`นำเข้าฐานข้อมูลวัสดุสำเร็จ ${ok} รายการ${qtyTxt}`)
   }
 
-  const adjustStock = (i: Item) => {
+  // เดิมถามด้วย window.prompt ซ้อน 3 ชั้น (ยอด → ต้นทุน → เหตุผล) กด Cancel กลางทางแล้วหลุดทั้งชุด
+  // ตอนนี้รวมเป็นฟอร์มเดียว เห็นยอดเดิม/ผลต่างก่อนยืนยัน · ต้นทุนใช้เฉพาะตอนยอดเพิ่ม (ของเข้าคลัง)
+  const adjustStock = async (i: Item) => {
     const cur = stockQty(i.id)
-    const v = window.prompt(`ยอดคงเหลือใหม่ของ ${i.name} (ปัจจุบัน ${cur} ${i.uom})`)
-    if (v === null) return
-    const qty = Number(v.trim())
-    if (v.trim() === '' || Number.isNaN(qty)) return show('กรุณากรอกยอดเป็นตัวเลข', true)
-    if (qty < 0) return show('ยอดคงเหลือติดลบไม่ได้', true)
-    // ยอดเพิ่ม = ของเข้าคลัง → ถามต้นทุนต่อหน่วย เพื่อให้ต้นทุนถัวเฉลี่ยมีค่า (เว้นว่าง = ไม่ขยับค่าเฉลี่ย)
-    let unitCost: number | undefined
-    if (qty > cur) {
-      const c = window.prompt(
-        `ต้นทุนต่อหน่วยของของที่เพิ่มเข้ามา ${qty - cur} ${i.uom} (บาท)\n` +
-        `เว้นว่าง = ไม่ระบุ (ต้นทุนถัวเฉลี่ยเดิมจะไม่เปลี่ยน)`,
-        stockCost(i.id) > 0 ? String(stockCost(i.id)) : '')
-      if (c === null) return
-      if (c.trim() !== '') {
-        const n = Number(c.trim())
-        if (Number.isNaN(n) || n < 0) return show('ต้นทุนต้องเป็นตัวเลขไม่ติดลบ', true)
-        unitCost = n
-      }
-    }
-    const note = window.prompt('เหตุผลการปรับยอด (บันทึกลง audit)') ?? ''
-    tryAction(() => act.adjustAccessoryStock({ itemId: i.id, newQty: qty, note, unitCost }), 'ปรับยอดแล้ว')
+    const avg = stockCost(i.id)
+    const v = await askPrompt({
+      title: `ปรับยอดคงเหลือ — ${i.name}`,
+      description: <>ยอดปัจจุบัน <b>{cur} {i.uom}</b>{avg > 0 && <> · ต้นทุนถัวเฉลี่ย {fmtBaht(avg)}</>} · ทุกการปรับยอดถูกบันทึกลง ledger และ audit</>,
+      fields: [
+        { key: 'qty', label: 'ยอดคงเหลือใหม่', type: 'number', min: 0, required: true,
+          suffix: i.uom, value: String(cur), hint: 'กรอกยอดที่นับได้จริง ระบบจะคิดผลต่างให้เอง' },
+        { key: 'cost', label: 'ต้นทุนต่อหน่วยของของที่เพิ่มเข้ามา', type: 'number', min: 0, suffix: 'บาท',
+          value: avg > 0 ? String(avg) : '',
+          hint: 'ใช้เฉพาะกรณียอดเพิ่มขึ้น (ของเข้าคลัง) · เว้นว่าง = ต้นทุนถัวเฉลี่ยเดิมไม่เปลี่ยน' },
+        { key: 'note', label: 'เหตุผลการปรับยอด', type: 'textarea', required: true,
+          placeholder: 'เช่น นับสต็อกประจำเดือน / ของชำรุด / รับเข้าจากหน้างาน' },
+      ],
+      confirmLabel: 'ปรับยอด',
+    })
+    if (!v) return
+    const qty = Number(v.qty)
+    // ยอดเพิ่ม = ของเข้าคลัง → ส่งต้นทุนไปคิดถัวเฉลี่ย · ยอดลดไม่ต้องใช้
+    const unitCost = qty > cur && v.cost !== '' ? Number(v.cost) : undefined
+    tryAction(() => act.adjustAccessoryStock({ itemId: i.id, newQty: qty, note: v.note, unitCost }), 'ปรับยอดแล้ว')
   }
 
   return (
@@ -477,6 +479,7 @@ export default function MasterDataPage() {
         </Modal>
       )}
 
+      {promptEl}
     </>
   )
 }

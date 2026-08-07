@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { Modal, useTryAction } from '../ui/components'
+import { Modal, usePrompt, useTryAction } from '../ui/components'
 import { fmtBaht, fmtDate, fmtDateTime, COST_CATEGORIES } from '../ui/format'
 import type { CostCategoryKey } from '../types'
 
@@ -10,6 +10,7 @@ const COST_LABEL: Record<string, string> = Object.fromEntries(COST_CATEGORIES.ma
 export default function PurchasingPage() {
   const { db, user, act } = useStore()
   const tryAction = useTryAction()
+  const { ask: askPrompt, element: promptEl } = usePrompt()
   const canManage = can(user, 'purchasing.manage')
   const [poFor, setPoFor] = useState<string | null>(null)
   const [rejectFor, setRejectFor] = useState<string | null>(null)
@@ -214,13 +215,18 @@ export default function PurchasingPage() {
                                 {it.name} × {r.qtyRequested} {it.uom} · <span className="mono">{fmtBaht(r.unitPrice)}</span>{value !== undefined ? ` = ${fmtBaht(value)}` : ''}
                                 {canEditPrice && (
                                   <button className="small" style={{ marginLeft: 6 }} title="บันทึก/แก้ราคาจริงจาก Supplier"
-                                    onClick={() => {
-                                      const v = window.prompt(`ราคาจริงต่อหน่วยของ ${it.name} (บาท/${it.uom})`, r.unitPrice !== undefined ? String(r.unitPrice) : '')
-                                      if (v === null) return
-                                      const t = v.trim()
-                                      if (t !== '' && (Number.isNaN(Number(t)) || Number(t) < 0))
-                                        return void tryAction(() => { throw new Error('กรุณากรอกราคาเป็นตัวเลขไม่ติดลบ') })
-                                      tryAction(() => act.updatePoLinePrice({ requestId: r.id, unitPrice: t === '' ? undefined : Number(t) }), 'บันทึกราคาจริงแล้ว — งบต้นทุนใช้จริงอัปเดต')
+                                    onClick={async () => {
+                                      const v = await askPrompt({
+                                        title: `ราคาจริงจาก Supplier — ${it.name}`,
+                                        description: <>สั่ง {r.qtyRequested} {it.uom} · ราคาที่บันทึกไว้ {fmtBaht(r.unitPrice)} · <b>เว้นว่าง = ล้างราคา</b> (กลับไปใช้ราคาประมาณการ)</>,
+                                        fields: [{
+                                          key: 'price', label: 'ราคาจริงต่อหน่วย', type: 'number', min: 0,
+                                          suffix: `บาท/${it.uom}`, value: r.unitPrice !== undefined ? String(r.unitPrice) : '',
+                                          hint: 'กรอกเป็นตัวเลขล้วน ไม่ต้องใส่เครื่องหมาย ,',
+                                        }],
+                                      })
+                                      if (!v) return
+                                      tryAction(() => act.updatePoLinePrice({ requestId: r.id, unitPrice: v.price === '' ? undefined : Number(v.price) }), 'บันทึกราคาจริงแล้ว — งบต้นทุนใช้จริงอัปเดต')
                                     }}>💰 ราคาจริง</button>
                                 )}
                               </div>
@@ -244,10 +250,16 @@ export default function PurchasingPage() {
                               <button className="small success" onClick={() => openReceive(po.id)}>รับของ</button>
                             )}{' '}
                             {canManage && po.status === 'issued' && totalReceived === 0 && (
-                              <button className="small danger" onClick={() => {
-                                const reason = window.prompt(`เหตุผลที่ยกเลิก ${po.poNo} (รายการจะกลับมารอออก PO ใหม่)`)
-                                if (reason !== null)
-                                  tryAction(() => act.cancelPO({ poId: po.id, reason }), `ยกเลิก ${po.poNo} แล้ว — รายการรอออก PO ใหม่`)
+                              <button className="small danger" onClick={async () => {
+                                const v = await askPrompt({
+                                  title: `ยกเลิก ${po.poNo}`,
+                                  description: <>รายการวัสดุใน PO นี้จะกลับไปสถานะ <b>รอออก PO</b> ให้ออก PO ใหม่ได้ · ทำได้เฉพาะ PO ที่ยังไม่รับของ</>,
+                                  fields: [{ key: 'reason', label: 'เหตุผลที่ยกเลิก', type: 'textarea', required: true,
+                                    placeholder: 'เช่น Supplier ส่งของไม่ได้ / เปลี่ยนสเปค / สั่งผิดรุ่น' }],
+                                  confirmLabel: 'ยืนยันยกเลิก PO', danger: true,
+                                })
+                                if (!v) return
+                                tryAction(() => act.cancelPO({ poId: po.id, reason: v.reason }), `ยกเลิก ${po.poNo} แล้ว — รายการรอออก PO ใหม่`)
                               }}>ยกเลิก PO</button>
                             )}
                           </td>
@@ -407,6 +419,7 @@ export default function PurchasingPage() {
           })}
         </Modal>
       )}
+      {promptEl}
     </>
   )
 }

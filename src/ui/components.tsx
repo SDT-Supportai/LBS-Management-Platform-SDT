@@ -65,6 +65,108 @@ export function useBusy(): boolean {
   return useContext(ToastCtx)?.busy ?? false
 }
 
+// ---------------- Prompt Modal (แทน window.prompt) ----------------
+// เหตุผลที่ต้องเลิกใช้ window.prompt:
+//   1) LINE in-app browser (iOS) บล็อก prompt → กดปุ่มแล้วไม่มีอะไรเกิดขึ้น = ผู้ใช้คิดว่าระบบเสีย
+//      ทีมเข้าระบบจากการ์ด Flex ใน LINE เป็นหลัก จึงเจอเคสนี้จริง
+//   2) ถามซ้อนหลายชั้น (ปรับยอดคลัง = 3 prompt) กด Cancel กลางทางแล้วยกเลิกทั้งชุดแบบเงียบ
+//   3) ไม่มี label/หน่วย/validation inline — พิมพ์ "12,000" แล้วถูกปฏิเสธโดยไม่บอกว่าห้ามใส่ comma
+// API เป็น promise เพื่อให้แทนที่ prompt() ได้ตรงๆ: const v = await ask({...}); if (!v) return
+
+export interface PromptField {
+  key: string
+  label: string
+  type?: 'text' | 'number' | 'textarea' | 'date'
+  value?: string
+  placeholder?: string
+  hint?: string
+  required?: boolean
+  min?: number
+  suffix?: string                                   // หน่วยต่อท้ายช่อง เช่น บาท / ชุด
+  validate?: (v: string, all: Record<string, string>) => string | undefined
+}
+export interface PromptConfig {
+  title: string
+  description?: ReactNode
+  fields: PromptField[]
+  confirmLabel?: string
+  danger?: boolean
+}
+
+export function usePrompt() {
+  const [state, setState] = useState<
+    { cfg: PromptConfig; resolve: (v: Record<string, string> | null) => void } | null
+  >(null)
+  const [values, setValues] = useState<Record<string, string>>({})
+  const [errors, setErrors] = useState<Record<string, string>>({})
+
+  const ask = useCallback((cfg: PromptConfig) => new Promise<Record<string, string> | null>(resolve => {
+    setValues(Object.fromEntries(cfg.fields.map(f => [f.key, f.value ?? ''])))
+    setErrors({})
+    setState({ cfg, resolve })
+  }), [])
+
+  const close = (result: Record<string, string> | null) => {
+    state?.resolve(result)
+    setState(null)
+  }
+
+  const submit = () => {
+    if (!state) return
+    const errs: Record<string, string> = {}
+    for (const f of state.cfg.fields) {
+      const v = (values[f.key] ?? '').trim()
+      if (f.required && !v) { errs[f.key] = 'กรุณากรอกช่องนี้'; continue }
+      if (v && f.type === 'number') {
+        const n = Number(v)
+        if (Number.isNaN(n)) { errs[f.key] = 'ต้องเป็นตัวเลข (ห้ามใส่เครื่องหมาย , )'; continue }
+        if (f.min !== undefined && n < f.min) { errs[f.key] = `ต้องไม่น้อยกว่า ${f.min}`; continue }
+      }
+      const custom = f.validate?.(v, values)
+      if (custom) errs[f.key] = custom
+    }
+    setErrors(errs)
+    if (Object.keys(errs).length > 0) return
+    close(Object.fromEntries(state.cfg.fields.map(f => [f.key, (values[f.key] ?? '').trim()])))
+  }
+
+  const element = state ? (
+    <Modal
+      title={state.cfg.title}
+      size={state.cfg.fields.length > 2 ? 'wide' : 'default'}
+      onClose={() => close(null)}
+      footer={<>
+        <button onClick={() => close(null)}>ยกเลิก</button>
+        <button className={state.cfg.danger ? 'danger' : 'primary'} onClick={submit}>
+          {state.cfg.confirmLabel ?? 'บันทึก'}
+        </button>
+      </>}
+    >
+      {state.cfg.description && <div className="muted" style={{ marginBottom: 12 }}>{state.cfg.description}</div>}
+      {state.cfg.fields.map(f => (
+        <label className="field" key={f.key}>
+          <span>{f.label}{f.required ? ' *' : ''}{f.suffix ? ` (${f.suffix})` : ''}</span>
+          {f.type === 'textarea'
+            ? <textarea rows={2} value={values[f.key] ?? ''} placeholder={f.placeholder}
+                onChange={e => setValues(v => ({ ...v, [f.key]: e.target.value }))} />
+            : <input
+                type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}
+                inputMode={f.type === 'number' ? 'decimal' : undefined}
+                min={f.min} value={values[f.key] ?? ''} placeholder={f.placeholder}
+                autoFocus={f.key === state.cfg.fields[0].key}
+                onChange={e => setValues(v => ({ ...v, [f.key]: e.target.value }))}
+                onKeyDown={e => { if (e.key === 'Enter' && f.type !== 'textarea') submit() }} />}
+          {errors[f.key]
+            ? <span style={{ color: 'var(--red)', fontSize: 12 }}>{errors[f.key]}</span>
+            : f.hint && <span className="muted">{f.hint}</span>}
+        </label>
+      ))}
+    </Modal>
+  ) : null
+
+  return { ask, element }
+}
+
 // ---------------- Error Boundary ----------------
 // render พังที่เดียวไม่ควรทำให้ทั้งแอปเป็นจอขาวจนผู้ใช้ต้องเดาว่าให้ refresh
 class ErrorBoundaryInner extends Component<{ children: ReactNode }, { error: Error | null }> {

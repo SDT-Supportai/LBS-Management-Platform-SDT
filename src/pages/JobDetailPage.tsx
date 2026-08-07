@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
 import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, PAYMENT_TYPES } from '../data/logic'
-import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
+import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, usePrompt, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
 import { ACC_STATUS_LABEL, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType } from '../types'
 
@@ -42,6 +42,7 @@ export default function JobDetailPage() {
   const [modal, setModal] = useState<'draw' | 'return' | 'accessory' | 'issue' | 'cancel' | 'edit' | 'budget' | 'swap' | null>(null)
   const [swapForm, setSwapForm] = useState({ allocatedUnitId: '', stockUnitId: '', reason: '' })
   const [budgetOpen, setBudgetOpen] = useState(false)   // ตาราง 7 หมวด (Item 4: เริ่มซ่อน)
+  const { ask: askPrompt, element: promptEl } = usePrompt()   // แทน window.prompt (ชุด B)
   const [payOpen, setPayOpen] = useState(false)         // ตารางงวดเงิน (0044 · เริ่มซ่อน เหมือน 7 หมวด)
   const [payForm, setPayForm] = useState<PayForm | null>(null)
   const [drawStock, setDrawStock] = useState('')
@@ -254,16 +255,22 @@ export default function JobDetailPage() {
                 <button className="small"
                   disabled={pendingApprovalOf('reopen_job')}
                   title={pendingApprovalOf('reopen_job') ? 'มีคำขอเปิดงานใหม่รอ Division พิจารณาอยู่แล้ว' : ''}
-                  onClick={() => {
-                    const reason = window.prompt(
-                      isManage
-                        ? `เปิดงาน ${job.jobNo} ใหม่ (กลับเป็นรอติดตั้ง)\nระบุเหตุผล:`
-                        : `ขออนุมัติเปิดงาน ${job.jobNo} ใหม่ (Division พิจารณา)\nระบุเหตุผล:`)
-                    if (reason === null) return
-                    if (!reason.trim()) return void tryAction(() => { throw new Error('กรุณาระบุเหตุผลที่ขอเปิดงานใหม่') })
+                  onClick={async () => {
+                    const v = await askPrompt({
+                      title: isManage ? `เปิดงาน ${job.jobNo} ใหม่` : `ขออนุมัติเปิดงาน ${job.jobNo} ใหม่`,
+                      description: <>
+                        งานจะกลับเป็น <b>รอติดตั้ง (Issued)</b> · หลักฐานการยืนยันรายเครื่องยังอยู่ครบ ไม่ต้องถ่ายรูป/เช็คอินซ้ำ ·
+                        วันปิดงานเดิมจะถูกล้าง (สำเนาเก็บใน Audit Log)
+                        {!isManage && <> · คำขอจะส่งให้ <b>Division</b> พิจารณาก่อน</>}
+                      </>,
+                      fields: [{ key: 'reason', label: 'เหตุผลที่ต้องเปิดงานใหม่', type: 'textarea', required: true,
+                        placeholder: 'เช่น กดปิดงานผิดใบ / ต้องกลับไปแก้จุดติดตั้งที่ 2' }],
+                      confirmLabel: isManage ? 'เปิดงานใหม่' : 'ส่งคำขอ',
+                    })
+                    if (!v) return
                     isManage
-                      ? tryAction(() => act.reopenJob({ jobId: job.id, reason }), `เปิดงาน ${job.jobNo} ใหม่แล้ว — กลับเป็นรอติดตั้ง`)
-                      : tryAction(() => act.requestApproval({ type: 'reopen_job', jobId: job.id, payload: { reason } }),
+                      ? tryAction(() => act.reopenJob({ jobId: job.id, reason: v.reason }), `เปิดงาน ${job.jobNo} ใหม่แล้ว — กลับเป็นรอติดตั้ง`)
+                      : tryAction(() => act.requestApproval({ type: 'reopen_job', jobId: job.id, payload: { reason: v.reason } }),
                           `ส่งคำขอเปิดงาน ${job.jobNo} ใหม่ ให้ Division พิจารณาแล้ว`)
                   }}>
                   🔄 {isManage ? 'เปิดงานใหม่' : 'ขออนุมัติเปิดงานใหม่'}
@@ -656,13 +663,16 @@ export default function JobDetailPage() {
                     <td className="mono">{[pr?.prNo, po?.poNo].filter(Boolean).join(' / ') || '-'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       {canManage && !procureLocked && active && (
-                        <button className="small" onClick={() => {
-                          const v = window.prompt(`ราคาต่อหน่วยของ ${item.name} (บาท/${item.uom})`, r.unitPrice !== undefined ? String(r.unitPrice) : '')
-                          if (v === null) return
-                          const t = v.trim()
-                          if (t !== '' && Number.isNaN(Number(t)))
-                            return void tryAction(() => { throw new Error('กรุณากรอกราคาเป็นตัวเลข') })
-                          tryAction(() => act.updateAccessoryRequestPrice({ requestId: r.id, unitPrice: t === '' ? undefined : Number(t) }), 'แก้ราคาแล้ว')
+                        <button className="small" onClick={async () => {
+                          const v = await askPrompt({
+                            title: `ราคาประมาณการ — ${item.name}`,
+                            description: <>ขอไว้ {r.qtyRequested} {item.uom} · ใช้คิดงบ <b>ประมาณการ</b> ของหมวดต้นทุน · <b>เว้นว่าง = ล้างราคา</b></>,
+                            fields: [{ key: 'price', label: 'ราคาต่อหน่วย', type: 'number', min: 0, suffix: `บาท/${item.uom}`,
+                              value: r.unitPrice !== undefined ? String(r.unitPrice) : '',
+                              hint: 'กรอกเป็นตัวเลขล้วน ไม่ต้องใส่เครื่องหมาย ,' }],
+                          })
+                          if (!v) return
+                          tryAction(() => act.updateAccessoryRequestPrice({ requestId: r.id, unitPrice: v.price === '' ? undefined : Number(v.price) }), 'แก้ราคาแล้ว')
                         }}>แก้ราคา</button>
                       )}{' '}
                       {canManage && !procureLocked && r.source === 'central_stock' && r.status === 'issued' && (
@@ -671,25 +681,36 @@ export default function JobDetailPage() {
                       {/* โอนวัสดุเหลือเข้าคลังคงเหลือ ให้ Job อื่นเบิกต่อ — ต้นทุนตัดออกจาก Job นี้ตามของ (S1) */}
                       {canManage && !procureLocked && (r.status === 'issued' || r.status === 'received') && effectiveQty(r) > 0 && (
                         <button className="small" title="โอนของที่เหลือเข้าคลังคงเหลือ — ต้นทุนจะถูกตัดออกจาก Job นี้ตามจำนวนที่โอน"
-                          onClick={() => {
+                          onClick={async () => {
                             const remain = effectiveQty(r)
-                            const v = window.prompt(
-                              `โอน ${item.name} เข้าคลังคงเหลือ\nคงอยู่ที่ Job นี้ ${remain} ${item.uom}\nระบุจำนวนที่จะโอน:`,
-                              String(remain))
-                            if (v === null) return
-                            const qty = Number(v)
-                            if (!qty || Number.isNaN(qty) || qty <= 0)
-                              return void tryAction(() => { throw new Error('จำนวนต้องเป็นตัวเลขมากกว่า 0') })
-                            const note = window.prompt('เหตุผล/หมายเหตุ (ถ้ามี)', 'วัสดุเหลือจากหน้างาน') ?? undefined
-                            tryAction(() => act.transferJobMaterialToStock({ requestId: r.id, qty, note }),
-                              `โอน ${item.name} ${qty} ${item.uom} เข้าคลังคงเหลือแล้ว`)
+                            const v = await askPrompt({
+                              title: `โอนเข้าคลังคงเหลือ — ${item.name}`,
+                              description: <>คงอยู่ที่ Job นี้ <b>{remain} {item.uom}</b> · ของที่โอนจะให้ Job อื่นเบิกต่อได้ และ<b>ต้นทุนถูกตัดออกจาก Job นี้ตามจำนวนที่โอน</b></>,
+                              fields: [
+                                { key: 'qty', label: 'จำนวนที่จะโอน', type: 'number', min: 0, required: true,
+                                  suffix: item.uom, value: String(remain),
+                                  validate: v => Number(v) > remain ? `โอนได้ไม่เกิน ${remain} ${item.uom}` : Number(v) <= 0 ? 'ต้องมากกว่า 0' : undefined },
+                                { key: 'note', label: 'เหตุผล/หมายเหตุ', value: 'วัสดุเหลือจากหน้างาน' },
+                              ],
+                              confirmLabel: 'โอนเข้าคลัง',
+                            })
+                            if (!v) return
+                            tryAction(() => act.transferJobMaterialToStock({ requestId: r.id, qty: Number(v.qty), note: v.note || undefined }),
+                              `โอน ${item.name} ${Number(v.qty)} ${item.uom} เข้าคลังคงเหลือแล้ว`)
                           }}>📦 โอนเข้าคลัง</button>
                       )}
                       {canManage && !procureLocked && r.status === 'pending' && (
                         <>
-                          <button className="small" onClick={() => {
-                            const v = window.prompt(`จำนวนใหม่ของ ${item.name} (${item.uom})`, String(r.qtyRequested))
-                            if (v !== null) tryAction(() => act.updateAccessoryRequestQty({ requestId: r.id, qty: Number(v) }), 'แก้จำนวนแล้ว')
+                          <button className="small" onClick={async () => {
+                            const v = await askPrompt({
+                              title: `แก้จำนวน — ${item.name}`,
+                              description: <>แก้ได้เฉพาะรายการที่ยังไม่ออก PR · จำนวนเดิม {r.qtyRequested} {item.uom}</>,
+                              fields: [{ key: 'qty', label: 'จำนวนใหม่', type: 'number', min: 0, required: true,
+                                suffix: item.uom, value: String(r.qtyRequested),
+                                validate: v => Number(v) <= 0 ? 'ต้องมากกว่า 0' : undefined }],
+                            })
+                            if (!v) return
+                            tryAction(() => act.updateAccessoryRequestQty({ requestId: r.id, qty: Number(v.qty) }), 'แก้จำนวนแล้ว')
                           }}>แก้จำนวน</button>{' '}
                           <button className="small danger" onClick={() => tryAction(() => act.cancelAccessoryRequest({ requestId: r.id }), 'ยกเลิกคำขอแล้ว')}>ยกเลิก</button>
                         </>
@@ -1155,6 +1176,7 @@ export default function JobDetailPage() {
           </Modal>
         )
       })()}
+      {promptEl}
     </>
   )
 }

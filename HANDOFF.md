@@ -219,6 +219,10 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
     (3) **ไม่มี ErrorBoundary** — render พังที่เดียว = จอขาวทั้งแอป · แก้: ครอบ `<Routes>` + `resetKey={pathname}` ให้เปลี่ยนหน้าแล้วหายเอง · sidebar/topbar ยังใช้ได้ระหว่าง error
     (4) **กดปุ่มซ้ำตอนเน็ตช้า = ข้อมูลซ้ำ** — แก้ที่ `useTryAction` ชั้นเดียว: `runExclusive` ใช้ ref กันซ้ำแบบ synchronous (คลิกที่ 2 ถูกทิ้ง คืน false) + `body.is-busy` ทำให้ปุ่ม `.primary/.danger` กดไม่ได้ + แถบ `.busy-bar` บนสุด — **ไม่ต้องแก้ปุ่มทีละตัว 30 จุด**
 
+11. **`window.prompt` ใช้ไม่ได้บน LINE in-app browser (ชุด B — 2026-08-06)** — ทีมเข้าระบบจากการ์ด Flex ใน LINE เป็นหลัก แต่ **iOS in-app webview บล็อก `prompt()`** → กดปุ่มแล้วไม่มีอะไรเกิดขึ้น ผู้ใช้คิดว่าระบบเสีย · เดิมมี 13 จุดรวม**ช่องกรอกเงิน** (ราคาจริงจาก Supplier, ปรับยอดคลัง) และการปรับยอดคลังถาม `prompt` **ซ้อน 3 ชั้น** กด Cancel กลางทางแล้วหลุดทั้งชุดแบบเงียบ
+    → แก้ด้วย `usePrompt()` ใน `ui/components.tsx` (Modal + promise API แทน `prompt()` ได้ตรงๆ: `const v = await ask({...}); if (!v) return`) · รองรับหลายช่องในหน้าเดียว · validation inline (required / ตัวเลข / min / `validate()` ต่อช่อง) · Enter = ยืนยัน · **ไม่เหลือ `window.prompt` ในระบบแล้ว**
+    ⚠️ `window.confirm` (ยืนยันการลบ 9 จุด) ยังใช้ native อยู่ — ถ้าถูกบล็อกจะ "ไม่ลบ" ซึ่งปลอดภัย แต่หน้าตาไม่เข้าชุดกับ modal อื่น (งานต่อยอดถ้าต้องการ)
+
 > demo mode ไม่มี trigger/RLS/functions/plpgsql จึงไม่เจอบั๊กพวกนี้ — ต้องทดสอบบน DB จริงเท่านั้น
 
 ## 10. งานค้าง (TODO)
