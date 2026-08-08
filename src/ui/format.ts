@@ -23,6 +23,19 @@ export const JOB_STATUS_LABEL: Record<JobStatus, string> = {
   cancelled: 'Cancelled',
 }
 
+// Status รายเครื่องใน Project Stock (0052) — flow เดียวจบ derive อัตโนมัติทั้งหมด
+//   ? → Pending → On Hand → ถูกดึงเข้า Job → เบิกแล้ว รอติดตั้ง → ติดตั้งแล้ว / ติดตั้งไม่ได้
+// label = ที่แสดงบนจอ/ไฟล์ Excel · cls = สีป้าย · hint = tooltip อธิบายว่าทำไมได้สถานะนี้
+export const UNIT_FLOW: Record<string, { label: string; cls: string; hint: string }> = {
+  unknown:   { label: '?',                cls: 'neutral', hint: 'ยังไม่ระบุ ETA to WH — กรอก FOB date (หรือ ETA) ก่อน ระบบถึงจะบอกได้ว่าของถึงคลังหรือยัง' },
+  pending:   { label: 'Pending',          cls: 'amber',   hint: 'ยังไม่ถึง ETA to WH — ของอยู่ระหว่างขนส่ง' },
+  on_hand:   { label: 'On Hand',          cls: 'green',   hint: 'ถึง/เกิน ETA to WH แล้ว — ของอยู่ที่คลัง พร้อมดึงเข้า Job' },
+  allocated: { label: 'ถูกดึงเข้า Job',      cls: 'blue',    hint: 'ถูกดึงเข้า Job แล้ว — รอเบิกให้ Service' },
+  issued:    { label: 'เบิกแล้ว รอติดตั้ง',   cls: 'neutral', hint: 'เบิกให้ Service แล้ว — รอยืนยันติดตั้งหน้างาน' },
+  installed: { label: 'ติดตั้งแล้ว',         cls: 'green',   hint: 'Service ยืนยันติดตั้งเสร็จแล้ว' },
+  blocked:   { label: 'ติดตั้งไม่ได้',        cls: 'red',     hint: 'ออกหน้างานแล้วติดตั้งไม่ได้ — ดูเหตุผลที่หน้า Service' },
+}
+
 export const PR_STATUS_LABEL: Record<string, string> = {
   pending: 'รอ Purchasing ออก PO',
   po_issued: 'ออก PO แล้ว รอรับของ',

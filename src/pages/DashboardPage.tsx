@@ -18,11 +18,11 @@ export default function DashboardPage() {
     (acc, s) => {
       const sum = stockSummary(db, s.id)
       acc.total += sum.total; acc.available += sum.available
-      acc.pending += sum.pending; acc.onHand += sum.onHand
+      acc.pending += sum.pending; acc.onHand += sum.onHand; acc.unknown += sum.unknown
       acc.allocated += sum.allocated; acc.issued += sum.issued
       return acc
     },
-    { total: 0, available: 0, pending: 0, onHand: 0, allocated: 0, issued: 0 },
+    { total: 0, available: 0, pending: 0, onHand: 0, unknown: 0, allocated: 0, issued: 0 },
   )
 
   const statusCount = new Map<JobStatus, number>()
@@ -68,6 +68,7 @@ export default function DashboardPage() {
           <div className="hint">
             พร้อมดึง (On Hand) {totals.onHand}
             {totals.pending > 0 && <> · <b style={{ color: 'var(--amber, #d97706)' }}>รอเข้าคลัง {totals.pending}</b></>}
+            {totals.unknown > 0 && <> · <b title="ยังไม่ระบุ ETA to WH — กรอก FOB date ให้ครบเพื่อให้ระบบคำนวณ Status ได้">ไม่ระบุ ETA {totals.unknown}</b></>}
             {' '}· ถูกดึงเข้า Job {totals.allocated} · เบิกติดตั้งแล้ว {totals.issued}
           </div>
         </div>
@@ -115,13 +116,13 @@ export default function DashboardPage() {
             <thead>
               <tr>
                 <th>Stock No.</th><th>ทั้งหมด</th>
-                <th>On Hand (พร้อมดึง)</th><th>Pending (รอเข้าคลัง)</th>
+                <th>On Hand (พร้อมดึง)</th><th>Pending (รอเข้าคลัง)</th><th>? (ไม่ระบุ ETA)</th>
                 <th>ถูกดึงเข้า Job</th><th>เบิกติดตั้งแล้ว</th>
               </tr>
             </thead>
             <tbody>
               {db.projectStocks.length === 0 && (
-                <tr><td colSpan={6}><div className="empty">ยังไม่มี Project Stock</div></td></tr>
+                <tr><td colSpan={7}><div className="empty">ยังไม่มี Project Stock</div></td></tr>
               )}
               {db.projectStocks.map(s => {
                 const sum = stockSummary(db, s.id)
@@ -134,6 +135,11 @@ export default function DashboardPage() {
                     <td>{sum.total}</td>
                     <td><span className={`badge ${sum.onHand > 0 ? 'green' : 'red'}`}>{sum.onHand}</span></td>
                     <td>{sum.pending > 0 ? <span className="badge amber">{sum.pending}</span> : <span className="muted">-</span>}</td>
+                    <td>
+                      {sum.unknown > 0
+                        ? <span className="badge neutral" title="ยังไม่ระบุ ETA to WH — กรอก FOB date ที่หน้า Project Stock">{sum.unknown}</span>
+                        : <span className="muted">-</span>}
+                    </td>
                     <td>{sum.allocated}</td>
                     <td>{sum.issued}</td>
                   </tr>
@@ -145,6 +151,7 @@ export default function DashboardPage() {
                   <td><b>{totals.total}</b></td>
                   <td><b>{totals.onHand}</b></td>
                   <td><b>{totals.pending || '-'}</b></td>
+                  <td><b>{totals.unknown || '-'}</b></td>
                   <td><b>{totals.allocated}</b></td>
                   <td><b>{totals.issued}</b></td>
                 </tr>

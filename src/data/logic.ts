@@ -90,15 +90,36 @@ export function unitEtaIsAuto(u: Pick<LbsUnit, 'fobDate'>): boolean {
 }
 
 /**
- * สถานะของที่คลัง: pending = ยังไม่ถึงกำหนดเข้าคลัง (อยู่ระหว่างขนส่ง) · on_hand = ของถึงคลังแล้ว
- * กติกา: ETA > วันนี้ → Pending · ETA ถึง/เกินแล้ว หรือ **ไม่ระบุ ETA** → On Hand
- * (ไม่ระบุ = เครื่องที่รับเข้าโดยไม่ได้บันทึกกำหนดเรือ = ของอยู่ในคลังจริงอยู่แล้ว)
+ * สถานะของที่คลังสำหรับเครื่องที่ยังไม่ถูกดึงเข้า Job
+ *   unknown = ยังไม่ระบุ ETA to WH → ระบบไม่รู้ว่าของถึงหรือยัง (แสดงเป็น "?")
+ *   pending = ETA ยังไม่ถึง (อยู่ระหว่างขนส่ง) · on_hand = ETA ถึง/เกินแล้ว (ของอยู่ที่คลัง)
+ * ⚠️ เดิม (0049) "ไม่ระบุ ETA" ถูกนับเป็น on_hand — เปลี่ยนเป็น unknown ตามมติ 2026-08-08
+ *    เพราะ "ไม่รู้" กับ "ของถึงแล้ว" คนละเรื่อง · การเดาว่าถึงแล้วทำให้วางแผนงานผิดโดยไม่รู้ตัว
  */
 export function unitStockState(
   u: Pick<LbsUnit, 'fobDate' | 'planPoReceiptDate' | 'etaLeadDays'>, today = todayIso(),
-): 'pending' | 'on_hand' {
+): 'unknown' | 'pending' | 'on_hand' {
   const eta = unitEta(u)
-  return eta && eta > today ? 'pending' : 'on_hand'
+  if (!eta) return 'unknown'
+  return eta > today ? 'pending' : 'on_hand'
+}
+
+/**
+ * Status รายเครื่อง = flow เดียวจบตั้งแต่ของยังไม่มาถึงจนติดตั้งเสร็จ (มติ 2026-08-08)
+ *   ? → Pending → On Hand → ถูกดึงเข้า Job → เบิกแล้ว รอติดตั้ง → ติดตั้งแล้ว / ติดตั้งไม่ได้
+ * ทุกขั้นเป็น derive อัตโนมัติจากข้อมูลที่มีอยู่ ไม่มีใครกดเปลี่ยนสถานะเอง
+ *   ช่วงต้น (?/Pending/On Hand) มาจาก ETA to WH · ช่วงหลังมาจาก allocation + unit_installations
+ */
+export type UnitFlowState =
+  | 'unknown' | 'pending' | 'on_hand' | 'allocated' | 'issued' | 'installed' | 'blocked'
+
+export function unitFlowState(db: DB, u: LbsUnit, today = todayIso()): UnitFlowState {
+  if (u.status === 'issued') {
+    const s = unitInstallState(db, u.id)
+    return s === 'installed' ? 'installed' : s === 'blocked' ? 'blocked' : 'issued'
+  }
+  if (u.status === 'allocated') return 'allocated'
+  return unitStockState(u, today)
 }
 
 function audit(db: DB, actor: User, entityType: string, entityId: string, action: string, detail: string): DB {
@@ -2316,11 +2337,13 @@ export function stockSummary(db: DB, stockId: string) {
   // → "พร้อมดึงเข้า Job จริง" = onHand เท่านั้น · Dashboard/การ์ดคลังใช้ตัวเลขคู่นี้
   const inStock = units.filter(u => u.status === 'in_stock')
   const pending = inStock.filter(u => unitStockState(u, today) === 'pending').length
+  const unknown = inStock.filter(u => unitStockState(u, today) === 'unknown').length
   return {
     total: units.length,
     available: inStock.length,
-    pending,                          // in_stock แต่ ETA ยังไม่ถึง — ของอยู่ระหว่างขนส่ง
-    onHand: inStock.length - pending, // in_stock และของถึงคลังแล้ว — ดึงเข้า Job ได้จริง
+    pending,                                    // in_stock แต่ ETA ยังไม่ถึง — ของอยู่ระหว่างขนส่ง
+    unknown,                                    // in_stock แต่ยังไม่ระบุ ETA — ไม่รู้ว่าของถึงหรือยัง (?)
+    onHand: inStock.length - pending - unknown, // ยืนยันได้ว่าของถึงคลังแล้ว — ดึงเข้า Job ได้จริง
     allocated: units.filter(u => u.status === 'allocated').length,
     issued: units.filter(u => u.status === 'issued').length,
     // มูลค่าคลัง = Σ ต้นทุนต่อเครื่อง (เฉพาะเครื่องที่กรอกราคา) · undefined ถ้ายังไม่มีเครื่องใดกรอกราคา

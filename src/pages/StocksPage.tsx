@@ -2,12 +2,12 @@ import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import {
-  stockSummary, unitInstallState, unitInstallDate, stockComments,
-  unitEta, unitEtaIsAuto, unitStockState, unitLeadDays, addDaysIso,
+  stockSummary, unitInstallDate, stockComments,
+  unitEta, unitEtaIsAuto, unitFlowState, unitLeadDays, addDaysIso,
   ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX,
 } from '../data/logic'
 import { Modal, useConfirm, useToast, useTryAction, toBudgetNum } from '../ui/components'
-import { fmtBaht, fmtDate, fmtDateTime, DEPT_LABEL } from '../ui/format'
+import { fmtBaht, fmtDate, fmtDateTime, DEPT_LABEL, UNIT_FLOW } from '../ui/format'
 
 // ฟอร์มแก้ข้อมูลรายเครื่อง (0043/0049) — รวม "แก้ Serial" เข้ามาในฟอร์มเดียวแล้ว
 // serialLvb/serialOm แก้ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก (in_stock) — บันทึกผ่าน updateUnitInfo แยก call
@@ -53,6 +53,56 @@ const LBS_DESCRIPTION = '115 kV Load Break Switch with SF6 Gas Interrupters, 200
 
 const UNIT_STATUS_LABEL: Record<string, string> = {
   in_stock: 'อยู่ในสต็อก', allocated: 'ถูกดึงเข้า Job', issued: 'เบิกติดตั้งแล้ว',
+}
+
+// ---------------------------------------------------------------
+// สเปกคอลัมน์ไฟล์ Excel (0052) — แหล่งความจริงเดียวของทั้ง Export / Import / ชีตวิธีกรอก
+//   io 'in'   = กรอกได้ (import อ่านค่านี้)
+//   io 'auto' = ระบบคำนวณให้ (import ไม่อ่าน แก้ในไฟล์ไม่มีผล) — ใส่ไว้ให้อ่าน/ทำรายงานต่อ
+//   alias     = หัวตารางรูปแบบอื่นที่ import ยอมรับ (รวมชื่อเก่าก่อน 0052 เพื่อไม่ให้ไฟล์เดิมพัง)
+// ---------------------------------------------------------------
+interface ColSpec {
+  key: string; io: 'in' | 'auto'; required?: boolean
+  width: number; format: string; note: string
+  alias?: string[]
+}
+const SHEET_COLS: ColSpec[] = [
+  { key: 'Serial.LVB', io: 'in', required: true, width: 16, format: 'ข้อความ',
+    note: 'เลข Serial ของตัว LBS — ห้ามซ้ำกับเครื่องอื่นทั้งระบบ', alias: ['serial.lvb', 'serial_lvb', 'lvb'] },
+  { key: 'Serial.OM', io: 'in', required: true, width: 16, format: 'ข้อความ',
+    note: 'เลข Serial ของ OM — ห้ามซ้ำ และห้ามเท่ากับ Serial.LVB ของเครื่องเดียวกัน', alias: ['serial.om', 'serial_om', 'om'] },
+  { key: 'Cost/Set', io: 'in', width: 14, format: 'ตัวเลข (บาท)',
+    note: 'ต้นทุนต่อเครื่อง — ตัวเลขไม่ติดลบ · ปล่อยว่าง = คงค่าเดิม',
+    alias: ['ต้นทุน/เครื่อง', 'ต้นทุน', 'cost', 'unit_cost', 'cost/set'] },
+  { key: 'ชื่อลูกค้า', io: 'in', width: 24, format: 'ข้อความ',
+    note: 'ข้อมูลแผน — เขียนได้เฉพาะเครื่องที่ยังไม่ถูกดึงเข้า Job (เครื่องที่มี Job แล้วใช้ค่าจาก Job)',
+    alias: ['ลูกค้า', 'customer', 'customer_name'] },
+  { key: 'เบอร์ติดต่อ', io: 'in', width: 14, format: 'ข้อความ',
+    note: 'ข้อมูลแผน — เงื่อนไขเดียวกับชื่อลูกค้า', alias: ['เบอร์', 'phone', 'contact_phone'] },
+  { key: 'สถานที่ติดตั้ง', io: 'in', width: 28, format: 'ข้อความ',
+    note: 'ข้อมูลแผน — เงื่อนไขเดียวกับชื่อลูกค้า', alias: ['สถานที่', 'location', 'install_location'] },
+  { key: 'FOB date', io: 'in', width: 13, format: 'YYYY-MM-DD',
+    note: 'วันที่ของลงเรือ — กรอกช่องนี้แล้วระบบคำนวณ ETA to WH ให้เอง', alias: ['fob', 'fob_date', 'fob date'] },
+  { key: 'ระยะขนส่ง (วัน)', io: 'in', width: 15, format: `จำนวนเต็ม ${ETA_LEAD_MIN}–${ETA_LEAD_MAX}`,
+    note: `ระยะเวลา FOB → คลัง · ปล่อยว่าง = ใช้ค่ามาตรฐาน ${ETA_LEAD_DAYS} วัน · ใช้ได้เมื่อกรอก FOB date เท่านั้น`,
+    alias: ['ระยะขนส่ง', 'lead', 'lead_days', 'lead days'] },
+  { key: 'ETA to WH', io: 'in', width: 13, format: 'YYYY-MM-DD',
+    note: 'วันที่ของถึงคลัง — กรอกเองได้เฉพาะเมื่อ "ไม่มี" FOB date · ถ้ามี FOB ระบบคำนวณทับให้เสมอ',
+    alias: ['eta', 'eta to wh', 'Plan PO receipt', 'plan po receipt', 'plan_po_receipt'] },
+  { key: 'Plan Delivery', io: 'in', width: 14, format: 'YYYY-MM-DD',
+    note: 'กำหนดส่งมอบ/ติดตั้งตามแผน', alias: ['plan delivery', 'plan_delivery'] },
+  { key: 'Status', io: 'auto', width: 18, format: 'ข้อความ',
+    note: 'ระบบคำนวณจาก ETA to WH + สถานะการดึง/เบิก: ? → Pending → On Hand → ถูกดึงเข้า Job → เบิกแล้ว รอติดตั้ง → ติดตั้งแล้ว' },
+  { key: 'Job No.', io: 'auto', width: 16, format: 'ข้อความ',
+    note: 'Job ที่เครื่องถูกดึงเข้า — ผูกจากหน้า Job เท่านั้น' },
+  { key: 'Actual Delivery', io: 'auto', width: 14, format: 'YYYY-MM-DD',
+    note: 'วันที่ติดตั้งจริง — Service เป็นผู้ยืนยันหน้างาน' },
+]
+const COL_HEADERS = SHEET_COLS.map(c => c.key)
+// รายชื่อหัวตารางที่ import ยอมรับต่อคอลัมน์ (ชื่อหลัก + alias)
+const colKeys = (key: string): string[] => {
+  const c = SHEET_COLS.find(x => x.key === key)!
+  return [c.key, ...(c.alias ?? [])]
 }
 
 // อ่านค่าจากหัวตารางหลายรูปแบบ (ไทยตามไฟล์ export / อังกฤษ)
@@ -186,27 +236,63 @@ export default function StocksPage() {
       return {
         'Serial.LVB': u.serialLvb,
         'Serial.OM': u.serialOm,
-        'ต้นทุน/เครื่อง': u.unitCost ?? '',
-        'สถานะเครื่อง': u.status === 'issued'
-          ? { pending: 'เบิกแล้ว รอติดตั้ง', installed: 'ติดตั้งแล้ว', blocked: 'ติดตั้งไม่ได้' }[unitInstallState(db, u.id)]
-          : UNIT_STATUS_LABEL[u.status] ?? u.status,
-        'Job No.': job?.jobNo ?? '',
+        'Cost/Set': u.unitCost ?? '',
         'ชื่อลูกค้า': job?.customerName ?? u.planCustomerName ?? '',
         'เบอร์ติดต่อ': job?.contactPhone ?? u.planContactPhone ?? '',
         'สถานที่ติดตั้ง': job?.installLocation || u.planInstallLocation || '',
         'FOB date': u.fobDate ?? '',
         'ระยะขนส่ง (วัน)': u.fobDate ? unitLeadDays(u) : '',
-        // ETA to WH / Status = ค่าคำนวณ (FOB + ระยะขนส่ง) — Export ไว้อ่าน · Import จะไม่เขียนทับถ้ามี FOB
+        // ETA to WH / Status = ค่าคำนวณ · import จะไม่เขียน ETA ทับถ้าแถวนั้นมี FOB
         'ETA to WH': unitEta(u) ?? '',
-        'Status': unitStockState(u) === 'pending' ? 'Pending' : 'On Hand',
+        'Status': UNIT_FLOW[unitFlowState(db, u)].label,
         'Plan Delivery': u.planDeliveryDate ?? '',
+        'Job No.': job?.jobNo ?? '',
         'Actual Delivery': unitInstallDate(db, u.id) ?? '',
       }
     })
-    const ws = XLSX.utils.json_to_sheet(rows)
-    ws['!cols'] = [{ wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 24 }, { wch: 14 }, { wch: 28 }, { wch: 13 }, { wch: 15 }, { wch: 13 }, { wch: 11 }, { wch: 14 }, { wch: 14 }]
+    // header: บังคับลำดับคอลัมน์ + **คลังเปล่าก็ยังได้หัวตารางครบ** (เดิม json_to_sheet([]) ออกไฟล์ว่างเปล่า
+    // ใช้เป็นแบบฟอร์มกรอกไม่ได้เลย — เจอจริงตอน export Project Stock No.21)
+    const ws = XLSX.utils.json_to_sheet(rows, { header: COL_HEADERS })
+    ws['!cols'] = SHEET_COLS.map(c => ({ wch: c.width }))
+    // autofilter บนหัวตาราง — เปิดไฟล์แล้วกรอง Status / ค้น Serial ได้ทันทีโดยไม่ต้องตั้งเอง
+    // (freeze panes ไม่ได้ตั้งไว้ — SheetJS รุ่น community ไม่เขียน `!freeze` ลงไฟล์ ใส่ไปก็ไม่มีผล)
+    ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(rows.length, 1), c: SHEET_COLS.length - 1 } }) }
+
+    // ชีต "วิธีกรอก" — บอกว่าคอลัมน์ไหนกรอกได้ / ไหนระบบเติมให้ / รูปแบบ / กติกา
+    const guide = [
+      ['วิธีกรอกไฟล์ Import — ' + s.stockNo],
+      [],
+      ['คอลัมน์', 'กรอกได้?', 'บังคับ', 'รูปแบบ', 'คำอธิบาย'],
+      ...SHEET_COLS.map(c => [
+        c.key,
+        c.io === 'in' ? 'กรอกได้' : 'อัตโนมัติ (แก้ในไฟล์ไม่มีผล)',
+        c.required ? 'บังคับ' : '',
+        c.format,
+        c.note,
+      ]),
+      [],
+      ['กติกาสำคัญ'],
+      ['1', 'ช่องที่เว้นว่าง = คงค่าเดิมในระบบ (ไม่ล้างค่า) — ถ้าต้องการล้างค่าจริง ใช้ปุ่ม "แก้ข้อมูล" รายเครื่องบนหน้าเว็บ'],
+      ['2', 'แถวที่ Serial ตรงกับเครื่องเดิมในคลังนี้ = อัพเดทเครื่องนั้น · Serial ใหม่ = รับเข้าเป็นเครื่องใหม่'],
+      ['3', 'Serial ที่ชนกับเครื่องในคลังอื่น = ระบบขึ้น error ไม่ให้นำเข้า (กันกรอกผิด)'],
+      ['4', 'เครื่องที่เบิกให้ Service แล้วจะถูกข้ามทั้งแถว — ระบบล็อกการแก้ไขไว้'],
+      ['5', 'วันที่กรอกเป็น YYYY-MM-DD (เช่น 2026-09-01) หรือใช้เซลล์ชนิดวันที่ของ Excel ก็ได้'],
+      ['6', `ETA to WH = FOB date + ระยะขนส่ง · ถ้าไม่กรอก FOB และไม่กรอก ETA เลย Status จะขึ้น "?" (ระบบไม่เดาว่าของถึงคลังแล้ว)`],
+      [],
+      ['ลำดับ Status (ระบบคำนวณให้ ไม่ต้องกรอก)'],
+      ['?', 'ยังไม่ระบุ ETA to WH'],
+      ['Pending', 'ยังไม่ถึง ETA — ของอยู่ระหว่างขนส่ง'],
+      ['On Hand', 'ถึง/เกิน ETA แล้ว — ของอยู่ที่คลัง พร้อมดึงเข้า Job'],
+      ['ถูกดึงเข้า Job', 'Project ดึงเข้างานแล้ว'],
+      ['เบิกแล้ว รอติดตั้ง', 'เบิกให้ Service แล้ว'],
+      ['ติดตั้งแล้ว / ติดตั้งไม่ได้', 'Service ยืนยันผลหน้างานแล้ว'],
+    ]
+    const wsGuide = XLSX.utils.aoa_to_sheet(guide)
+    wsGuide['!cols'] = [{ wch: 26 }, { wch: 28 }, { wch: 10 }, { wch: 22 }, { wch: 86 }]
+
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, s.stockNo.slice(0, 31))
+    XLSX.utils.book_append_sheet(wb, wsGuide, 'วิธีกรอก')
     XLSX.writeFile(wb, `${s.stockNo.replace(/[\\/:*?"<>|]/g, '-')}-${new Date().toISOString().slice(0, 10)}.xlsx`)
   }
 
@@ -217,8 +303,10 @@ export default function StocksPage() {
       const XLSX = await import('xlsx')
       // cellDates: เซลล์วันที่ (Plan PO receipt / Plan Delivery) จะได้เป็น Date ไม่ใช่ serial number
       const wb = XLSX.read(await file.arrayBuffer(), { cellDates: true })
-      const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[wb.SheetNames[0]], { defval: '' })
-      if (raw.length === 0) return show('ไฟล์ไม่มีข้อมูล — ต้องมีหัวตาราง Serial.LVB, Serial.OM', true)
+      // ข้ามชีต "วิธีกรอก" ที่แนบไปกับไฟล์ Export — อ่านชีตข้อมูลชีตแรกที่ไม่ใช่คู่มือ
+      const dataSheet = wb.SheetNames.find(n => n !== 'วิธีกรอก') ?? wb.SheetNames[0]
+      const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[dataSheet], { defval: '' })
+      if (raw.length === 0) return show('ไฟล์ไม่มีข้อมูล — ต้องมีหัวตาราง Serial.LVB และ Serial.OM อย่างน้อย', true)
 
       const newUnits: UnitRow[] = []
       const dupUnits: { row: UnitRow; oldCost?: number; hasJob?: boolean; locked?: boolean }[] = []
@@ -226,33 +314,36 @@ export default function StocksPage() {
       const stockNoOf = (id: string) => db.projectStocks.find(s => s.id === id)?.stockNo ?? '?'
       const seenInFile = new Set<string>()          // กันซ้ำภายในไฟล์ (ข้าม field ด้วย)
       raw.forEach((row, i) => {
-        const lvb = cell(row, ['Serial.LVB', 'serial.lvb', 'serial_lvb', 'lvb'])
-        const om = cell(row, ['Serial.OM', 'serial.om', 'serial_om', 'om'])
-        const costStr = cell(row, ['ต้นทุน/เครื่อง', 'ต้นทุน', 'unit_cost', 'cost'])
+        // อ่านทุกคอลัมน์ตามสเปก SHEET_COLS (รับหัวตารางชื่อเก่าด้วยผ่าน alias)
+        const lvb = cell(row, colKeys('Serial.LVB'))
+        const om = cell(row, colKeys('Serial.OM'))
+        const costStr = cell(row, colKeys('Cost/Set'))
+        const no = `แถว ${i + 2}`
         // ข้อมูลแผนรายเครื่อง (0048/0049) — ช่องว่าง = คงค่าเดิม
-        const fob = toIsoDate(rawCell(row, ['FOB date', 'fob date', 'fob', 'fob_date'])) || undefined
+        const fob = toIsoDate(rawCell(row, colKeys('FOB date'))) || undefined
         // "ETA to WH" ในไฟล์ = ค่าคำนวณจาก FOB → ถ้าแถวนี้มี FOB ให้ข้าม (กันเขียนค่า auto ทับเป็นค่ากรอกมือ)
         // แถวที่ไม่มี FOB จึงจะรับ ETA เป็นค่ากรอกเอง (ลงคอลัมน์เดิม plan_po_receipt_date)
-        const etaCell = toIsoDate(rawCell(row, ['ETA to WH', 'eta to wh', 'eta', 'Plan PO receipt', 'plan po receipt', 'plan_po_receipt'])) || undefined
-        const leadStr = cell(row, ['ระยะขนส่ง (วัน)', 'ระยะขนส่ง', 'lead', 'lead_days', 'lead days'])
-        if (fob && leadStr !== '' && (!Number.isInteger(Number(leadStr)) || Number(leadStr) < 1 || Number(leadStr) > 365))
-          return void errors.push(`แถว ${i + 2}: ระยะขนส่ง "${leadStr}" ต้องเป็นจำนวนเต็ม 1–365 วัน`)
+        const etaCell = toIsoDate(rawCell(row, colKeys('ETA to WH'))) || undefined
+        const leadStr = cell(row, colKeys('ระยะขนส่ง (วัน)'))
+        if (leadStr !== '' && (!Number.isInteger(Number(leadStr)) || Number(leadStr) < 1 || Number(leadStr) > 365))
+          return void errors.push(`${no}: ระยะขนส่ง (วัน) "${leadStr}" ต้องเป็นจำนวนเต็ม 1–365`)
+        if (leadStr !== '' && !fob)
+          return void errors.push(`${no}: กรอก "ระยะขนส่ง (วัน)" แต่ไม่ได้กรอก "FOB date" — ระยะขนส่งใช้คำนวณต่อจาก FOB เท่านั้น`)
         const plan = {
-          customer: cell(row, ['ชื่อลูกค้า', 'ลูกค้า', 'customer', 'customer_name']) || undefined,
-          phone: cell(row, ['เบอร์ติดต่อ', 'เบอร์', 'phone', 'contact_phone']) || undefined,
-          location: cell(row, ['สถานที่ติดตั้ง', 'สถานที่', 'location', 'install_location']) || undefined,
+          customer: cell(row, colKeys('ชื่อลูกค้า')) || undefined,
+          phone: cell(row, colKeys('เบอร์ติดต่อ')) || undefined,
+          location: cell(row, colKeys('สถานที่ติดตั้ง')) || undefined,
           fob,
           // ระยะขนส่งมีความหมายเฉพาะเมื่อมี FOB (ไม่มี FOB = ETA กรอกตรงๆ ไม่ต้องคำนวณ)
           leadDays: fob && leadStr !== '' ? Number(leadStr) : undefined,
           planPoReceipt: fob ? undefined : etaCell,
-          planDelivery: toIsoDate(rawCell(row, ['Plan Delivery', 'plan delivery', 'plan_delivery'])) || undefined,
+          planDelivery: toIsoDate(rawCell(row, colKeys('Plan Delivery'))) || undefined,
         }
         if (!lvb && !om) return                       // ข้ามแถวว่าง
-        const no = `แถว ${i + 2}`
         if (!lvb || !om) return void errors.push(`${no}: ต้องมีทั้ง Serial.LVB และ Serial.OM`)
         if (lvb === om) return void errors.push(`${no}: LVB กับ OM ห้ามเป็นเลขเดียวกัน (${lvb})`)
         if (costStr !== '' && (Number.isNaN(Number(costStr)) || Number(costStr) < 0))
-          return void errors.push(`${no}: ต้นทุน/เครื่อง "${costStr}" ต้องเป็นตัวเลขไม่ติดลบ`)
+          return void errors.push(`${no}: Cost/Set "${costStr}" ต้องเป็นตัวเลขไม่ติดลบ`)
         if (seenInFile.has(lvb) || seenInFile.has(om))
           return void errors.push(`${no}: "${lvb}" / "${om}" ซ้ำกันในไฟล์`)
         // ซ้ำในคลังนี้ (คู่ Serial ตรงกันเป๊ะ) → อัพเดทต้นทุนได้
@@ -317,8 +408,13 @@ export default function StocksPage() {
     <>
       <div className="page-title">Project Stock — คลัง LBS</div>
       <div className="page-sub">
-        คลังกลาง 115kV LBS ติดตามรายเครื่องด้วย Serial คู่ (LVB · OM) — Project ดึงเข้างานตามลำดับ ·
-        <b> ETA to WH = FOB + {ETA_LEAD_DAYS} วัน</b> (คำนวณอัตโนมัติ) → Status <b>Pending</b> เมื่อยังไม่ถึงกำหนด · <b>On Hand</b> เมื่อถึง/เกินกำหนด
+        คลังกลาง 115kV LBS ติดตามรายเครื่องด้วย Serial คู่ (LVB · OM) — Project ดึงเข้างานตามลำดับ<br />
+        <b>Status</b> ไหลอัตโนมัติทั้งเส้น:{' '}
+        <span className="badge neutral">?</span> → <span className="badge amber">Pending</span> →{' '}
+        <span className="badge green">On Hand</span> → <span className="badge blue">ถูกดึงเข้า Job</span> →{' '}
+        <span className="badge neutral">เบิกแล้ว รอติดตั้ง</span> → <span className="badge green">ติดตั้งแล้ว</span>
+        {' '}· ETA to WH = FOB + ระยะขนส่ง ({ETA_LEAD_MIN}–{ETA_LEAD_MAX} วัน · ค่ามาตรฐาน {ETA_LEAD_DAYS}) ·
+        <b> ยังไม่กรอก ETA จะขึ้น "?"</b> (ระบบไม่เดาว่าของถึงคลังแล้ว)
         {!canManage && ' · แผนกของคุณดูได้อย่างเดียว (สร้าง/รับเข้าสต็อกเป็นสิทธิ์ของ Division)'}
       </div>
 
@@ -341,6 +437,11 @@ export default function StocksPage() {
                 {sum.pending > 0 && (
                   <span className="badge amber" title={`รับเข้าระบบแล้วแต่ ETA to WH ยังไม่ถึง — อยู่ระหว่างขนส่ง (${sum.pending} เครื่อง)`}>
                     Pending {sum.pending}
+                  </span>
+                )}{' '}
+                {sum.unknown > 0 && (
+                  <span className="badge neutral" title={`ยังไม่ระบุ ETA to WH ${sum.unknown} เครื่อง — กรอก FOB date (หรือใช้ปุ่ม 🚢 ตั้ง FOB ทั้งคลัง) เพื่อให้ระบบคำนวณ Status ได้`}>
+                    ? {sum.unknown}
                   </span>
                 )}{' '}
                 <span className="badge blue">ถูกดึง {sum.allocated}</span>{' '}
@@ -385,9 +486,10 @@ export default function StocksPage() {
             </div>
             {expanded && (
               <div className="table-scroll">
-                {/* grid = ตีเส้นตารางบางๆ ทุกช่อง (อ่านตารางกว้างง่ายขึ้น) · ต้นทุน/เครื่องไม่แสดงที่นี่ — กดป้าย "มูลค่าคลัง" ดูแทน */}
+                {/* grid = ตีเส้นตารางบางๆ ทุกช่อง (อ่านตารางกว้างง่ายขึ้น)
+                    Status = flow เดียวจบทั้งชีวิตเครื่อง (0052) — ไม่มีคอลัมน์ "สถานะเครื่อง" แยกแล้ว */}
                 <table className="grid">
-                  <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th>สถานะเครื่อง</th><th>ชื่อลูกค้า</th><th>เบอร์ติดต่อ</th><th>สถานที่ติดตั้ง</th><th>Job No.</th><th>FOB date</th><th>ETA to WH</th><th>Status</th><th>Plan Delivery</th><th>Actual Delivery</th>{canManage && <th></th>}</tr></thead>
+                  <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>Cost/Set</th><th>ชื่อลูกค้า</th><th>เบอร์ติดต่อ</th><th>สถานที่ติดตั้ง</th><th>Job No.</th><th>FOB date</th><th>ETA to WH</th><th>Status</th><th>Plan Delivery</th><th>Actual Delivery</th>{canManage && <th></th>}</tr></thead>
                   <tbody>
                     {units.map(u => {
                       // ข้อมูลลูกค้า "จริง" ref จาก Job ที่เครื่องถูกดึงเข้า (0014) — ยังไม่เข้า Job ใช้ค่าแผน (0043)
@@ -397,24 +499,18 @@ export default function StocksPage() {
                       const cust = job?.customerName ?? u.planCustomerName
                       const phone = job?.contactPhone ?? u.planContactPhone
                       const loc = job?.installLocation || u.planInstallLocation
-                      // สถานะ + Actual Delivery = auto ตาม flow Service (0035) ไม่มีคอลัมน์เก็บซ้ำ
-                      const installState = u.status === 'issued' ? unitInstallState(db, u.id) : 'pending'
+                      // Actual Delivery = auto ตาม flow Service (0035) ไม่มีคอลัมน์เก็บซ้ำ
                       const actualDelivery = unitInstallDate(db, u.id)
-                      // ETA to WH = FOB + 60 วัน (auto) หรือค่าที่กรอกเอง · Status = Pending/On Hand ตาม ETA
+                      // ETA to WH = FOB + ระยะขนส่ง (auto) หรือค่าที่กรอกเอง
                       const eta = unitEta(u)
                       const etaAuto = unitEtaIsAuto(u)
-                      const onHand = unitStockState(u) === 'on_hand'
+                      // Status = flow เดียวจบ: ? → Pending → On Hand → ถูกดึงเข้า Job → เบิก → ติดตั้ง
+                      const flow = UNIT_FLOW[unitFlowState(db, u)]
                       return (
                         <tr key={u.id}>
                           <td className="mono">{u.serialLvb}</td>
                           <td className="mono">{u.serialOm}</td>
-                          <td>
-                            {u.status === 'in_stock' && <span className="badge green">อยู่ในสต็อก</span>}
-                            {u.status === 'allocated' && <span className="badge blue">ถูกดึงเข้า Job</span>}
-                            {u.status === 'issued' && installState === 'pending' && <span className="badge neutral">เบิกแล้ว รอติดตั้ง</span>}
-                            {u.status === 'issued' && installState === 'installed' && <span className="badge green">ติดตั้งแล้ว</span>}
-                            {u.status === 'issued' && installState === 'blocked' && <span className="badge red">ติดตั้งไม่ได้</span>}
-                          </td>
+                          <td style={{ textAlign: 'right' }}>{fmtBaht(u.unitCost)}</td>
                           <td>{cust ?? '-'}{planned && cust && <span className="badge neutral" style={{ marginLeft: 6 }}>แผน</span>}</td>
                           <td>{phone ?? '-'}</td>
                           <td>{loc || '-'}</td>
@@ -427,11 +523,7 @@ export default function StocksPage() {
                                 title={`คำนวณอัตโนมัติ = FOB + ${unitLeadDays(u)} วัน`}>+{unitLeadDays(u)} วัน</span>
                             )}
                           </td>
-                          <td>
-                            {onHand
-                              ? <span className="badge green" title="ETA ถึง/เกินแล้ว — ของอยู่ที่คลัง">On Hand</span>
-                              : <span className="badge amber" title={`ยังไม่ถึง ETA to WH (${fmtDate(eta)}) — อยู่ระหว่างขนส่ง`}>Pending</span>}
-                          </td>
+                          <td><span className={`badge ${flow.cls}`} title={flow.hint}>{flow.label}</span></td>
                           <td>{fmtDate(u.planDeliveryDate)}</td>
                           <td>{actualDelivery ? fmtDate(actualDelivery) : '-'}</td>
                           {canManage && (
@@ -799,7 +891,7 @@ export default function StocksPage() {
           </div>
           <div className="table-scroll" style={{ maxHeight: 420, overflowY: 'auto' }}>
             <table className="grid">
-              <thead><tr><th>#</th><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>ต้นทุน/เครื่อง</th><th>สถานะเครื่อง</th><th>Job No.</th></tr></thead>
+              <thead><tr><th>#</th><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>Cost/Set</th><th>Status</th><th>Job No.</th></tr></thead>
               <tbody>
                 {list.map((u, i) => (
                   <tr key={u.id}>
@@ -807,7 +899,7 @@ export default function StocksPage() {
                     <td className="mono">{u.serialLvb}</td>
                     <td className="mono">{u.serialOm}</td>
                     <td style={{ textAlign: 'right' }}>{fmtBaht(u.unitCost)}</td>
-                    <td className="muted">{UNIT_STATUS_LABEL[u.status] ?? u.status}</td>
+                    <td>{(f => <span className={`badge ${f.cls}`} title={f.hint}>{f.label}</span>)(UNIT_FLOW[unitFlowState(db, u)])}</td>
                     <td>{u.jobId ? jobNo(u.jobId) : '-'}</td>
                   </tr>
                 ))}
@@ -855,7 +947,7 @@ export default function StocksPage() {
                 </div>
                 <label className="field" style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-start', marginBottom: 6 }}>
                   <input type="radio" name="dupAction" checked={dupAction === 'update'} onChange={() => setDupAction('update')} style={{ marginTop: 3 }} />
-                  <span><b>อัพเดทข้อมูลเครื่องเดิม</b> — ต้นทุน · ลูกค้า/เบอร์/สถานที่ (แผน) · FOB date · ETA to WH · Plan Delivery
+                  <span><b>อัพเดทข้อมูลเครื่องเดิม</b> — Cost/Set · ลูกค้า/เบอร์/สถานที่ (แผน) · FOB date · ระยะขนส่ง · ETA to WH · Plan Delivery
                     <div className="muted">ช่องที่เว้นว่างในไฟล์ = คงค่าเดิม (ไม่ล้างค่า) · ถ้าต้องการล้างค่าให้ใช้ปุ่ม "แก้ข้อมูล" รายเครื่อง</div>
                   </span>
                 </label>
@@ -878,7 +970,7 @@ export default function StocksPage() {
                   <table>
                     <thead><tr>
                       <th>#</th><th>Serial.LVB</th><th>Serial.OM</th>
-                      <th style={{ textAlign: 'right' }}>ต้นทุนเดิม</th><th style={{ textAlign: 'right' }}>ต้นทุนใหม่</th>
+                      <th style={{ textAlign: 'right' }}>Cost/Set เดิม</th><th style={{ textAlign: 'right' }}>Cost/Set ใหม่</th>
                       <th>ลูกค้า/เบอร์/สถานที่ (แผน)</th><th>FOB date</th><th>ETA to WH</th><th>Plan Delivery</th><th>ผล</th>
                     </tr></thead>
                     <tbody>
@@ -931,7 +1023,7 @@ export default function StocksPage() {
               <div className="muted" style={{ marginBottom: 6 }}>เครื่องใหม่ที่จะรับเข้า {newUnits.length} เครื่อง</div>
               <div className="table-scroll" style={{ maxHeight: 280, overflowY: 'auto' }}>
                 <table className="grid">
-                  <thead><tr><th>#</th><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>ต้นทุน/เครื่อง</th><th>FOB date</th><th>ETA to WH</th></tr></thead>
+                  <thead><tr><th>#</th><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>Cost/Set</th><th>FOB date</th><th>ETA to WH</th></tr></thead>
                   <tbody>
                     {newUnits.map((u, i) => (
                       <tr key={i}>
