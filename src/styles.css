@@ -202,6 +202,13 @@ tr.clickable { cursor: pointer; }
 tr.clickable:hover td { background: #f7f9fc; }
 .table-scroll { overflow-x: auto; }
 
+/* table.grid — ตีเส้นตารางบางๆ ทุกช่อง (ตารางกว้างหลายคอลัมน์ เช่น รายเครื่องใน Project Stock)
+   เส้นอ่อนกว่าเส้นแนวนอนเดิม เพื่อไม่ให้ตารางดูหนัก */
+table.grid th, table.grid td { border-right: 1px solid #f0f1f4; }
+table.grid th:last-child, table.grid td:last-child { border-right: none; }
+table.grid tr:last-child td { border-bottom: 1px solid #f0f1f4; }
+table.grid td { vertical-align: middle; }
+
 /* ---------- badges ---------- */
 .badge {
   display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap;
@@ -272,6 +279,13 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary-sof
   display: flex; align-items: center; gap: 6px; background: #fff;
 }
 .serial-pick.selected { border-color: var(--primary); background: var(--primary-soft); font-weight: 600; }
+/* เครื่องที่ ETA ยังไม่ถึง (0049) — ป้ายเตือนขึ้นบรรทัดใหม่ใต้ Serial ไม่ให้ล้นช่อง */
+.serial-pick { flex-wrap: wrap; }
+.serial-pick .pick-main { display: flex; align-items: center; gap: 6px; }
+.serial-pick .pick-eta {
+  flex-basis: 100%; margin-left: 22px; font-size: 11px; font-weight: 600;
+  color: var(--amber, #d97706); white-space: nowrap;
+}
 /* ---------- Project Budget ---------- */
 .budget-legend {
   font-size: 12px; font-weight: 700; color: var(--primary);

@@ -130,6 +130,9 @@ lbs-platform/
 | `0046_std_bom_import.sql` | **ฟีเจอร์ (2026-08-04)**: **Import Excel เข้า Standard BOM** — `rpc_import_std_bom_lines(p_bom_id, p_lines JSONB, p_replace BOOLEAN)` **RPC เดียวรับทั้งชุด (atomic)** ไม่ให้ client loop เรียก add ทีละบรรทัด (พังกลางทาง = rollback ทั้งชุด · pattern เดียวกับ `rpc_import_units_to_stock` 0025) · 2 โหมดเลือกในหน้า preview: **เพิ่มต่อท้าย (default)** / **แทนที่ทั้งหมด** (ลบรายการเดิมก่อน — ไฟล์เป็น source of truth · UI เตือนสีแดงว่าจะลบกี่รายการ) · หัวตารางตรงกับไฟล์ที่ Export ออกไป (`รหัส Epicor / ชื่ออุปกรณ์ / จำนวน / หน่วย / ต้นทุนประมาณการ-หน่วย / หมายเหตุ` — คอลัมน์ `#` / มูลค่า / ผูกฐานข้อมูล ถูกข้าม) รับ header อังกฤษด้วย · **ผูก items จาก `epicor_code` แล้วค่อย `code` ให้อัตโนมัติ + เติมชื่อ/หน่วยจาก master ให้ช่องที่ไฟล์เว้นว่าง** · ไม่เจอ = free text · validate ทั้งฝั่ง client (preview บอกเลขแถวที่ผิด + ปิดปุ่มนำเข้า) และฝั่ง server ซ้ำ · **Export ของ BOM ว่างจะออกไฟล์หัวตารางเปล่าเป็นแบบฟอร์ม** ให้กรอกแล้ว Import กลับได้ · demo sync `logic.ts importStdBomLines` |
 | `0047_pr_no_edit.sql` | **ฟีเจอร์ (2026-08-05)**: **Purchasing แก้เลข PR ได้** — `rpc_update_pr_no` (dept purchasing +admin) · แก้ได้**เฉพาะใบที่ยังไม่ออก PO** (`status='pending'`) ออก PO แล้วล็อก · unique + ยาว ≤50 · **ไม่แจ้งเตือน ลงแต่ audit** (มติ) เพราะ `pr_no` เก็บที่เดียว หน้า Project (การ์ดวัสดุ/ประวัติ PR/Export) join อ่านจากแถวเดียวกัน → **เห็นเลขใหม่เองทันที ไม่มี snapshot ที่ต้อง sync** · ⚠️ ข้อความแจ้งเตือน/audit เก่าที่เขียนเลข PR ไว้เป็นข้อความ **ไม่แก้ตามโดยเจตนา** = บันทึกประวัติ ณ เวลานั้น · demo sync `logic.ts updatePrNo` · UI: ปุ่ม "✏️ แก้เลข PR" ใต้เลข PR ในตารางรอออก PO |
 | `0048_import_unit_plan.sql` | **ฟีเจอร์ (2026-08-05)**: **Import Excel อัพเดทข้อมูลแผนรายเครื่องได้** — recreate `rpc_import_units_to_stock` **โดยไม่เปลี่ยน signature** (payload เป็น jsonb เติม key ใหม่ได้เลย → ไม่มีความเสี่ยง PGRST202 ตาม §9.8 · เรียกแบบเดิมยังได้) รับเพิ่ม `customer`/`phone`/`location`/`plan_po_receipt`/`plan_delivery` ทั้งขา insert และ update · **3 กติกา**: (1) **ช่องว่างในไฟล์ = คงค่าเดิม ไม่ล้างค่า** (ต่างจาก modal แก้รายเครื่องที่ว่าง = ล้าง — ไฟล์กรอกไม่ครบไม่ควรลบข้อมูลคนอื่น) (2) **ลูกค้า/เบอร์/สถานที่ เขียนเฉพาะเครื่องที่ `job_id IS NULL`** เพราะเครื่องที่มี Job ค่าจริงมาจาก Job (กฎ 0014) — ไฟล์ Export เขียนคอลัมน์ลูกค้าจาก Job ถ้า import กลับต้องไม่เขียนย้อนลง unit (3) **ข้ามเครื่องที่เบิกแล้ว (`status='issued'`) + นับรายงาน** เพราะ trigger `trg_block_issued_edit` บล็อก UPDATE ทั้งแถว ถ้าไม่กันไว้เครื่องเดียวทำให้ทั้งไฟล์ error · client อ่าน Excel ด้วย `cellDates: true` + `toIsoDate()` กันเซลล์วันที่กลายเป็น serial number · preview บอกผลรายแถว (อัพเดท / ข้าม (ใช้ค่าจาก Job) / 🔒 เบิกแล้ว ข้าม) · demo sync `logic.ts importUnitsToStock` |
+| `0049_fob_eta_to_wh.sql` | **ฟีเจอร์ (2026-08-08)**: **FOB date + ETA to WH + Status (Pending / On Hand) รายเครื่อง** — `lbs_units.fob_date` (คอลัมน์ใหม่ **ตัวเดียว**) · **ETA to WH = FOB + 60 วัน และ Status = คำนวณตอนแสดงผล ไม่เก็บคอลัมน์** (Status ต้องเปลี่ยนเองเมื่อวันผ่านไป — เก็บลง DB เมื่อไหร่ก็ค้าง ต้องมี cron มาไล่อัปเดต · pattern เดียวกับ Actual Delivery ของ 0043 ที่ derive จาก `unit_installations`) · **ไม่เพิ่มคอลัมน์วันที่ตัวที่ 3**: `plan_po_receipt_date` (0043) ความหมายคือ "วันที่ของเข้าคลัง" = ETA อยู่แล้ว → ใช้เป็น **ETA แบบกรอกเอง** สำหรับล็อตที่ไม่รู้ FOB (ข้อมูลเดิมไม่ต้อง migrate) · **ไม่ระบุ ETA = On Hand** (เครื่องที่รับเข้าโดยไม่บันทึกกำหนดเรือ = ของอยู่ในคลังจริง → ข้อมูลเดิมทั้งหมดยังถูกต้อง) · มี FOB แล้วระบบล้าง `plan_po_receipt_date` ทิ้งเสมอ (แหล่งความจริงเดียว) · **DROP** `rpc_update_unit_plan` 7 args แล้ว recreate 8 args (+`p_fob_date`) ตาม §9.8 กัน PGRST203 · `rpc_import_units_to_stock` รับ key `fob` (signature เดิม ไม่เสี่ยง PGRST202) · **`rpc_set_stock_fob` ใหม่** = ตั้ง FOB ทั้งคลังครั้งเดียว (`p_overwrite` false = เติมเฉพาะที่ยังว่าง) · **ไม่แตะ `rpc_create_project_stock`/`rpc_add_units_to_stock`** เพราะ 0031 patch สตริงแจ้งเตือนไว้ (§9.5) · demo sync `logic.ts`: `unitEta` / `unitStockState` / `setStockFob` / `updateUnitPlan` / `importUnitsToStock` |
+| `0050_vip_review.sql` | **ฟีเจอร์ (2026-08-08)**: **แผนก VIP (ผู้บริหารสูงสุด) + ความเห็นบนคำขออนุมัติ** — ขยาย CHECK `profiles_department_check` ให้รับ `'vip'` (ใช้ชื่อ constraint เดิมตาม §9.9) · ตาราง `approval_comments` (request_id → approval_requests ON DELETE CASCADE, body ≤1000 ตัวอักษร, author_id) + RLS อ่านได้ทุกแผนก เขียนผ่าน RPC เท่านั้น + เข้า realtime publication · `rpc_add_approval_comment` (`app_assert_dept(['vip','sales'])`) → VIP คอมเมนต์แจ้ง `sales` · Division คอมเมนต์แจ้งกลับ `vip` · **VIP ไม่ถูกใส่ใน `app_assert_dept` ของ RPC ตัวอื่นเลย** = อ่านอย่างเดียวจริงระดับ server · demo sync `logic.ts addApprovalComment` |
+| `0051_eta_lead_days_stock_comment.sql` | **ฟีเจอร์ (2026-08-08)**: (1) **ระยะขนส่งเลือกได้ 45–60 วัน** — `lbs_units.eta_lead_days` (NULL = ค่ามาตรฐาน 60 → ข้อมูลเดิมไม่ต้อง backfill) · ETA to WH = `fob_date + COALESCE(eta_lead_days, 60)` ยังเป็นค่าคำนวณตามเดิม · ตั้งได้ 3 ทาง: modal แก้รายเครื่อง / ปุ่ม 🚢 ตั้ง FOB ทั้งคลัง / คอลัมน์ "ระยะขนส่ง (วัน)" ใน Excel · helper `app_unit_lead(jsonb)` validate 1–365 (UI จำกัด 45–60 — เส้นทางใหม่แก้แค่ฝั่ง UI) · **DROP+recreate** `rpc_update_unit_plan` (8→9 args) และ `rpc_set_stock_fob` (+`p_lead_days`) ตาม §9.8 (2) **ความเห็นผู้บริหารเรื่องคลัง LBS** — `approval_comments.scope` ('approval' \| 'stock') + `request_id` เป็น NULL ได้เมื่อ scope='stock' + CHECK คู่ scope/target · `rpc_add_stock_comment` ใหม่ · ใช้ตารางเดิมเพราะเป็น thread ชนิดเดียวกัน (VIP ↔ Division) แค่คนละบริบท → UI/แจ้งเตือนใช้โค้ดชุดเดียว เพิ่ม scope ใหม่ได้ภายหลัง · demo sync `logic.ts`: `unitLeadDays` / `normalizeLeadDays` / `addStockComment` / `stockComments` |
 | `0026_job_install_sites.sql` | **ฟีเจอร์ (2026-07-23)**: หลายจุดติดตั้งต่อ Job — `jobs.install_sites` JSONB (array `{location, requiredDate}` = จุดที่ 2+; จุดที่ 1 ยังใช้ install_location/required_date เดิม) · drop+recreate `rpc_create_job`/`rpc_update_job` (+`p_install_sites`) · ข้อมูลวางแผนอย่างเดียว ไม่ผูก Serial/ไม่แตะ flow issue/confirm · UI: เปิด/แก้ Job โชว์ "เพิ่มจุดติดตั้ง" เมื่อ LBS>1 (≤ จำนวน LBS), JobDetail แผง "จุดติดตั้ง", list badge "+N จุด" · demo sync `logic.ts` (normalizeInstallSites) |
 
 > DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0041 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
@@ -186,17 +189,21 @@ lbs-platform/
 
 | แผนก (DB) | แสดงผล | ทำอะไรได้ |
 |---|---|---|
-| `sales` | **Division** | สร้าง/แก้/ลบ Project Stock, รับ LBS เข้า, แก้ Serial, **แก้ข้อมูลรายเครื่อง (ต้นทุน/ลูกค้าแผน/Plan PO receipt/Plan Delivery — 0043)**, ปรับยอดคลังสินค้า accessory + **อนุมัติ/ตีกลับคำขอจาก project** (หน้า "รออนุมัติ") |
+| `sales` | **Division** | สร้าง/แก้/ลบ Project Stock, รับ LBS เข้า, **แก้ข้อมูลรายเครื่อง — รวม Serial + ต้นทุน + ลูกค้าแผน + FOB date + ETA to WH + Plan Delivery ในฟอร์มเดียว (0043/0049)**, **ตั้ง FOB ทั้งคลัง (0049)**, ปรับยอดคลังสินค้า accessory + **อนุมัติ/ตีกลับคำขอจาก project** (หน้า "รออนุมัติ") + ตอบกลับความเห็น VIP (0050) |
 | `project` | Project | เปิด/แก้/ลบ Job, ดึง-คืน LBS, ขอวัสดุ (+Phase Budget), **บันทึกงวดเงิน Payment (0044 — ทำได้แม้ปิดงานแล้ว)** — ส่วน **ออก PR / เบิกให้ Service / ยกเลิก Job ต้องส่งคำขอให้ Division อนุมัติ** (`rpc_request_approval`) · **⚠️ ทำรายการได้เฉพาะ Job ที่อีเมลตัวเองเปิด (0042) — Job ของคนอื่นดูได้อย่างเดียว** |
 | `purchasing` | Purchasing | ออก PO / ยกเลิก PO (ยังไม่รับของ) / ตีกลับ PR / รับของ (partial ได้) / **แก้เลข PR ให้ตรงเอกสารจริง — เฉพาะใบที่ยังไม่ออก PO (0047)** |
 | `service` | Service | ยืนยันติดตั้งเสร็จ (+วันที่จริง) |
 | `admin` | **Manage** | ทำได้ทุกอย่าง + **ข้ามขั้นอนุมัติ** (เรียก rpc_create_pr/issue/cancel ตรงได้) + อนุมัติแทน Division ได้ + Material Database + ผู้ใช้งาน + **Dev Settings (แผนกเดียวที่เห็น** — เมนูซ่อน + route redirect สำหรับแผนกอื่น) |
+| `vip` | **VIP** | **ผู้บริหารสูงสุด (0050)** — ดูได้ทุกหน้าแบบ **อ่านอย่างเดียว** (RLS `read_all` ครอบให้อยู่แล้ว) · เขียนได้อย่างเดียวคือ **ความเห็นบนคำขออนุมัติ** (`rpc_add_approval_comment`) → แจ้ง Division ทันที · **ไม่อยู่ใน `app_assert_dept` ของ RPC ตัวอื่นเลย** = ยิง RPC เขียนข้อมูลอื่นไม่ผ่าน server (ไม่ใช่แค่ซ่อนปุ่ม) |
 
 **สิทธิ์ระดับแถว (0042)**: Project แต่ละอีเมลดำเนินการได้เฉพาะ Job ที่ตัวเองเปิด (`jobs.opened_by`) — Job อื่นเห็นข้อมูลครบแต่ทำรายการไม่ได้ · **บังคับเฉพาะแผนก `project`** เท่านั้น (Purchasing/Service/Division/Manage ทำงานข้าม Job ได้ตามหน้าที่) · งานเก่าที่ `opened_by` ว่าง = ไม่ล็อก · **ไม่มีปุ่มโอนเจ้าของ — คนลาออก/ลาพักร้อนให้ Manage เข้าไปทำแทน**
 
 **Approval flow (0016)**: project ขอ → แจ้งเตือน Division → division/admin อนุมัติที่หน้า "รออนุมัติ" = **execute ทันทีใน transaction เดียว** (fail = rollback ทั้งคำขอ) หรือตีกลับพร้อมเหตุผล (แจ้งกลับ project) · คำขอ pending ซ้ำ type เดียวกันต่อ Job ไม่ได้ (unique partial index) · `rpc_create_pr`/`rpc_issue_job`/`rpc_cancel_job` เช็ค admin-only แล้ว — project ยิง RPC ตรงจะโดนปฏิเสธ
 
 **Standard Drawing / BOM (0045)**: perm `standards.manage` = `project` + `sales` + `admin` — เพิ่ม/แก้/ลบ/อัปโหลด PDF · **ทุกแผนกที่ login อ่านและดาวน์โหลดได้** (เป็นมาตรฐานที่ทุกคนต้องใช้)
+
+**VIP review (0050)**: perm `approval.comment` = `vip` + `sales` + `admin` · VIP รีวิวคำขอที่หน้า Awaiting Approval แล้วฝากความเห็น → แจ้ง Division · Division ตอบกลับได้ → แจ้ง VIP · ความเห็นแสดงใต้คำขอทั้งตอนรอตัดสินและในประวัติหลังตัดสิน (เป็นหลักฐานประกอบการตัดสิน) · badge เมนูโชว์ `<จำนวนคำขอ> · 💬<จำนวนความเห็น>`
+**⚠️ VIP เป็น "ผู้ให้ความเห็น" ไม่ใช่ "ผู้อนุมัติชั้นที่ 2" โดยตั้งใจ** — ถ้าทำเป็นขั้นอนุมัติเพิ่ม ทุกคำขอจะค้างรอผู้บริหาร งานหน้างาน (ออก PR/เบิกของ) หยุดทั้งสายเมื่อผู้บริหารติดประชุม และโมเดล "อนุมัติ = ทำงานทันที" ของ 0016 จะเสียไป · ถ้าภายหลังต้องการ gate จริง ให้ทำเป็นเงื่อนไขตามวงเงิน (ต่อยอดจากตาราง `approval_comments` ได้ ไม่ต้องรื้อ)
 
 Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Accessory → Ready to Issue → Issued → Installed` (+ `Cancelled` ได้ทุกสถานะก่อน Issued)
 
@@ -237,7 +244,48 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
       ไฟล์ถูกใส่สลักนิรภัย (DO-block RAISE EXCEPTION) กันรันติดมือแล้ว · **หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่**
 - [ ] ตรวจว่า **service_role key ถูก rotate แล้ว** (ระหว่าง setup key เก่าเคยเปิดเผย — ตรวจ repo แล้ว 2026-07-19: **key ไม่เคยหลุดลง git** หลุดเฉพาะนอก repo) — Dashboard → Settings → API → สร้าง/roll secret key ใหม่ → อัปเดต `SUPABASE_SERVICE_ROLE_KEY` บน Cloudflare Pages env → Retry deployment
 
-### 🟠 Migrations — ✅ **0001–0048 รันครบ** (0042–0048 รัน 2026-08-07)
+### 🟠 Migrations — ✅ **0001–0051 รันครบ** (0049–0051 รัน 2026-08-08)
+- [x] ~~รัน `0049_fob_eta_to_wh.sql` → `0050_vip_review.sql` → `0051_eta_lead_days_stock_comment.sql`~~
+      **รันครบแล้ว 2026-08-08** · ตรวจยืนยันผ่าน PostgREST แล้ว: `rpc_update_unit_plan` / `rpc_set_stock_fob` /
+      `rpc_add_approval_comment` / `rpc_add_stock_comment` resolve ด้วยชื่อพารามิเตอร์ใหม่ครบ
+      (**ไม่มี PGRST202 = ไม่ขาดไฟล์ · ไม่มี PGRST203 = signature เก่าถูก DROP ครบ ไม่มี overload ค้าง**)
+      และคอลัมน์ `lbs_units.fob_date` / `lbs_units.eta_lead_days` / `approval_comments.scope` มีอยู่จริง
+      > วิธีตรวจซ้ำโดยไม่ต้องเข้า SQL Editor (ไม่แตะข้อมูล): POST `/rest/v1/rpc/<fn>` ด้วย anon key —
+      > ได้ error สิทธิ์ = ฟังก์ชันมีอยู่ · ได้ `PGRST202` = ยังไม่ลง · ได้ `PGRST203` = มี signature ซ้ำต้อง DROP ตัวเก่า
+      ตรวจว่าลงครบ (ต้องได้ `true` ทุกแถว):
+      ```sql
+      with f as (select p.proname,
+                        pg_get_function_identity_arguments(p.oid) as args,
+                        pg_get_functiondef(p.oid) as def
+                 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                 where n.nspname = 'public')
+      select * from (values
+        ('0049 lbs_units.fob_date', exists (select 1 from information_schema.columns
+            where table_name='lbs_units' and column_name='fob_date')),
+        ('0049+0051 rpc_update_unit_plan = 9 args ตัวเดียว (signature เก่าถูก drop ครบ)',
+            (select count(*) = 1 from f where proname='rpc_update_unit_plan')
+            and exists (select 1 from f where proname='rpc_update_unit_plan'
+                          and args like '%p_fob_date%' and args like '%p_lead_days%')),
+        ('0049+0051 rpc_set_stock_fob = 4 args ตัวเดียว',
+            (select count(*) = 1 from f where proname='rpc_set_stock_fob')
+            and exists (select 1 from f where proname='rpc_set_stock_fob' and args like '%p_lead_days%')),
+        ('0049+0051 import รับ key fob + lead_days', exists (select 1 from f
+            where proname='rpc_import_units_to_stock' and def like '%''fob''%' and def like '%lead_days%')),
+        ('0051 lbs_units.eta_lead_days', exists (select 1 from information_schema.columns
+            where table_name='lbs_units' and column_name='eta_lead_days')),
+        ('0051 approval_comments.scope + rpc_add_stock_comment', (
+            exists (select 1 from information_schema.columns
+              where table_name='approval_comments' and column_name='scope')
+            and exists (select 1 from f where proname='rpc_add_stock_comment'))),
+        ('0050 profiles รับแผนก vip', (select pg_get_constraintdef(oid) like '%vip%' from pg_constraint
+            where conname='profiles_department_check')),
+        ('0050 approval_comments + RPC', (to_regclass('public.approval_comments') is not null
+            and exists (select 1 from f where proname='rpc_add_approval_comment'))),
+        ('0050 approval_comments อยู่ใน realtime', exists (select 1 from pg_publication_tables
+            where pubname='supabase_realtime' and schemaname='public' and tablename='approval_comments'))
+      ) t(migration, ok) order by 1;
+      ```
+- [ ] หลังรัน 0050: สร้างผู้ใช้ VIP ที่ **Dev Settings → + เพิ่มผู้ใช้ → แผนก VIP** (ยังไม่มีบัญชี VIP บน production)
 - [x] ~~0011–0048~~ **รันครบแล้ว** (0042–0048 รัน 2026-08-07) · **กติกา: หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่ (ผมจะบอกชื่อไฟล์)**
 - [ ] **ตรวจครั้งเดียวว่า 0042–0048 ลงครบจริง** (รันได้ตลอด ไม่แตะข้อมูล — ต้องได้ `true` ทุกแถว):
       ```sql
@@ -299,6 +347,10 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 - **ปิด PO เท่าที่รับ (short-close)** — ตอนนี้ยกเลิก PO ได้เฉพาะยังไม่รับของเลย · ถ้าซัพส่ง 3/5 แล้วส่งที่เหลือไม่ได้ PO จะค้าง `issued` ตลอด
 - **Job Detail: ยังไม่มี UI ดูข้อมูลบางส่วน** — ประวัติ ledger ของวัสดุ (ดูได้ที่ Material Database) · ตอนนี้เห็นทีม/คืบหน้า/หลักฐานรายเครื่อง/ประวัติออกหน้างานแล้ว (2026-07-29)
 
+> ✅ เสร็จแล้ว (2026-08-08): **Project Stock — FOB date / ETA to WH (FOB+60 อัตโนมัติ) / Status Pending–On Hand รายเครื่อง (0049)** + ปุ่ม **🚢 ตั้ง FOB ทั้งคลัง** + **ตีเส้นตารางบางๆ** (`table.grid`) + **รวมปุ่ม "แก้ Serial" เข้าไปในปุ่ม "แก้ข้อมูล"** (ฟอร์มเดียว บันทึกทีเดียว) + **ย้ายต้นทุน/เครื่องออกจากตาราง → กดป้าย "มูลค่าคลัง" ดูรายเครื่องแทน** + Export/Import Excel round-trip คอลัมน์ FOB/ETA/Status
+> ✅ เสร็จแล้ว (2026-08-08): **Dashboard — LBS Stock Balance แยก On Hand / Pending + แถวรวมทุกคลัง + ป้ายปิดคลัง** · **Job List เรียงตามกำหนดส่ง (ใกล้สุดก่อน) ตัดงานที่ปิด/ยกเลิกออก + 🔴 เลยกำหนด / ⚠️ เหลือ ≤30 วัน + คอลัมน์วันคงเหลือ** (กำหนดส่ง = วันที่ใกล้สุดจาก `requiredDate` + `installSites` ทุกจุด)
+> ✅ เสร็จแล้ว (2026-08-08): **แผนก VIP (ผู้บริหารสูงสุด) + ความเห็นบนคำขออนุมัติ (0050)** — VIP อ่านได้ทุกหน้า เขียนได้แค่ความเห็น · ความเห็นแสดงใต้คำขอที่หน้า Awaiting Approval (ทั้งตอนรอตัดสินและในประวัติ) · Division ตอบกลับได้ · badge เมนู `<คำขอ> · 💬<ความเห็น>` · Dev Settings มีคำอธิบายสิทธิ์ต่อแผนกใต้ dropdown
+> ✅ เสร็จแล้ว (2026-08-08 · รอบ 2 — 0051): **ระยะขนส่งเลือกได้ 45–60 วัน** (ต่อเครื่อง/ต่อล็อต · ป้ายในตารางโชว์ `+45 วัน` แทน `auto`) · **ความเห็นผู้บริหารเรื่องคลัง LBS** ท้ายหน้า Project Stock ใต้พาเนล "วัสดุตาม Job (Ref.PO)" · **หน้า Project ID (Jobs) เรียงตามกำหนดส่ง + 🔴/⚠️ + คอลัมน์ "เหลือ"** เหมือน Dashboard (งานที่จบแล้วลงล่างสุด ไม่เตือน) · **เตือนตอนดึง LBS ที่ ETA ยังไม่ถึง** — ป้าย `⚠️ ETA <วันที่>` รายเครื่องในตัวเลือก + สรุปจำนวนเหนือรายการ + dropdown คลังโชว์ `On Hand n (รอเข้าคลังอีก m)` · **ยังดึงได้ (จองล่วงหน้า) ไม่บล็อก** ตามมติ 2026-08-08
 > ✅ เสร็จแล้ว (2026-07-31): **บังคับสรุปปัญหาก่อนปิดงานติดตั้ง** (มี/ไม่มี + รายละเอียด + ไฟล์แนบ, 0040) · **มุมรวมปัญหางานบริการ** จาก 3 แหล่ง + badge เมนู · **เปิดงานใหม่ (Reopen) ผ่านการอนุมัติ Division** + reopenCount (0041)
 > ✅ เสร็จแล้ว (2026-07-30): **จัดซื้อเพิ่มเติมหลังเบิก** ผ่าน Division + แก้ราคาจริงได้แม้ปิดงาน (0037) · **Stock ledger + ต้นทุนถัวเฉลี่ย + โอนวัสดุเหลือจาก Job เข้าคลัง** (0038) · **แยกพาเนล catalog/คลังคงเหลือ + เลือกซื้อ-เบิกฉลาด (เตือนเมื่อมีของในคลัง) + Import Excel round-trip ครบ 5 คอลัมน์** · **ใส่ต้นทุนตอนของเข้าคลัง** (0039)
 > ✅ เสร็จแล้ว (2026-07-29): ต่อข้อมูล Service เข้า **Job Detail** (ทีม/คืบหน้า x/y/หลักฐานรายเครื่อง/ประวัติออกหน้างาน) · **Dashboard การ์ด "งานติดตั้ง (Service)"** · **บอท LINE รายงานคืบหน้ารายเครื่อง + ทีม** (+ แก้บั๊ก LBS 0/N)

@@ -38,6 +38,7 @@ export const DEPT_LABEL: Record<Department, string> = {
   purchasing: 'Purchasing',
   service: 'Service',
   admin: 'Manage',        // ทำได้ทุกอย่าง + ข้ามขั้นอนุมัติ
+  vip: 'VIP',             // ผู้บริหารสูงสุด (0050) — ดูได้ทุกหน้า · ให้ความเห็นบนคำขออนุมัติ · ไม่แก้ข้อมูล
 }
 
 export const APPROVAL_TYPE_LABEL: Record<string, string> = {

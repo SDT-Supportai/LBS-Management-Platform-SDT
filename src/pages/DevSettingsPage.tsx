@@ -5,7 +5,17 @@ import { DEPT_LABEL } from '../ui/format'
 import { supabase } from '../lib/supabase'
 import type { Department, User } from '../types'
 
-const DEPTS: Department[] = ['sales', 'project', 'purchasing', 'service', 'admin']
+const DEPTS: Department[] = ['sales', 'project', 'purchasing', 'service', 'admin', 'vip']
+
+// คำอธิบายสิทธิ์ต่อแผนก — โชว์ใต้ dropdown ตอนเพิ่ม/แก้ผู้ใช้ (กันตั้งแผนกผิดโดยไม่รู้ผลกระทบ)
+const DEPT_HINT: Record<Department, string> = {
+  sales: 'Division — อนุมัติ/ตีกลับคำขอของ Project · จัดการคลัง LBS (สร้าง/รับเข้า/แก้ข้อมูลรายเครื่อง)',
+  project: 'Project — เปิด/แก้ Job ของตัวเอง · ดึง LBS · ขอวัสดุ · ขออนุมัติ (ทำเองไม่ได้ ต้องผ่าน Division)',
+  purchasing: 'Purchasing — ออก PO จาก PR · รับของ · บันทึกราคาจริง',
+  service: 'Service — ยืนยันติดตั้งรายเครื่อง · ทะเบียนทีมช่าง · มอบหมายงาน',
+  admin: 'Manage — ทำได้ทุกอย่าง + ข้ามขั้นอนุมัติ · จัดการผู้ใช้/Dev Settings',
+  vip: 'VIP (ผู้บริหารสูงสุด) — ดูได้ทุกหน้าแบบอ่านอย่างเดียว · ให้ความเห็นบนคำขอที่ Awaiting Approval เพื่อแจ้ง Division (ไม่มีสิทธิ์แก้ข้อมูลใดๆ)',
+}
 
 export default function DevSettingsPage() {
   const { db, user, act, settings, updateSettings, resetDemo, importDb, mode } = useStore()
@@ -252,6 +262,9 @@ export default function DevSettingsPage() {
             <label className="field"><span>{userModal === 'create' ? 'รหัสผ่าน *' : 'รหัสผ่านใหม่ (เว้นว่าง = ไม่เปลี่ยน)'}</span>
               <input type="password" value={userForm.password} onChange={e => setUserForm({ ...userForm, password: e.target.value })} />
             </label>
+          </div>
+          <div className="muted" style={{ marginTop: -4, marginBottom: 10 }}>
+            สิทธิ์ของแผนกที่เลือก: {DEPT_HINT[userForm.department]}
           </div>
           {userModal === 'edit' && (
             <label className="field" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>

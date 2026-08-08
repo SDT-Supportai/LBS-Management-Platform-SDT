@@ -1,4 +1,5 @@
-export type Department = 'sales' | 'project' | 'purchasing' | 'service' | 'admin'
+// vip = ผู้บริหารสูงสุด (0050) — ดูได้ทุกหน้า ไม่แก้ข้อมูล · ให้ความเห็นบนคำขออนุมัติเพื่อแจ้ง Division
+export type Department = 'sales' | 'project' | 'purchasing' | 'service' | 'admin' | 'vip'
 
 export interface User {
   id: string
@@ -47,7 +48,13 @@ export interface LbsUnit {
   planCustomerName?: string
   planContactPhone?: string
   planInstallLocation?: string
-  planPoReceiptDate?: string   // Plan PO receipt — วันที่คาดว่าของจะเข้าคลัง (YYYY-MM-DD)
+  // FOB date (0049) — วันที่ของลงเรือจากผู้ผลิต · ETA to WH = FOB + etaLeadDays (คำนวณอัตโนมัติ ไม่เก็บซ้ำ)
+  fobDate?: string             // YYYY-MM-DD
+  // ระยะขนส่ง FOB → คลัง (วัน) — เลือกได้ 45–60 ตามเส้นทาง/ซัพพลายเออร์ · ว่าง = ใช้ค่ามาตรฐาน 60
+  etaLeadDays?: number
+  // ETA to WH แบบกรอกเอง — ใช้เมื่อไม่มี FOB (ข้อมูลเก่า / ล็อตที่รู้วันเข้าคลังตรงๆ)
+  // ชื่อคอลัมน์คงเดิมจาก 0043 เพื่อไม่ต้อง migrate ข้อมูล — ความหมายเดียวกัน "วันที่ของเข้าคลัง"
+  planPoReceiptDate?: string   // YYYY-MM-DD
   planDeliveryDate?: string    // Plan Delivery — วันที่คาดว่าจะส่งมอบ/ติดตั้ง (YYYY-MM-DD)
   // Actual Delivery + สถานะติดตั้ง = derive จาก unitInstallations (0035) ไม่เก็บซ้ำ
 }
@@ -239,6 +246,21 @@ export interface ApprovalRequest {
   rejectReason?: string
 }
 
+// ความเห็นผู้บริหาร (0050/0051) — VIP รีวิวแล้วฝากความเห็นให้ Division รับทราบ
+// เก็บเป็น thread: Division ตอบกลับได้ · ไม่บล็อกงาน — เป็น "ความเห็นประกอบการตัดสิน"
+// ไม่ใช่ขั้นอนุมัติเพิ่ม (มติ 2026-08-08)
+//   scope 'approval' → ผูกกับคำขอ (requestId) แสดงใต้คำขอในหน้า Awaiting Approval
+//   scope 'stock'    → ความเห็นเรื่องคลัง LBS โดยรวม แสดงท้ายหน้า Project Stock (0051)
+export type CommentScope = 'approval' | 'stock'
+export interface ApprovalComment {
+  id: string
+  scope: CommentScope
+  requestId?: string           // scope = 'approval'
+  body: string
+  authorId: string
+  createdAt: string
+}
+
 export interface AuditLog {
   id: string
   entityType: string
@@ -396,6 +418,7 @@ export interface DB {
   prs: PurchaseRequisition[]
   pos: PurchaseOrder[]
   approvalRequests: ApprovalRequest[]
+  approvalComments: ApprovalComment[]
   auditLogs: AuditLog[]
   notifications: AppNotification[]
   siteVisits: SiteVisit[]

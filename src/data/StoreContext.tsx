@@ -63,6 +63,9 @@ export const PERMISSIONS: Record<string, Department[]> = {
   'service.confirm': ['service', 'admin'],
   'master.manage': ['admin'],
   'approval.decide': ['sales', 'admin'],   // Division อนุมัติ/ตีกลับคำขอจาก project
+  // ความเห็นบนคำขออนุมัติ (0050) — VIP (ผู้บริหาร) ฝากความเห็นให้ Division · Division ตอบกลับได้
+  // VIP ไม่มีสิทธิ์อื่นเลย = ดูได้ทุกหน้า แต่แก้ข้อมูลไม่ได้ (ปุ่มทุกปุ่มซ่อนเองผ่าน can())
+  'approval.comment': ['vip', 'sales', 'admin'],
   'accessory.cleanup': ['project', 'sales', 'admin'],   // ลบรายการวัสดุที่ยกเลิกออกจากการ์ด (Project/Division/Manage)
   // Standard Drawing / BOM (0045) — แก้ได้ Project/Division/Manage · ดู+ดาวน์โหลดได้ทุกแผนก
   'standards.manage': ['project', 'sales', 'admin'],
@@ -95,7 +98,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 const EMPTY_DB: DB = {
   users: [], items: [], projectStocks: [], lbsUnits: [], jobs: [], allocations: [],
-  accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [],
+  accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [], approvalComments: [],
   auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
   stdDrawings: [], stdBoms: [], stdBomLines: [],
@@ -128,6 +131,7 @@ function migrateDb(raw: unknown): DB {
       qtyReceived: r.qtyReceived ?? (r.status === 'received' ? r.qtyRequested : 0),
     })),
     approvalRequests: d.approvalRequests ?? [],
+    approvalComments: d.approvalComments ?? [],
     notifications: d.notifications ?? [],
     siteVisits: d.siteVisits ?? [],
     unitInstallations: d.unitInstallations ?? [],
@@ -176,6 +180,7 @@ export interface StoreActions {
   deleteProjectStock: (p: Parameters<typeof L.deleteProjectStock>[2]) => MaybePromise
   updateUnitInfo: (p: Parameters<typeof L.updateUnitInfo>[2]) => MaybePromise
   updateUnitPlan: (p: Parameters<typeof L.updateUnitPlan>[2]) => MaybePromise
+  setStockFob: (p: Parameters<typeof L.setStockFob>[2]) => MaybePromise
   deleteDraftJob: (p: Parameters<typeof L.deleteDraftJob>[2]) => MaybePromise
   drawLbs: (p: Parameters<typeof L.drawLbs>[2]) => MaybePromise
   returnLbs: (p: Parameters<typeof L.returnLbs>[2]) => MaybePromise
@@ -208,6 +213,8 @@ export interface StoreActions {
   requestApproval: (p: Parameters<typeof L.requestApproval>[2]) => MaybePromise
   approveRequest: (p: Parameters<typeof L.approveRequest>[2]) => MaybePromise
   rejectApprovalRequest: (p: Parameters<typeof L.rejectApprovalRequest>[2]) => MaybePromise
+  addApprovalComment: (p: Parameters<typeof L.addApprovalComment>[2]) => MaybePromise
+  addStockComment: (p: Parameters<typeof L.addStockComment>[2]) => MaybePromise
   createItem: (p: Parameters<typeof L.createItem>[2]) => MaybePromise
   updateItem: (p: Parameters<typeof L.updateItem>[2]) => MaybePromise
   deleteItem: (p: Parameters<typeof L.deleteItem>[2]) => MaybePromise
@@ -353,6 +360,7 @@ function DemoProvider({ children }: { children: ReactNode }) {
         deleteProjectStock: run('stock.manage', L.deleteProjectStock),
         updateUnitInfo: run('stock.manage', L.updateUnitInfo),
         updateUnitPlan: run('stock.manage', L.updateUnitPlan),
+        setStockFob: run('stock.manage', L.setStockFob),
         deleteDraftJob: run('job.manage', L.deleteDraftJob),
         drawLbs: run('job.manage', L.drawLbs),
         returnLbs: run('job.manage', L.returnLbs),
@@ -389,6 +397,8 @@ function DemoProvider({ children }: { children: ReactNode }) {
         requestApproval: run('job.manage', L.requestApproval),
         approveRequest: run('approval.decide', L.approveRequest),
         rejectApprovalRequest: run('approval.decide', L.rejectApprovalRequest),
+        addApprovalComment: run('approval.comment', L.addApprovalComment),
+        addStockComment: run('approval.comment', L.addStockComment),
         createItem: run('master.manage', L.createItem),
         updateItem: run('master.manage', L.updateItem),
         deleteItem: run('master.manage', L.deleteItem),

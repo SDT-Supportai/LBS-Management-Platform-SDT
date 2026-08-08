@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
-import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, PAYMENT_TYPES } from '../data/logic'
+import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, PAYMENT_TYPES } from '../data/logic'
 import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
 import { ACC_STATUS_LABEL, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType } from '../types'
@@ -14,19 +14,31 @@ interface PayForm {
 
 const COST_LABEL: Record<string, string> = Object.fromEntries(COST_CATEGORIES.map(c => [c.key, c.label]))
 
-function SerialPicker({ units, selected, toggle }: {
+function SerialPicker({ units, selected, toggle, showEta }: {
   units: LbsUnit[]
   selected: Set<string>
   toggle: (id: string) => void
+  /** โชว์ ETA ของเครื่องที่ยังไม่เข้าคลัง (0049) — ใช้ตอนดึงเข้า Job · ไม่ต้องใช้ตอนคืน */
+  showEta?: boolean
 }) {
   return (
     <div className="serial-grid">
-      {units.map(u => (
-        <div key={u.id} className={`serial-pick${selected.has(u.id) ? ' selected' : ''}`} onClick={() => toggle(u.id)}>
-          <input type="checkbox" readOnly checked={selected.has(u.id)} />
-          <span className="mono">{u.serialLvb}</span>
-        </div>
-      ))}
+      {units.map(u => {
+        const pending = showEta && unitStockState(u) === 'pending'
+        return (
+          <div key={u.id} className={`serial-pick${selected.has(u.id) ? ' selected' : ''}`} onClick={() => toggle(u.id)}>
+            <span className="pick-main">
+              <input type="checkbox" readOnly checked={selected.has(u.id)} />
+              <span className="mono">{u.serialLvb}</span>
+            </span>
+            {pending && (
+              <span className="pick-eta" title="ของยังไม่เข้าคลัง (Status = Pending) — ดึงจองล่วงหน้าได้">
+                ⚠️ ETA {fmtDate(unitEta(u))}
+              </span>
+            )}
+          </div>
+        )
+      })}
       {units.length === 0 && <div className="muted">ไม่มีเครื่องให้เลือก</div>}
     </div>
   )
@@ -106,6 +118,8 @@ export default function JobDetailPage() {
   const returnableUnits = db.lbsUnits.filter(u => u.jobId === jobId && u.status === 'allocated')
   // cap ตาม Scope: ดึงรวมได้ไม่เกินจำนวนตอนเปิด Job
   const drawCap = Math.max(0, job.lbsQtyRequired - returnableUnits.length)
+  // เครื่องที่เลือกอยู่แต่ ETA ยังไม่ถึง (0049) — เตือนอย่างเดียว ไม่บล็อก (จองล่วงหน้าได้)
+  const pickedPending = drawableUnits.filter(u => picked.has(u.id) && unitStockState(u) === 'pending').length
   const toggleDraw = (id: string) => setPicked(prev => {
     const next = new Set(prev)
     if (next.has(id)) next.delete(id)
@@ -791,7 +805,11 @@ export default function JobDetailPage() {
             <select value={drawStock} onChange={e => { setDrawStock(e.target.value); setPicked(new Set()) }}>
               {db.projectStocks.filter(s => s.status === 'open').map(s => {
                 const sum = stockSummary(db, s.id)
-                return <option key={s.id} value={s.id}>{s.stockNo} — คงเหลือ {sum.available} เครื่อง</option>
+                return (
+                  <option key={s.id} value={s.id}>
+                    {s.stockNo} — On Hand {sum.onHand} เครื่อง{sum.pending > 0 ? ` (รอเข้าคลังอีก ${sum.pending})` : ''}
+                  </option>
+                )
               })}
             </select>
           </label>
@@ -800,7 +818,14 @@ export default function JobDetailPage() {
             (Scope {job.lbsQtyRequired} · ถืออยู่ {returnableUnits.length}{picked.size > 0 ? ` · เลือกแล้ว ${picked.size}` : ''})
           </div>
           {drawCap === 0 && <div className="muted" style={{ color: 'var(--red)', marginBottom: 8 }}>ดึงครบตาม Scope แล้ว — เพิ่มจำนวนใน "แก้ไขข้อมูล Job" ก่อนถ้า Scope เปลี่ยน</div>}
-          <SerialPicker units={drawableUnits} selected={picked} toggle={toggleDraw} />
+          {/* 0049: เครื่องที่ ETA ยังไม่ถึงยังดึงได้ (จองล่วงหน้า) แต่ต้องเตือนว่าของยังไม่อยู่ที่คลังจริง */}
+          {pickedPending > 0 && (
+            <div style={{ color: 'var(--amber, #d97706)', marginBottom: 8 }}>
+              ⚠️ ในนี้มี <b>{pickedPending} เครื่องที่ยังไม่เข้าคลัง</b> (Status = Pending) —
+              ดึงจองล่วงหน้าได้ แต่เบิกให้ Service ไม่ได้จนกว่าของจะถึงคลังจริง ตรวจ ETA ให้ตรงกับกำหนดติดตั้งก่อน
+            </div>
+          )}
+          <SerialPicker units={drawableUnits} selected={picked} toggle={toggleDraw} showEta />
         </Modal>
       )}
 

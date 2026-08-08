@@ -35,7 +35,10 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const openPos = db.pos.filter(p => p.status === 'issued').length
   const readyJobs = db.jobs.filter(j => deriveJobStatus(db, j) === 'ready_to_issue').length
   const awaitingInstall = db.jobs.filter(j => j.terminalStatus === 'issued').length
-  const pendingApprovals = db.approvalRequests.filter(r => r.status === 'pending').length
+  const pendingIds = new Set(db.approvalRequests.filter(r => r.status === 'pending').map(r => r.id))
+  const pendingApprovals = pendingIds.size
+  // ความเห็นผู้บริหาร (0050) ที่แปะอยู่บนคำขอซึ่งยังไม่ตัดสิน — Division ควรเห็นก่อนกดอนุมัติ
+  const pendingComments = db.approvalComments.filter(c => !!c.requestId && pendingIds.has(c.requestId)).length
   // งานที่เบิกแล้วแต่ยังไม่มอบหมายทีม (เฟส C)
   const unassignedJobs = db.jobs.filter(j =>
     j.terminalStatus === 'issued' && !db.jobAssignments.some(a => a.jobId === j.id)).length
@@ -56,7 +59,10 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
     // เอกสารมาตรฐาน (0045) — ข้อมูลอ้างอิงเหมือน Material Database จึงวางต่อกัน · ทุกแผนกเปิดดูได้
     { to: '/standards', icon: '📐', label: 'Standard Drawing & BOM' },
     // Awaiting Approval ย้ายมาอยู่ล่าง Material Database (มติ 2026-07-19)
-    { to: '/approvals', icon: '✅', label: 'Awaiting Approval', badge: pendingApprovals > 0 ? { text: `${pendingApprovals}`, cls: 'amber' } : undefined },
+    { to: '/approvals', icon: '✅', label: 'Awaiting Approval',
+      badge: pendingApprovals > 0
+        ? { text: `${pendingApprovals}${pendingComments > 0 ? ` · 💬${pendingComments}` : ''}`, cls: 'amber' }
+        : undefined },
     // Dev Settings เฉพาะ Manage (admin) — แผนกอื่น "not can DevSettings"
     ...(can(user, 'master.manage') ? [{ to: '/dev', icon: '⚙️', label: 'Dev Settings' }] : []),
   ]

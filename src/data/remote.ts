@@ -2,7 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type {
   DB, User, Item, ProjectStock, LbsUnit, Job, AllocationTxn,
   AccessoryRequest, PurchaseRequisition, PurchaseOrder, AuditLog, AppNotification,
-  Department, ApprovalRequest, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit, UnitInstallation,
+  Department, ApprovalRequest, ApprovalComment, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit, UnitInstallation,
   TeamMember, JobAssignment, StockMovement, JobPayment, PaymentType,
   StdDrawing, StdBom, StdBomLine,
 } from '../types'
@@ -43,6 +43,9 @@ function mapUnit(r: Row): LbsUnit {
     planCustomerName: r.plan_customer_name ?? undefined,
     planContactPhone: r.plan_contact_phone ?? undefined,
     planInstallLocation: r.plan_install_location ?? undefined,
+    // FOB date (0049) — ETA to WH derive จากตัวนี้ + ระยะขนส่ง (ไม่มีคอลัมน์ ETA ใน DB)
+    fobDate: r.fob_date ?? undefined,
+    etaLeadDays: r.eta_lead_days != null ? Number(r.eta_lead_days) : undefined,
     planPoReceiptDate: r.plan_po_receipt_date ?? undefined,
     planDeliveryDate: r.plan_delivery_date ?? undefined,
   }
@@ -161,6 +164,13 @@ function mapApproval(r: Row): ApprovalRequest {
     rejectReason: r.reject_reason ?? undefined,
   }
 }
+function mapApprovalComment(r: Row): ApprovalComment {
+  return {
+    id: r.id, scope: (r.scope ?? 'approval') as ApprovalComment['scope'],
+    requestId: r.request_id ?? undefined, body: r.body,
+    authorId: r.author_id ?? '', createdAt: r.created_at,
+  }
+}
 function mapAudit(r: Row): AuditLog {
   return {
     id: r.id, entityType: r.entity_type, entityId: r.entity_id, action: r.action,
@@ -224,7 +234,7 @@ async function q(sb: SupabaseClient, table: string, order?: { col: string; asc?:
 }
 
 export async function loadAll(sb: SupabaseClient): Promise<DB> {
-  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, boms, bomLines] =
+  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, approvalComments, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, boms, bomLines] =
     await Promise.all([
       q(sb, 'profiles'),
       q(sb, 'items', { col: 'code', limit: 10000 }),
@@ -237,6 +247,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       q(sb, 'purchase_requisitions', { col: 'created_at' }),
       q(sb, 'purchase_orders', { col: 'created_at' }),
       q(sb, 'approval_requests', { col: 'requested_at' }),
+      q(sb, 'approval_comments', { col: 'created_at' }),
       q(sb, 'audit_logs', { col: 'created_at', asc: false, limit: 500 }),
       q(sb, 'notifications', { col: 'created_at', asc: true, limit: 300 }),
       q(sb, 'notification_reads'),
@@ -280,6 +291,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     prs: prs.map(r => mapPr(r, reqIdsByPr.get(r.id) ?? [])),
     pos: pos.map(mapPo),
     approvalRequests: approvals.map(mapApproval),
+    approvalComments: approvalComments.map(mapApprovalComment),
     auditLogs: audits.map(mapAudit),
     notifications: notifs.map(r => mapNotif(r, readsByNotif.get(r.id) ?? [])),
     siteVisits: visits.map(mapSiteVisit),
@@ -298,11 +310,13 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
 interface UnitPayload {
   lvb: string; om: string; cost?: number
   customer?: string; phone?: string; location?: string
+  fob?: string; leadDays?: number       // FOB date + ระยะขนส่ง (0049)
   planPoReceipt?: string; planDelivery?: string
 }
 const toUnitJson = (u: UnitPayload) => ({
   lvb: u.lvb, om: u.om, cost: u.cost ?? null,
   customer: u.customer ?? null, phone: u.phone ?? null, location: u.location ?? null,
+  fob: u.fob ?? null, lead_days: u.leadDays ?? null,
   plan_po_receipt: u.planPoReceipt ?? null, plan_delivery: u.planDelivery ?? null,
 })
 
@@ -331,13 +345,20 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_delete_project_stock', { p_stock_id: p.stockId }),
     updateUnitInfo: (p: { unitId: string; serialLvb: string; serialOm: string }) =>
       rpc(sb, 'rpc_update_unit_info', { p_unit_id: p.unitId, p_serial_lvb: p.serialLvb, p_serial_om: p.serialOm }),
-    // 0043 — ฟอร์มส่งครบทุกช่องทุกครั้ง: null = ล้างค่า ไม่ใช่ "ไม่เปลี่ยน"
-    updateUnitPlan: (p: { unitId: string; unitCost?: number; planCustomerName?: string; planContactPhone?: string; planInstallLocation?: string; planPoReceiptDate?: string; planDeliveryDate?: string }) =>
+    // 0043/0049 — ฟอร์มส่งครบทุกช่องทุกครั้ง: null = ล้างค่า ไม่ใช่ "ไม่เปลี่ยน"
+    updateUnitPlan: (p: { unitId: string; unitCost?: number; planCustomerName?: string; planContactPhone?: string; planInstallLocation?: string; fobDate?: string; etaLeadDays?: number; planPoReceiptDate?: string; planDeliveryDate?: string }) =>
       rpc(sb, 'rpc_update_unit_plan', {
         p_unit_id: p.unitId, p_unit_cost: p.unitCost ?? null,
         p_customer_name: p.planCustomerName ?? null, p_contact_phone: p.planContactPhone ?? null,
         p_install_location: p.planInstallLocation ?? null,
+        p_fob_date: p.fobDate || null, p_lead_days: p.etaLeadDays ?? null,
         p_plan_po_receipt: p.planPoReceiptDate || null, p_plan_delivery: p.planDeliveryDate || null,
+      }),
+    // ตั้ง FOB date + ระยะขนส่ง ทั้งคลังในครั้งเดียว (0049)
+    setStockFob: (p: { stockId: string; fobDate: string; leadDays?: number; overwrite: boolean }) =>
+      rpc(sb, 'rpc_set_stock_fob', {
+        p_stock_id: p.stockId, p_fob_date: p.fobDate,
+        p_lead_days: p.leadDays ?? null, p_overwrite: p.overwrite,
       }),
     createJob: (p: { jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCosts?: BudgetCosts; installSites?: { location: string; requiredDate: string }[] }) =>
       rpc(sb, 'rpc_create_job', { p_job_no: p.jobNo, p_customer: p.customerName, p_phone: p.contactPhone ?? null, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_costs: p.budgetCosts ?? null, p_install_sites: p.installSites ?? null }),
@@ -441,6 +462,11 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_approve_request', { p_request_id: p.requestId }),
     rejectApprovalRequest: (p: { requestId: string; reason: string }) =>
       rpc(sb, 'rpc_reject_request', { p_request_id: p.requestId, p_reason: p.reason }),
+    // ความเห็นผู้บริหาร (0050/0051) — VIP ↔ Division
+    addApprovalComment: (p: { requestId: string; body: string }) =>
+      rpc(sb, 'rpc_add_approval_comment', { p_request_id: p.requestId, p_body: p.body }),
+    addStockComment: (p: { body: string }) =>
+      rpc(sb, 'rpc_add_stock_comment', { p_body: p.body }),
     createItem: (p: { code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean; initialQty?: number; initialUnitCost?: number }) =>
       rpc(sb, 'rpc_create_item', { p_code: p.code, p_epicor_code: p.epicorCode ?? null, p_name: p.name, p_uom: p.uom, p_stockable: p.stockableCentrally, p_initial_qty: p.initialQty ?? 0, p_initial_unit_cost: p.initialUnitCost ?? null }),
     updateItem: (p: { itemId: string; code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean }) =>

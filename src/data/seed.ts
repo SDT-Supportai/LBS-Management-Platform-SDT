@@ -8,6 +8,7 @@ const USERS: User[] = [
   { id: 'u-purchasing', email: 'purchasing@demo.co', password: '1234', fullName: 'มาลี ฝ่ายจัดซื้อ', department: 'purchasing', isActive: true },
   { id: 'u-service', email: 'service@demo.co', password: '1234', fullName: 'ประสิทธิ์ ฝ่ายบริการ', department: 'service', isActive: true },
   { id: 'u-admin', email: 'admin@demo.co', password: '1234', fullName: 'ผู้ดูแลระบบ', department: 'admin', isActive: true },
+  { id: 'u-vip', email: 'vip@demo.co', password: '1234', fullName: 'ผู้บริหารสูงสุด', department: 'vip', isActive: true },
 ]
 
 const ITEMS: Item[] = [
@@ -42,7 +43,7 @@ export function buildSeedDb(): DB {
       { id: 'sm-seed-brk', itemId: 'i-bracket', qty: 15, unitCost: 4500, balanceAfter: 15,
         type: 'initial', note: 'ยอดตั้งต้นข้อมูลตัวอย่าง', performedBy: 'u-admin', performedAt: '2026-06-01T09:00:00.000Z' },
     ],
-    accessoryRequests: [], prs: [], pos: [], approvalRequests: [], auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
+    accessoryRequests: [], prs: [], pos: [], approvalRequests: [], approvalComments: [], auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
     teamMembers: [], jobAssignments: [], jobPayments: [],
     // Standard Drawing / BOM ตัวอย่าง (0045) — drawing ตัวที่ 2 ยังไม่แนบไฟล์ ให้เห็นสถานะนั้นด้วย
     stdDrawings: [
@@ -83,6 +84,13 @@ export function buildSeedDb(): DB {
     stockNo: 'Project Stock No.2', itemId: 'i-lbs',
     units: units('LBS25', 1, 10, 890000), notes: 'ล็อตสั่งซื้อรอบที่ 2 (10 set)', poNo: 'PO-2025-0003',
   })
+  // ล็อตรอบที่ 3 — เพิ่งลงเรือ (FOB = วันนี้ → ETA to WH อีก 60 วัน) ให้เห็นสถานะ "Pending" ในตาราง
+  db = L.createProjectStock(db, sales, {
+    stockNo: 'Project Stock No.3', itemId: 'i-lbs',
+    units: units('LBS26', 1, 6, 920000), notes: 'ล็อตสั่งซื้อรอบที่ 3 (6 set) — ลงเรือแล้ว รอเข้าคลัง', poNo: 'PO-2026-0021',
+  })
+  db = L.setStockFob(db, sales, { stockId: db.projectStocks[2].id, fobDate: L.todayIso(), overwrite: true })
+
   const stock1 = db.projectStocks[0].id
   const stock2 = db.projectStocks[1].id
   const unitsOf = (stockId: string) => db.lbsUnits.filter(u => u.projectStockId === stockId && u.status === 'in_stock')

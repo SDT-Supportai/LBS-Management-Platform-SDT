@@ -1,22 +1,30 @@
 import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { stockSummary, unitInstallState, unitInstallDate } from '../data/logic'
+import {
+  stockSummary, unitInstallState, unitInstallDate, stockComments,
+  unitEta, unitEtaIsAuto, unitStockState, unitLeadDays, addDaysIso,
+  ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX,
+} from '../data/logic'
 import { Modal, useConfirm, useToast, useTryAction, toBudgetNum } from '../ui/components'
-import { fmtBaht, fmtDate } from '../ui/format'
+import { fmtBaht, fmtDate, fmtDateTime, DEPT_LABEL } from '../ui/format'
 
-// ฟอร์มแก้ข้อมูลรายเครื่อง (0043) — ต้นทุน + ข้อมูลแผน + Plan PO receipt / Plan Delivery
+// ฟอร์มแก้ข้อมูลรายเครื่อง (0043/0049) — รวม "แก้ Serial" เข้ามาในฟอร์มเดียวแล้ว
+// serialLvb/serialOm แก้ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก (in_stock) — บันทึกผ่าน updateUnitInfo แยก call
 interface PlanForm {
-  id: string; serial: string; cost: string
+  id: string; canEditSerial: boolean
+  serialLvb: string; serialOm: string
+  origLvb: string; origOm: string
+  cost: string
   customerName: string; contactPhone: string; installLocation: string
-  planPoReceiptDate: string; planDeliveryDate: string
+  fobDate: string; leadDays: string; planPoReceiptDate: string; planDeliveryDate: string
 }
 
-// ฟอร์มกรอกมือใช้แค่ 3 ช่องแรก · ช่องข้อมูลแผน (0048) มาจาก Import Excel เท่านั้น
+// ฟอร์มกรอกมือใช้แค่ 3 ช่องแรก · ช่องข้อมูลแผน (0048/0049) มาจาก Import Excel เท่านั้น
 interface UnitRow {
   lvb: string; om: string; cost: string
   customer?: string; phone?: string; location?: string
-  planPoReceipt?: string; planDelivery?: string
+  fob?: string; leadDays?: number; planPoReceipt?: string; planDelivery?: string
 }
 const emptyRow = (): UnitRow => ({ lvb: '', om: '', cost: '' })
 
@@ -25,7 +33,7 @@ const rowsToUnits = (rows: UnitRow[]) =>
   rows.map(r => ({
     lvb: r.lvb, om: r.om, cost: toBudgetNum(r.cost),
     customer: r.customer, phone: r.phone, location: r.location,
-    planPoReceipt: r.planPoReceipt, planDelivery: r.planDelivery,
+    fob: r.fob, leadDays: r.leadDays, planPoReceipt: r.planPoReceipt, planDelivery: r.planDelivery,
   }))
 
 // Excel: เซลล์วันที่อ่านมาเป็น Date (อ่านด้วย cellDates) หรือเป็นข้อความ YYYY-MM-DD จากไฟล์ Export
@@ -107,8 +115,13 @@ export default function StocksPage() {
   const [editNotes, setEditNotes] = useState('')
   const [editPoNo, setEditPoNo] = useState('')
   const [editStatus, setEditStatus] = useState<'open' | 'closed'>('open')
-  const [editUnit, setEditUnit] = useState<{ id: string; lvb: string; om: string } | null>(null)
   const [editPlan, setEditPlan] = useState<PlanForm | null>(null)
+  const [costStock, setCostStock] = useState<string | null>(null)          // ดูต้นทุนรายเครื่อง (กดจากป้ายมูลค่าคลัง)
+  const [fobStock, setFobStock] = useState<string | null>(null)            // ตั้ง FOB date ทั้งคลัง
+  const [fobDate, setFobDate] = useState('')
+  const [fobLead, setFobLead] = useState(String(ETA_LEAD_DAYS))
+  const [fobOverwrite, setFobOverwrite] = useState(false)
+  const [stockComment, setStockComment] = useState('')                     // ความเห็นผู้บริหารเรื่องคลัง (0051)
   const [importPreview, setImportPreview] = useState<{
     stockId: string; stockNo: string
     newUnits: UnitRow[]
@@ -129,6 +142,10 @@ export default function StocksPage() {
 
   const lbsItem = db.items.find(i => i.itemType === 'main_equipment')!
   const canManage = can(user, 'stock.manage')
+  // ความเห็นผู้บริหารเรื่องคลัง (0051) — VIP เขียน · Division ตอบกลับ · ทุกแผนกอ่านได้
+  const canComment = can(user, 'approval.comment')
+  const isVip = user?.department === 'vip'
+  const vipComments = stockComments(db)
   // คลังสินค้า (Ref.Job): วัสดุที่รับของครบจาก PO เท่านั้น
   const receivedLines = db.pos
     .filter(p => p.status === 'received')
@@ -170,20 +187,24 @@ export default function StocksPage() {
         'Serial.LVB': u.serialLvb,
         'Serial.OM': u.serialOm,
         'ต้นทุน/เครื่อง': u.unitCost ?? '',
-        'สถานะ': u.status === 'issued'
+        'สถานะเครื่อง': u.status === 'issued'
           ? { pending: 'เบิกแล้ว รอติดตั้ง', installed: 'ติดตั้งแล้ว', blocked: 'ติดตั้งไม่ได้' }[unitInstallState(db, u.id)]
           : UNIT_STATUS_LABEL[u.status] ?? u.status,
         'Job No.': job?.jobNo ?? '',
         'ชื่อลูกค้า': job?.customerName ?? u.planCustomerName ?? '',
         'เบอร์ติดต่อ': job?.contactPhone ?? u.planContactPhone ?? '',
         'สถานที่ติดตั้ง': job?.installLocation || u.planInstallLocation || '',
-        'Plan PO receipt': u.planPoReceiptDate ?? '',
+        'FOB date': u.fobDate ?? '',
+        'ระยะขนส่ง (วัน)': u.fobDate ? unitLeadDays(u) : '',
+        // ETA to WH / Status = ค่าคำนวณ (FOB + ระยะขนส่ง) — Export ไว้อ่าน · Import จะไม่เขียนทับถ้ามี FOB
+        'ETA to WH': unitEta(u) ?? '',
+        'Status': unitStockState(u) === 'pending' ? 'Pending' : 'On Hand',
         'Plan Delivery': u.planDeliveryDate ?? '',
         'Actual Delivery': unitInstallDate(db, u.id) ?? '',
       }
     })
     const ws = XLSX.utils.json_to_sheet(rows)
-    ws['!cols'] = [{ wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 24 }, { wch: 14 }, { wch: 28 }, { wch: 15 }, { wch: 14 }, { wch: 14 }]
+    ws['!cols'] = [{ wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 24 }, { wch: 14 }, { wch: 28 }, { wch: 13 }, { wch: 15 }, { wch: 13 }, { wch: 11 }, { wch: 14 }, { wch: 14 }]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, s.stockNo.slice(0, 31))
     XLSX.writeFile(wb, `${s.stockNo.replace(/[\\/:*?"<>|]/g, '-')}-${new Date().toISOString().slice(0, 10)}.xlsx`)
@@ -208,12 +229,22 @@ export default function StocksPage() {
         const lvb = cell(row, ['Serial.LVB', 'serial.lvb', 'serial_lvb', 'lvb'])
         const om = cell(row, ['Serial.OM', 'serial.om', 'serial_om', 'om'])
         const costStr = cell(row, ['ต้นทุน/เครื่อง', 'ต้นทุน', 'unit_cost', 'cost'])
-        // ข้อมูลแผนรายเครื่อง (0048) — ช่องว่าง = คงค่าเดิม
+        // ข้อมูลแผนรายเครื่อง (0048/0049) — ช่องว่าง = คงค่าเดิม
+        const fob = toIsoDate(rawCell(row, ['FOB date', 'fob date', 'fob', 'fob_date'])) || undefined
+        // "ETA to WH" ในไฟล์ = ค่าคำนวณจาก FOB → ถ้าแถวนี้มี FOB ให้ข้าม (กันเขียนค่า auto ทับเป็นค่ากรอกมือ)
+        // แถวที่ไม่มี FOB จึงจะรับ ETA เป็นค่ากรอกเอง (ลงคอลัมน์เดิม plan_po_receipt_date)
+        const etaCell = toIsoDate(rawCell(row, ['ETA to WH', 'eta to wh', 'eta', 'Plan PO receipt', 'plan po receipt', 'plan_po_receipt'])) || undefined
+        const leadStr = cell(row, ['ระยะขนส่ง (วัน)', 'ระยะขนส่ง', 'lead', 'lead_days', 'lead days'])
+        if (fob && leadStr !== '' && (!Number.isInteger(Number(leadStr)) || Number(leadStr) < 1 || Number(leadStr) > 365))
+          return void errors.push(`แถว ${i + 2}: ระยะขนส่ง "${leadStr}" ต้องเป็นจำนวนเต็ม 1–365 วัน`)
         const plan = {
           customer: cell(row, ['ชื่อลูกค้า', 'ลูกค้า', 'customer', 'customer_name']) || undefined,
           phone: cell(row, ['เบอร์ติดต่อ', 'เบอร์', 'phone', 'contact_phone']) || undefined,
           location: cell(row, ['สถานที่ติดตั้ง', 'สถานที่', 'location', 'install_location']) || undefined,
-          planPoReceipt: toIsoDate(rawCell(row, ['Plan PO receipt', 'plan po receipt', 'plan_po_receipt'])) || undefined,
+          fob,
+          // ระยะขนส่งมีความหมายเฉพาะเมื่อมี FOB (ไม่มี FOB = ETA กรอกตรงๆ ไม่ต้องคำนวณ)
+          leadDays: fob && leadStr !== '' ? Number(leadStr) : undefined,
+          planPoReceipt: fob ? undefined : etaCell,
           planDelivery: toIsoDate(rawCell(row, ['Plan Delivery', 'plan delivery', 'plan_delivery'])) || undefined,
         }
         if (!lvb && !om) return                       // ข้ามแถวว่าง
@@ -286,7 +317,8 @@ export default function StocksPage() {
     <>
       <div className="page-title">Project Stock — คลัง LBS</div>
       <div className="page-sub">
-        คลังกลาง 115kV LBS ติดตามรายเครื่องด้วย Serial คู่ (LVB · OM) — Project ดึงเข้างานตามลำดับ
+        คลังกลาง 115kV LBS ติดตามรายเครื่องด้วย Serial คู่ (LVB · OM) — Project ดึงเข้างานตามลำดับ ·
+        <b> ETA to WH = FOB + {ETA_LEAD_DAYS} วัน</b> (คำนวณอัตโนมัติ) → Status <b>Pending</b> เมื่อยังไม่ถึงกำหนด · <b>On Hand</b> เมื่อถึง/เกินกำหนด
         {!canManage && ' · แผนกของคุณดูได้อย่างเดียว (สร้าง/รับเข้าสต็อกเป็นสิทธิ์ของ Division)'}
       </div>
 
@@ -305,13 +337,20 @@ export default function StocksPage() {
             <div className="panel-head">
               <h3>
                 {s.stockNo}{' '}
-                <span className="badge green">คงเหลือ {sum.available}</span>{' '}
+                <span className="badge green" title="อยู่ในคลังจริง (ETA ถึงแล้ว) — ดึงเข้า Job ได้">On Hand {sum.onHand}</span>{' '}
+                {sum.pending > 0 && (
+                  <span className="badge amber" title={`รับเข้าระบบแล้วแต่ ETA to WH ยังไม่ถึง — อยู่ระหว่างขนส่ง (${sum.pending} เครื่อง)`}>
+                    Pending {sum.pending}
+                  </span>
+                )}{' '}
                 <span className="badge blue">ถูกดึง {sum.allocated}</span>{' '}
                 <span className="badge neutral">เบิกแล้ว {sum.issued}</span>{' '}
                 {sum.totalCost !== undefined && (
-                  <span className="badge amber" title={`รวมต้นทุน ${sum.costedUnits}/${sum.total} เครื่องที่กรอกราคา`}>
-                    มูลค่าคลัง {fmtBaht(sum.totalCost)}
-                  </span>
+                  <button className="badge amber" type="button" style={{ cursor: 'pointer', border: 0 }}
+                    title={`รวมต้นทุน ${sum.costedUnits}/${sum.total} เครื่องที่กรอกราคา — กดดูรายเครื่อง`}
+                    onClick={() => setCostStock(s.id)}>
+                    มูลค่าคลัง {fmtBaht(sum.totalCost)} ▸
+                  </button>
                 )}
               </h3>
               <div style={{ display: 'flex', gap: 8 }}>
@@ -319,6 +358,10 @@ export default function StocksPage() {
                 <button className="small" onClick={() => exportStock(s.id)}>⬇ Export</button>
                 {canManage && (
                   <button className="small" onClick={() => { importToRef.current = { id: s.id, no: s.stockNo }; importFileRef.current?.click() }}>⬆ Import</button>
+                )}
+                {canManage && (
+                  <button className="small" title={`ตั้ง FOB date + ระยะขนส่ง ให้ทุกเครื่องในคลังนี้ — ETA to WH = FOB + ${ETA_LEAD_MIN}–${ETA_LEAD_MAX} วัน`}
+                    onClick={() => { setFobDate(''); setFobLead(String(ETA_LEAD_DAYS)); setFobOverwrite(false); setFobStock(s.id) }}>🚢 ตั้ง FOB ทั้งคลัง</button>
                 )}
                 {canManage && <button className="small" onClick={() => { setRows([emptyRow()]); setAddTo(s.id) }}>+ รับ LBS เพิ่ม</button>}
                 {canManage && <button className="small" onClick={() => { setEditNotes(s.notes ?? ''); setEditPoNo(s.poNo ?? ''); setEditStatus(s.status); setEditStock(s.id) }}>แก้ไข</button>}
@@ -342,8 +385,9 @@ export default function StocksPage() {
             </div>
             {expanded && (
               <div className="table-scroll">
-                <table>
-                  <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>ต้นทุน/เครื่อง</th><th>สถานะ</th><th>ชื่อลูกค้า</th><th>เบอร์ติดต่อ</th><th>สถานที่ติดตั้ง</th><th>Job No.</th><th>Plan PO receipt</th><th>Plan Delivery</th><th>Actual Delivery</th>{canManage && <th></th>}</tr></thead>
+                {/* grid = ตีเส้นตารางบางๆ ทุกช่อง (อ่านตารางกว้างง่ายขึ้น) · ต้นทุน/เครื่องไม่แสดงที่นี่ — กดป้าย "มูลค่าคลัง" ดูแทน */}
+                <table className="grid">
+                  <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th>สถานะเครื่อง</th><th>ชื่อลูกค้า</th><th>เบอร์ติดต่อ</th><th>สถานที่ติดตั้ง</th><th>Job No.</th><th>FOB date</th><th>ETA to WH</th><th>Status</th><th>Plan Delivery</th><th>Actual Delivery</th>{canManage && <th></th>}</tr></thead>
                   <tbody>
                     {units.map(u => {
                       // ข้อมูลลูกค้า "จริง" ref จาก Job ที่เครื่องถูกดึงเข้า (0014) — ยังไม่เข้า Job ใช้ค่าแผน (0043)
@@ -356,11 +400,14 @@ export default function StocksPage() {
                       // สถานะ + Actual Delivery = auto ตาม flow Service (0035) ไม่มีคอลัมน์เก็บซ้ำ
                       const installState = u.status === 'issued' ? unitInstallState(db, u.id) : 'pending'
                       const actualDelivery = unitInstallDate(db, u.id)
+                      // ETA to WH = FOB + 60 วัน (auto) หรือค่าที่กรอกเอง · Status = Pending/On Hand ตาม ETA
+                      const eta = unitEta(u)
+                      const etaAuto = unitEtaIsAuto(u)
+                      const onHand = unitStockState(u) === 'on_hand'
                       return (
                         <tr key={u.id}>
                           <td className="mono">{u.serialLvb}</td>
                           <td className="mono">{u.serialOm}</td>
-                          <td style={{ textAlign: 'right' }}>{fmtBaht(u.unitCost)}</td>
                           <td>
                             {u.status === 'in_stock' && <span className="badge green">อยู่ในสต็อก</span>}
                             {u.status === 'allocated' && <span className="badge blue">ถูกดึงเข้า Job</span>}
@@ -372,26 +419,35 @@ export default function StocksPage() {
                           <td>{phone ?? '-'}</td>
                           <td>{loc || '-'}</td>
                           <td>{u.jobId ? <Link to={`/jobs/${u.jobId}`}>{jobNo(u.jobId)}</Link> : '-'}</td>
-                          <td>{fmtDate(u.planPoReceiptDate)}</td>
+                          <td>{fmtDate(u.fobDate)}</td>
+                          <td>
+                            {eta ? fmtDate(eta) : '-'}
+                            {eta && etaAuto && (
+                              <span className="badge neutral" style={{ marginLeft: 6 }}
+                                title={`คำนวณอัตโนมัติ = FOB + ${unitLeadDays(u)} วัน`}>+{unitLeadDays(u)} วัน</span>
+                            )}
+                          </td>
+                          <td>
+                            {onHand
+                              ? <span className="badge green" title="ETA ถึง/เกินแล้ว — ของอยู่ที่คลัง">On Hand</span>
+                              : <span className="badge amber" title={`ยังไม่ถึง ETA to WH (${fmtDate(eta)}) — อยู่ระหว่างขนส่ง`}>Pending</span>}
+                          </td>
                           <td>{fmtDate(u.planDeliveryDate)}</td>
                           <td>{actualDelivery ? fmtDate(actualDelivery) : '-'}</td>
                           {canManage && (
                             <td style={{ whiteSpace: 'nowrap' }}>
                               {u.status === 'issued'
                                 ? <span className="muted" title="เบิกให้ Service แล้ว — allocation ถูกล็อก แก้ข้อมูลรายเครื่องไม่ได้">🔒</span>
-                                : <>
-                                    <button className="small" onClick={() => setEditPlan({
-                                      id: u.id, serial: `${u.serialLvb} / ${u.serialOm}`,
-                                      cost: u.unitCost !== undefined ? String(u.unitCost) : '',
-                                      customerName: u.planCustomerName ?? '', contactPhone: u.planContactPhone ?? '',
-                                      installLocation: u.planInstallLocation ?? '',
-                                      planPoReceiptDate: u.planPoReceiptDate ?? '', planDeliveryDate: u.planDeliveryDate ?? '',
-                                    })}>แก้ข้อมูล</button>
-                                    {u.status === 'in_stock' && (
-                                      <button className="small" style={{ marginLeft: 6 }}
-                                        onClick={() => setEditUnit({ id: u.id, lvb: u.serialLvb, om: u.serialOm })}>แก้ Serial</button>
-                                    )}
-                                  </>}
+                                : <button className="small" onClick={() => setEditPlan({
+                                    id: u.id, canEditSerial: u.status === 'in_stock',
+                                    serialLvb: u.serialLvb, serialOm: u.serialOm,
+                                    origLvb: u.serialLvb, origOm: u.serialOm,
+                                    cost: u.unitCost !== undefined ? String(u.unitCost) : '',
+                                    customerName: u.planCustomerName ?? '', contactPhone: u.planContactPhone ?? '',
+                                    installLocation: u.planInstallLocation ?? '',
+                                    fobDate: u.fobDate ?? '', leadDays: String(unitLeadDays(u)),
+                                    planPoReceiptDate: u.planPoReceiptDate ?? '', planDeliveryDate: u.planDeliveryDate ?? '',
+                                  })}>แก้ข้อมูล</button>}
                             </td>
                           )}
                         </tr>
@@ -443,6 +499,53 @@ export default function StocksPage() {
             </table>
           </div>
         </>}
+      </div>
+
+      {/* ความเห็นผู้บริหาร (VIP) เรื่องคลัง LBS โดยรวม (0051) — วางท้ายหน้าใต้ "วัสดุตาม Job (Ref.PO)"
+          อ่านได้ทุกแผนก · เขียนได้ VIP / Division / Manage (perm approval.comment) */}
+      <div className="panel">
+        <div className="panel-head">
+          <h3>💬 ความเห็นผู้บริหาร (VIP) — คลัง LBS
+            <span className="muted" style={{ fontWeight: 400 }}> · ข้อสังเกต/ข้อสั่งการเรื่องสต็อกภาพรวม</span>
+          </h3>
+          {vipComments.length > 0 && <span className="badge amber">{vipComments.length}</span>}
+        </div>
+        <div className="panel-body">
+          {vipComments.length === 0 && (
+            <div className="muted" style={{ marginBottom: canComment ? 12 : 0 }}>
+              ยังไม่มีความเห็น{canComment ? ' — พิมพ์ด้านล่างเพื่อแจ้งให้อีกฝ่ายทราบ' : ''}
+            </div>
+          )}
+          {vipComments.map(c => {
+            const author = db.users.find(u => u.id === c.authorId)
+            return (
+              <div key={c.id} style={{ marginBottom: 10, paddingLeft: 10, borderLeft: '3px solid var(--border)' }}>
+                <div className="muted" style={{ fontSize: 12 }}>
+                  <b style={{ color: 'var(--text)' }}>{author?.fullName ?? '-'}</b>
+                  {author && <span className="badge blue" style={{ marginLeft: 6 }}>{DEPT_LABEL[author.department]}</span>}
+                  {' '}· {fmtDateTime(c.createdAt)}
+                </div>
+                <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
+              </div>
+            )
+          })}
+          {canComment && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 6 }}>
+              <textarea rows={2} style={{ flex: 1 }} value={stockComment}
+                onChange={e => setStockComment(e.target.value)}
+                placeholder={isVip
+                  ? 'เช่น "ล็อต Stock No.3 ETA ต.ค. ช้าไป ให้ตามซัพเรื่องวันลงเรืออีกครั้ง"'
+                  : 'ตอบกลับความเห็นของผู้บริหาร'} />
+              <button className="primary small" disabled={!stockComment.trim()}
+                onClick={async () => {
+                  if (await tryAction(
+                    () => act.addStockComment({ body: stockComment }),
+                    isVip ? 'ส่งความเห็นถึง Division แล้ว' : 'บันทึกความเห็นแล้ว — แจ้ง VIP ให้ทราบ',
+                  )) setStockComment('')
+                }}>ส่งความเห็น</button>
+            </div>
+          )}
+        </div>
       </div>
 
       {editStock && (
@@ -517,62 +620,72 @@ export default function StocksPage() {
         </Modal>
       )}
 
-      {editUnit && (
-        <Modal
-          title="แก้ Serial No. ของเครื่อง"
-          onClose={() => setEditUnit(null)}
-          footer={<>
-            <button onClick={() => setEditUnit(null)}>ยกเลิก</button>
-            <button className="primary" disabled={!editUnit.lvb.trim() || !editUnit.om.trim()}
-              onClick={async () => {
-                if (await tryAction(
-                  () => act.updateUnitInfo({ unitId: editUnit.id, serialLvb: editUnit.lvb, serialOm: editUnit.om }),
-                  'แก้ Serial แล้ว',
-                )) setEditUnit(null)
-              }}>บันทึก</button>
-          </>}
-        >
-          <div className="muted" style={{ marginBottom: 12 }}>แก้ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก · Serial ห้ามซ้ำกับเครื่องอื่น</div>
-          <div className="row">
-            <label className="field"><span>Serial.LVB *</span>
-              <input className="mono" value={editUnit.lvb} onChange={e => setEditUnit({ ...editUnit, lvb: e.target.value })} />
-            </label>
-            <label className="field"><span>Serial.OM *</span>
-              <input className="mono" value={editUnit.om} onChange={e => setEditUnit({ ...editUnit, om: e.target.value })} />
-            </label>
-          </div>
-        </Modal>
-      )}
-
-      {/* แก้ข้อมูลรายเครื่อง (0043) — Division/Manage · ทำได้ก่อนเบิกให้ Service */}
-      {editPlan && (
+      {/* แก้ข้อมูลรายเครื่อง (0043/0049) — Division/Manage · ทำได้ก่อนเบิกให้ Service
+          รวม "แก้ Serial" เข้ามาที่นี่แล้ว (เดิมเป็นปุ่มแยก) — Serial แก้ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก */}
+      {editPlan && (() => {
+        const serialChanged = editPlan.serialLvb.trim() !== editPlan.origLvb || editPlan.serialOm.trim() !== editPlan.origOm
+        const serialEmpty = !editPlan.serialLvb.trim() || !editPlan.serialOm.trim()
+        // ETA to WH: มี FOB → คำนวณอัตโนมัติ (ช่องกรอกเองถูกปิด) · ไม่มี FOB → กรอกเองได้
+        const lead = Number(editPlan.leadDays) || ETA_LEAD_DAYS
+        const autoEta = editPlan.fobDate ? addDaysIso(editPlan.fobDate, lead) : ''
+        return (
         <Modal
           title="แก้ข้อมูลรายเครื่อง"
           size="wide"
           onClose={() => setEditPlan(null)}
           footer={<>
             <button onClick={() => setEditPlan(null)}>ยกเลิก</button>
-            <button className="primary" onClick={async () => {
+            <button className="primary" disabled={editPlan.canEditSerial && serialEmpty} onClick={async () => {
               if (await tryAction(
-                () => act.updateUnitPlan({
-                  unitId: editPlan.id,
-                  unitCost: toBudgetNum(editPlan.cost),
-                  planCustomerName: editPlan.customerName,
-                  planContactPhone: editPlan.contactPhone,
-                  planInstallLocation: editPlan.installLocation,
-                  planPoReceiptDate: editPlan.planPoReceiptDate,
-                  planDeliveryDate: editPlan.planDeliveryDate,
-                }),
-                'บันทึกข้อมูลรายเครื่องแล้ว',
+                async () => {
+                  // แก้ Serial ก่อน (มี guard unique ฝั่ง server) แล้วค่อยบันทึกข้อมูลแผน
+                  if (editPlan.canEditSerial && serialChanged) {
+                    await act.updateUnitInfo({
+                      unitId: editPlan.id,
+                      serialLvb: editPlan.serialLvb.trim(), serialOm: editPlan.serialOm.trim(),
+                    })
+                  }
+                  await act.updateUnitPlan({
+                    unitId: editPlan.id,
+                    unitCost: toBudgetNum(editPlan.cost),
+                    planCustomerName: editPlan.customerName,
+                    planContactPhone: editPlan.contactPhone,
+                    planInstallLocation: editPlan.installLocation,
+                    fobDate: editPlan.fobDate,
+                    etaLeadDays: editPlan.fobDate ? lead : undefined,
+                    // มี FOB → ETA เป็นค่าคำนวณ ไม่เก็บซ้ำ (ล้างค่ากรอกมือทิ้ง)
+                    planPoReceiptDate: editPlan.fobDate ? '' : editPlan.planPoReceiptDate,
+                    planDeliveryDate: editPlan.planDeliveryDate,
+                  })
+                },
+                serialChanged ? 'บันทึกข้อมูล + แก้ Serial แล้ว' : 'บันทึกข้อมูลรายเครื่องแล้ว',
               )) setEditPlan(null)
             }}>บันทึก</button>
           </>}
         >
           <div className="muted" style={{ marginBottom: 12 }}>
-            Serial <b className="mono">{editPlan.serial}</b> · ช่องที่เว้นว่าง = ล้างค่าเดิม<br />
+            ช่องที่เว้นว่าง = ล้างค่าเดิม ·
             ลูกค้า/เบอร์/สถานที่ ที่กรอกที่นี่คือ <b>ข้อมูลแผน</b> — เมื่อเครื่องถูกดึงเข้า Job ตารางจะแสดงค่าจาก Job แทน
-            (Job เป็นแหล่งข้อมูลจริงตามกติกาเดิมของระบบ) · <b>Actual Delivery กับสถานะไม่ต้องกรอก</b> ระบบเติมเองตาม flow ติดตั้ง
+            (Job เป็นแหล่งข้อมูลจริงตามกติกาเดิมของระบบ) · <b>Status / Actual Delivery ไม่ต้องกรอก</b> ระบบคำนวณเองจาก ETA และ flow ติดตั้ง
           </div>
+
+          <div className="row">
+            <label className="field"><span>Serial.LVB *</span>
+              <input className="mono" value={editPlan.serialLvb} disabled={!editPlan.canEditSerial}
+                onChange={e => setEditPlan({ ...editPlan, serialLvb: e.target.value })} />
+            </label>
+            <label className="field"><span>Serial.OM *</span>
+              <input className="mono" value={editPlan.serialOm} disabled={!editPlan.canEditSerial}
+                onChange={e => setEditPlan({ ...editPlan, serialOm: e.target.value })} />
+            </label>
+          </div>
+          {!editPlan.canEditSerial && (
+            <div className="muted" style={{ marginTop: -6, marginBottom: 10 }}>
+              🔒 เครื่องนี้ถูกดึงเข้า Job แล้ว — แก้ Serial ไม่ได้ (เลข Serial ถูก snapshot ไว้ในประวัติการดึง)
+              · ถ้าต้องเปลี่ยนเครื่อง ใช้ฟังก์ชัน <b>สลับ LBS</b> ที่หน้า Job
+            </div>
+          )}
+
           <div className="row">
             <label className="field"><span>ต้นทุน/เครื่อง (฿)</span>
               <input type="number" min={0} value={editPlan.cost}
@@ -594,17 +707,116 @@ export default function StocksPage() {
             </label>
           </div>
           <div className="row">
-            <label className="field"><span>Plan PO receipt</span>
-              <input type="date" value={editPlan.planPoReceiptDate}
+            <label className="field"><span>FOB date (วันลงเรือ)</span>
+              <input type="date" value={editPlan.fobDate}
+                onChange={e => setEditPlan({ ...editPlan, fobDate: e.target.value })} />
+            </label>
+            <label className="field">
+              <span>ระยะขนส่ง (วัน) — เลือก {ETA_LEAD_MIN}–{ETA_LEAD_MAX}</span>
+              <input type="number" min={ETA_LEAD_MIN} max={ETA_LEAD_MAX} step={1}
+                value={editPlan.leadDays} disabled={!editPlan.fobDate}
+                onChange={e => setEditPlan({ ...editPlan, leadDays: e.target.value })} />
+            </label>
+            <label className="field">
+              <span>ETA to WH {editPlan.fobDate ? `(auto = FOB + ${lead} วัน)` : '(กรอกเองเมื่อไม่มี FOB)'}</span>
+              <input type="date" value={editPlan.fobDate ? autoEta : editPlan.planPoReceiptDate}
+                disabled={!!editPlan.fobDate}
                 onChange={e => setEditPlan({ ...editPlan, planPoReceiptDate: e.target.value })} />
             </label>
-            <label className="field"><span>Plan Delivery</span>
+          </div>
+          <div className="muted" style={{ marginTop: -6, marginBottom: 10 }}>
+            ระยะขนส่งต่างกันได้ตามเส้นทางเรือ/ซัพพลายเออร์ (ค่ามาตรฐาน {ETA_LEAD_DAYS} วัน) ·
+            Status คำนวณจาก ETA to WH: ยังไม่ถึงกำหนด = <b>Pending</b> · ถึง/เกินกำหนด (หรือไม่ระบุ ETA) = <b>On Hand</b>
+          </div>
+          <div className="row">
+            <label className="field"><span>Plan Delivery (กำหนดส่งมอบ/ติดตั้ง)</span>
               <input type="date" value={editPlan.planDeliveryDate}
                 onChange={e => setEditPlan({ ...editPlan, planDeliveryDate: e.target.value })} />
             </label>
+            <div className="field" />
           </div>
         </Modal>
-      )}
+        )
+      })()}
+
+      {/* ตั้ง FOB date ทั้งคลัง (0049) — ล็อตหนึ่ง PO มักลงเรือพร้อมกัน */}
+      {fobStock && (() => {
+        const s = db.projectStocks.find(x => x.id === fobStock)!
+        const stockUnits = db.lbsUnits.filter(u => u.projectStockId === fobStock && u.status !== 'issued')
+        const target = fobOverwrite ? stockUnits : stockUnits.filter(u => !u.fobDate)
+        return (
+        <Modal title={`ตั้ง FOB date ทั้งคลัง — ${s.stockNo}`} onClose={() => setFobStock(null)}
+          footer={<>
+            <button onClick={() => setFobStock(null)}>ยกเลิก</button>
+            <button className="primary" disabled={!fobDate} onClick={async () => {
+              if (await tryAction(
+                () => act.setStockFob({ stockId: fobStock, fobDate, leadDays: Number(fobLead) || ETA_LEAD_DAYS, overwrite: fobOverwrite }),
+                `ตั้ง FOB date ให้ ${s.stockNo} แล้ว`,
+              )) setFobStock(null)
+            }}>ตั้ง FOB ({target.length} เครื่อง)</button>
+          </>}>
+          <div className="row">
+            <label className="field"><span>FOB date *</span>
+              <input type="date" value={fobDate} onChange={e => setFobDate(e.target.value)} />
+            </label>
+            <label className="field"><span>ระยะขนส่ง (วัน) — เลือก {ETA_LEAD_MIN}–{ETA_LEAD_MAX}</span>
+              <input type="number" min={ETA_LEAD_MIN} max={ETA_LEAD_MAX} step={1}
+                value={fobLead} onChange={e => setFobLead(e.target.value)} />
+            </label>
+          </div>
+          {fobDate && (
+            <div className="muted" style={{ marginBottom: 10 }}>
+              → ETA to WH = <b>{fmtDate(addDaysIso(fobDate, Number(fobLead) || ETA_LEAD_DAYS))}</b> (FOB + {Number(fobLead) || ETA_LEAD_DAYS} วัน)
+            </div>
+          )}
+          <label className="field" style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-start' }}>
+            <input type="checkbox" style={{ width: 'auto', marginTop: 3 }} checked={fobOverwrite}
+              onChange={e => setFobOverwrite(e.target.checked)} />
+            <span style={{ margin: 0 }}>ทับ FOB เดิมที่เคยตั้งไว้
+              <div className="muted">ไม่ติ๊ก = เติมเฉพาะเครื่องที่ยังไม่มี FOB (ปลอดภัยกว่า)</div>
+            </span>
+          </label>
+          <div className="muted">
+            จะมีผลกับ <b>{target.length}</b> เครื่องจาก {stockUnits.length} เครื่องที่ยังไม่ถูกเบิก
+            {db.lbsUnits.filter(u => u.projectStockId === fobStock && u.status === 'issued').length > 0 &&
+              ' · เครื่องที่เบิกให้ Service แล้วจะถูกข้าม (ถูกล็อก)'}
+          </div>
+        </Modal>
+        )
+      })()}
+
+      {/* ต้นทุนรายเครื่อง — ย้ายออกจากตารางหลัก กดจากป้าย "มูลค่าคลัง" แทน */}
+      {costStock && (() => {
+        const s = db.projectStocks.find(x => x.id === costStock)!
+        const sum = stockSummary(db, costStock)
+        const list = db.lbsUnits.filter(u => u.projectStockId === costStock)
+        return (
+        <Modal title={`ต้นทุนรายเครื่อง — ${s.stockNo}`} size="wide" onClose={() => setCostStock(null)}
+          footer={<button onClick={() => setCostStock(null)}>ปิด</button>}>
+          <div className="muted" style={{ marginBottom: 10 }}>
+            มูลค่าคลังรวม <b>{fmtBaht(sum.totalCost)}</b> · กรอกราคาแล้ว {sum.costedUnits}/{sum.total} เครื่อง
+            {sum.costedUnits < sum.total && ' — เครื่องที่ยังไม่กรอกราคาไม่ถูกนับในมูลค่ารวม'}
+          </div>
+          <div className="table-scroll" style={{ maxHeight: 420, overflowY: 'auto' }}>
+            <table className="grid">
+              <thead><tr><th>#</th><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>ต้นทุน/เครื่อง</th><th>สถานะเครื่อง</th><th>Job No.</th></tr></thead>
+              <tbody>
+                {list.map((u, i) => (
+                  <tr key={u.id}>
+                    <td className="muted">{i + 1}</td>
+                    <td className="mono">{u.serialLvb}</td>
+                    <td className="mono">{u.serialOm}</td>
+                    <td style={{ textAlign: 'right' }}>{fmtBaht(u.unitCost)}</td>
+                    <td className="muted">{UNIT_STATUS_LABEL[u.status] ?? u.status}</td>
+                    <td>{u.jobId ? jobNo(u.jobId) : '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Modal>
+        )
+      })()}
 
       {/* ไฟล์ import ต่อคลัง (ปุ่ม ⬆ Import บนการ์ดเป็นคนกด) */}
       <input ref={importFileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }}
@@ -643,7 +855,7 @@ export default function StocksPage() {
                 </div>
                 <label className="field" style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-start', marginBottom: 6 }}>
                   <input type="radio" name="dupAction" checked={dupAction === 'update'} onChange={() => setDupAction('update')} style={{ marginTop: 3 }} />
-                  <span><b>อัพเดทข้อมูลเครื่องเดิม</b> — ต้นทุน · ลูกค้า/เบอร์/สถานที่ (แผน) · Plan PO receipt · Plan Delivery
+                  <span><b>อัพเดทข้อมูลเครื่องเดิม</b> — ต้นทุน · ลูกค้า/เบอร์/สถานที่ (แผน) · FOB date · ETA to WH · Plan Delivery
                     <div className="muted">ช่องที่เว้นว่างในไฟล์ = คงค่าเดิม (ไม่ล้างค่า) · ถ้าต้องการล้างค่าให้ใช้ปุ่ม "แก้ข้อมูล" รายเครื่อง</div>
                   </span>
                 </label>
@@ -667,7 +879,7 @@ export default function StocksPage() {
                     <thead><tr>
                       <th>#</th><th>Serial.LVB</th><th>Serial.OM</th>
                       <th style={{ textAlign: 'right' }}>ต้นทุนเดิม</th><th style={{ textAlign: 'right' }}>ต้นทุนใหม่</th>
-                      <th>ลูกค้า/เบอร์/สถานที่ (แผน)</th><th>Plan PO receipt</th><th>Plan Delivery</th><th>ผล</th>
+                      <th>ลูกค้า/เบอร์/สถานที่ (แผน)</th><th>FOB date</th><th>ETA to WH</th><th>Plan Delivery</th><th>ผล</th>
                     </tr></thead>
                     <tbody>
                       {dupUnits.map((d, i) => {
@@ -691,7 +903,12 @@ export default function StocksPage() {
                                 : d.hasJob ? <span className="muted">ข้าม (ใช้ค่าจาก Job)</span>
                                 : custParts.join(' · ')}
                             </td>
-                            <td>{skip ? <span className="muted">—</span> : (d.row.planPoReceipt ?? <span className="muted">คงเดิม</span>)}</td>
+                            <td>{skip ? <span className="muted">—</span> : (d.row.fob ?? <span className="muted">คงเดิม</span>)}</td>
+                            <td>
+                              {skip ? <span className="muted">—</span>
+                                : d.row.fob ? <>{addDaysIso(d.row.fob, d.row.leadDays ?? ETA_LEAD_DAYS)} <span className="badge neutral">+{d.row.leadDays ?? ETA_LEAD_DAYS} วัน</span></>
+                                : (d.row.planPoReceipt ?? <span className="muted">คงเดิม</span>)}
+                            </td>
                             <td>{skip ? <span className="muted">—</span> : (d.row.planDelivery ?? <span className="muted">คงเดิม</span>)}</td>
                             <td>
                               {d.locked ? <span className="badge red">🔒 เบิกแล้ว ข้าม</span>
@@ -713,8 +930,8 @@ export default function StocksPage() {
             <>
               <div className="muted" style={{ marginBottom: 6 }}>เครื่องใหม่ที่จะรับเข้า {newUnits.length} เครื่อง</div>
               <div className="table-scroll" style={{ maxHeight: 280, overflowY: 'auto' }}>
-                <table>
-                  <thead><tr><th>#</th><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>ต้นทุน/เครื่อง</th></tr></thead>
+                <table className="grid">
+                  <thead><tr><th>#</th><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>ต้นทุน/เครื่อง</th><th>FOB date</th><th>ETA to WH</th></tr></thead>
                   <tbody>
                     {newUnits.map((u, i) => (
                       <tr key={i}>
@@ -722,6 +939,8 @@ export default function StocksPage() {
                         <td className="mono">{u.lvb}</td>
                         <td className="mono">{u.om}</td>
                         <td style={{ textAlign: 'right' }}>{u.cost ? fmtBaht(Number(u.cost)) : '-'}</td>
+                        <td>{u.fob ?? '-'}</td>
+                        <td>{u.fob ? <>{addDaysIso(u.fob, u.leadDays ?? ETA_LEAD_DAYS)} <span className="badge neutral">+{u.leadDays ?? ETA_LEAD_DAYS} วัน</span></> : (u.planPoReceipt ?? '-')}</td>
                       </tr>
                     ))}
                   </tbody>

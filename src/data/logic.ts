@@ -1,5 +1,5 @@
 import type {
-  DB, Job, JobStatus, User, AccessoryRequest, Department,
+  DB, Job, JobStatus, User, AccessoryRequest, Department, LbsUnit,
   ApprovalType, ApprovalPayload, BudgetCosts, CostCategoryKey,
   SiteVisit, SiteVisitOutcome, UnitInstallOutcome, TeamMember, JobAssignment,
   StockMovementType, PaymentType,
@@ -28,6 +28,77 @@ export function nextNo(prefix: string, existing: string[]): string {
     })
   const next = (nums.length ? Math.max(...nums) : 0) + 1
   return `${prefix}-${year}-${String(next).padStart(4, '0')}`
+}
+
+// ---------------- วันที่ (ทำงานบน YYYY-MM-DD ล้วน — ไม่แตะ timezone) ----------------
+
+/** วันนี้ตามเวลาเครื่องผู้ใช้ (YYYY-MM-DD) — ใช้เทียบ ETA / กำหนดส่ง */
+export function todayIso(): string {
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+/** บวกวันบน YYYY-MM-DD → YYYY-MM-DD (ใช้ UTC ภายในเพื่อไม่ให้ DST เลื่อนวัน) */
+export function addDaysIso(iso: string, days: number): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso)
+  if (!m) return ''
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+/** ผลต่างเป็นจำนวนวัน (b − a) บน YYYY-MM-DD · ลบ = a อยู่หลัง b */
+export function daysBetweenIso(a: string, b: string): number {
+  if (!a || !b) return 0
+  return Math.round((Date.parse(`${b.slice(0, 10)}T00:00:00Z`) - Date.parse(`${a.slice(0, 10)}T00:00:00Z`)) / 86400000)
+}
+
+// ---------------- ETA to WH ของ LBS รายเครื่อง (sync 0049) ----------------
+
+/** ระยะขนส่งมาตรฐานจาก FOB ถึงคลัง (วัน) — ค่าตั้งต้นเมื่อไม่ได้เลือกเอง */
+export const ETA_LEAD_DAYS = 60
+/** ช่วงที่เลือกได้ต่อล็อต (มติ 2026-08-08) — ต่างกันตามเส้นทางเรือ/ซัพพลายเออร์ */
+export const ETA_LEAD_MIN = 45
+export const ETA_LEAD_MAX = 60
+
+/** ระยะขนส่งที่ใช้จริงของเครื่องนี้ (วัน) — ว่าง/นอกช่วง = ใช้ค่ามาตรฐาน */
+export function unitLeadDays(u: Pick<LbsUnit, 'etaLeadDays'>): number {
+  const d = u.etaLeadDays
+  return typeof d === 'number' && Number.isFinite(d) && d > 0 ? d : ETA_LEAD_DAYS
+}
+
+/** ตรวจค่าระยะขนส่งที่ผู้ใช้กรอก — คืนค่าที่จะเก็บ (undefined = ใช้ค่ามาตรฐาน) */
+export function normalizeLeadDays(d?: number): number | undefined {
+  if (d === undefined || d === null || Number.isNaN(d)) return undefined
+  if (!Number.isInteger(d) || d < 1 || d > 365)
+    throw new Error('ระยะขนส่ง (วัน) ต้องเป็นจำนวนเต็ม 1–365')
+  return d === ETA_LEAD_DAYS ? undefined : d      // เท่าค่ามาตรฐาน = ไม่ต้องเก็บ
+}
+
+/**
+ * ETA to WH = FOB + ระยะขนส่ง (อัตโนมัติ) · ถ้าไม่มี FOB ใช้ค่าที่กรอกเอง (planPoReceiptDate)
+ * คืน undefined = ไม่รู้กำหนดเข้าคลัง → ถือว่าของอยู่ในคลังแล้ว (ดู unitStockState)
+ */
+export function unitEta(u: Pick<LbsUnit, 'fobDate' | 'planPoReceiptDate' | 'etaLeadDays'>): string | undefined {
+  if (u.fobDate) return addDaysIso(u.fobDate, unitLeadDays(u))
+  return u.planPoReceiptDate || undefined
+}
+/** ETA ตัวนี้คำนวณมาจาก FOB หรือกรอกเอง — UI ใช้ติดป้าย "auto" */
+export function unitEtaIsAuto(u: Pick<LbsUnit, 'fobDate'>): boolean {
+  return !!u.fobDate
+}
+
+/**
+ * สถานะของที่คลัง: pending = ยังไม่ถึงกำหนดเข้าคลัง (อยู่ระหว่างขนส่ง) · on_hand = ของถึงคลังแล้ว
+ * กติกา: ETA > วันนี้ → Pending · ETA ถึง/เกินแล้ว หรือ **ไม่ระบุ ETA** → On Hand
+ * (ไม่ระบุ = เครื่องที่รับเข้าโดยไม่ได้บันทึกกำหนดเรือ = ของอยู่ในคลังจริงอยู่แล้ว)
+ */
+export function unitStockState(
+  u: Pick<LbsUnit, 'fobDate' | 'planPoReceiptDate' | 'etaLeadDays'>, today = todayIso(),
+): 'pending' | 'on_hand' {
+  const eta = unitEta(u)
+  return eta && eta > today ? 'pending' : 'on_hand'
 }
 
 function audit(db: DB, actor: User, entityType: string, entityId: string, action: string, detail: string): DB {
@@ -69,6 +140,27 @@ export function deriveJobStatus(db: DB, job: Job): JobStatus {
   if (allocated > 0) return 'allocated'
   return 'draft'
 }
+
+/**
+ * "กำหนดส่ง" ที่ใช้เรียงลำดับ/เตือน = วันที่ใกล้ที่สุดที่ยังต้องส่งมอบของงานนี้
+ * งานหลายจุดติดตั้ง (installSites, 0026) มีหลายกำหนด → เอาจุดที่ใกล้ที่สุดเป็นตัวแทน
+ * คืน undefined = ยังไม่ได้ระบุกำหนด (ไปอยู่ท้ายรายการ ไม่ใช่หัวรายการ)
+ */
+export function jobDueDate(job: Job): string | undefined {
+  const dates = [job.requiredDate, ...(job.installSites ?? []).map(s => s.requiredDate)]
+    .map(d => d?.slice(0, 10))
+    .filter((d): d is string => !!d)
+  return dates.length ? dates.sort()[0] : undefined
+}
+
+/** วันคงเหลือถึงกำหนดส่ง (ลบ = เลยกำหนด) · undefined = ไม่ได้ระบุกำหนด */
+export function jobDaysLeft(job: Job, today = todayIso()): number | undefined {
+  const due = jobDueDate(job)
+  return due ? daysBetweenIso(today, due) : undefined
+}
+
+/** เตือนเมื่อเหลือ ≤ 30 วันก่อนกำหนดส่ง (มติ 2026-08-08) */
+export const DUE_WARN_DAYS = 30
 
 export function jobAllocatedQty(db: DB, jobId: string): number {
   return db.lbsUnits.filter(u => u.jobId === jobId && u.status === 'allocated').length
@@ -131,6 +223,8 @@ function notifyIfBecameReady(_before: DB, after: DB, _jobId: string): DB {
 export interface UnitSerialInput {
   lvb: string; om: string; cost?: number
   customer?: string; phone?: string; location?: string
+  fob?: string                 // FOB date (0049) — ETA to WH คำนวณต่อจากนี้
+  leadDays?: number            // ระยะขนส่ง FOB → คลัง (วัน) · ว่าง = ค่ามาตรฐาน
   planPoReceipt?: string; planDelivery?: string
 }
 
@@ -140,6 +234,7 @@ function normalizeUnits(rows: UnitSerialInput[]): UnitSerialInput[] {
     .map(r => ({
       lvb: r.lvb.trim(), om: r.om.trim(), cost: r.cost,
       customer: t(r.customer), phone: t(r.phone), location: t(r.location),
+      fob: t(r.fob), leadDays: normalizeLeadDays(r.leadDays),
       planPoReceipt: t(r.planPoReceipt), planDelivery: t(r.planDelivery),
     }))
     .filter(r => r.lvb || r.om)
@@ -252,14 +347,18 @@ export function importUnitsToStock(
     if (x.projectStockId !== p.stockId) return x
     const u = upByKey.get(`${x.serialLvb}|${x.serialOm}`)
     if (!u) return x
-    const hasAny = u.cost !== undefined || u.customer || u.phone || u.location || u.planPoReceipt || u.planDelivery
+    const hasAny = u.cost !== undefined || u.customer || u.phone || u.location || u.fob
+      || u.leadDays !== undefined || u.planPoReceipt || u.planDelivery
     if (!hasAny) return x
     if (x.status === 'issued') { lockedCount++; return x }
     updatedCount++
     return {
       ...x,
       unitCost: u.cost ?? x.unitCost,
-      planPoReceiptDate: u.planPoReceipt ?? x.planPoReceiptDate,
+      fobDate: u.fob ?? x.fobDate,
+      etaLeadDays: u.leadDays ?? x.etaLeadDays,
+      // มี FOB ในไฟล์ → ETA เป็นค่าคำนวณ ล้างค่ากรอกมือทิ้ง (แหล่งความจริงเดียว — sync 0049)
+      planPoReceiptDate: u.fob ? undefined : (u.planPoReceipt ?? x.planPoReceiptDate),
       planDeliveryDate: u.planDelivery ?? x.planDeliveryDate,
       planCustomerName: x.jobId ? x.planCustomerName : (u.customer ?? x.planCustomerName),
       planContactPhone: x.jobId ? x.planContactPhone : (u.phone ?? x.planContactPhone),
@@ -275,7 +374,8 @@ export function importUnitsToStock(
       id: uid(), serialLvb: u.lvb, serialOm: u.om, projectStockId: p.stockId,
       status: 'in_stock' as const, jobId: null, unitCost: u.cost,
       planCustomerName: u.customer, planContactPhone: u.phone, planInstallLocation: u.location,
-      planPoReceiptDate: u.planPoReceipt, planDeliveryDate: u.planDelivery,
+      fobDate: u.fob, etaLeadDays: u.leadDays,
+      planPoReceiptDate: u.fob ? undefined : u.planPoReceipt, planDeliveryDate: u.planDelivery,
     })),
   ]
   let next: DB = { ...db, lbsUnits }
@@ -353,7 +453,7 @@ export function updateUnitPlan(
   p: {
     unitId: string; unitCost?: number
     planCustomerName?: string; planContactPhone?: string; planInstallLocation?: string
-    planPoReceiptDate?: string; planDeliveryDate?: string
+    fobDate?: string; etaLeadDays?: number; planPoReceiptDate?: string; planDeliveryDate?: string
   },
 ): DB {
   const unit = db.lbsUnits.find(u => u.id === p.unitId)
@@ -362,6 +462,7 @@ export function updateUnitPlan(
     throw new Error(`Serial ${unit.serialLvb} ถูกเบิกให้ Service แล้ว — แก้ข้อมูลรายเครื่องไม่ได้ (allocation ถูกล็อก)`)
   if (p.unitCost !== undefined && p.unitCost < 0) throw new Error('ต้นทุน/เครื่องต้องไม่ติดลบ')
   const clean = (s?: string) => { const t = s?.trim(); return t ? t : undefined }
+  const lead = normalizeLeadDays(p.etaLeadDays)
   const stock = db.projectStocks.find(s => s.id === unit.projectStockId)
   const next: DB = {
     ...db,
@@ -371,15 +472,47 @@ export function updateUnitPlan(
       planCustomerName: clean(p.planCustomerName),
       planContactPhone: clean(p.planContactPhone),
       planInstallLocation: clean(p.planInstallLocation),
-      planPoReceiptDate: clean(p.planPoReceiptDate),
+      fobDate: clean(p.fobDate),
+      etaLeadDays: lead,
+      // มี FOB → ETA เป็นค่าคำนวณ ไม่เก็บซ้ำ (sync 0049)
+      planPoReceiptDate: clean(p.fobDate) ? undefined : clean(p.planPoReceiptDate),
       planDeliveryDate: clean(p.planDeliveryDate),
     } : u),
   }
+  const eta = unitEta({
+    fobDate: clean(p.fobDate), etaLeadDays: lead, planPoReceiptDate: clean(p.planPoReceiptDate),
+  })
   return audit(next, actor, 'lbs_unit', p.unitId, 'update_unit_plan',
     `${stock?.stockNo ?? ''} · ${unit.serialLvb}/${unit.serialOm} → ต้นทุน ${p.unitCost ?? '-'} ฿` +
     ` · ลูกค้า(แผน) ${clean(p.planCustomerName) ?? '-'}` +
-    ` · Plan PO receipt ${clean(p.planPoReceiptDate) ?? '-'}` +
+    ` · FOB ${clean(p.fobDate) ?? '-'} +${lead ?? ETA_LEAD_DAYS} วัน · ETA to WH ${eta ?? '-'}` +
     ` · Plan Delivery ${clean(p.planDeliveryDate) ?? '-'}`)
+}
+
+// ตั้ง FOB date ให้ทั้งคลังในครั้งเดียว (0049) — ล็อตหนึ่ง PO มักลงเรือพร้อมกัน
+// overwrite = false → เติมเฉพาะเครื่องที่ยังไม่มี FOB (ไม่ทับของที่ตั้งไว้แล้ว)
+// ข้ามเครื่องที่เบิกแล้วเสมอ (trigger trg_block_issued_edit ฝั่ง LIVE ล็อกอยู่)
+export function setStockFob(
+  db: DB, actor: User, p: { stockId: string; fobDate: string; leadDays?: number; overwrite: boolean },
+): DB {
+  const stock = db.projectStocks.find(s => s.id === p.stockId)
+  if (!stock) throw new Error('ไม่พบ Project Stock')
+  const fob = p.fobDate?.trim()
+  if (!fob) throw new Error('กรุณาระบุ FOB date')
+  const lead = normalizeLeadDays(p.leadDays)
+  let changed = 0
+  const lbsUnits = db.lbsUnits.map(u => {
+    if (u.projectStockId !== p.stockId || u.status === 'issued') return u
+    if (!p.overwrite && u.fobDate) return u
+    if (u.fobDate === fob && u.etaLeadDays === lead) return u
+    changed++
+    // ETA กลายเป็นค่าคำนวณ → ล้างค่ากรอกมือ (แหล่งความจริงเดียว — sync 0049)
+    return { ...u, fobDate: fob, etaLeadDays: lead, planPoReceiptDate: undefined }
+  })
+  if (changed === 0) throw new Error('ไม่มีเครื่องที่ต้องอัพเดท (ทุกเครื่องมีค่านี้อยู่แล้ว หรือถูกเบิกไปหมดแล้ว)')
+  return audit({ ...db, lbsUnits }, actor, 'project_stock', p.stockId, 'set_stock_fob',
+    `ตั้ง FOB date ${fob} +${lead ?? ETA_LEAD_DAYS} วัน ให้ ${stock.stockNo} จำนวน ${changed} เครื่อง` +
+    ` (ETA to WH = ${addDaysIso(fob, lead ?? ETA_LEAD_DAYS)})${p.overwrite ? ' · ทับค่าเดิม' : ' · เฉพาะเครื่องที่ยังว่าง'}`)
 }
 
 // ---------------- Job (Project Dept) ----------------
@@ -1933,6 +2066,75 @@ export function rejectApprovalRequest(db: DB, actor: User, p: { requestId: strin
     `ตีกลับคำขอ${APPROVAL_TYPE_LABEL[req.type]} ของ ${job.jobNo} เหตุผล: ${p.reason.trim()}`)
 }
 
+// ---------------- ความเห็นบนคำขออนุมัติ (sync 0050) ----------------
+// VIP (ผู้บริหาร) รีวิวคำขอแล้วฝากความเห็น → แจ้ง Division · Division ตอบกลับได้ → แจ้ง VIP
+// ไม่เปลี่ยนสถานะคำขอ: อำนาจอนุมัติยังอยู่ที่ Division/Manage ตามเดิม (ไม่เพิ่มขั้นตอนบล็อกงาน)
+export function addApprovalComment(db: DB, actor: User, p: { requestId: string; body: string }): DB {
+  const req = db.approvalRequests.find(r => r.id === p.requestId)
+  if (!req) throw new Error('ไม่พบคำขออนุมัติ')
+  const body = assertCommentBody(p.body)
+  const job = db.jobs.find(j => j.id === req.jobId)
+  const { who, toDept } = commentAudience(actor)
+  let next: DB = {
+    ...db,
+    approvalComments: [...db.approvalComments, {
+      id: uid(), scope: 'approval' as const, requestId: p.requestId, body, authorId: actor.id, createdAt: now(),
+    }],
+  }
+  next = notify(next, {
+    type: 'approval_comment', dept: toDept, jobId: req.jobId,
+    message: `💬 ${who} ให้ความเห็นคำขอ${APPROVAL_TYPE_LABEL[req.type]} · ${job?.jobNo ?? '-'}: ${body.slice(0, 120)}`,
+  })
+  return audit(next, actor, 'approval_request', p.requestId, 'comment_request',
+    `${who} ให้ความเห็นคำขอ${APPROVAL_TYPE_LABEL[req.type]} ของ ${job?.jobNo ?? '-'}: ${body}`)
+}
+
+// ความเห็นเรื่องคลัง LBS โดยรวม (0051) — แสดงท้ายหน้า Project Stock
+// ไม่ผูกคลังใดคลังหนึ่ง: ผู้บริหารมองภาพรวมสต็อก (ล็อตไหนช้า · ควรสั่งเพิ่ม ฯลฯ)
+export function addStockComment(db: DB, actor: User, p: { body: string }): DB {
+  const body = assertCommentBody(p.body)
+  const { who, toDept } = commentAudience(actor)
+  const id = uid()
+  let next: DB = {
+    ...db,
+    approvalComments: [...db.approvalComments, {
+      id, scope: 'stock' as const, body, authorId: actor.id, createdAt: now(),
+    }],
+  }
+  next = notify(next, {
+    type: 'stock_comment', dept: toDept,
+    message: `💬 ${who} ให้ความเห็นเรื่องคลัง LBS: ${body.slice(0, 120)}`,
+  })
+  return audit(next, actor, 'project_stock', id, 'comment_stock',
+    `${who} ให้ความเห็นเรื่องคลัง LBS: ${body}`)
+}
+
+function assertCommentBody(raw: string): string {
+  const body = raw.trim()
+  if (!body) throw new Error('กรุณาพิมพ์ความเห็นก่อนส่ง')
+  if (body.length > 1000) throw new Error('ความเห็นยาวเกิน 1,000 ตัวอักษร')
+  return body
+}
+
+// VIP คอมเมนต์ → แจ้ง Division (ผู้ตัดสิน) · Division คอมเมนต์ → แจ้งกลับ VIP
+function commentAudience(actor: User): { who: string; toDept: Department } {
+  return actor.department === 'vip'
+    ? { who: 'VIP', toDept: 'sales' }
+    : { who: 'Division', toDept: 'vip' }
+}
+
+const byCreatedAt = (a: { createdAt: string }, b: { createdAt: string }) => a.createdAt.localeCompare(b.createdAt)
+
+/** ความเห็นของคำขอหนึ่งใบ เรียงเก่า→ใหม่ */
+export function approvalCommentsOf(db: DB, requestId: string) {
+  return db.approvalComments.filter(c => c.scope === 'approval' && c.requestId === requestId).slice().sort(byCreatedAt)
+}
+
+/** ความเห็นเรื่องคลัง LBS โดยรวม เรียงเก่า→ใหม่ */
+export function stockComments(db: DB) {
+  return db.approvalComments.filter(c => c.scope === 'stock').slice().sort(byCreatedAt)
+}
+
 // ---------------- Master Data: Items / Central stock ----------------
 
 export function createItem(
@@ -2109,9 +2311,16 @@ export function setNotificationLineStatus(db: DB, p: { ids: string[]; status: 'o
 export function stockSummary(db: DB, stockId: string) {
   const units = db.lbsUnits.filter(u => u.projectStockId === stockId)
   const withCost = units.filter(u => u.unitCost !== undefined)
+  const today = todayIso()
+  // คงเหลือ (in_stock) แยกตามสถานะของจริง: ยังไม่ถึงคลัง (Pending) vs ถึงคลังแล้ว (On Hand)
+  // → "พร้อมดึงเข้า Job จริง" = onHand เท่านั้น · Dashboard/การ์ดคลังใช้ตัวเลขคู่นี้
+  const inStock = units.filter(u => u.status === 'in_stock')
+  const pending = inStock.filter(u => unitStockState(u, today) === 'pending').length
   return {
     total: units.length,
-    available: units.filter(u => u.status === 'in_stock').length,
+    available: inStock.length,
+    pending,                          // in_stock แต่ ETA ยังไม่ถึง — ของอยู่ระหว่างขนส่ง
+    onHand: inStock.length - pending, // in_stock และของถึงคลังแล้ว — ดึงเข้า Job ได้จริง
     allocated: units.filter(u => u.status === 'allocated').length,
     issued: units.filter(u => u.status === 'issued').length,
     // มูลค่าคลัง = Σ ต้นทุนต่อเครื่อง (เฉพาะเครื่องที่กรอกราคา) · undefined ถ้ายังไม่มีเครื่องใดกรอกราคา

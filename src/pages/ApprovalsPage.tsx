@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
+import { approvalCommentsOf } from '../data/logic'
 import { Modal, useToast, useTryAction } from '../ui/components'
 import { supabase } from '../lib/supabase'
-import { APPROVAL_TYPE_LABEL, APPROVAL_STATUS_LABEL, fmtDate, fmtDateTime } from '../ui/format'
+import { APPROVAL_TYPE_LABEL, APPROVAL_STATUS_LABEL, DEPT_LABEL, fmtDate, fmtDateTime } from '../ui/format'
 import type { ApprovalRequest } from '../types'
 
 // โชว์ LINE User ID แบบปิดบางส่วน — พอให้ยืนยันว่าเชื่อมเครื่องไหน แต่ไม่เผยค่าเต็ม
@@ -24,6 +25,19 @@ export default function ApprovalsPage() {
   const [rejectReason, setRejectReason] = useState('')
   const [openJob, setOpenJob] = useState<Record<string, boolean>>({})   // ประวัติต่อ Job (เริ่มซ่อน)
   const canDecide = can(user, 'approval.decide')
+  // ความเห็นบนคำขอ (0050) — VIP (ผู้บริหาร) ฝากความเห็นให้ Division · Division ตอบกลับได้
+  const canComment = can(user, 'approval.comment')
+  const isVip = user?.department === 'vip'
+  const [commentBox, setCommentBox] = useState<Record<string, string>>({})   // ร่างความเห็นต่อคำขอ
+  const [openComments, setOpenComments] = useState<Record<string, boolean>>({})
+  const sendComment = async (requestId: string) => {
+    const body = (commentBox[requestId] ?? '').trim()
+    if (!body) return
+    if (await tryAction(
+      () => act.addApprovalComment({ requestId, body }),
+      isVip ? 'ส่งความเห็นถึง Division แล้ว' : 'บันทึกความเห็นแล้ว — แจ้ง VIP ให้ทราบ',
+    )) setCommentBox(p => ({ ...p, [requestId]: '' }))
+  }
   // เชื่อมบัญชี LINE (รับคำขอ + กดอนุมัติจากแชท 1:1) — เฉพาะผู้อนุมัติ โหมด LIVE
   const [lineCode, setLineCode] = useState<string | null>(null)
   const [lineBusy, setLineBusy] = useState(false)
@@ -80,13 +94,69 @@ export default function ApprovalsPage() {
     return `เหตุผล: ${r.payload.reason ?? '-'}${r.payload.receivedToCentral ? ' (วัสดุที่รับแล้วคืนเข้าสต็อกกลาง)' : ''}`
   }
 
+  // แถบความเห็น (VIP ↔ Division) ใต้คำขอแต่ละใบ — อ่านได้ทุกแผนก, เขียนได้เฉพาะ VIP/Division/Manage
+  const CommentThread = ({ r, cols }: { r: ApprovalRequest; cols: number }) => {
+    const list = approvalCommentsOf(db, r.id)
+    const open = openComments[r.id] ?? list.length > 0    // มีความเห็นแล้ว = กางให้เห็นเลย
+    if (list.length === 0 && !canComment) return null
+    return (
+      <tr>
+        <td colSpan={cols} style={{ background: 'var(--bg-soft, #fafbfc)', paddingTop: 8 }}>
+          <button className="small" onClick={() => setOpenComments(p => ({ ...p, [r.id]: !open }))}>
+            {open ? '▾' : '▸'} 💬 ความเห็นผู้บริหาร (VIP) {list.length > 0 && <b>· {list.length}</b>}
+          </button>
+          {open && (
+            <div style={{ marginTop: 8 }}>
+              {list.length === 0 && <div className="muted" style={{ marginBottom: 8 }}>ยังไม่มีความเห็น</div>}
+              {list.map(c => {
+                const author = db.users.find(u => u.id === c.authorId)
+                return (
+                  <div key={c.id} style={{ marginBottom: 8, paddingLeft: 10, borderLeft: '3px solid var(--border)' }}>
+                    <div className="muted" style={{ fontSize: 12 }}>
+                      <b style={{ color: 'var(--text)' }}>{author?.fullName ?? '-'}</b>
+                      {author && <span className="badge blue" style={{ marginLeft: 6 }}>{DEPT_LABEL[author.department]}</span>}
+                      {' '}· {fmtDateTime(c.createdAt)}
+                    </div>
+                    <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
+                  </div>
+                )
+              })}
+              {canComment && (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 6 }}>
+                  <textarea rows={2} style={{ flex: 1 }}
+                    value={commentBox[r.id] ?? ''}
+                    onChange={e => setCommentBox(p => ({ ...p, [r.id]: e.target.value }))}
+                    placeholder={isVip
+                      ? 'ความเห็น/ข้อสั่งการถึง Division เช่น "อนุมัติได้ แต่ให้ต่อรองราคากับซัพก่อน"'
+                      : 'ตอบกลับความเห็นของผู้บริหาร'} />
+                  <button className="primary small" disabled={!(commentBox[r.id] ?? '').trim()}
+                    onClick={() => sendComment(r.id)}>ส่งความเห็น</button>
+                </div>
+              )}
+            </div>
+          )}
+        </td>
+      </tr>
+    )
+  }
+
   return (
     <div>
       <div className="page-title">Awaiting Approval</div>
       <div className="page-sub">
         คำขอจากงานโครงการที่รอ Division พิจารณา — ออก PR · เบิกให้ Service · ยกเลิก Job · สลับ LBS
         {canDecide ? ' · อนุมัติแล้วระบบดำเนินการให้ทันที' : ' · ติดตามสถานะคำขอของแผนกคุณที่นี่'}
+        {isVip && ' · คุณคือผู้บริหาร (VIP): รีวิวคำขอแล้วฝากความเห็นได้ทุกใบ — Division จะได้รับแจ้งทันที (อำนาจอนุมัติยังอยู่ที่ Division)'}
       </div>
+      {isVip && (
+        <div className="panel">
+          <div className="panel-body muted">
+            👑 <b>โหมดผู้บริหาร (VIP)</b> — ดูข้อมูลได้ทุกหน้าแบบอ่านอย่างเดียว ·
+            ที่หน้านี้ให้ความเห็นบนคำขอแต่ละใบได้ (ใต้แต่ละแถว) ความเห็นจะแสดงคู่คำขอให้ Division เห็นก่อนตัดสิน
+            และเก็บไว้เป็นหลักฐานหลังตัดสินแล้ว
+          </div>
+        </div>
+      )}
 
       {canDecide && mode === 'supabase' && (
         <div className="panel">
@@ -147,9 +217,16 @@ export default function ApprovalsPage() {
               )}
               {pending.map(r => {
                 const job = jobOf(r.jobId)
+                const cmts = approvalCommentsOf(db, r.id)
                 return (
-                  <tr key={r.id}>
-                    <td><span className="badge blue">{APPROVAL_TYPE_LABEL[r.type]}</span></td>
+                  <Fragment key={r.id}>
+                  <tr>
+                    <td>
+                      <span className="badge blue">{APPROVAL_TYPE_LABEL[r.type]}</span>
+                      {cmts.length > 0 && (
+                        <div><span className="badge amber" title="มีความเห็นจากผู้บริหาร/Division">💬 {cmts.length}</span></div>
+                      )}
+                    </td>
                     <td>
                       <a style={{ cursor: 'pointer', color: 'var(--primary)', fontWeight: 600 }}
                         onClick={() => navigate(`/jobs/${r.jobId}`)}>{job?.jobNo ?? '-'}</a>
@@ -172,6 +249,8 @@ export default function ApprovalsPage() {
                       </td>
                     )}
                   </tr>
+                  <CommentThread r={r} cols={canDecide ? 6 : 5} />
+                  </Fragment>
                 )
               })}
             </tbody>
@@ -208,18 +287,22 @@ export default function ApprovalsPage() {
                   </thead>
                   <tbody>
                     {list.map(r => (
-                      <tr key={r.id}>
-                        <td>{APPROVAL_TYPE_LABEL[r.type]}</td>
-                        <td>
-                          <span className={`badge ${r.status === 'approved' ? 'green' : 'red'}`}>
-                            {APPROVAL_STATUS_LABEL[r.status]}
-                          </span>
-                          {r.rejectReason && <div className="muted">เหตุผล: {r.rejectReason}</div>}
-                        </td>
-                        <td>{userName(r.requestedBy)}</td>
-                        <td>{userName(r.decidedBy)}</td>
-                        <td>{fmtDateTime(r.decidedAt)}</td>
-                      </tr>
+                      <Fragment key={r.id}>
+                        <tr>
+                          <td>{APPROVAL_TYPE_LABEL[r.type]}</td>
+                          <td>
+                            <span className={`badge ${r.status === 'approved' ? 'green' : 'red'}`}>
+                              {APPROVAL_STATUS_LABEL[r.status]}
+                            </span>
+                            {r.rejectReason && <div className="muted">เหตุผล: {r.rejectReason}</div>}
+                          </td>
+                          <td>{userName(r.requestedBy)}</td>
+                          <td>{userName(r.decidedBy)}</td>
+                          <td>{fmtDateTime(r.decidedAt)}</td>
+                        </tr>
+                        {/* ความเห็นผู้บริหารยังอยู่คู่กับคำขอหลังตัดสินแล้ว — เป็นหลักฐานประกอบการตัดสิน */}
+                        <CommentThread r={r} cols={5} />
+                      </Fragment>
                     ))}
                   </tbody>
                 </table>

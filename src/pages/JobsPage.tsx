@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { deriveJobStatus, jobAllocatedQty } from '../data/logic'
+import { deriveJobStatus, jobAllocatedQty, jobDueDate, jobDaysLeft, todayIso, DUE_WARN_DAYS } from '../data/logic'
 import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
 import { fmtDate, JOB_STATUS_LABEL } from '../ui/format'
 import type { JobStatus } from '../types'
@@ -23,14 +23,27 @@ export default function JobsPage() {
   // 0042: Project ทำรายการได้เฉพาะงานที่ตัวเองเปิด → ต้องเห็นว่าใบไหนของใคร + กรองเฉพาะของตัวเองได้
   const isProject = user?.department === 'project'
   const userOf = (id: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
+  const today = todayIso()
+  // เรียงตาม "กำหนดส่ง" ใกล้สุดก่อน (sync Dashboard Job List) — งานที่ยังไม่ระบุกำหนดไปท้ายรายการ
+  // งานที่จบแล้ว (installed/cancelled) ไม่มีอะไรต้องเร่ง → เรียงใหม่→เก่าตามเดิม
   const jobs = db.jobs
-    .map(j => ({ job: j, status: deriveJobStatus(db, j) }))
+    .map(j => ({ job: j, status: deriveJobStatus(db, j), due: jobDueDate(j), daysLeft: jobDaysLeft(j, today) }))
     .filter(({ status }) =>
       filter === 'all' ? true
       : filter === 'active' ? status !== 'installed' && status !== 'cancelled'
       : status === filter)
     .filter(({ job }) => !mineOnly || job.openedBy === user?.id)
     .reverse()
+    .sort((a, b) => {
+      const done = (s: typeof a.status) => s === 'installed' || s === 'cancelled'
+      if (done(a.status) !== done(b.status)) return done(a.status) ? 1 : -1   // งานที่จบแล้วลงล่างสุด
+      if (done(a.status)) return 0                                            // คงลำดับใหม่→เก่าจาก reverse()
+      return (a.due ?? '9999-12-31').localeCompare(b.due ?? '9999-12-31')
+    })
+  const overdue = jobs.filter(x => x.daysLeft !== undefined && x.daysLeft < 0
+    && x.status !== 'installed' && x.status !== 'cancelled').length
+  const dueSoon = jobs.filter(x => x.daysLeft !== undefined && x.daysLeft >= 0 && x.daysLeft <= DUE_WARN_DAYS
+    && x.status !== 'installed' && x.status !== 'cancelled').length
 
   const submit = async () => {
     const { salePrice, ...rest } = form
@@ -51,7 +64,15 @@ export default function JobsPage() {
     <>
       <div className="page-title">Project ID (Jobs)</div>
       <div className="page-sub">
-        เปิดและติดตามงานโครงการตาม Scope ลูกค้า — สถานะไหลอัตโนมัติ Draft → Allocated → Procuring Accessory → Ready to Issue → Issued → Installed
+        เปิดและติดตามงานโครงการตาม Scope ลูกค้า — สถานะไหลอัตโนมัติ Draft → Allocated → Procuring Accessory → Ready to Issue → Issued → Installed ·
+        <b> เรียงตามกำหนดส่ง (ใกล้สุดก่อน)</b> · 🔴 เลยกำหนด · ⚠️ เหลือ ≤{DUE_WARN_DAYS} วัน
+        {(overdue > 0 || dueSoon > 0) && (
+          <>
+            {' '}
+            {overdue > 0 && <span className="badge red">เลยกำหนด {overdue}</span>}{' '}
+            {dueSoon > 0 && <span className="badge amber">≤{DUE_WARN_DAYS} วัน {dueSoon}</span>}
+          </>
+        )}
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -79,16 +100,20 @@ export default function JobsPage() {
           <table>
             <thead>
               <tr>
-                <th>Job No.</th><th>ลูกค้า / Scope</th><th>ผู้รับผิดชอบ</th><th>สถานที่ติดตั้ง</th><th>กำหนดส่ง</th>
+                <th>Job No.</th><th>ลูกค้า / Scope</th><th>ผู้รับผิดชอบ</th><th>สถานที่ติดตั้ง</th><th>กำหนดส่ง</th><th>เหลือ</th>
                 <th>LBS (ดึงแล้ว/Scope)</th><th>สถานะ</th>
               </tr>
             </thead>
             <tbody>
-              {jobs.length === 0 && <tr><td colSpan={7}><div className="empty">ไม่มี Job ในสถานะนี้</div></td></tr>}
-              {jobs.map(({ job, status }) => {
+              {jobs.length === 0 && <tr><td colSpan={8}><div className="empty">ไม่มี Job ในสถานะนี้</div></td></tr>}
+              {jobs.map(({ job, status, due, daysLeft }) => {
                 const allocated = (status === 'issued' || status === 'installed')
                   ? db.lbsUnits.filter(u => u.jobId === job.id && u.status === 'issued').length
                   : jobAllocatedQty(db, job.id)
+                // งานที่จบแล้วไม่ต้องเตือน — เหลือแต่ข้อมูลกำหนดส่งไว้อ้างอิง
+                const active = status !== 'installed' && status !== 'cancelled'
+                const late = active && daysLeft !== undefined && daysLeft < 0
+                const soon = active && daysLeft !== undefined && daysLeft >= 0 && daysLeft <= DUE_WARN_DAYS
                 return (
                   <tr key={job.id} className="clickable" onClick={() => navigate(`/jobs/${job.id}`)}>
                     <td><b>{job.jobNo}</b></td>
@@ -98,7 +123,20 @@ export default function JobsPage() {
                       {isProject && job.openedBy === user?.id && <span className="badge green" style={{ marginLeft: 6 }}>ของฉัน</span>}
                     </td>
                     <td>{job.installLocation || '-'}{job.installSites?.length ? <span className="badge blue" style={{ marginLeft: 6 }}>+{job.installSites.length} จุด</span> : null}</td>
-                    <td>{fmtDate(job.requiredDate)}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {late && <span title="เลยกำหนดส่งแล้ว">🔴 </span>}
+                      {soon && <span title={`เหลือ ≤ ${DUE_WARN_DAYS} วันก่อนกำหนดส่ง`}>⚠️ </span>}
+                      {due ? fmtDate(due) : <span className="muted">ยังไม่ระบุ</span>}
+                      {(job.installSites?.length ?? 0) > 0 && (
+                        <div className="muted" style={{ fontSize: 11 }}>ใกล้สุดจาก {(job.installSites?.length ?? 0) + 1} จุด</div>
+                      )}
+                    </td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {!active || daysLeft === undefined ? <span className="muted">-</span>
+                        : late ? <span className="badge red">เลย {Math.abs(daysLeft)} วัน</span>
+                        : soon ? <span className="badge amber">{daysLeft} วัน</span>
+                        : <span className="muted">{daysLeft} วัน</span>}
+                    </td>
                     <td>
                       {allocated}/{job.lbsQtyRequired}
                       <div className="progress"><div style={{ width: `${Math.min(100, (allocated / job.lbsQtyRequired) * 100)}%` }} /></div>
