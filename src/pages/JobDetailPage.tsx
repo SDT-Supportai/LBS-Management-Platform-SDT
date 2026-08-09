@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
-import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, PAYMENT_TYPES } from '../data/logic'
+import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, PAYMENT_TYPES } from '../data/logic'
 import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
 import { ACC_STATUS_LABEL, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType } from '../types'
@@ -118,8 +118,10 @@ export default function JobDetailPage() {
   const returnableUnits = db.lbsUnits.filter(u => u.jobId === jobId && u.status === 'allocated')
   // cap ตาม Scope: ดึงรวมได้ไม่เกินจำนวนตอนเปิด Job
   const drawCap = Math.max(0, job.lbsQtyRequired - returnableUnits.length)
-  // เครื่องที่เลือกอยู่แต่ ETA ยังไม่ถึง (0049) — เตือนอย่างเดียว ไม่บล็อก (จองล่วงหน้าได้)
+  // เครื่องที่เลือกอยู่แต่ ETA ยังไม่ถึง (0049) — ดึงจองล่วงหน้าได้ แต่กันตอนเบิก (0052)
   const pickedPending = drawableUnits.filter(u => picked.has(u.id) && unitStockState(u) === 'pending').length
+  // Job ถือของที่ยังไม่ถึงคลัง → เบิกให้ Service ไม่ได้ (guard ตัวจริงอยู่ที่ logic/RPC)
+  const etaBlock = jobEtaBlockReason(db, job.id)
   const toggleDraw = (id: string) => setPicked(prev => {
     const next = new Set(prev)
     if (next.has(id)) next.delete(id)
@@ -390,6 +392,19 @@ export default function JobDetailPage() {
         </div></div>
       )}
 
+      {/* ของที่ดึงเข้า Job แล้วแต่ยังไม่ถึงคลัง (0052) — บอกเหตุผลตรงนี้ ไม่ให้ผู้ใช้งงว่าทำไมปุ่มเบิกกดไม่ได้ */}
+      {!locked && etaBlock && (
+        <div className="panel" style={{ borderLeft: '4px solid var(--amber, #d97706)', marginBottom: 18 }}>
+          <div className="panel-body">
+            🚢 <b>{etaBlock}</b>
+            <div className="muted" style={{ marginTop: 4 }}>
+              เบิกได้เมื่อ ETA to WH ผ่านไปแล้ว · ถ้าของถึงคลังก่อนกำหนดให้แก้ ETA ที่หน้า Project Stock →
+              ปุ่ม "แก้ข้อมูล" รายเครื่อง · หรือคืนเครื่องที่ยังไม่มาแล้วดึงเครื่องที่ On Hand แทน
+            </div>
+          </div>
+        </div>
+      )}
+
       {canManage && !locked && (
         <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
           <button className="primary" onClick={() => { setDrawStock(db.projectStocks.find(s => s.status === 'open')?.id ?? ''); openModal('draw') }}>+ ดึง LBS เข้า Job</button>
@@ -397,9 +412,10 @@ export default function JobDetailPage() {
           <button className="success" onClick={() => {
             setIssueForm({ startDate: job.requiredDate || '', endDate: job.requiredDate || '', location: job.installLocation || '', note: '' })
             openModal('issue')
-          }} disabled={status !== 'ready_to_issue' || pendingApprovalOf('issue_job')}
+          }} disabled={status !== 'ready_to_issue' || pendingApprovalOf('issue_job') || !!etaBlock}
             title={status !== 'ready_to_issue' ? 'ต้องมี LBS ครบตาม Scope และ Accessory ครบทุกรายการ'
-              : pendingApprovalOf('issue_job') ? 'มีคำขอเบิกรอ Division พิจารณาอยู่แล้ว' : ''}>
+              : pendingApprovalOf('issue_job') ? 'มีคำขอเบิกรอ Division พิจารณาอยู่แล้ว'
+              : etaBlock ?? ''}>
             {isManage ? 'เบิกทั้งหมดให้ Service' : 'ขออนุมัติเบิกให้ Service'}
           </button>
           <button onClick={() => {
@@ -807,7 +823,9 @@ export default function JobDetailPage() {
                 const sum = stockSummary(db, s.id)
                 return (
                   <option key={s.id} value={s.id}>
-                    {s.stockNo} — On Hand {sum.onHand} เครื่อง{sum.pending > 0 ? ` (รอเข้าคลังอีก ${sum.pending})` : ''}
+                    {s.stockNo} — เลือกได้ {sum.available} เครื่อง (On Hand {sum.onHand}
+                    {sum.pending > 0 ? ` · Pending ${sum.pending}` : ''}
+                    {sum.unknown > 0 ? ` · ไม่ระบุ ETA ${sum.unknown}` : ''})
                   </option>
                 )
               })}
@@ -822,7 +840,8 @@ export default function JobDetailPage() {
           {pickedPending > 0 && (
             <div style={{ color: 'var(--amber, #d97706)', marginBottom: 8 }}>
               ⚠️ ในนี้มี <b>{pickedPending} เครื่องที่ยังไม่เข้าคลัง</b> (Status = Pending) —
-              ดึงจองล่วงหน้าได้ แต่เบิกให้ Service ไม่ได้จนกว่าของจะถึงคลังจริง ตรวจ ETA ให้ตรงกับกำหนดติดตั้งก่อน
+              ดึงจองล่วงหน้าได้ แต่ <b>ระบบจะไม่ให้เบิกให้ Service จนกว่าของจะถึงคลัง</b> (ETA ผ่านไปแล้ว)
+              ตรวจ ETA ให้ตรงกับกำหนดติดตั้งก่อน
             </div>
           )}
           <SerialPicker units={drawableUnits} selected={picked} toggle={toggleDraw} showEta />

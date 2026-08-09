@@ -17,12 +17,13 @@ export default function DashboardPage() {
   const totals = db.projectStocks.reduce(
     (acc, s) => {
       const sum = stockSummary(db, s.id)
-      acc.total += sum.total; acc.available += sum.available
+      acc.total += sum.total
       acc.pending += sum.pending; acc.onHand += sum.onHand; acc.unknown += sum.unknown
       acc.allocated += sum.allocated; acc.issued += sum.issued
       return acc
     },
-    { total: 0, available: 0, pending: 0, onHand: 0, unknown: 0, allocated: 0, issued: 0 },
+    // ไม่เก็บ available (= in_stock ทั้งหมด) แยก — ทับซ้อนกับ onHand + pending + unknown
+    { total: 0, pending: 0, onHand: 0, unknown: 0, allocated: 0, issued: 0 },
   )
 
   const statusCount = new Map<JobStatus, number>()
@@ -63,7 +64,7 @@ export default function DashboardPage() {
 
       <div className="cards">
         <div className="card">
-          <div className="label">LBS ทั้งหมดในระบบ</div>
+          <div className="label">Total LBS Target Plan</div>
           <div className="value">{totals.total} <span className="muted">เครื่อง</span></div>
           <div className="hint">
             พร้อมดึง (On Hand) {totals.onHand}
@@ -73,7 +74,7 @@ export default function DashboardPage() {
           </div>
         </div>
         <div className="card">
-          <div className="label">Job กำลังดำเนินการ</div>
+          <div className="label">Jobs In Progress</div>
           <div className="value">{db.jobs.filter(j => !j.terminalStatus || j.terminalStatus === 'issued').length}</div>
           <div className="hint">
             {overdue > 0 && <><b style={{ color: 'var(--danger)' }}>เลยกำหนดส่ง {overdue} งาน</b> · </>}
@@ -82,17 +83,17 @@ export default function DashboardPage() {
           </div>
         </div>
         <div className="card">
-          <div className="label">PR รอ Purchasing ออก PO</div>
+          <div className="label">PRs Awaiting PO Issuance</div>
           <div className="value">{pendingPr.length}</div>
           <div className="hint"><Link to="/purchasing">ไปหน้า Purchasing →</Link></div>
         </div>
         <div className="card">
-          <div className="label">PO รอรับของ</div>
+          <div className="label">POs Pending Delivery</div>
           <div className="value">{openPo.length}</div>
           <div className="hint">รับของครบแล้ว Job จะขยับสถานะอัตโนมัติ</div>
         </div>
         <div className="card">
-          <div className="label">งานติดตั้ง (Service)</div>
+          <div className="label">Installation Work (Service)</div>
           <div className="value">{svc.installed}<span className="muted">/{svc.units} เครื่อง</span></div>
           <div className="hint">
             {svc.unassigned > 0

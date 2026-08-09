@@ -48,6 +48,10 @@ export interface LbsUnit {
   planCustomerName?: string
   planContactPhone?: string
   planInstallLocation?: string
+  // Plan PO receipt (0053) — วันที่คาดว่าจะได้รับ PO จากลูกค้า (แผนฝั่งขาย)
+  // ⚠️ คนละตัวกับ ETA to WH (วันของเข้าคลัง) · ชื่อเดิมของคอลัมน์ planPoReceiptDate ก่อน 0049
+  //    เคยใช้คำนี้ในความหมาย "ของเข้าคลัง" — 0053 คืนชื่อนี้ให้ฟิลด์ใหม่ตามที่ผู้ใช้ต้องการ
+  planPoDate?: string          // YYYY-MM-DD
   // FOB date (0049) — วันที่ของลงเรือจากผู้ผลิต · ETA to WH = FOB + etaLeadDays (คำนวณอัตโนมัติ ไม่เก็บซ้ำ)
   fobDate?: string             // YYYY-MM-DD
   // ระยะขนส่ง FOB → คลัง (วัน) — เลือกได้ 45–60 ตามเส้นทาง/ซัพพลายเออร์ · ว่าง = ใช้ค่ามาตรฐาน 60

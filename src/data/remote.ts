@@ -43,6 +43,8 @@ function mapUnit(r: Row): LbsUnit {
     planCustomerName: r.plan_customer_name ?? undefined,
     planContactPhone: r.plan_contact_phone ?? undefined,
     planInstallLocation: r.plan_install_location ?? undefined,
+    // Plan PO receipt (0053) — วันที่คาดว่าจะได้รับ PO จากลูกค้า (คนละตัวกับ ETA to WH)
+    planPoDate: r.plan_po_date ?? undefined,
     // FOB date (0049) — ETA to WH derive จากตัวนี้ + ระยะขนส่ง (ไม่มีคอลัมน์ ETA ใน DB)
     fobDate: r.fob_date ?? undefined,
     etaLeadDays: r.eta_lead_days != null ? Number(r.eta_lead_days) : undefined,
@@ -310,12 +312,14 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
 interface UnitPayload {
   lvb: string; om: string; cost?: number
   customer?: string; phone?: string; location?: string
+  planPo?: string                       // Plan PO receipt (0053)
   fob?: string; leadDays?: number       // FOB date + ระยะขนส่ง (0049)
   planPoReceipt?: string; planDelivery?: string
 }
 const toUnitJson = (u: UnitPayload) => ({
   lvb: u.lvb, om: u.om, cost: u.cost ?? null,
   customer: u.customer ?? null, phone: u.phone ?? null, location: u.location ?? null,
+  plan_po: u.planPo ?? null,
   fob: u.fob ?? null, lead_days: u.leadDays ?? null,
   plan_po_receipt: u.planPoReceipt ?? null, plan_delivery: u.planDelivery ?? null,
 })
@@ -346,11 +350,12 @@ export function remoteActions(sb: SupabaseClient) {
     updateUnitInfo: (p: { unitId: string; serialLvb: string; serialOm: string }) =>
       rpc(sb, 'rpc_update_unit_info', { p_unit_id: p.unitId, p_serial_lvb: p.serialLvb, p_serial_om: p.serialOm }),
     // 0043/0049 — ฟอร์มส่งครบทุกช่องทุกครั้ง: null = ล้างค่า ไม่ใช่ "ไม่เปลี่ยน"
-    updateUnitPlan: (p: { unitId: string; unitCost?: number; planCustomerName?: string; planContactPhone?: string; planInstallLocation?: string; fobDate?: string; etaLeadDays?: number; planPoReceiptDate?: string; planDeliveryDate?: string }) =>
+    updateUnitPlan: (p: { unitId: string; unitCost?: number; planCustomerName?: string; planContactPhone?: string; planInstallLocation?: string; planPoDate?: string; fobDate?: string; etaLeadDays?: number; planPoReceiptDate?: string; planDeliveryDate?: string }) =>
       rpc(sb, 'rpc_update_unit_plan', {
         p_unit_id: p.unitId, p_unit_cost: p.unitCost ?? null,
         p_customer_name: p.planCustomerName ?? null, p_contact_phone: p.planContactPhone ?? null,
         p_install_location: p.planInstallLocation ?? null,
+        p_plan_po_date: p.planPoDate || null,
         p_fob_date: p.fobDate || null, p_lead_days: p.etaLeadDays ?? null,
         p_plan_po_receipt: p.planPoReceiptDate || null, p_plan_delivery: p.planDeliveryDate || null,
       }),

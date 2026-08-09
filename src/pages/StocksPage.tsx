@@ -16,7 +16,7 @@ interface PlanForm {
   serialLvb: string; serialOm: string
   origLvb: string; origOm: string
   cost: string
-  customerName: string; contactPhone: string; installLocation: string
+  customerName: string; contactPhone: string; installLocation: string; planPoDate: string
   fobDate: string; leadDays: string; planPoReceiptDate: string; planDeliveryDate: string
 }
 
@@ -24,15 +24,31 @@ interface PlanForm {
 interface UnitRow {
   lvb: string; om: string; cost: string
   customer?: string; phone?: string; location?: string
+  planPo?: string
   fob?: string; leadDays?: number; planPoReceipt?: string; planDelivery?: string
 }
 const emptyRow = (): UnitRow => ({ lvb: '', om: '', cost: '' })
+
+// เครื่องที่ดึงเข้า Job แล้ว: ช่องที่ Job เป็นเจ้าของถูกตัดทิ้งก่อนส่ง (กฎ 0014)
+// — Customer / Contact Number / Location / Site / Plan PO receipt ค่าจริงมาจาก Job
+type DupRow = { row: UnitRow; hasJob?: boolean; locked?: boolean }
+const effectiveRow = (d: DupRow): UnitRow =>
+  d.hasJob
+    ? { ...d.row, customer: undefined, phone: undefined, location: undefined, planPo: undefined }
+    : d.row
+
+// แถวนี้จะเปลี่ยนอะไรจริงไหมหลังตัดช่องของ Job ออกแล้ว — ตรงกับกติกา hasAny ฝั่ง logic/RPC
+const rowChangesSomething = (d: DupRow): boolean => {
+  const r = effectiveRow(d)
+  return r.cost.trim() !== '' || !!r.customer || !!r.phone || !!r.location || !!r.planPo
+    || !!r.fob || r.leadDays !== undefined || !!r.planPoReceipt || !!r.planDelivery
+}
 
 // UnitRow (ฟอร์ม string) → payload logic/RPC · ช่องว่าง = ไม่ส่งไป (คงค่าเดิมฝั่ง server)
 const rowsToUnits = (rows: UnitRow[]) =>
   rows.map(r => ({
     lvb: r.lvb, om: r.om, cost: toBudgetNum(r.cost),
-    customer: r.customer, phone: r.phone, location: r.location,
+    customer: r.customer, phone: r.phone, location: r.location, planPo: r.planPo,
     fob: r.fob, leadDays: r.leadDays, planPoReceipt: r.planPoReceipt, planDelivery: r.planDelivery,
   }))
 
@@ -50,10 +66,6 @@ function toIsoDate(v: unknown): string {
 
 // สเปกคงที่ของ LBS ที่รับเข้าคลัง (แสดงเป็น Description ทุกคลัง)
 const LBS_DESCRIPTION = '115 kV Load Break Switch with SF6 Gas Interrupters, 2000A'
-
-const UNIT_STATUS_LABEL: Record<string, string> = {
-  in_stock: 'อยู่ในสต็อก', allocated: 'ถูกดึงเข้า Job', issued: 'เบิกติดตั้งแล้ว',
-}
 
 // ---------------------------------------------------------------
 // สเปกคอลัมน์ไฟล์ Excel (0052) — แหล่งความจริงเดียวของทั้ง Export / Import / ชีตวิธีกรอก
@@ -74,21 +86,29 @@ const SHEET_COLS: ColSpec[] = [
   { key: 'Cost/Set', io: 'in', width: 14, format: 'ตัวเลข (บาท)',
     note: 'ต้นทุนต่อเครื่อง — ตัวเลขไม่ติดลบ · ปล่อยว่าง = คงค่าเดิม',
     alias: ['ต้นทุน/เครื่อง', 'ต้นทุน', 'cost', 'unit_cost', 'cost/set'] },
-  { key: 'ชื่อลูกค้า', io: 'in', width: 24, format: 'ข้อความ',
+  { key: 'Customer', io: 'in', width: 24, format: 'ข้อความ',
     note: 'ข้อมูลแผน — เขียนได้เฉพาะเครื่องที่ยังไม่ถูกดึงเข้า Job (เครื่องที่มี Job แล้วใช้ค่าจาก Job)',
-    alias: ['ลูกค้า', 'customer', 'customer_name'] },
-  { key: 'เบอร์ติดต่อ', io: 'in', width: 14, format: 'ข้อความ',
-    note: 'ข้อมูลแผน — เงื่อนไขเดียวกับชื่อลูกค้า', alias: ['เบอร์', 'phone', 'contact_phone'] },
-  { key: 'สถานที่ติดตั้ง', io: 'in', width: 28, format: 'ข้อความ',
-    note: 'ข้อมูลแผน — เงื่อนไขเดียวกับชื่อลูกค้า', alias: ['สถานที่', 'location', 'install_location'] },
+    alias: ['ชื่อลูกค้า', 'ลูกค้า', 'customer', 'customer_name'] },
+  { key: 'Contact Number', io: 'in', width: 16, format: 'ข้อความ',
+    note: 'ข้อมูลแผน — เงื่อนไขเดียวกับ Customer',
+    alias: ['เบอร์ติดต่อ', 'เบอร์', 'phone', 'contact_phone', 'contact number'] },
+  { key: 'Location / Site', io: 'in', width: 28, format: 'ข้อความ',
+    note: 'ข้อมูลแผน — เงื่อนไขเดียวกับ Customer',
+    alias: ['สถานที่ติดตั้ง', 'สถานที่', 'location', 'install_location', 'location / site', 'location/site'] },
+  { key: 'Plan PO receipt', io: 'in', width: 15, format: 'YYYY-MM-DD',
+    note: 'วันที่คาดว่าจะได้รับ PO จากลูกค้า (แผนฝั่งขาย) — คนละตัวกับ ETA to WH ที่เป็นวันของเข้าคลัง · เงื่อนไขเดียวกับ Customer',
+    alias: ['plan po receipt', 'plan_po', 'plan po'] },
   { key: 'FOB date', io: 'in', width: 13, format: 'YYYY-MM-DD',
     note: 'วันที่ของลงเรือ — กรอกช่องนี้แล้วระบบคำนวณ ETA to WH ให้เอง', alias: ['fob', 'fob_date', 'fob date'] },
   { key: 'ระยะขนส่ง (วัน)', io: 'in', width: 15, format: `จำนวนเต็ม ${ETA_LEAD_MIN}–${ETA_LEAD_MAX}`,
     note: `ระยะเวลา FOB → คลัง · ปล่อยว่าง = ใช้ค่ามาตรฐาน ${ETA_LEAD_DAYS} วัน · ใช้ได้เมื่อกรอก FOB date เท่านั้น`,
     alias: ['ระยะขนส่ง', 'lead', 'lead_days', 'lead days'] },
+  // ⚠️ ห้ามใส่ 'Plan PO receipt' เป็น alias ของ ETA อีก — 0053 ใช้ชื่อนั้นเป็นคอลัมน์ใหม่ (วันรับ PO จากลูกค้า)
+  //    ถ้าเหลือไว้ ไฟล์รูปแบบใหม่จะถูกอ่านวันรับ PO ไปลง ETA to WH ผิดช่อง
+  //    (ไฟล์ที่ export ก่อน 0049 ซึ่งใช้หัว "Plan PO receipt" ในความหมายวันของเข้าคลัง จึงต้องแก้หัวเป็น "ETA to WH" ก่อน import)
   { key: 'ETA to WH', io: 'in', width: 13, format: 'YYYY-MM-DD',
     note: 'วันที่ของถึงคลัง — กรอกเองได้เฉพาะเมื่อ "ไม่มี" FOB date · ถ้ามี FOB ระบบคำนวณทับให้เสมอ',
-    alias: ['eta', 'eta to wh', 'Plan PO receipt', 'plan po receipt', 'plan_po_receipt'] },
+    alias: ['eta', 'eta to wh', 'plan_po_receipt'] },
   { key: 'Plan Delivery', io: 'in', width: 14, format: 'YYYY-MM-DD',
     note: 'กำหนดส่งมอบ/ติดตั้งตามแผน', alias: ['plan delivery', 'plan_delivery'] },
   { key: 'Status', io: 'auto', width: 18, format: 'ข้อความ',
@@ -237,9 +257,10 @@ export default function StocksPage() {
         'Serial.LVB': u.serialLvb,
         'Serial.OM': u.serialOm,
         'Cost/Set': u.unitCost ?? '',
-        'ชื่อลูกค้า': job?.customerName ?? u.planCustomerName ?? '',
-        'เบอร์ติดต่อ': job?.contactPhone ?? u.planContactPhone ?? '',
-        'สถานที่ติดตั้ง': job?.installLocation || u.planInstallLocation || '',
+        'Customer': job?.customerName ?? u.planCustomerName ?? '',
+        'Contact Number': job?.contactPhone ?? u.planContactPhone ?? '',
+        'Location / Site': job?.installLocation || u.planInstallLocation || '',
+        'Plan PO receipt': u.planPoDate ?? '',
         'FOB date': u.fobDate ?? '',
         'ระยะขนส่ง (วัน)': u.fobDate ? unitLeadDays(u) : '',
         // ETA to WH / Status = ค่าคำนวณ · import จะไม่เขียน ETA ทับถ้าแถวนั้นมี FOB
@@ -325,14 +346,15 @@ export default function StocksPage() {
         // แถวที่ไม่มี FOB จึงจะรับ ETA เป็นค่ากรอกเอง (ลงคอลัมน์เดิม plan_po_receipt_date)
         const etaCell = toIsoDate(rawCell(row, colKeys('ETA to WH'))) || undefined
         const leadStr = cell(row, colKeys('ระยะขนส่ง (วัน)'))
-        if (leadStr !== '' && (!Number.isInteger(Number(leadStr)) || Number(leadStr) < 1 || Number(leadStr) > 365))
-          return void errors.push(`${no}: ระยะขนส่ง (วัน) "${leadStr}" ต้องเป็นจำนวนเต็ม 1–365`)
+        if (leadStr !== '' && (!Number.isInteger(Number(leadStr)) || Number(leadStr) < ETA_LEAD_MIN || Number(leadStr) > ETA_LEAD_MAX))
+          return void errors.push(`${no}: ระยะขนส่ง (วัน) "${leadStr}" ต้องเป็นจำนวนเต็ม ${ETA_LEAD_MIN}–${ETA_LEAD_MAX}`)
         if (leadStr !== '' && !fob)
           return void errors.push(`${no}: กรอก "ระยะขนส่ง (วัน)" แต่ไม่ได้กรอก "FOB date" — ระยะขนส่งใช้คำนวณต่อจาก FOB เท่านั้น`)
         const plan = {
-          customer: cell(row, colKeys('ชื่อลูกค้า')) || undefined,
-          phone: cell(row, colKeys('เบอร์ติดต่อ')) || undefined,
-          location: cell(row, colKeys('สถานที่ติดตั้ง')) || undefined,
+          customer: cell(row, colKeys('Customer')) || undefined,
+          phone: cell(row, colKeys('Contact Number')) || undefined,
+          location: cell(row, colKeys('Location / Site')) || undefined,
+          planPo: toIsoDate(rawCell(row, colKeys('Plan PO receipt'))) || undefined,
           fob,
           // ระยะขนส่งมีความหมายเฉพาะเมื่อมี FOB (ไม่มี FOB = ETA กรอกตรงๆ ไม่ต้องคำนวณ)
           leadDays: fob && leadStr !== '' ? Number(leadStr) : undefined,
@@ -384,18 +406,21 @@ export default function StocksPage() {
     setImporting(true)
     const newUnits = rowsToUnits(importPreview.newUnits)
     // ส่งเครื่องที่เบิกแล้วไปด้วย ให้ฝั่ง server/logic เป็นคนข้าม+นับ → audit บันทึกครบว่าข้ามกี่เครื่อง
-    // (กติกาอยู่ที่เดียว ไม่ต้อง maintain 2 ที่) · เครื่องที่มี Job ตัดเฉพาะช่องลูกค้าออกก่อนส่ง
+    // (กติกาอยู่ที่เดียว ไม่ต้อง maintain 2 ที่)
     const updateUnits = dupAction === 'update'
-      ? rowsToUnits(importPreview.dupUnits.map(d => d.hasJob
-          ? { ...d.row, customer: undefined, phone: undefined, location: undefined }
-          : d.row))
+      ? rowsToUnits(importPreview.dupUnits.map(d => effectiveRow(d)))
       : []
     const lockedCount = dupAction === 'update' ? importPreview.dupUnits.filter(d => d.locked).length : 0
+    // นับเฉพาะแถวที่ "เปลี่ยนอะไรจริง" ให้ตรงกับกติกา hasAny ฝั่ง logic/RPC
+    // ไม่งั้นแถวที่ทุกช่องถูกตัดทิ้ง (เช่นเครื่องมี Job แล้วกรอกมาแต่ช่องของ Job) จะถูกนับว่าอัพเดท
+    const changedCount = dupAction === 'update'
+      ? importPreview.dupUnits.filter(d => !d.locked && rowChangesSomething(d)).length
+      : 0
     const msg = [
       newUnits.length ? `รับเข้า ${newUnits.length} เครื่อง` : '',
-      updateUnits.length - lockedCount > 0 ? `อัพเดทข้อมูล ${updateUnits.length - lockedCount} เครื่อง` : '',
+      changedCount > 0 ? `อัพเดทข้อมูล ${changedCount} เครื่อง` : '',
       lockedCount ? `ข้ามเครื่องที่เบิกแล้ว ${lockedCount} เครื่อง` : '',
-    ].filter(Boolean).join(' · ')
+    ].filter(Boolean).join(' · ') || 'ไม่มีข้อมูลที่เปลี่ยน'
     const ok = await tryAction(
       () => act.importUnitsToStock({ stockId: importPreview.stockId, newUnits, updateUnits }),
       `${msg} เข้า ${importPreview.stockNo} แล้ว`,
@@ -489,7 +514,7 @@ export default function StocksPage() {
                 {/* grid = ตีเส้นตารางบางๆ ทุกช่อง (อ่านตารางกว้างง่ายขึ้น)
                     Status = flow เดียวจบทั้งชีวิตเครื่อง (0052) — ไม่มีคอลัมน์ "สถานะเครื่อง" แยกแล้ว */}
                 <table className="grid">
-                  <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>Cost/Set</th><th>ชื่อลูกค้า</th><th>เบอร์ติดต่อ</th><th>สถานที่ติดตั้ง</th><th>Job No.</th><th>FOB date</th><th>ETA to WH</th><th>Status</th><th>Plan Delivery</th><th>Actual Delivery</th>{canManage && <th></th>}</tr></thead>
+                  <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>Cost/Set</th><th>Customer</th><th>Contact Number</th><th>Location / Site</th><th>Plan PO receipt</th><th>Job No.</th><th>FOB date</th><th>ETA to WH</th><th>Status</th><th>Plan Delivery</th><th>Actual Delivery</th>{canManage && <th></th>}</tr></thead>
                   <tbody>
                     {units.map(u => {
                       // ข้อมูลลูกค้า "จริง" ref จาก Job ที่เครื่องถูกดึงเข้า (0014) — ยังไม่เข้า Job ใช้ค่าแผน (0043)
@@ -514,6 +539,7 @@ export default function StocksPage() {
                           <td>{cust ?? '-'}{planned && cust && <span className="badge neutral" style={{ marginLeft: 6 }}>แผน</span>}</td>
                           <td>{phone ?? '-'}</td>
                           <td>{loc || '-'}</td>
+                          <td>{fmtDate(u.planPoDate)}</td>
                           <td>{u.jobId ? <Link to={`/jobs/${u.jobId}`}>{jobNo(u.jobId)}</Link> : '-'}</td>
                           <td>{fmtDate(u.fobDate)}</td>
                           <td>
@@ -536,7 +562,7 @@ export default function StocksPage() {
                                     origLvb: u.serialLvb, origOm: u.serialOm,
                                     cost: u.unitCost !== undefined ? String(u.unitCost) : '',
                                     customerName: u.planCustomerName ?? '', contactPhone: u.planContactPhone ?? '',
-                                    installLocation: u.planInstallLocation ?? '',
+                                    installLocation: u.planInstallLocation ?? '', planPoDate: u.planPoDate ?? '',
                                     fobDate: u.fobDate ?? '', leadDays: String(unitLeadDays(u)),
                                     planPoReceiptDate: u.planPoReceiptDate ?? '', planDeliveryDate: u.planDeliveryDate ?? '',
                                   })}>แก้ข้อมูล</button>}
@@ -743,6 +769,7 @@ export default function StocksPage() {
                     planCustomerName: editPlan.customerName,
                     planContactPhone: editPlan.contactPhone,
                     planInstallLocation: editPlan.installLocation,
+                    planPoDate: editPlan.planPoDate,
                     fobDate: editPlan.fobDate,
                     etaLeadDays: editPlan.fobDate ? lead : undefined,
                     // มี FOB → ETA เป็นค่าคำนวณ ไม่เก็บซ้ำ (ล้างค่ากรอกมือทิ้ง)
@@ -783,20 +810,28 @@ export default function StocksPage() {
               <input type="number" min={0} value={editPlan.cost}
                 onChange={e => setEditPlan({ ...editPlan, cost: e.target.value })} />
             </label>
-            <label className="field"><span>ชื่อลูกค้า (แผน)</span>
+            <label className="field"><span>Customer (แผน)</span>
               <input value={editPlan.customerName}
                 onChange={e => setEditPlan({ ...editPlan, customerName: e.target.value })} placeholder="PEA เชียงใหม่" />
             </label>
           </div>
           <div className="row">
-            <label className="field"><span>เบอร์ติดต่อ (แผน)</span>
+            <label className="field"><span>Contact Number (แผน)</span>
               <input value={editPlan.contactPhone}
                 onChange={e => setEditPlan({ ...editPlan, contactPhone: e.target.value })} placeholder="08x-xxx-xxxx" />
             </label>
-            <label className="field"><span>สถานที่ติดตั้ง (แผน)</span>
+            <label className="field"><span>Location / Site (แผน)</span>
               <input value={editPlan.installLocation}
                 onChange={e => setEditPlan({ ...editPlan, installLocation: e.target.value })} />
             </label>
+            <label className="field"><span>Plan PO receipt</span>
+              <input type="date" value={editPlan.planPoDate}
+                onChange={e => setEditPlan({ ...editPlan, planPoDate: e.target.value })} />
+            </label>
+          </div>
+          <div className="muted" style={{ marginTop: -6, marginBottom: 10 }}>
+            <b>Plan PO receipt</b> = วันที่คาดว่าจะได้รับ PO จากลูกค้า (แผนฝั่งขาย) —
+            คนละตัวกับ <b>ETA to WH</b> ที่เป็นวันของเข้าคลังและใช้คำนวณ Status
           </div>
           <div className="row">
             <label className="field"><span>FOB date (วันลงเรือ)</span>
@@ -918,9 +953,11 @@ export default function StocksPage() {
         const { newUnits, dupUnits, errors } = importPreview
         const updatable = dupUnits.filter(d => !d.locked)
         const lockedCount = dupUnits.length - updatable.length
-        const nothingToDo = newUnits.length === 0 && (updatable.length === 0 || dupAction === 'skip')
+        // นับเฉพาะแถวที่เปลี่ยนอะไรจริง — แถวที่กรอกมาแต่ช่องของ Job จะไม่มีผล ต้องไม่โฆษณาว่า "อัพเดท"
+        const changeable = updatable.filter(rowChangesSomething)
+        const nothingToDo = newUnits.length === 0 && (changeable.length === 0 || dupAction === 'skip')
         const confirmLabel = importing ? 'กำลังนำเข้า…'
-          : `ยืนยัน — รับใหม่ ${newUnits.length}${dupAction === 'update' && updatable.length ? ` · อัพเดท ${updatable.length}` : ''} เครื่อง`
+          : `ยืนยัน — รับใหม่ ${newUnits.length}${dupAction === 'update' && changeable.length ? ` · อัพเดท ${changeable.length}` : ''} เครื่อง`
         return (
         <Modal title={`Import Serial เข้า ${importPreview.stockNo} — ตรวจสอบก่อนยืนยัน`} size="wide" onClose={() => setImportPreview(null)}
           footer={<>
@@ -947,7 +984,7 @@ export default function StocksPage() {
                 </div>
                 <label className="field" style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-start', marginBottom: 6 }}>
                   <input type="radio" name="dupAction" checked={dupAction === 'update'} onChange={() => setDupAction('update')} style={{ marginTop: 3 }} />
-                  <span><b>อัพเดทข้อมูลเครื่องเดิม</b> — Cost/Set · ลูกค้า/เบอร์/สถานที่ (แผน) · FOB date · ระยะขนส่ง · ETA to WH · Plan Delivery
+                  <span><b>อัพเดทข้อมูลเครื่องเดิม</b> — Cost/Set · Customer / Contact Number / Location / Site (แผน) · Plan PO receipt · FOB date · ระยะขนส่ง · ETA to WH · Plan Delivery
                     <div className="muted">ช่องที่เว้นว่างในไฟล์ = คงค่าเดิม (ไม่ล้างค่า) · ถ้าต้องการล้างค่าให้ใช้ปุ่ม "แก้ข้อมูล" รายเครื่อง</div>
                   </span>
                 </label>
@@ -962,7 +999,7 @@ export default function StocksPage() {
                 )}
                 {dupUnits.some(d => d.hasJob && !d.locked && (d.row.customer || d.row.phone || d.row.location)) && (
                   <div className="muted" style={{ marginTop: 6 }}>
-                    ℹ️ เครื่องที่ดึงเข้า Job แล้ว ระบบจะ<b>ข้ามช่องลูกค้า/เบอร์/สถานที่</b> — ข้อมูลจริงมาจาก Job
+                    ℹ️ เครื่องที่ดึงเข้า Job แล้ว ระบบจะ<b>ข้ามช่อง Customer / Contact Number / Location / Site / Plan PO receipt</b> — ข้อมูลจริงมาจาก Job
                     (แก้ที่หน้า Job) · ส่วนต้นทุนกับวันแผนยังอัพเดทให้ตามไฟล์
                   </div>
                 )}
@@ -971,7 +1008,7 @@ export default function StocksPage() {
                     <thead><tr>
                       <th>#</th><th>Serial.LVB</th><th>Serial.OM</th>
                       <th style={{ textAlign: 'right' }}>Cost/Set เดิม</th><th style={{ textAlign: 'right' }}>Cost/Set ใหม่</th>
-                      <th>ลูกค้า/เบอร์/สถานที่ (แผน)</th><th>FOB date</th><th>ETA to WH</th><th>Plan Delivery</th><th>ผล</th>
+                      <th>Customer / Contact / Location (แผน)</th><th>Plan PO receipt</th><th>FOB date</th><th>ETA to WH</th><th>Plan Delivery</th><th>ผล</th>
                     </tr></thead>
                     <tbody>
                       {dupUnits.map((d, i) => {
@@ -995,6 +1032,12 @@ export default function StocksPage() {
                                 : d.hasJob ? <span className="muted">ข้าม (ใช้ค่าจาก Job)</span>
                                 : custParts.join(' · ')}
                             </td>
+                            <td>
+                              {skip ? <span className="muted">—</span>
+                                : !d.row.planPo ? <span className="muted">คงเดิม</span>
+                                : d.hasJob ? <span className="muted">ข้าม (ใช้ค่าจาก Job)</span>
+                                : d.row.planPo}
+                            </td>
                             <td>{skip ? <span className="muted">—</span> : (d.row.fob ?? <span className="muted">คงเดิม</span>)}</td>
                             <td>
                               {skip ? <span className="muted">—</span>
@@ -1005,7 +1048,8 @@ export default function StocksPage() {
                             <td>
                               {d.locked ? <span className="badge red">🔒 เบิกแล้ว ข้าม</span>
                                 : dupAction === 'skip' ? <span className="badge neutral">ข้าม</span>
-                                : <span className="badge green">อัพเดท</span>}
+                                : rowChangesSomething(d) ? <span className="badge green">อัพเดท</span>
+                                : <span className="badge neutral" title="ทุกช่องที่กรอกมาเป็นช่องที่ Job เป็นเจ้าของ หรือเว้นว่างทั้งแถว">ไม่มีอะไรเปลี่ยน</span>}
                             </td>
                           </tr>
                         )

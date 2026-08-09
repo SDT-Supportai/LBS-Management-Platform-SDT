@@ -68,17 +68,27 @@ export function unitLeadDays(u: Pick<LbsUnit, 'etaLeadDays'>): number {
   return typeof d === 'number' && Number.isFinite(d) && d > 0 ? d : ETA_LEAD_DAYS
 }
 
-/** ตรวจค่าระยะขนส่งที่ผู้ใช้กรอก — คืนค่าที่จะเก็บ (undefined = ใช้ค่ามาตรฐาน) */
+/**
+ * ตรวจค่าระยะขนส่งที่ผู้ใช้กรอก — คืนค่าที่ "กรอกมา" ตามเดิม (undefined = ไม่ได้กรอก)
+ * ⚠️ ห้ามยุบ 60 → undefined ที่นี่ ไม่งั้นแยกไม่ออกระหว่าง "ไม่ได้กรอก" (คงค่าเดิม)
+ *    กับ "กรอก 60" (ตั้งใจรีเซ็ตกลับค่ามาตรฐาน) — ตอน import จะทำให้รีเซ็ตไม่ได้
+ *    การยุบ 60 → undefined ทำตอนเก็บลง DB เท่านั้น (leadDaysToStore)
+ */
 export function normalizeLeadDays(d?: number): number | undefined {
   if (d === undefined || d === null || Number.isNaN(d)) return undefined
-  if (!Number.isInteger(d) || d < 1 || d > 365)
-    throw new Error('ระยะขนส่ง (วัน) ต้องเป็นจำนวนเต็ม 1–365')
-  return d === ETA_LEAD_DAYS ? undefined : d      // เท่าค่ามาตรฐาน = ไม่ต้องเก็บ
+  if (!Number.isInteger(d) || d < ETA_LEAD_MIN || d > ETA_LEAD_MAX)
+    throw new Error(`ระยะขนส่ง (วัน) ต้องเป็นจำนวนเต็ม ${ETA_LEAD_MIN}–${ETA_LEAD_MAX}`)
+  return d
+}
+
+/** ค่าที่เก็บลง DB — เท่าค่ามาตรฐาน = เก็บ undefined (แหล่งความจริงเดียว) */
+export function leadDaysToStore(d?: number): number | undefined {
+  return d === undefined || d === ETA_LEAD_DAYS ? undefined : d
 }
 
 /**
  * ETA to WH = FOB + ระยะขนส่ง (อัตโนมัติ) · ถ้าไม่มี FOB ใช้ค่าที่กรอกเอง (planPoReceiptDate)
- * คืน undefined = ไม่รู้กำหนดเข้าคลัง → ถือว่าของอยู่ในคลังแล้ว (ดู unitStockState)
+ * คืน undefined = ยังไม่ระบุกำหนดเข้าคลัง → Status = '?' ไม่ใช่ On Hand (ดู unitStockState)
  */
 export function unitEta(u: Pick<LbsUnit, 'fobDate' | 'planPoReceiptDate' | 'etaLeadDays'>): string | undefined {
   if (u.fobDate) return addDaysIso(u.fobDate, unitLeadDays(u))
@@ -120,6 +130,27 @@ export function unitFlowState(db: DB, u: LbsUnit, today = todayIso()): UnitFlowS
   }
   if (u.status === 'allocated') return 'allocated'
   return unitStockState(u, today)
+}
+
+/**
+ * เครื่องที่ Job ถืออยู่แต่ "ยืนยันได้ว่ายังไม่ถึงคลัง" (Status = Pending) — sync 0052
+ * ใช้กันการเบิกให้ Service ทั้งที่ของยังอยู่บนเรือ (ทีมออกหน้างานแล้วเสียเที่ยว)
+ * ⚠️ นับเฉพาะ pending เท่านั้น — เครื่องที่ยังไม่ระบุ ETA ('?') ไม่บล็อก
+ *    เพราะ "ไม่รู้" ไม่ใช่ "รู้ว่ายังไม่มา" · ถ้าบล็อกด้วยจะเบิกงานเดิมทั้งระบบไม่ได้เลย
+ */
+export function jobPendingEtaUnits(db: DB, jobId: string, today = todayIso()) {
+  return db.lbsUnits.filter(u =>
+    u.jobId === jobId && u.status === 'allocated' && unitStockState(u, today) === 'pending')
+}
+
+/** ข้อความเตือน/กันเบิก — คืน undefined = เบิกได้ */
+export function jobEtaBlockReason(db: DB, jobId: string, today = todayIso()): string | undefined {
+  const pending = jobPendingEtaUnits(db, jobId, today)
+  if (pending.length === 0) return undefined
+  const worst = pending.map(u => unitEta(u)!).sort().slice(-1)[0]
+  return `ยังเบิกให้ Service ไม่ได้ — มี LBS ${pending.length} เครื่องที่ของยังไม่เข้าคลัง` +
+    ` (Status = Pending · ETA ล่าสุด ${worst})` +
+    ` เช่น ${pending.slice(0, 3).map(u => u.serialLvb).join(', ')}${pending.length > 3 ? ' …' : ''}`
 }
 
 function audit(db: DB, actor: User, entityType: string, entityId: string, action: string, detail: string): DB {
@@ -244,6 +275,7 @@ function notifyIfBecameReady(_before: DB, after: DB, _jobId: string): DB {
 export interface UnitSerialInput {
   lvb: string; om: string; cost?: number
   customer?: string; phone?: string; location?: string
+  planPo?: string              // Plan PO receipt (0053) — วันที่คาดว่าจะได้รับ PO จากลูกค้า
   fob?: string                 // FOB date (0049) — ETA to WH คำนวณต่อจากนี้
   leadDays?: number            // ระยะขนส่ง FOB → คลัง (วัน) · ว่าง = ค่ามาตรฐาน
   planPoReceipt?: string; planDelivery?: string
@@ -254,7 +286,7 @@ function normalizeUnits(rows: UnitSerialInput[]): UnitSerialInput[] {
   return rows
     .map(r => ({
       lvb: r.lvb.trim(), om: r.om.trim(), cost: r.cost,
-      customer: t(r.customer), phone: t(r.phone), location: t(r.location),
+      customer: t(r.customer), phone: t(r.phone), location: t(r.location), planPo: t(r.planPo),
       fob: t(r.fob), leadDays: normalizeLeadDays(r.leadDays),
       planPoReceipt: t(r.planPoReceipt), planDelivery: t(r.planDelivery),
     }))
@@ -368,7 +400,7 @@ export function importUnitsToStock(
     if (x.projectStockId !== p.stockId) return x
     const u = upByKey.get(`${x.serialLvb}|${x.serialOm}`)
     if (!u) return x
-    const hasAny = u.cost !== undefined || u.customer || u.phone || u.location || u.fob
+    const hasAny = u.cost !== undefined || u.customer || u.phone || u.location || u.planPo || u.fob
       || u.leadDays !== undefined || u.planPoReceipt || u.planDelivery
     if (!hasAny) return x
     if (x.status === 'issued') { lockedCount++; return x }
@@ -377,13 +409,16 @@ export function importUnitsToStock(
       ...x,
       unitCost: u.cost ?? x.unitCost,
       fobDate: u.fob ?? x.fobDate,
-      etaLeadDays: u.leadDays ?? x.etaLeadDays,
+      // เว้นว่างในไฟล์ = คงค่าเดิม · กรอกมา = ใช้ค่าใหม่ (กรอก 60 = รีเซ็ตกลับค่ามาตรฐาน)
+      etaLeadDays: u.leadDays === undefined ? x.etaLeadDays : leadDaysToStore(u.leadDays),
       // มี FOB ในไฟล์ → ETA เป็นค่าคำนวณ ล้างค่ากรอกมือทิ้ง (แหล่งความจริงเดียว — sync 0049)
       planPoReceiptDate: u.fob ? undefined : (u.planPoReceipt ?? x.planPoReceiptDate),
       planDeliveryDate: u.planDelivery ?? x.planDeliveryDate,
       planCustomerName: x.jobId ? x.planCustomerName : (u.customer ?? x.planCustomerName),
       planContactPhone: x.jobId ? x.planContactPhone : (u.phone ?? x.planContactPhone),
       planInstallLocation: x.jobId ? x.planInstallLocation : (u.location ?? x.planInstallLocation),
+      // Plan PO receipt (0053) = แผนฝั่งลูกค้า → กติกาเดียวกับ Customer/Contact/Location (0014)
+      planPoDate: x.jobId ? x.planPoDate : (u.planPo ?? x.planPoDate),
     }
   })
   if (newUnits.length === 0 && updatedCount === 0 && lockedCount > 0)
@@ -395,7 +430,8 @@ export function importUnitsToStock(
       id: uid(), serialLvb: u.lvb, serialOm: u.om, projectStockId: p.stockId,
       status: 'in_stock' as const, jobId: null, unitCost: u.cost,
       planCustomerName: u.customer, planContactPhone: u.phone, planInstallLocation: u.location,
-      fobDate: u.fob, etaLeadDays: u.leadDays,
+      planPoDate: u.planPo,
+      fobDate: u.fob, etaLeadDays: leadDaysToStore(u.leadDays),
       planPoReceiptDate: u.fob ? undefined : u.planPoReceipt, planDeliveryDate: u.planDelivery,
     })),
   ]
@@ -474,6 +510,7 @@ export function updateUnitPlan(
   p: {
     unitId: string; unitCost?: number
     planCustomerName?: string; planContactPhone?: string; planInstallLocation?: string
+    planPoDate?: string
     fobDate?: string; etaLeadDays?: number; planPoReceiptDate?: string; planDeliveryDate?: string
   },
 ): DB {
@@ -483,7 +520,7 @@ export function updateUnitPlan(
     throw new Error(`Serial ${unit.serialLvb} ถูกเบิกให้ Service แล้ว — แก้ข้อมูลรายเครื่องไม่ได้ (allocation ถูกล็อก)`)
   if (p.unitCost !== undefined && p.unitCost < 0) throw new Error('ต้นทุน/เครื่องต้องไม่ติดลบ')
   const clean = (s?: string) => { const t = s?.trim(); return t ? t : undefined }
-  const lead = normalizeLeadDays(p.etaLeadDays)
+  const lead = leadDaysToStore(normalizeLeadDays(p.etaLeadDays))
   const stock = db.projectStocks.find(s => s.id === unit.projectStockId)
   const next: DB = {
     ...db,
@@ -493,6 +530,7 @@ export function updateUnitPlan(
       planCustomerName: clean(p.planCustomerName),
       planContactPhone: clean(p.planContactPhone),
       planInstallLocation: clean(p.planInstallLocation),
+      planPoDate: clean(p.planPoDate),
       fobDate: clean(p.fobDate),
       etaLeadDays: lead,
       // มี FOB → ETA เป็นค่าคำนวณ ไม่เก็บซ้ำ (sync 0049)
@@ -505,7 +543,8 @@ export function updateUnitPlan(
   })
   return audit(next, actor, 'lbs_unit', p.unitId, 'update_unit_plan',
     `${stock?.stockNo ?? ''} · ${unit.serialLvb}/${unit.serialOm} → ต้นทุน ${p.unitCost ?? '-'} ฿` +
-    ` · ลูกค้า(แผน) ${clean(p.planCustomerName) ?? '-'}` +
+    ` · Customer(แผน) ${clean(p.planCustomerName) ?? '-'}` +
+    ` · Plan PO receipt ${clean(p.planPoDate) ?? '-'}` +
     ` · FOB ${clean(p.fobDate) ?? '-'} +${lead ?? ETA_LEAD_DAYS} วัน · ETA to WH ${eta ?? '-'}` +
     ` · Plan Delivery ${clean(p.planDeliveryDate) ?? '-'}`)
 }
@@ -520,7 +559,7 @@ export function setStockFob(
   if (!stock) throw new Error('ไม่พบ Project Stock')
   const fob = p.fobDate?.trim()
   if (!fob) throw new Error('กรุณาระบุ FOB date')
-  const lead = normalizeLeadDays(p.leadDays)
+  const lead = leadDaysToStore(normalizeLeadDays(p.leadDays))
   let changed = 0
   const lbsUnits = db.lbsUnits.map(u => {
     if (u.projectStockId !== p.stockId || u.status === 'issued') return u
@@ -1360,6 +1399,9 @@ export function issueJob(
   const status = deriveJobStatus(db, job)
   if (status !== 'ready_to_issue')
     throw new Error(`${job.jobNo} ยังไม่พร้อมเบิก — ต้องมี LBS ครบตาม Scope และ Accessory ครบทุกรายการ`)
+  // sync 0052 — ของยังไม่เข้าคลังจริง ห้ามเบิกให้ Service (กันทีมออกหน้างานแล้วเสียเที่ยว)
+  const etaBlock = jobEtaBlockReason(db, p.jobId)
+  if (etaBlock) throw new Error(`${job.jobNo}: ${etaBlock}`)
   if (!p.startDate || !p.endDate) throw new Error('กรุณาระบุกำหนดวันติดตั้ง (Start–End)')
   if (p.endDate < p.startDate) throw new Error('วันสิ้นสุดต้องไม่ก่อนวันเริ่มติดตั้ง')
   if (!p.location.trim()) throw new Error('กรุณาระบุสถานที่ติดตั้ง (Location)')
@@ -1991,6 +2033,9 @@ export function requestApproval(
   } else if (p.type === 'issue_job') {
     if (deriveJobStatus(db, job) !== 'ready_to_issue')
       throw new Error(`${job.jobNo} ยังไม่พร้อมเบิก — ต้องมี LBS ครบตาม Scope และ Accessory ครบทุกรายการ`)
+    // กันตั้งแต่ตอนขอ — ไม่ให้คำขอที่เบิกไม่ได้ไปค้างรอ Division พิจารณา (sync 0052)
+    const etaBlock = jobEtaBlockReason(db, p.jobId)
+    if (etaBlock) throw new Error(`${job.jobNo}: ${etaBlock}`)
     if (!p.payload.startDate || !p.payload.endDate) throw new Error('กรุณาระบุกำหนดวันติดตั้ง (Start–End)')
     if (p.payload.endDate < p.payload.startDate) throw new Error('วันสิ้นสุดต้องไม่ก่อนวันเริ่มติดตั้ง')
     if (!p.payload.location?.trim()) throw new Error('กรุณาระบุสถานที่ติดตั้ง (Location)')
@@ -2126,7 +2171,9 @@ export function addStockComment(db: DB, actor: User, p: { body: string }): DB {
     type: 'stock_comment', dept: toDept,
     message: `💬 ${who} ให้ความเห็นเรื่องคลัง LBS: ${body.slice(0, 120)}`,
   })
-  return audit(next, actor, 'project_stock', id, 'comment_stock',
+  // entityType = 'stock_comment' ไม่ใช่ 'project_stock' — entity_id เป็น id ของคอมเมนต์
+  // ถ้าใช้ 'project_stock' จะชี้ไปยังคลังที่ไม่มีอยู่จริง ทำให้ join/drill-down จาก audit พัง
+  return audit(next, actor, 'stock_comment', id, 'comment_stock',
     `${who} ให้ความเห็นเรื่องคลัง LBS: ${body}`)
 }
 
@@ -2137,11 +2184,12 @@ function assertCommentBody(raw: string): string {
   return body
 }
 
-// VIP คอมเมนต์ → แจ้ง Division (ผู้ตัดสิน) · Division คอมเมนต์ → แจ้งกลับ VIP
+// VIP คอมเมนต์ → แจ้ง Division (ผู้ตัดสิน) · Division/Manage คอมเมนต์ → แจ้งกลับ VIP
+// ⚠️ ต้องแยก admin ออกจาก sales — ไม่งั้น Manage คอมเมนต์แล้วถูกบันทึกว่าเป็น "Division"
+// ทั้งใน audit และข้อความแจ้งเตือน (สอบภายหลังว่าใครสั่งการไม่ตรงตัวคน)
 function commentAudience(actor: User): { who: string; toDept: Department } {
-  return actor.department === 'vip'
-    ? { who: 'VIP', toDept: 'sales' }
-    : { who: 'Division', toDept: 'vip' }
+  if (actor.department === 'vip') return { who: 'VIP', toDept: 'sales' }
+  return { who: actor.department === 'admin' ? 'Manage' : 'Division', toDept: 'vip' }
 }
 
 const byCreatedAt = (a: { createdAt: string }, b: { createdAt: string }) => a.createdAt.localeCompare(b.createdAt)

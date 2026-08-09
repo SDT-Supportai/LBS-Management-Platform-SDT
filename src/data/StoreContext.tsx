@@ -131,7 +131,8 @@ function migrateDb(raw: unknown): DB {
       qtyReceived: r.qtyReceived ?? (r.status === 'received' ? r.qtyRequested : 0),
     })),
     approvalRequests: d.approvalRequests ?? [],
-    approvalComments: d.approvalComments ?? [],
+    // scope เพิ่มใน 0051 — คอมเมนต์ที่บันทึกไว้ก่อนหน้าไม่มีฟิลด์นี้ ถ้าไม่เติมจะถูก filter ทิ้งทั้งหมด
+    approvalComments: (d.approvalComments ?? []).map(c => ({ ...c, scope: c.scope ?? 'approval' })),
     notifications: d.notifications ?? [],
     siteVisits: d.siteVisits ?? [],
     unitInstallations: d.unitInstallations ?? [],

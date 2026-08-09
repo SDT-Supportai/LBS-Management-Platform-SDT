@@ -5,12 +5,70 @@ import { approvalCommentsOf } from '../data/logic'
 import { Modal, useToast, useTryAction } from '../ui/components'
 import { supabase } from '../lib/supabase'
 import { APPROVAL_TYPE_LABEL, APPROVAL_STATUS_LABEL, DEPT_LABEL, fmtDate, fmtDateTime } from '../ui/format'
-import type { ApprovalRequest } from '../types'
+import type { ApprovalRequest, DB } from '../types'
 
 // โชว์ LINE User ID แบบปิดบางส่วน — พอให้ยืนยันว่าเชื่อมเครื่องไหน แต่ไม่เผยค่าเต็ม
 function maskLineId(id?: string): string {
   if (!id) return '-'
   return id.length <= 10 ? id : `${id.slice(0, 6)}…${id.slice(-4)}`
+}
+
+// แถบความเห็น (VIP ↔ Division) ใต้คำขอแต่ละใบ — อ่านได้ทุกแผนก, เขียนได้เฉพาะ VIP/Division/Manage
+// ⚠️ ต้องประกาศ "นอก" ApprovalsPage — ถ้าประกาศในฟังก์ชัน React จะได้ component type ใหม่ทุก render
+//    → unmount/remount ทั้ง subtree ทุกครั้งที่พิมพ์ → textarea เสีย focus ทีละตัวอักษร (พิมพ์ไม่ได้จริง)
+function CommentThread({
+  r, cols, db, canComment, isVip, commentBox, setCommentBox, openComments, setOpenComments, sendComment,
+}: {
+  r: ApprovalRequest; cols: number; db: DB
+  canComment: boolean; isVip: boolean
+  commentBox: Record<string, string>
+  setCommentBox: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  openComments: Record<string, boolean>
+  setOpenComments: React.Dispatch<React.SetStateAction<Record<string, boolean>>>
+  sendComment: (requestId: string) => void
+}) {
+  const list = approvalCommentsOf(db, r.id)
+  const open = openComments[r.id] ?? list.length > 0    // มีความเห็นแล้ว = กางให้เห็นเลย
+  if (list.length === 0 && !canComment) return null
+  return (
+    <tr>
+      <td colSpan={cols} style={{ background: 'var(--bg-soft, #fafbfc)', paddingTop: 8 }}>
+        <button className="small" onClick={() => setOpenComments(p => ({ ...p, [r.id]: !open }))}>
+          {open ? '▾' : '▸'} 💬 ความเห็นผู้บริหาร (VIP) {list.length > 0 && <b>· {list.length}</b>}
+        </button>
+        {open && (
+          <div style={{ marginTop: 8 }}>
+            {list.length === 0 && <div className="muted" style={{ marginBottom: 8 }}>ยังไม่มีความเห็น</div>}
+            {list.map(c => {
+              const author = db.users.find(u => u.id === c.authorId)
+              return (
+                <div key={c.id} style={{ marginBottom: 8, paddingLeft: 10, borderLeft: '3px solid var(--border)' }}>
+                  <div className="muted" style={{ fontSize: 12 }}>
+                    <b style={{ color: 'var(--text)' }}>{author?.fullName ?? '-'}</b>
+                    {author && <span className="badge blue" style={{ marginLeft: 6 }}>{DEPT_LABEL[author.department]}</span>}
+                    {' '}· {fmtDateTime(c.createdAt)}
+                  </div>
+                  <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
+                </div>
+              )
+            })}
+            {canComment && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 6 }}>
+                <textarea rows={2} style={{ flex: 1 }}
+                  value={commentBox[r.id] ?? ''}
+                  onChange={e => setCommentBox(p => ({ ...p, [r.id]: e.target.value }))}
+                  placeholder={isVip
+                    ? 'ความเห็น/ข้อสั่งการถึง Division เช่น "อนุมัติได้ แต่ให้ต่อรองราคากับซัพก่อน"'
+                    : 'ตอบกลับความเห็นของผู้บริหาร'} />
+                <button className="primary small" disabled={!(commentBox[r.id] ?? '').trim()}
+                  onClick={() => sendComment(r.id)}>ส่งความเห็น</button>
+              </div>
+            )}
+          </div>
+        )}
+      </td>
+    </tr>
+  )
 }
 
 // หน้ารออนุมัติ (Division approval inbox)
@@ -94,51 +152,8 @@ export default function ApprovalsPage() {
     return `เหตุผล: ${r.payload.reason ?? '-'}${r.payload.receivedToCentral ? ' (วัสดุที่รับแล้วคืนเข้าสต็อกกลาง)' : ''}`
   }
 
-  // แถบความเห็น (VIP ↔ Division) ใต้คำขอแต่ละใบ — อ่านได้ทุกแผนก, เขียนได้เฉพาะ VIP/Division/Manage
-  const CommentThread = ({ r, cols }: { r: ApprovalRequest; cols: number }) => {
-    const list = approvalCommentsOf(db, r.id)
-    const open = openComments[r.id] ?? list.length > 0    // มีความเห็นแล้ว = กางให้เห็นเลย
-    if (list.length === 0 && !canComment) return null
-    return (
-      <tr>
-        <td colSpan={cols} style={{ background: 'var(--bg-soft, #fafbfc)', paddingTop: 8 }}>
-          <button className="small" onClick={() => setOpenComments(p => ({ ...p, [r.id]: !open }))}>
-            {open ? '▾' : '▸'} 💬 ความเห็นผู้บริหาร (VIP) {list.length > 0 && <b>· {list.length}</b>}
-          </button>
-          {open && (
-            <div style={{ marginTop: 8 }}>
-              {list.length === 0 && <div className="muted" style={{ marginBottom: 8 }}>ยังไม่มีความเห็น</div>}
-              {list.map(c => {
-                const author = db.users.find(u => u.id === c.authorId)
-                return (
-                  <div key={c.id} style={{ marginBottom: 8, paddingLeft: 10, borderLeft: '3px solid var(--border)' }}>
-                    <div className="muted" style={{ fontSize: 12 }}>
-                      <b style={{ color: 'var(--text)' }}>{author?.fullName ?? '-'}</b>
-                      {author && <span className="badge blue" style={{ marginLeft: 6 }}>{DEPT_LABEL[author.department]}</span>}
-                      {' '}· {fmtDateTime(c.createdAt)}
-                    </div>
-                    <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
-                  </div>
-                )
-              })}
-              {canComment && (
-                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 6 }}>
-                  <textarea rows={2} style={{ flex: 1 }}
-                    value={commentBox[r.id] ?? ''}
-                    onChange={e => setCommentBox(p => ({ ...p, [r.id]: e.target.value }))}
-                    placeholder={isVip
-                      ? 'ความเห็น/ข้อสั่งการถึง Division เช่น "อนุมัติได้ แต่ให้ต่อรองราคากับซัพก่อน"'
-                      : 'ตอบกลับความเห็นของผู้บริหาร'} />
-                  <button className="primary small" disabled={!(commentBox[r.id] ?? '').trim()}
-                    onClick={() => sendComment(r.id)}>ส่งความเห็น</button>
-                </div>
-              )}
-            </div>
-          )}
-        </td>
-      </tr>
-    )
-  }
+  // props ที่ CommentThread ต้องใช้ — รวมไว้ชุดเดียวให้จุดเรียกสั้น
+  const threadProps = { db, canComment, isVip, commentBox, setCommentBox, openComments, setOpenComments, sendComment }
 
   return (
     <div>
@@ -249,7 +264,7 @@ export default function ApprovalsPage() {
                       </td>
                     )}
                   </tr>
-                  <CommentThread r={r} cols={canDecide ? 6 : 5} />
+                  <CommentThread r={r} cols={canDecide ? 6 : 5} {...threadProps} />
                   </Fragment>
                 )
               })}
@@ -301,7 +316,7 @@ export default function ApprovalsPage() {
                           <td>{fmtDateTime(r.decidedAt)}</td>
                         </tr>
                         {/* ความเห็นผู้บริหารยังอยู่คู่กับคำขอหลังตัดสินแล้ว — เป็นหลักฐานประกอบการตัดสิน */}
-                        <CommentThread r={r} cols={5} />
+                        <CommentThread r={r} cols={5} {...threadProps} />
                       </Fragment>
                     ))}
                   </tbody>
