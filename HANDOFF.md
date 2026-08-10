@@ -31,9 +31,9 @@
 | Hosting | **Cloudflare Pages — LIVE แล้ว** https://lbs-platform-sdt.pages.dev (ย้ายจาก Netlify 2026-07-15, auto-deploy จาก `main`) |
 | GitHub repo | https://github.com/SDT-Supportai/LBS-Management-Platform-SDT (root = โฟลเดอร์นี้) |
 | Supabase project ref | `mrdnxajwnvkgvfyaclwv` (region: ตามที่สร้าง) |
-| Migrations ที่รันแล้ว | **0001–0048 รันครบ** (0041 รัน 2026-08-03 · **0042–0048 รัน 2026-08-07**) · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูป/ไฟล์แนบไม่ได้ เช็ค bucket `install-photos` (0019 — ไฟล์แนบปัญหาใช้ bucket เดิม prefix `job-issues/`) |
-| E2E บน DB จริง | ✅ ผ่านทั้ง flow · demo E2E: approval, LINE dispatch, budget 7 หมวด, 1 PR→N PO (12/12), check-in/photo, ยืนยันรายเครื่อง, โอนวัสดุเข้าคลัง, Import Excel แก้ยอด, ปิดงาน+สรุปปัญหา, reopen |
-| ตรวจ LIVE แบบไม่แตะข้อมูล | probe ผ่าน PostgREST ด้วย anon key: `GET /rest/v1/<table>?select=...` (200 = มีตาราง/คอลัมน์) และ `POST /rest/v1/rpc/<fn>` (ตอบ `กรุณาเข้าสู่ระบบก่อน` = ฟังก์ชันมีจริง+auth gate ทำงาน · `404 PGRST202` = ไม่มี signature นั้น) — RPC ทุกตัวตรวจสิทธิ์ก่อนเขียน จึงไม่มี row ถูกสร้าง |
+| Migrations ที่รันแล้ว | **0001–0054 รันครบ** (0042–0048 รัน 2026-08-07 · **0049–0054 รัน 2026-08-08**) · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูป/ไฟล์แนบไม่ได้ เช็ค bucket `install-photos` (0019 — ไฟล์แนบปัญหา prefix `job-issues/` · Drawing `standard-drawings/` · Price list `standard-prices/`) |
+| E2E บน DB จริง | ✅ ผ่านทั้ง flow · demo E2E: approval, LINE dispatch, budget 7 หมวด, 1 PR→N PO (12/12), check-in/photo, ยืนยันรายเครื่อง, โอนวัสดุเข้าคลัง, Import Excel แก้ยอด, ปิดงาน+สรุปปัญหา, reopen, FOB/ETA + Status flow, VIP comment, guard ห้ามเบิกเมื่อของยังไม่ถึงคลัง |
+| ตรวจ LIVE แบบไม่แตะข้อมูล | probe ผ่าน PostgREST ด้วย anon key — **อ่าน §9 ข้อ 12 ก่อนใช้** (มีกับดัก 3 อย่างที่ทำให้ได้ false positive ทั้งชุด) · โดยย่อ: `GET /rest/v1/<table>?select=<col>` → 200 = มี · `42703`/`PGRST205` = ไม่มี · `POST /rest/v1/rpc/<fn>` **ต้องส่งชื่อพารามิเตอร์ให้ตรง signature + ส่ง body ผ่านไฟล์** → `42501 permission denied` = มีจริง · `PGRST202` = ไม่มี signature นั้น |
 | Admin จริง | `siradanai.s@precise.co.th` (department = admin, แสดงเป็น "Manage") |
 
 ## 3. Tech stack + หลักการออกแบบ
@@ -71,7 +71,7 @@ lbs-platform/
     _redirects               SPA fallback (/* → /index.html 200)
     logo.jpg                 โลโก้จริง (เสาส่งไฟในวงกลม) — ใช้ทั้ง login/sidebar/favicon (refs = /logo.jpg)
   supabase/
-    migrations/0001..0031    schema, RPC, seed, bug fixes, ฟีเจอร์
+    migrations/0001..0054    schema, RPC, seed, bug fixes, ฟีเจอร์ (ดูตารางหัวข้อ 5)
     cleanup_e2e.sql          ⛔ ล้าง transaction ทั้งหมด (มีสลักนิรภัย) — ห้ามรันถ้ามีข้อมูลจริง
     cleanup_e2e_accounts.sql ปิด/ลบบัญชีทดสอบ e2e (ปลอดภัยแม้มีข้อมูลจริง)
     cleanup_job.sql          ล้าง Job เดียวเพื่อเปิด Job No. เดิมใหม่ (คืน LBS เข้าสต็อก) — แก้ v_job_no ก่อนรัน
@@ -186,7 +186,7 @@ lbs-platform/
 - รูปแบบ: `export async function onRequestPost({ request, env })` · อ่าน env ผ่าน `env.XXX` (ไม่ใช่ `process.env`)
 - ทดสอบ functions ในเครื่อง: `npx wrangler pages dev dist` (build ก่อน) — Vite `npm run dev` ไม่รัน functions
 
-## 8. แผนก + สิทธิ์ (RLS + app_assert_dept) — อัปเดต 2026-07-19
+## 8. แผนก + สิทธิ์ (RLS + app_assert_dept) — อัปเดต 2026-08-08 (เพิ่มแผนก VIP)
 
 ชื่อแสดงผลเปลี่ยน (มติ 2026-07-19): `sales` → **"Division"**, `admin` → **"Manage"** (ค่าใน DB คงเดิม — แก้ที่ `DEPT_LABEL` ใน format.ts)
 
@@ -203,7 +203,7 @@ lbs-platform/
 
 **Approval flow (0016)**: project ขอ → แจ้งเตือน Division → division/admin อนุมัติที่หน้า "รออนุมัติ" = **execute ทันทีใน transaction เดียว** (fail = rollback ทั้งคำขอ) หรือตีกลับพร้อมเหตุผล (แจ้งกลับ project) · คำขอ pending ซ้ำ type เดียวกันต่อ Job ไม่ได้ (unique partial index) · `rpc_create_pr`/`rpc_issue_job`/`rpc_cancel_job` เช็ค admin-only แล้ว — project ยิง RPC ตรงจะโดนปฏิเสธ
 
-**Standard Drawing / BOM (0045)**: perm `standards.manage` = `project` + `sales` + `admin` — เพิ่ม/แก้/ลบ/อัปโหลด PDF · **ทุกแผนกที่ login อ่านและดาวน์โหลดได้** (เป็นมาตรฐานที่ทุกคนต้องใช้)
+**Standard Price list / Drawing / BOM (0045 + 0054)**: perm `standards.manage` = `project` + `sales` + `admin` — เพิ่ม/แก้/ลบ/อัปโหลด PDF ทั้ง 3 แท็บ · **ทุกแผนกที่ login อ่านและดาวน์โหลดได้** (เป็นมาตรฐานที่ทุกคนต้องใช้) · Price list ใช้กติกาเดียวกับ Drawing เป๊ะ (แก้ = ทับข้อมูลเดิม + stamp ผู้แก้/เวลา · ลบ = ลบทะเบียน ไฟล์ยังอยู่ใน Storage)
 
 **VIP review (0050)**: perm `approval.comment` = `vip` + `sales` + `admin` · VIP รีวิวคำขอที่หน้า Awaiting Approval แล้วฝากความเห็น → แจ้ง Division · Division ตอบกลับได้ → แจ้ง VIP · ความเห็นแสดงใต้คำขอทั้งตอนรอตัดสินและในประวัติหลังตัดสิน (เป็นหลักฐานประกอบการตัดสิน) · badge เมนูโชว์ `<จำนวนคำขอ> · 💬<จำนวนความเห็น>`
 **⚠️ VIP เป็น "ผู้ให้ความเห็น" ไม่ใช่ "ผู้อนุมัติชั้นที่ 2" โดยตั้งใจ** — ถ้าทำเป็นขั้นอนุมัติเพิ่ม ทุกคำขอจะค้างรอผู้บริหาร งานหน้างาน (ออก PR/เบิกของ) หยุดทั้งสายเมื่อผู้บริหารติดประชุม และโมเดล "อนุมัติ = ทำงานทันที" ของ 0016 จะเสียไป · ถ้าภายหลังต้องการ gate จริง ให้ทำเป็นเงื่อนไขตามวงเงิน (ต่อยอดจากตาราง `approval_comments` ได้ ไม่ต้องรื้อ)
@@ -234,6 +234,39 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
     → ตามด้วย `useConfirm()` แทน `window.confirm` อีก 11 จุด (ยืนยันการลบ/รีเซ็ต) · ได้เขียน **"ผลของการลบ" ได้เต็ม** ซึ่ง `confirm()` บรรทัดเดียวทำไม่ได้ เช่น "Serial ทั้ง 30 เครื่องในคลังนี้จะถูกลบไปด้วย" · "รายการวัสดุ 3 รายการในชุดนี้จะถูกลบไปด้วย — ถ้าต้องการเก็บให้ Export ก่อน" · "ไฟล์ PDF ยังอยู่ใน Storage"
     ✅ **ไม่เหลือ native dialog (`prompt`/`confirm`/`alert`) ในระบบแล้ว** — ทดสอบด้วยการ override ให้ throw ทั้ง session แล้วเดินทุกปุ่มลบ ไม่มีจุดไหนทริกเกอร์
 
+12. **ตรวจ migration ผ่าน PostgREST — กับดัก 3 อย่างที่ทำให้ "ยืนยันผิด" (2026-08-08)**
+    เคยรายงานว่า "0052/0053 ลงแล้ว" ทั้งที่ยังไม่รู้ผลจริง เพราะตัวตรวจให้ false positive **ทุกตัว**
+    - **(ก) body โดน mangle บน PowerShell** — `curl -d '{"a":1}'` quote เพี้ยน ได้ `PGRST102 "Empty or invalid json"`
+      ซึ่ง **ไม่ใช่** `PGRST202` → ตัวจำแนกแบบ "ไม่ใช่ 202 = มีอยู่" อ่านว่าผ่านหมด
+      ✅ เขียน JSON ลงไฟล์แล้ว `--data-binary "@file"`
+    - **(ข) `PGRST202` ≠ ฟังก์ชันหาย** — PostgREST resolve ตาม **ชื่อพารามิเตอร์ที่ส่งไป**
+      ยิง `{}` เปล่าๆ ฟังก์ชันที่มีอยู่จริงก็ตอบ 202 (พิสูจน์กับ `rpc_set_stock_fob` ที่รู้ว่าลงแล้ว)
+      → ต้องส่งชื่อพารามิเตอร์ให้ตรง signature ที่จะตรวจ · `42501 permission denied` = **มีจริง**
+    - **(ค) ต้องมี control case เสมอ** — ยิงชื่อฟังก์ชัน/คอลัมน์ที่รู้ว่าไม่มีจริงคู่กันไปด้วย
+      ไม่งั้นแยก "ไม่มี" ออกจาก "เรียกไม่ถูกวิธี" ไม่ได้ · ชื่อไทยใน URL/`-d` ก็โดน mangle ใช้ ASCII ทำ control
+    - **(ง) ตรวจคอลัมน์ปลอดภัยกว่าตรวจ RPC** — `GET /rest/v1/<table>?select=<col>` ไม่มี body ให้เพี้ยน
+      200 = มี · `42703` = ไม่มีคอลัมน์ · `PGRST205` = ไม่มีตาราง
+    > ผลข้างเคียงที่ดี: ถ้าไฟล์ migration สร้างฟังก์ชัน **ก่อน** DO block ที่ patch ของเดิม แล้วฟังก์ชันนั้นมีอยู่จริง
+    > ⇒ DO block ผ่านด้วย เพราะ SQL Editor รันทั้งสคริปต์เป็น transaction เดียว (0052 ใช้ข้อนี้ยืนยัน guard)
+
+13. **สูตรต้นทุนกระจายอยู่ 4 ที่ แล้วไม่ตรงกัน (2026-08-08)** — กติกา §12 บอกให้ใช้ `effectiveQty()`
+    แต่ยังมีที่ใช้ `qtyRequested` ตรงๆ เหลืออยู่ · เจอ 2 จุดตอน review:
+    - หน้า **Purchasing** คิด `unitPrice × qtyRequested` แต่งบ Job หัก `unitPrice × effectiveQty`
+      ทดสอบจริง (รับครบ 5 → โอนคืนคลัง 2): **600,000 vs 360,000 ต่าง 240,000 ฿** ใต้ป้าย "มูลค่า" เหมือนกัน
+    - หน้า **Job เอง**: จอใช้ `effectiveQty` แต่ **Excel export ใช้ `qtyRequested`** → ไฟล์ไม่ตรงกับจอ
+    → แก้แล้ว (0054 รอบ frontend) โดย **ไม่ยุบให้เท่ากัน** เพราะสองมุมถูกทั้งคู่แต่คนละความหมาย:
+      `มูลค่าสั่งซื้อ` = ยอดจ่ายซัพ (qtyRequested) · `ตัดเข้างาน` = ยอดหักงบ Job (effectiveQty)
+      → แยกป้ายให้ต่างกันชัด + โชว์ทั้งสองยอดเมื่อไม่เท่ากัน · helper กลาง `poCostSummary()`
+    **บทเรียน: ตัวเลขเงินที่ป้ายเหมือนกันต้องมาจาก helper ตัวเดียวกัน ห้ามคำนวณ inline ซ้ำในแต่ละหน้า**
+
+14. **ประกาศ component ไว้ใน body ของ component → พิมพ์ในช่องข้อความไม่ได้ (2026-08-08)**
+    `ApprovalsPage` ประกาศ `const CommentThread = (...) => ...` ไว้ข้างใน → React ได้ **element type ใหม่ทุก render**
+    ⇒ unmount/remount subtree ทุกครั้งที่ state เปลี่ยน ⇒ `textarea` เสีย focus **ทีละตัวอักษร** (พิมพ์ได้ตัวเดียว)
+    วัดยืนยันแล้ว: `sameNode=false`, `document.activeElement=BODY` ทุกครั้งที่กดแป้น
+    → ย้ายออกไปเป็น component ระดับโมดูล + ส่ง props (pattern เดียวกับ `SerialPicker` ใน JobDetailPage)
+    ⚠️ **การทดสอบด้วยการ set `.value` แล้ว dispatch `input` ตรวจไม่เจอบั๊กนี้** — ต้องเช็ค `activeElement`
+       และ node identity ระหว่างกดแป้นทีละตัว
+
 > demo mode ไม่มี trigger/RLS/functions/plpgsql จึงไม่เจอบั๊กพวกนี้ — ต้องทดสอบบน DB จริงเท่านั้น
 
 ## 10. งานค้าง (TODO)
@@ -247,135 +280,113 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
       ไฟล์ถูกใส่สลักนิรภัย (DO-block RAISE EXCEPTION) กันรันติดมือแล้ว · **หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่**
 - [ ] ตรวจว่า **service_role key ถูก rotate แล้ว** (ระหว่าง setup key เก่าเคยเปิดเผย — ตรวจ repo แล้ว 2026-07-19: **key ไม่เคยหลุดลง git** หลุดเฉพาะนอก repo) — Dashboard → Settings → API → สร้าง/roll secret key ใหม่ → อัปเดต `SUPABASE_SERVICE_ROLE_KEY` บน Cloudflare Pages env → Retry deployment
 
-### 🟠 Migrations — ✅ 0001–0053 รันครบ · 🔴 **ค้าง: 0054 (Standard Price list)**
-- [ ] 🔴 **รัน `supabase/migrations/0054_std_price_list.sql`** ก่อน push frontend
-      (สร้างตาราง `std_prices` + RPC 3 ตัว · ไม่แตะของเดิมเลย — ปลอดภัยที่สุดในบรรดา migration ที่ผ่านมา)
-      ตรวจ: `select to_regclass('public.std_prices') is not null;` ต้องได้ `true`
-      **ถ้ายังไม่รันแล้ว push:** แท็บ Standard Price list จะโหลดข้อมูลไม่ได้ (`loadAll` query ตาราง `std_prices`)
-      → แบนเนอร์ "โหลดข้อมูลจากเซิร์ฟเวอร์ไม่สำเร็จ" ขึ้นทั้งแอป **จึงควรรัน SQL ก่อน push รอบนี้**
+### 🟠 Migrations — ✅ **0001–0054 รันครบทั้งหมด** (0049–0054 รัน/ยืนยัน 2026-08-08)
 
-### 🟠 Migrations — ✅ **0001–0053 รันครบ** (0052–0053 ยืนยัน 2026-08-08)
-- [x] ~~0052 + 0053~~ **รันแล้ว** — ตรวจผ่าน PostgREST (มี control case ทั้ง 2 ฝั่ง):
-      `lbs_units.plan_po_date` ตอบ HTTP 200 (คอลัมน์ปลอมตอบ `42703`/400) ·
-      `app_assert_job_eta_ready` ตอบ **204** (ฟังก์ชันปลอมตอบ `PGRST202`) ·
-      `rpc_update_unit_plan` + `p_plan_po_date` ตอบ `42501 permission denied` = signature 10 args มีจริง
-      (ส่งพารามิเตอร์มั่วตอบ `PGRST202` → PostgREST match ตามชื่อพารามิเตอร์จริง)
-      → `app_assert_job_eta_ready` ถูกสร้าง**ก่อน** DO block ที่ patch guard ในไฟล์เดียวกัน และ SQL Editor รันทั้งสคริปต์
-        เป็น transaction เดียว ⇒ ฟังก์ชันนี้มีอยู่ = DO block ผ่าน = guard เข้า `app_exec_issue_job` / `rpc_request_approval` แล้ว
+**กติกา: หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่ (ผมจะบอกชื่อไฟล์และลำดับ)**
+ทุกไฟล์ idempotent — แถวไหนตรวจได้ `false` รันไฟล์นั้นซ้ำได้เลย
 
-> **⚠️ วิธีตรวจ RPC ผ่าน REST — กับดักที่เจอจริง (2026-08-08)**
-> - อย่าส่ง body ด้วย `curl -d '{...}'` บน **PowerShell** — quote โดน mangle ได้ `PGRST102 "Empty or invalid json"`
->   ซึ่ง **ไม่ใช่** PGRST202 → ถ้าเขียนตัวตรวจแบบ "ไม่ใช่ 202 = มีอยู่" จะได้ **false positive ทุกตัว**
->   ✅ เขียน JSON ลงไฟล์แล้วใช้ `--data-binary "@file"`
-> - `PGRST202` **ไม่ได้แปลว่าฟังก์ชันหาย** — PostgREST match ตาม **ชื่อพารามิเตอร์ที่ส่งไป** ยิงด้วย `{}` เปล่าๆ
->   ฟังก์ชันที่มีอยู่จริงก็ตอบ 202 · ต้องส่งชื่อพารามิเตอร์ให้ตรง signature ที่จะตรวจ
-> - **ต้องมี control case เสมอ** (ฟังก์ชัน/คอลัมน์ที่รู้ว่าไม่มีจริง) ไม่งั้นแยก "ไม่มี" กับ "เรียกไม่ถูกวิธี" ไม่ออก
-      ตรวจว่าลง: ต้องได้ `true` ทุกแถว
-      ```sql
-      with f as (select p.proname, pg_get_functiondef(p.oid) def
-                 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname='public')
-      select * from (values
-        ('0052 app_assert_job_eta_ready', exists (select 1 from f where proname='app_assert_job_eta_ready')),
-        ('0052 guard เข้า app_exec_issue_job', exists (select 1 from f
-            where proname='app_exec_issue_job' and def like '%app_assert_job_eta_ready%')),
-        ('0052 guard เข้า rpc_request_approval', exists (select 1 from f
-            where proname='rpc_request_approval' and def like '%app_assert_job_eta_ready%')),
-        ('0052 import เว้นว่าง = คงค่าเดิม', exists (select 1 from f
-            where proname='rpc_import_units_to_stock' and def like '%v_lead IS NULL THEN eta_lead_days%')),
-        ('0052 CHECK ระยะขนส่ง 45-60', (select pg_get_constraintdef(oid) like '%45%60%' from pg_constraint
-            where conname='lbs_units_eta_lead_days_check'))
-      ) t(migration, ok) order by 1;
-      ```
-      **ถ้าแถว guard เป็น false** แปลว่า body ใน DB ต่างจากที่คาด — 0052 จะ RAISE EXCEPTION พร้อมชื่อฟังก์ชันให้เอง (ไม่ patch มั่ว)
+- [x] ~~0001–0048~~ รันครบ (0042–0048 รัน 2026-08-07)
+- [x] ~~0049–0051~~ FOB/ETA to WH · VIP + ความเห็นผู้บริหาร · ระยะขนส่ง 45–60 + ความเห็นเรื่องคลัง
+- [x] ~~0052–0053~~ แก้ตาม code review (import คงค่าเดิม · guard ห้ามเบิกเมื่อของยังไม่ถึงคลัง) · Plan PO receipt
+- [x] ~~0054~~ Standard Price list (`std_prices` + RPC 3 ตัว) — ยืนยัน 2026-08-08
 
-### 🟠 Migrations — ✅ **0001–0051 รันครบ** (0049–0051 รัน 2026-08-08)
-- [x] ~~รัน `0049_fob_eta_to_wh.sql` → `0050_vip_review.sql` → `0051_eta_lead_days_stock_comment.sql`~~
-      **รันครบแล้ว 2026-08-08** · ตรวจยืนยันผ่าน PostgREST แล้ว: `rpc_update_unit_plan` / `rpc_set_stock_fob` /
-      `rpc_add_approval_comment` / `rpc_add_stock_comment` resolve ด้วยชื่อพารามิเตอร์ใหม่ครบ
-      (**ไม่มี PGRST202 = ไม่ขาดไฟล์ · ไม่มี PGRST203 = signature เก่าถูก DROP ครบ ไม่มี overload ค้าง**)
-      และคอลัมน์ `lbs_units.fob_date` / `lbs_units.eta_lead_days` / `approval_comments.scope` มีอยู่จริง
-      > วิธีตรวจซ้ำโดยไม่ต้องเข้า SQL Editor (ไม่แตะข้อมูล): POST `/rest/v1/rpc/<fn>` ด้วย anon key —
-      > ได้ error สิทธิ์ = ฟังก์ชันมีอยู่ · ได้ `PGRST202` = ยังไม่ลง · ได้ `PGRST203` = มี signature ซ้ำต้อง DROP ตัวเก่า
-      ตรวจว่าลงครบ (ต้องได้ `true` ทุกแถว):
-      ```sql
-      with f as (select p.proname,
-                        pg_get_function_identity_arguments(p.oid) as args,
-                        pg_get_functiondef(p.oid) as def
-                 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-                 where n.nspname = 'public')
-      select * from (values
-        ('0049 lbs_units.fob_date', exists (select 1 from information_schema.columns
-            where table_name='lbs_units' and column_name='fob_date')),
-        ('0049+0051 rpc_update_unit_plan = 9 args ตัวเดียว (signature เก่าถูก drop ครบ)',
-            (select count(*) = 1 from f where proname='rpc_update_unit_plan')
-            and exists (select 1 from f where proname='rpc_update_unit_plan'
-                          and args like '%p_fob_date%' and args like '%p_lead_days%')),
-        ('0049+0051 rpc_set_stock_fob = 4 args ตัวเดียว',
-            (select count(*) = 1 from f where proname='rpc_set_stock_fob')
-            and exists (select 1 from f where proname='rpc_set_stock_fob' and args like '%p_lead_days%')),
-        ('0049+0051 import รับ key fob + lead_days', exists (select 1 from f
-            where proname='rpc_import_units_to_stock' and def like '%''fob''%' and def like '%lead_days%')),
-        ('0051 lbs_units.eta_lead_days', exists (select 1 from information_schema.columns
-            where table_name='lbs_units' and column_name='eta_lead_days')),
-        ('0051 approval_comments.scope + rpc_add_stock_comment', (
-            exists (select 1 from information_schema.columns
-              where table_name='approval_comments' and column_name='scope')
-            and exists (select 1 from f where proname='rpc_add_stock_comment'))),
-        ('0050 profiles รับแผนก vip', (select pg_get_constraintdef(oid) like '%vip%' from pg_constraint
-            where conname='profiles_department_check')),
-        ('0050 approval_comments + RPC', (to_regclass('public.approval_comments') is not null
-            and exists (select 1 from f where proname='rpc_add_approval_comment'))),
-        ('0050 approval_comments อยู่ใน realtime', exists (select 1 from pg_publication_tables
-            where pubname='supabase_realtime' and schemaname='public' and tablename='approval_comments'))
-      ) t(migration, ok) order by 1;
-      ```
-- [ ] หลังรัน 0050: สร้างผู้ใช้ VIP ที่ **Dev Settings → + เพิ่มผู้ใช้ → แผนก VIP** (ยังไม่มีบัญชี VIP บน production)
-- [x] ~~0011–0048~~ **รันครบแล้ว** (0042–0048 รัน 2026-08-07) · **กติกา: หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่ (ผมจะบอกชื่อไฟล์)**
-- [ ] **ตรวจครั้งเดียวว่า 0042–0048 ลงครบจริง** (รันได้ตลอด ไม่แตะข้อมูล — ต้องได้ `true` ทุกแถว):
-      ```sql
-      with f as (select proname, pg_get_functiondef(p.oid) def from pg_proc p
-                 join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public')
-      select * from (values
-        ('0042 สิทธิ์ระดับแถว (guard 6 ตัว)', (select count(*) = 6 from f where proname in
-            ('app_assert_job_editable','app_assert_job_procurable','app_assert_job_cost_editable',
-             'app_assert_job_reopenable','rpc_delete_accessory_request','rpc_transfer_job_material_to_stock')
-            and def like '%app_assert_job_owner%')),
-        ('0043 คอลัมน์ plan_* + rpc_update_unit_plan', (
-            (select count(*) = 5 from information_schema.columns where table_name = 'lbs_units'
-               and column_name in ('plan_customer_name','plan_contact_phone','plan_install_location',
-                                   'plan_po_receipt_date','plan_delivery_date'))
-            and exists (select 1 from f where proname = 'rpc_update_unit_plan'))),
-        ('0044 job_payments + RPC', (to_regclass('public.job_payments') is not null
-            and exists (select 1 from f where proname = 'rpc_add_job_payment'))),
-        ('0045 std_drawings / std_boms / std_bom_lines', (to_regclass('public.std_drawings') is not null
-            and to_regclass('public.std_boms') is not null and to_regclass('public.std_bom_lines') is not null
-            and exists (select 1 from f where proname = 'rpc_create_std_drawing'))),
-        ('0046 import BOM จาก Excel', exists (select 1 from f where proname = 'rpc_import_std_bom_lines')),
-        ('0047 แก้เลข PR', exists (select 1 from f where proname = 'rpc_update_pr_no')),
-        ('0048 import ข้อมูลแผนรายเครื่อง', exists (select 1 from f
-            where proname = 'rpc_import_units_to_stock' and def like '%plan_po_receipt%')),
-        ('realtime: job_payments + std_* อยู่ใน publication', (
-            select count(*) = 4 from pg_publication_tables where pubname = 'supabase_realtime'
-              and schemaname = 'public'
-              and tablename in ('job_payments','std_drawings','std_boms','std_bom_lines')))
-      ) t(migration, ok) order by 1;
-      ```
-      แถวไหน `false` → รัน migration ไฟล์นั้นซ้ำได้เลย (ทุกไฟล์ idempotent)
-- [ ] ยืนยัน bucket **`install-photos`** (public) มีจริง — ใช้ทั้งรูปยืนยันติดตั้ง (0019/0035) และไฟล์แนบปัญหา prefix `job-issues/` (0040) · ถ้าอัปโหลดไม่ได้ให้สร้างที่ Dashboard→Storage
-- [ ] ตรวจว่า string patch ของ 0041 ลงจริง (ตรวจผ่าน REST ไม่ได้เพราะ auth gate มาก่อน):
+<details>
+<summary><b>SQL ตรวจว่า 0042–0054 ลงครบจริง</b> (รันได้ตลอด ไม่แตะข้อมูล — ต้องได้ <code>true</code> ทุกแถว)</summary>
+
+```sql
+with f as (select p.proname,
+                  pg_get_function_identity_arguments(p.oid) as args,
+                  pg_get_functiondef(p.oid) as def
+           from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public'),
+     c as (select table_name, column_name from information_schema.columns)
+select * from (values
+  -- 0042–0048
+  ('0042 สิทธิ์ระดับแถว (guard 6 ตัว)', (select count(*) = 6 from f where proname in
+      ('app_assert_job_editable','app_assert_job_procurable','app_assert_job_cost_editable',
+       'app_assert_job_reopenable','rpc_delete_accessory_request','rpc_transfer_job_material_to_stock')
+      and def like '%app_assert_job_owner%')),
+  ('0043 คอลัมน์ plan_* (5 ตัว)', (select count(*) = 5 from c where table_name = 'lbs_units'
+      and column_name in ('plan_customer_name','plan_contact_phone','plan_install_location',
+                          'plan_po_receipt_date','plan_delivery_date'))),
+  ('0044 job_payments + RPC', (to_regclass('public.job_payments') is not null
+      and exists (select 1 from f where proname = 'rpc_add_job_payment'))),
+  ('0045 std_drawings / std_boms / std_bom_lines', (to_regclass('public.std_drawings') is not null
+      and to_regclass('public.std_boms') is not null and to_regclass('public.std_bom_lines') is not null
+      and exists (select 1 from f where proname = 'rpc_create_std_drawing'))),
+  ('0046 import BOM จาก Excel', exists (select 1 from f where proname = 'rpc_import_std_bom_lines')),
+  ('0047 แก้เลข PR', exists (select 1 from f where proname = 'rpc_update_pr_no')),
+  ('0048 import ข้อมูลแผนรายเครื่อง', exists (select 1 from f
+      where proname = 'rpc_import_units_to_stock' and def like '%plan_po_receipt%')),
+  -- 0049–0051
+  ('0049 lbs_units.fob_date', exists (select 1 from c where table_name='lbs_units' and column_name='fob_date')),
+  ('0049 rpc_set_stock_fob = ตัวเดียว + p_lead_days',
+      (select count(*) = 1 from f where proname='rpc_set_stock_fob')
+      and exists (select 1 from f where proname='rpc_set_stock_fob' and args like '%p_lead_days%')),
+  ('0050 profiles รับแผนก vip', (select pg_get_constraintdef(oid) like '%vip%' from pg_constraint
+      where conname='profiles_department_check')),
+  ('0050 approval_comments + RPC', (to_regclass('public.approval_comments') is not null
+      and exists (select 1 from f where proname='rpc_add_approval_comment'))),
+  ('0051 lbs_units.eta_lead_days', exists (select 1 from c where table_name='lbs_units' and column_name='eta_lead_days')),
+  ('0051 approval_comments.scope + rpc_add_stock_comment',
+      exists (select 1 from c where table_name='approval_comments' and column_name='scope')
+      and exists (select 1 from f where proname='rpc_add_stock_comment')),
+  -- 0052–0053
+  ('0052 app_assert_job_eta_ready', exists (select 1 from f where proname='app_assert_job_eta_ready')),
+  ('0052 guard เข้า app_exec_issue_job', exists (select 1 from f
+      where proname='app_exec_issue_job' and def like '%app_assert_job_eta_ready%')),
+  ('0052 guard เข้า rpc_request_approval', exists (select 1 from f
+      where proname='rpc_request_approval' and def like '%app_assert_job_eta_ready%')),
+  ('0052 import: เว้นว่าง = คงค่าเดิม', exists (select 1 from f
+      where proname='rpc_import_units_to_stock' and def like '%v_lead IS NULL THEN eta_lead_days%')),
+  ('0052 CHECK ระยะขนส่ง 45-60', (select pg_get_constraintdef(oid) like '%45%' from pg_constraint
+      where conname='lbs_units_eta_lead_days_check')),
+  ('0053 lbs_units.plan_po_date', exists (select 1 from c where table_name='lbs_units' and column_name='plan_po_date')),
+  ('0053 rpc_update_unit_plan = ตัวเดียว 10 args',
+      (select count(*) = 1 from f where proname='rpc_update_unit_plan')
+      and exists (select 1 from f where proname='rpc_update_unit_plan'
+                    and args like '%p_fob_date%' and args like '%p_lead_days%' and args like '%p_plan_po_date%')),
+  ('0053 import รับ key plan_po', exists (select 1 from f
+      where proname='rpc_import_units_to_stock' and def like '%plan_po_date%')),
+  -- 0054
+  ('0054 std_prices + RPC 3 ตัว', (to_regclass('public.std_prices') is not null
+      and (select count(*) = 3 from f where proname in
+           ('rpc_create_std_price','rpc_update_std_price','rpc_delete_std_price')))),
+  -- realtime
+  ('realtime: ตารางใหม่อยู่ใน publication', (
+      select count(*) = 6 from pg_publication_tables where pubname = 'supabase_realtime'
+        and schemaname = 'public'
+        and tablename in ('job_payments','std_drawings','std_boms','std_bom_lines','approval_comments','std_prices')))
+) t(migration, ok) order by 1;
+```
+
+**ถ้าแถว guard (0052) เป็น `false`** = body ใน DB ต่างจากที่ 0052 คาด — ตัว migration จะ `RAISE EXCEPTION`
+พร้อมชื่อฟังก์ชันให้เอง ไม่ patch มั่ว · ให้ `pg_get_functiondef` ดู body จริงก่อนแก้มือ
+</details>
+
+- [ ] ตรวจว่า string patch ของ **0041** ลงจริง (ตรวจผ่าน REST ไม่ได้ — auth gate มาก่อน):
       ```sql
       select p.proname, position('reopen_job' in pg_get_functiondef(p.oid)) > 0 as patched
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
       where n.nspname='public' and p.proname in ('rpc_request_approval','rpc_reject_request');
       ```
-      ต้องได้ `patched = true` ทั้ง 2 แถว — ถ้า false ให้รัน `0041` ซ้ำ (idempotent) · อาการถ้าไม่ลง: กด "ขออนุมัติเปิดงานใหม่" แล้ว error `ประเภทคำขอไม่ถูกต้อง`
-      (แถว 0042 ในตารางข้างบนครอบการตรวจ string patch ของ `rpc_transfer_job_material_to_stock` ไว้แล้ว —
-      ตัวนี้เป็น `app_swap_guard` patch จึงเป็นตัวเดียวใน 6 ที่มีโอกาสไม่ลง)
-- [ ] **ทดสอบใช้งานจริง 1 รอบหลังรัน SQL** (ของใหม่ที่เพิ่งเปิด): Project เปิด Job คนอื่น → ต้องเห็นแบนเนอร์ 🔒 โหมดดูอย่างเดียว ·
-      Division กด "แก้ข้อมูล" รายเครื่องในคลัง · Project กด `+ Advance` ในการ์ด Payment · เมนู Standard Drawing & BOM อัปโหลด PDF 1 ไฟล์ ·
-      Purchasing กด "✏️ แก้เลข PR" — ถ้าจุดไหนขึ้น `404 PGRST202` แปลว่า migration ตัวนั้นยังไม่ลง
+      ต้องได้ `patched = true` ทั้ง 2 แถว — ถ้า false รัน `0041` ซ้ำ (idempotent) ·
+      อาการถ้าไม่ลง: กด "ขออนุมัติเปิดงานใหม่" แล้ว error `ประเภทคำขอไม่ถูกต้อง`
+- [ ] ยืนยัน bucket **`install-photos`** (public) มีจริง — ใช้ทั้งรูปยืนยันติดตั้ง (0019/0035),
+      ไฟล์แนบปัญหา prefix `job-issues/` (0040), Standard Drawing prefix `standard-drawings/` (0045)
+      และ **Standard Price list prefix `standard-prices/` (0054)** · ถ้าอัปโหลดไม่ได้ให้สร้างที่ Dashboard→Storage
 
 ### 🟡 ฟีเจอร์เสริม (ตั้งค่าค้างอยู่)
+- [ ] 🆕 **สร้างบัญชี VIP บน production** (0050 — ยังไม่มีบัญชีแผนกนี้เลย)
+      login **Manage** → Dev Settings → **+ เพิ่มผู้ใช้** → แผนก **VIP** (dropdown มีคำอธิบายสิทธิ์ให้อ่านใต้ช่อง)
+      แล้วทดสอบ: VIP พิมพ์ความเห็นที่ **Awaiting Approval** และท้ายหน้า **Project Stock** → Division ต้องเห็น badge 💬
+- [ ] 🆕 **เคลียร์ Status `?` ของของเดิมในคลัง** (0049–0052) — ของทุกเครื่องที่รับเข้าก่อน 0049 ยังไม่มี FOB
+      จึงขึ้น `?` (ระบบไม่เดาว่าของถึงคลังแล้ว) · วิธีเร็วสุด: Division → Project Stock → **🚢 ตั้ง FOB ทั้งคลัง**
+      ทีละคลัง ใส่วัน FOB จริง + ระยะขนส่ง 45–60 · ล็อตที่ไม่รู้ FOB ย้อนหลัง ให้กรอก **ETA to WH ตรงๆ**
+      ที่ปุ่ม "แก้ข้อมูล" รายเครื่อง (เว้น FOB ว่าง) ใส่วันในอดีต → ขึ้น On Hand ทันที
+      ⚠️ **สำคัญ**: ถ้าไม่เคลียร์ Dashboard จะโชว์ `On Hand 0` และ dropdown ตอนดึง LBS จะขึ้น "ไม่ระบุ ETA n"
+- [ ] 🆕 **ทดสอบอัปโหลด PDF ที่แท็บ Standard Price list** (0054) — จุดเดียวที่ demo แทนไม่ได้
+      (demo เก็บ data URL · production ใช้ Supabase Storage prefix `standard-prices/`) ใช้ bucket เดียวกับ Drawing
 - [ ] **เปิดสวิตช์ LINE** — env + code + migration 0017 พร้อมหมด · เหลือ: login **Manage** → Dev Settings → เปิดสวิตช์แจ้งเตือน LINE (global มีผลทุกเครื่อง) → "ส่งข้อความทดสอบ"
 - [ ] 🆕 **ปิด Auto-response / Greeting ที่ LINE Official Account Manager** (2026-08-05) — โค้ดไม่ตอบในกลุ่มแล้ว แต่ LINE ตอบเองได้จาก Response settings: ตั้ง `Chat = ปิด · Webhook = เปิด · Auto-response = ปิด · Greeting message = ปิด` แล้วทดสอบพิมพ์ในกลุ่มว่าบอทเงียบจริง
 - [ ] **เปิดใช้อนุมัติผ่าน LINE 1:1** (0033) — ต้องทำ 3 อย่าง: (1) ตั้ง env `APP_URL` (2) LINE Developers → เปิด **Use webhook** + Webhook URL `https://lbs-platform-sdt.pages.dev/line-webhook` (postback มาที่ URL เดียวกัน ไม่ต้องตั้งแยก) (3) ผู้อนุมัติแต่ละคน: **เพิ่มบอทเป็นเพื่อน** → หน้า Awaiting Approval กด "สร้างโค้ดเชื่อม LINE" → **พิมพ์โค้ด 6 หลักในแชท 1:1** ภายใน 10 นาที (หน้านั้นจะโชว์ badge "✅ เชื่อมต่อแล้ว" เมื่อผูกสำเร็จ)
@@ -394,6 +405,8 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 > ✅ เสร็จแล้ว (2026-08-08): **Project Stock — FOB date / ETA to WH (FOB+60 อัตโนมัติ) / Status Pending–On Hand รายเครื่อง (0049)** + ปุ่ม **🚢 ตั้ง FOB ทั้งคลัง** + **ตีเส้นตารางบางๆ** (`table.grid`) + **รวมปุ่ม "แก้ Serial" เข้าไปในปุ่ม "แก้ข้อมูล"** (ฟอร์มเดียว บันทึกทีเดียว) + **ย้ายต้นทุน/เครื่องออกจากตาราง → กดป้าย "มูลค่าคลัง" ดูรายเครื่องแทน** + Export/Import Excel round-trip คอลัมน์ FOB/ETA/Status
 > ✅ เสร็จแล้ว (2026-08-08): **Dashboard — LBS Stock Balance แยก On Hand / Pending + แถวรวมทุกคลัง + ป้ายปิดคลัง** · **Job List เรียงตามกำหนดส่ง (ใกล้สุดก่อน) ตัดงานที่ปิด/ยกเลิกออก + 🔴 เลยกำหนด / ⚠️ เหลือ ≤30 วัน + คอลัมน์วันคงเหลือ** (กำหนดส่ง = วันที่ใกล้สุดจาก `requiredDate` + `installSites` ทุกจุด)
 > ✅ เสร็จแล้ว (2026-08-08): **แผนก VIP (ผู้บริหารสูงสุด) + ความเห็นบนคำขออนุมัติ (0050)** — VIP อ่านได้ทุกหน้า เขียนได้แค่ความเห็น · ความเห็นแสดงใต้คำขอที่หน้า Awaiting Approval (ทั้งตอนรอตัดสินและในประวัติ) · Division ตอบกลับได้ · badge เมนู `<คำขอ> · 💬<ความเห็น>` · Dev Settings มีคำอธิบายสิทธิ์ต่อแผนกใต้ dropdown
+> ✅ เสร็จแล้ว (2026-08-08 · รอบ 5 — 0054): **ต้นทุนรวมต่อ PO No.** (`poCostSummary` — โชว์ยอดสั่งซื้อ + จำนวนรายการ + เตือนเมื่อกรอกราคาไม่ครบ) · **แก้สูตรต้นทุนไม่ตรงกัน 2 จุด** (หน้า Purchasing ใช้ `qtyRequested` แต่งบ Job หัก `effectiveQty` ต่าง 240,000 ฿ ในเคสทดสอบ · และ Excel export ของหน้า Job ไม่ตรงกับจอเอง) → แยกป้าย `มูลค่าสั่งซื้อ` / `ตัดเข้างาน` ไม่ยุบรวม เพราะสองมุมถูกทั้งคู่ (ดู §9 ข้อ 13) · **Standard Price list** เป็นแท็บที่ 3 (ตาราง `std_prices` + RPC 3 ตัว · หลักการเดียวกับ Standard Drawing เป๊ะ) + เปลี่ยนชื่อหน้า/เมนู
+> ✅ เสร็จแล้ว (2026-08-08 · รอบ 4 — 0052/0053): **แก้ตาม code review** — CommentThread เสีย focus ทุกตัวอักษร (§9 ข้อ 14) · dropdown ดึง LBS โชว์ On Hand 0 ทั้งที่มีของ · import ระยะขนส่งเว้นว่างต้องคงค่าเดิม · ระยะขนส่งบังคับ 45–60 · **guard ห้ามเบิกเมื่อของยังไม่ถึงคลัง** (`app_assert_job_eta_ready`) · **Plan PO receipt** รายเครื่อง (`plan_po_date`) + ป้ายคอลัมน์อังกฤษ Customer / Contact Number / Location / Site
 > ✅ เสร็จแล้ว (2026-08-08 · รอบ 3 — **ไม่ต้องรัน SQL**): **Status รายเครื่องรวมเป็น flow เดียว** `? → Pending → On Hand → ถูกดึงเข้า Job → เบิกแล้ว รอติดตั้ง → ติดตั้งแล้ว/ติดตั้งไม่ได้` (`unitFlowState` + `UNIT_FLOW` ใน format.ts) — ตัดคอลัมน์ "สถานะเครื่อง" ทิ้ง เอา **Cost/Set** มาแทนที่ · **ไม่ระบุ ETA = "?" ไม่ใช่ On Hand อีกต่อไป** (เดิม 0049 เดาว่าถึงแล้ว — "ไม่รู้" กับ "ของถึงแล้ว" คนละเรื่อง ทำให้วางแผนงานผิดโดยไม่รู้ตัว) → `stockSummary.unknown` + คอลัมน์ `? (ไม่ระบุ ETA)` บน Dashboard · **Export/Import ยกเครื่องเป็น professional**: สเปกคอลัมน์รวมศูนย์ที่ `SHEET_COLS` (แหล่งความจริงเดียวของ Export + Import + ชีตคู่มือ) · เรียงคอลัมน์ **กรอกได้ก่อน → auto ท้ายสุด** · แนบชีต **"วิธีกรอก"** (กรอกได้/อัตโนมัติ · บังคับ · รูปแบบ · คำอธิบาย + กติกา 6 ข้อ + ตาราง Status) · autofilter บนหัวตาราง · **แก้บั๊ก: คลังเปล่า export ออกมาไม่มีหัวตารางเลย** (`json_to_sheet([])` → ใส่ `{header}` แล้วได้แบบฟอร์มกรอกจริง — เจอจาก Project Stock No.21 ที่ผู้ใช้ส่งมา) · import รับหัวตารางชื่อเก่าผ่าน `alias` (ไฟล์ที่ export ไว้ก่อนหน้ายังใช้ได้) + error ใหม่ "กรอกระยะขนส่งแต่ไม่กรอก FOB"
 > ✅ เสร็จแล้ว (2026-08-08 · รอบ 2 — 0051): **ระยะขนส่งเลือกได้ 45–60 วัน** (ต่อเครื่อง/ต่อล็อต · ป้ายในตารางโชว์ `+45 วัน` แทน `auto`) · **ความเห็นผู้บริหารเรื่องคลัง LBS** ท้ายหน้า Project Stock ใต้พาเนล "วัสดุตาม Job (Ref.PO)" · **หน้า Project ID (Jobs) เรียงตามกำหนดส่ง + 🔴/⚠️ + คอลัมน์ "เหลือ"** เหมือน Dashboard (งานที่จบแล้วลงล่างสุด ไม่เตือน) · **เตือนตอนดึง LBS ที่ ETA ยังไม่ถึง** — ป้าย `⚠️ ETA <วันที่>` รายเครื่องในตัวเลือก + สรุปจำนวนเหนือรายการ + dropdown คลังโชว์ `On Hand n (รอเข้าคลังอีก m)` · **ยังดึงได้ (จองล่วงหน้า) ไม่บล็อก** ตามมติ 2026-08-08
 > ✅ เสร็จแล้ว (2026-07-31): **บังคับสรุปปัญหาก่อนปิดงานติดตั้ง** (มี/ไม่มี + รายละเอียด + ไฟล์แนบ, 0040) · **มุมรวมปัญหางานบริการ** จาก 3 แหล่ง + badge เมนู · **เปิดงานใหม่ (Reopen) ผ่านการอนุมัติ Division** + reopenCount (0041)
@@ -435,7 +448,10 @@ npm run build     # tsc + vite build -> dist/
 - แก้ business rule ต้องอัปเดตทั้ง demo (`logic.ts`) และ LIVE (RPC ตัวล่าสุด — grep หา `CREATE OR REPLACE FUNCTION <ชื่อ>` ในทุก migration แล้วดูไฟล์ที่ใหม่สุด ไม่ใช่แค่ 0002)
 - **⚠️ ก่อนแก้ RPC เดิม อ่านหัวข้อ 9 ข้อ 5–6 ก่อน** — `CREATE OR REPLACE` ด้วย body เก่าจะ revert การย่อข้อความของ 0031 · และ `app_swap_guard` patch ได้เฉพาะ **บรรทัดเดียว** (body ใน DB มี CRLF)
 - **ห้ามแก้ `accessory_stock.qty_on_hand` ตรงๆ ในโค้ดใหม่** — ต้องผ่าน `app_apply_stock_movement`-pattern (LIVE: UPDATE แล้วให้ trigger `trg_log_stock_movement` ลง ledger เอง + ตั้งบริบทด้วย `app_set_stock_ctx` ก่อน) · demo: ผ่าน `applyStockMovement` ใน logic.ts เท่านั้น
-- **ต้นทุนที่ใช้ตัดงบ = `unitPrice × (qtyRequested − qtyTransferred)`** ไม่ใช่ `qtyRequested` เฉยๆ (0038) — เขียนสูตรงบใหม่ที่ไหนต้องใช้ helper `effectiveQty()`
+- **ต้นทุนที่ใช้ตัดงบ = `unitPrice × (qtyRequested − qtyTransferred)`** ไม่ใช่ `qtyRequested` เฉยๆ (0038) — เขียนสูตรงบใหม่ที่ไหนต้องใช้ helper `effectiveQty()` · **ยอดต่อ PO ใช้ `poCostSummary()`** ซึ่งคืนทั้ง `ordered` (จ่ายซัพ) และ `charged` (หักงบ Job) · ⚠️ ป้าย 2 ยอดนี้ต้องต่างกันบนจอเสมอ ห้ามยุบเป็น "มูลค่า" อันเดียว (เคยพลาด — ดู §9 ข้อ 13)
+- **Status รายเครื่องใน Project Stock เป็น derive ทั้งหมด** — `unitFlowState()` + `UNIT_FLOW` (format.ts): `? → Pending → On Hand → ถูกดึงเข้า Job → เบิกแล้ว รอติดตั้ง → ติดตั้งแล้ว/ติดตั้งไม่ได้` · **ไม่มีคอลัมน์ status ใน DB สำหรับช่วงต้น** (คำนวณจาก ETA to WH + วันปัจจุบัน) · **ไม่ระบุ ETA = `?` ไม่ใช่ On Hand** — ระบบไม่เดาว่าของถึงคลังแล้ว
+- **ETA to WH = `fob_date + COALESCE(eta_lead_days, 60)`** คำนวณตอนแสดงผล ไม่เก็บคอลัมน์ · `plan_po_receipt_date` = ETA แบบกรอกเอง (ใช้เมื่อไม่มี FOB) · ⚠️ **คนละตัวกับ `plan_po_date`** ที่เป็น "Plan PO receipt = วันรับ PO จากลูกค้า" (0053) — สองคอลัมน์นี้ชื่อคล้ายกันมาก อ่าน comment ใน 0053 ก่อนแตะ
+- **ห้ามเบิกให้ Service ถ้า Job ถือ LBS ที่ Status = Pending** (0052 `app_assert_job_eta_ready`) — guard อยู่ทั้ง `app_exec_issue_job` และ `rpc_request_approval` · **นับเฉพาะ pending ไม่นับ `?`** ("ไม่รู้" ไม่ใช่ "รู้ว่ายังไม่มา" — ถ้าบล็อก `?` ด้วยจะเบิกงานเดิมทั้งระบบไม่ได้)
 - **`profiles.id` อ้าง `auth.users`** → ทุก user ต้องมีบัญชี login · คนที่ไม่ต้อง login (ช่างภาคสนาม/outsource) ต้องเก็บใน `team_members` ไม่ใช่ profiles (0036)
 - **ทดสอบ UI ด้วย Browser pane**: พิกัดคลิกเพี้ยนสเกล (สัดส่วนต่างกันต่อ tab เช่น ~0.59 หรือ ~0.73 เทียบ CSS pixel) และ screenshot ไม่ render modal overlay → วิธีที่ใช้ได้: อ่าน `getBoundingClientRect()` ผ่าน `javascript_tool` แล้วคูณสเกลก่อนคลิก · อ่านเนื้อ modal จาก `document.querySelector('.modal').innerText` · `form_input` ใช้ได้กับ text/textarea/select แต่ **checkbox/radio ต้องคลิกจริง** (React onChange ไม่รับค่าจากการ set `.checked`)
 - `.env`, `.env.*.local`, `.env.live-backup`, `node_modules` อยู่ใน `.gitignore` — อย่า commit
