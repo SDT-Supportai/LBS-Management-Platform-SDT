@@ -56,6 +56,17 @@ export function buildSeedDb(): DB {
         createdBy: 'u-admin', createdAt: '2026-06-12T02:00:00.000Z',
         updatedBy: 'u-admin', updatedAt: '2026-06-12T02:00:00.000Z' },
     ],
+    // Standard Price list ตัวอย่าง (0054) — ตัวที่ 2 ยังไม่แนบไฟล์ ให้เห็นสถานะนั้นด้วย
+    stdPrices: [
+      { id: 's-prc-1', title: 'ราคามาตรฐาน 115kV LBS + อุปกรณ์ประกอบ ปี 2026', priceNo: 'STD-PRICE-2026-01',
+        description: 'ราคาอ้างอิงสำหรับตั้งงบ Job และยื่นลูกค้า · มีผลถึงสิ้นปี 2026',
+        createdBy: 'u-admin', createdAt: '2026-06-15T02:00:00.000Z',
+        updatedBy: 'u-admin', updatedAt: '2026-06-15T02:00:00.000Z' },
+      { id: 's-prc-2', title: 'ราคาค่าแรงติดตั้ง + ขนส่ง (Service Rate)', priceNo: 'STD-PRICE-2026-02',
+        description: 'อัตราค่าแรงติดตั้งต่อเครื่องและค่าขนส่งตามระยะทาง',
+        createdBy: 'u-admin', createdAt: '2026-06-18T02:00:00.000Z',
+        updatedBy: 'u-admin', updatedAt: '2026-06-18T02:00:00.000Z' },
+    ],
     stdBoms: [
       { id: 's-bom-1', title: 'BOM มาตรฐาน — ติดตั้ง LBS 1 ชุด (Outdoor)', bomNo: 'STD-BOM-001',
         description: 'รายการวัสดุมาตรฐานต่อการติดตั้ง LBS 1 เครื่อง',

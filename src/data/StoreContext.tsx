@@ -101,7 +101,7 @@ const EMPTY_DB: DB = {
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [], approvalComments: [],
   auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
-  stdDrawings: [], stdBoms: [], stdBomLines: [],
+  stdDrawings: [], stdPrices: [], stdBoms: [], stdBomLines: [],
 }
 
 // migrate ข้อมูล demo จาก schema เก่า (v1: issued_installed, ไม่มี qtyReceived/notifications)
@@ -141,6 +141,7 @@ function migrateDb(raw: unknown): DB {
     stockMovements: d.stockMovements ?? [],
     jobPayments: d.jobPayments ?? [],
     stdDrawings: d.stdDrawings ?? [],
+    stdPrices: d.stdPrices ?? [],
     stdBoms: d.stdBoms ?? [],
     stdBomLines: d.stdBomLines ?? [],
   }
@@ -227,6 +228,9 @@ export interface StoreActions {
   createStdDrawing: (p: Parameters<typeof L.createStdDrawing>[2]) => MaybePromise
   updateStdDrawing: (p: Parameters<typeof L.updateStdDrawing>[2]) => MaybePromise
   deleteStdDrawing: (p: Parameters<typeof L.deleteStdDrawing>[2]) => MaybePromise
+  createStdPrice: (p: Parameters<typeof L.createStdPrice>[2]) => MaybePromise
+  updateStdPrice: (p: Parameters<typeof L.updateStdPrice>[2]) => MaybePromise
+  deleteStdPrice: (p: Parameters<typeof L.deleteStdPrice>[2]) => MaybePromise
   createStdBom: (p: Parameters<typeof L.createStdBom>[2]) => MaybePromise
   updateStdBom: (p: Parameters<typeof L.updateStdBom>[2]) => MaybePromise
   deleteStdBom: (p: Parameters<typeof L.deleteStdBom>[2]) => MaybePromise
@@ -414,6 +418,9 @@ function DemoProvider({ children }: { children: ReactNode }) {
         createStdDrawing: run('standards.manage', L.createStdDrawing),
         updateStdDrawing: run('standards.manage', L.updateStdDrawing),
         deleteStdDrawing: run('standards.manage', L.deleteStdDrawing),
+        createStdPrice: run('standards.manage', L.createStdPrice),
+        updateStdPrice: run('standards.manage', L.updateStdPrice),
+        deleteStdPrice: run('standards.manage', L.deleteStdPrice),
         createStdBom: run('standards.manage', L.createStdBom),
         updateStdBom: run('standards.manage', L.updateStdBom),
         deleteStdBom: run('standards.manage', L.deleteStdBom),

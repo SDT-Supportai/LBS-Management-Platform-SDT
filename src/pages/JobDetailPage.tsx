@@ -149,16 +149,20 @@ export default function JobDetailPage() {
       const pr = db.prs.find(p => p.id === r.prId)
       const po = r.poId ? db.pos.find(p => p.id === r.poId) : undefined
       const active = r.status !== 'cancelled' && r.status !== 'returned'
-      const lineValue = active && r.unitPrice !== undefined ? r.unitPrice * r.qtyRequested : undefined
+      // ⚠️ ต้องใช้ effectiveQty ให้ตรงกับที่แสดงบนจอและที่ตัดงบจริง (§12) — เดิมใช้ qtyRequested
+      //    ทำให้ไฟล์ Excel ไม่ตรงกับหน้าจอเมื่อมีการโอนวัสดุเหลือคืนคลัง
+      const lineValue = active && r.unitPrice !== undefined ? r.unitPrice * effectiveQty(r) : undefined
       const cat = r.phaseBudget ? (COST_LABEL[r.phaseBudget] ?? r.phaseBudget) : ''
       const phase = r.phaseBudget ? (job.budgetCosts?.[r.phaseBudget as CostCategoryKey]?.phase ?? '') : ''
       return {
         'รหัส Epicor': item.epicorCode || '',
         'ชื่ออุปกรณ์': item.name,
-        'จำนวน': r.qtyRequested,
+        'จำนวนที่ขอ': r.qtyRequested,
+        'โอนคืนคลัง': r.qtyTransferred ?? 0,
+        'จำนวนที่คิดต้นทุน': active ? effectiveQty(r) : 0,
         'หน่วย': item.uom,
         'ราคา/หน่วย': r.unitPrice ?? '',
-        'มูลค่า': lineValue ?? '',
+        'ต้นทุนที่ตัดเข้างาน': lineValue ?? '',
         'Phase Budget': cat,
         'Phase': phase,
         'แหล่ง': r.source === 'central_stock' ? 'คลังคงเหลือ' : 'Purchasing',
@@ -167,7 +171,7 @@ export default function JobDetailPage() {
       }
     })
     const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ 'รหัส Epicor': '', 'ชื่ออุปกรณ์': '(ยังไม่มีรายการวัสดุ)' }])
-    ws['!cols'] = [{ wch: 14 }, { wch: 24 }, { wch: 8 }, { wch: 8 }, { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 18 }]
+    ws['!cols'] = [{ wch: 14 }, { wch: 24 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 8 }, { wch: 12 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 18 }]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'Purchase Orders')
     XLSX.writeFile(wb, `${job.jobNo.replace(/[\\/:*?"<>|]/g, '-')}-PO-${new Date().toISOString().slice(0, 10)}.xlsx`)

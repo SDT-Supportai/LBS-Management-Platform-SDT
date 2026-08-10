@@ -57,7 +57,7 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
     { to: '/scheduling', icon: '👷', label: 'Service & Scheduling', badge: unassignedJobs > 0 ? { text: `${unassignedJobs} ยังไม่มอบหมาย`, cls: 'amber' } : undefined },
     { to: '/master', icon: '🗄️', label: 'Material Database' },
     // เอกสารมาตรฐาน (0045) — ข้อมูลอ้างอิงเหมือน Material Database จึงวางต่อกัน · ทุกแผนกเปิดดูได้
-    { to: '/standards', icon: '📐', label: 'Standard Drawing & BOM' },
+    { to: '/standards', icon: '📐', label: 'Standard Price / Drawing / BOM' },
     // Awaiting Approval ย้ายมาอยู่ล่าง Material Database (มติ 2026-07-19)
     { to: '/approvals', icon: '✅', label: 'Awaiting Approval',
       badge: pendingApprovals > 0

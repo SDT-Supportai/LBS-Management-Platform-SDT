@@ -2404,6 +2404,28 @@ export function pendingPurchasingReqs(db: DB, jobId: string): AccessoryRequest[]
   return db.accessoryRequests.filter(r => r.jobId === jobId && r.source === 'purchasing' && r.status === 'pending')
 }
 
+/**
+ * สรุปต้นทุนของ PO ใบหนึ่ง (0054) — แยก 2 ตัวเลขที่ "ไม่เท่ากันได้" ให้ชัด
+ *   ordered = มูลค่าที่สั่งซื้อ/ถูกบิลจากซัพ  = unitPrice × qtyRequested
+ *   charged = ต้นทุนที่ตัดเข้า Job จริง      = unitPrice × effectiveQty (หักของที่โอนคืนคลัง)
+ * ⚠️ ต่างกันเมื่อมีการโอนวัสดุเหลือเข้าคลัง (transferJobMaterialToStock, 0038)
+ *    ของที่โอนคืนไม่ใช่ต้นทุนของงานนี้แล้ว แต่เงินที่จ่ายซัพไปยังเท่าเดิม — สองมุมนี้ถูกทั้งคู่
+ *    ห้ามยุบเป็นตัวเลขเดียว ต้องติดป้ายให้ต่างกันชัดเจน (ดู §12 กติกา effectiveQty)
+ */
+export function poCostSummary(db: DB, poId: string) {
+  const lines = db.accessoryRequests.filter(r => r.poId === poId)
+  const active = lines.filter(r => r.status !== 'cancelled' && r.status !== 'returned')
+  const priced = active.filter(r => r.unitPrice !== undefined)
+  return {
+    lineCount: active.length,
+    droppedCount: lines.length - active.length,        // ยกเลิก/คืนของแล้ว — ไม่นับเป็นต้นทุน
+    missingPrice: active.length - priced.length,       // ยังไม่กรอกราคา → ยอดรวมยังไม่ครบ
+    ordered: priced.reduce((s, r) => s + (r.unitPrice ?? 0) * r.qtyRequested, 0),
+    charged: priced.reduce((s, r) => s + (r.unitPrice ?? 0) * effectiveQty(r), 0),
+    transferredQty: active.reduce((s, r) => s + (r.qtyTransferred ?? 0), 0),
+  }
+}
+
 // มูลค่าวัสดุของ Job = Σ(ราคาต่อหน่วย × จำนวน) เฉพาะรายการที่ยัง active (ไม่นับ cancelled/returned)
 export function jobMaterialValue(db: DB, jobId: string): number {
   return db.accessoryRequests
@@ -2520,6 +2542,66 @@ export function deleteStdDrawing(db: DB, actor: User, p: { id: string }): DB {
   const next: DB = { ...db, stdDrawings: db.stdDrawings.filter(x => x.id !== p.id) }
   return audit(next, actor, 'std_drawing', p.id, 'delete_std_drawing',
     `ลบ Standard Drawing "${d.title}" (ไฟล์ ${d.fileName ?? '-'} ยังอยู่ใน Storage)`)
+}
+
+// ---------------- Standard Price list (sync 0054) ----------------
+// กติกาเดียวกับ Standard Drawing ทุกข้อ: แก้ = ทับข้อมูลเดิม + stamp ผู้แก้/เวลา ·
+// fileUrl ว่างตอนแก้ = คงไฟล์เดิม · ลบ = ลบทะเบียน ไฟล์ยังอยู่ใน Storage
+export function createStdPrice(
+  db: DB, actor: User,
+  p: { title: string; priceNo?: string; description?: string; fileUrl?: string; fileName?: string },
+): DB {
+  const title = p.title.trim()
+  if (!title) throw new Error('กรุณาระบุหัวข้อ/ชื่อรายการราคา')
+  const no = clean(p.priceNo)
+  if (no && db.stdPrices.some(x => x.priceNo === no))
+    throw new Error(`เลขเอกสารราคา "${no}" มีอยู่แล้ว`)
+  const id = uid()
+  const next: DB = {
+    ...db,
+    stdPrices: [...db.stdPrices, {
+      id, title, priceNo: no, description: clean(p.description),
+      fileUrl: clean(p.fileUrl), fileName: clean(p.fileName),
+      createdBy: actor.id, createdAt: now(), updatedBy: actor.id, updatedAt: now(),
+    }],
+  }
+  return audit(next, actor, 'std_price', id, 'create_std_price',
+    `เพิ่ม Standard Price list "${title}"${clean(p.fileName) ? ` · ไฟล์ ${p.fileName}` : ' · ยังไม่แนบไฟล์'}`)
+}
+
+export function updateStdPrice(
+  db: DB, actor: User,
+  p: { id: string; title: string; priceNo?: string; description?: string; fileUrl?: string; fileName?: string; revNote?: string },
+): DB {
+  const d = db.stdPrices.find(x => x.id === p.id)
+  if (!d) throw new Error('ไม่พบรายการราคานี้')
+  const title = p.title.trim()
+  if (!title) throw new Error('กรุณาระบุหัวข้อ/ชื่อรายการราคา')
+  const no = clean(p.priceNo)
+  if (no && db.stdPrices.some(x => x.id !== p.id && x.priceNo === no))
+    throw new Error(`เลขเอกสารราคา "${no}" มีอยู่แล้ว`)
+  const newUrl = clean(p.fileUrl) ?? d.fileUrl
+  const newName = clean(p.fileUrl) ? clean(p.fileName) : d.fileName
+  const next: DB = {
+    ...db,
+    stdPrices: db.stdPrices.map(x => x.id === p.id ? {
+      ...x, title, priceNo: no, description: clean(p.description),
+      fileUrl: newUrl, fileName: newName, revNote: clean(p.revNote),
+      updatedBy: actor.id, updatedAt: now(),
+    } : x),
+  }
+  return audit(next, actor, 'std_price', p.id, 'update_std_price',
+    `แก้ Standard Price list "${d.title}" → "${title}"` +
+    (newUrl !== d.fileUrl ? ` · เปลี่ยนไฟล์: ${d.fileName ?? '-'} → ${newName ?? '-'}` : ' · ไฟล์เดิม') +
+    (clean(p.revNote) ? ` · หมายเหตุ: ${clean(p.revNote)}` : ''))
+}
+
+export function deleteStdPrice(db: DB, actor: User, p: { id: string }): DB {
+  const d = db.stdPrices.find(x => x.id === p.id)
+  if (!d) throw new Error('ไม่พบรายการราคานี้')
+  const next: DB = { ...db, stdPrices: db.stdPrices.filter(x => x.id !== p.id) }
+  return audit(next, actor, 'std_price', p.id, 'delete_std_price',
+    `ลบ Standard Price list "${d.title}" (ไฟล์ ${d.fileName ?? '-'} ยังอยู่ใน Storage)`)
 }
 
 export function createStdBom(

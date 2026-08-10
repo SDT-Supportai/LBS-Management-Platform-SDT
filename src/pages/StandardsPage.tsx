@@ -24,6 +24,12 @@ interface DrawingForm {
   title: string; drawingNo: string; description: string; revNote: string
   currentFileName?: string
 }
+// Standard Price list (0054) — โครงเดียวกับ DrawingForm (priceNo แทน drawingNo)
+interface PriceForm {
+  id: string | null
+  title: string; priceNo: string; description: string; revNote: string
+  currentFileName?: string
+}
 interface BomForm { id: string | null; title: string; bomNo: string; description: string }
 interface LineForm {
   id: string | null; bomId: string
@@ -52,8 +58,9 @@ export default function StandardsPage() {
   const { show } = useToast()
   const canManage = can(user, 'standards.manage')
 
-  const [tab, setTab] = useState<'drawing' | 'bom'>('drawing')
+  const [tab, setTab] = useState<'price' | 'drawing' | 'bom'>('price')
   const [drawingForm, setDrawingForm] = useState<DrawingForm | null>(null)
+  const [priceForm, setPriceForm] = useState<PriceForm | null>(null)
   const [pdf, setPdf] = useState<{ file: File; dataUrl: string } | null>(null)
   const [bomForm, setBomForm] = useState<BomForm | null>(null)
   const [lineForm, setLineForm] = useState<LineForm | null>(null)
@@ -68,6 +75,7 @@ export default function StandardsPage() {
 
   const userOf = (id?: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
   const drawings = [...db.stdDrawings].sort((a, b) => (a.drawingNo ?? a.title).localeCompare(b.drawingNo ?? b.title))
+  const prices = [...db.stdPrices].sort((a, b) => (a.priceNo ?? a.title).localeCompare(b.priceNo ?? b.title))
   const boms = [...db.stdBoms].sort((a, b) => (a.bomNo ?? a.title).localeCompare(b.bomNo ?? b.title))
 
   const pickPdf = async (file?: File) => {
@@ -83,11 +91,11 @@ export default function StandardsPage() {
 
   // LIVE: อัปโหลดเข้า Storage คืน public URL (path ใหม่ทุกครั้ง ไม่ทับ object เดิม)
   // demo: คืน data URL · ไม่ได้เลือกไฟล์ = undefined → ฝั่ง RPC/logic คงไฟล์เดิม
-  const resolvePdfUrl = async (): Promise<string | undefined> => {
+  const resolvePdfUrl = async (prefix = 'standard-drawings'): Promise<string | undefined> => {
     if (!pdf) return undefined
     if (!supabase) return pdf.dataUrl
     const safe = pdf.file.name.replace(/[^\w.\-]/g, '_')
-    const path = `standard-drawings/${Date.now()}-${safe}`
+    const path = `${prefix}/${Date.now()}-${safe}`
     const { error } = await supabase.storage.from('install-photos').upload(path, pdf.file, { upsert: false })
     if (error) throw new Error(`อัปโหลด PDF ไม่สำเร็จ: ${error.message} (ตรวจว่ามี bucket install-photos)`)
     return supabase.storage.from('install-photos').getPublicUrl(path).data.publicUrl
@@ -107,6 +115,23 @@ export default function StandardsPage() {
         : act.createStdDrawing(base))
     }, drawingForm.id ? 'บันทึกการแก้ไข Drawing แล้ว' : 'เพิ่ม Drawing แล้ว')
     if (ok) { setDrawingForm(null); setPdf(null) }
+  }
+
+  // Standard Price list (0054) — ใช้ machinery เดียวกับ saveDrawing (pdf state + resolvePdfUrl)
+  const savePrice = async () => {
+    if (!priceForm) return
+    const ok = await tryAction(async () => {
+      const fileUrl = await resolvePdfUrl('standard-prices')
+      const base = {
+        title: priceForm.title, priceNo: priceForm.priceNo,
+        description: priceForm.description,
+        fileUrl, fileName: fileUrl ? pdf?.file.name : undefined,
+      }
+      await (priceForm.id
+        ? act.updateStdPrice({ id: priceForm.id, ...base, revNote: priceForm.revNote })
+        : act.createStdPrice(base))
+    }, priceForm.id ? 'บันทึกการแก้ไขรายการราคาแล้ว' : 'เพิ่มรายการราคาแล้ว')
+    if (ok) { setPriceForm(null); setPdf(null) }
   }
 
   const saveBom = async () => {
@@ -241,13 +266,16 @@ export default function StandardsPage() {
 
   return (
     <>
-      <div className="page-title">Standard Drawing and BOM List</div>
+      <div className="page-title">Standard Price list, Drawing and BOM List</div>
       <div className="page-sub">
-        แบบมาตรฐานและรายการวัสดุมาตรฐานของ LBS — ทุกแผนกเปิดดู/ดาวน์โหลดได้
+        ราคามาตรฐาน · แบบมาตรฐาน · รายการวัสดุมาตรฐานของ LBS — ทุกแผนกเปิดดู/ดาวน์โหลดได้
         {canManage ? ' · คุณมีสิทธิ์เพิ่ม/แก้ไข' : ' · เพิ่ม/แก้ไขได้เฉพาะ Project / Division / Manage'}
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+        <button className={tab === 'price' ? 'primary' : ''} onClick={() => setTab('price')}>
+          💰 Standard Price list ({prices.length})
+        </button>
         <button className={tab === 'drawing' ? 'primary' : ''} onClick={() => setTab('drawing')}>
           📐 Standard Drawing ({drawings.length})
         </button>
@@ -255,6 +283,75 @@ export default function StandardsPage() {
           📋 Standard BOM List ({boms.length})
         </button>
       </div>
+
+      {/* ---------------- Standard Price list (0054) ---------------- */}
+      {/* หลักการเดียวกับ Standard Drawing เป๊ะ: 1 รายการ = 1 แถว + PDF ล่าสุด · แก้ = ทับข้อมูลเดิม
+          + stamp ผู้แก้/เวลา · ลบ = ลบทะเบียน ไฟล์ยังอยู่ใน Storage */}
+      {tab === 'price' && (
+        <>
+          {canManage && (
+            <div style={{ marginBottom: 12 }}>
+              <button className="primary" onClick={() => {
+                setPdf(null)
+                setPriceForm({ id: null, title: '', priceNo: '', description: '', revNote: '' })
+              }}>+ เพิ่มรายการราคา</button>
+            </div>
+          )}
+          <div className="panel">
+            <div className="table-scroll">
+              <table>
+                <thead><tr>
+                  <th>เลขเอกสารราคา</th><th>หัวข้อ / ชื่อรายการราคา</th><th>ไฟล์ PDF</th>
+                  <th>แก้ไขล่าสุด</th><th>โดย</th><th>หมายเหตุการแก้ไข</th>{canManage && <th></th>}
+                </tr></thead>
+                <tbody>
+                  {prices.length === 0 && (
+                    <tr><td colSpan={canManage ? 7 : 6}><div className="empty">ยังไม่มี Standard Price list</div></td></tr>
+                  )}
+                  {prices.map(d => (
+                    <tr key={d.id}>
+                      <td className="mono">{d.priceNo || '-'}</td>
+                      <td>{d.title}<div className="muted">{d.description || ''}</div></td>
+                      <td>
+                        {d.fileUrl
+                          ? <a href={d.fileUrl} target="_blank" rel="noreferrer" download={d.fileName}>
+                              📄 {d.fileName || 'ดาวน์โหลด PDF'}
+                            </a>
+                          : <span className="badge amber">ยังไม่แนบไฟล์</span>}
+                      </td>
+                      <td>{fmtDateTime(d.updatedAt ?? d.createdAt)}</td>
+                      <td>{userOf(d.updatedBy ?? d.createdBy)}</td>
+                      <td className="muted">{d.revNote || '-'}</td>
+                      {canManage && (
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          <button className="small" onClick={() => {
+                            setPdf(null)
+                            setPriceForm({
+                              id: d.id, title: d.title, priceNo: d.priceNo ?? '',
+                              description: d.description ?? '', revNote: '',
+                              currentFileName: d.fileName,
+                            })
+                          }}>แก้ไข</button>
+                          <button className="small danger" style={{ marginLeft: 6 }} onClick={async () => {
+                            if (await askConfirm({
+                              title: `ลบรายการราคา "${d.title}"`,
+                              description: <>
+                                {d.priceNo && <>เลขเอกสาร <b className="mono">{d.priceNo}</b> · </>}
+                                ทุกแผนกจะโหลดรายการราคานี้จากระบบไม่ได้อีก · <b>ไฟล์ PDF ยังอยู่ใน Storage</b> และ URL เดิมยังเปิดได้ (ลบรายการออกจากทะเบียนเท่านั้น)
+                              </>,
+                              confirmLabel: 'ลบรายการราคา',
+                            })) tryAction(() => act.deleteStdPrice({ id: d.id }), 'ลบรายการราคาแล้ว')
+                          }}>ลบ</button>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* ---------------- Standard Drawing ---------------- */}
       {tab === 'drawing' && (
@@ -563,6 +660,57 @@ export default function StandardsPage() {
               <input value={drawingForm.revNote}
                 onChange={e => setDrawingForm({ ...drawingForm, revNote: e.target.value })}
                 placeholder="เช่น แก้ระยะ clearance ตามมาตรฐานใหม่" />
+            </label>
+          )}
+        </Modal>
+      )}
+
+      {/* ---------------- Modal: Standard Price list (0054) ---------------- */}
+      {priceForm && (
+        <Modal
+          title={priceForm.id ? 'แก้ไข Standard Price list' : 'เพิ่ม Standard Price list'}
+          size="wide"
+          onClose={() => { setPriceForm(null); setPdf(null) }}
+          footer={<>
+            <button onClick={() => { setPriceForm(null); setPdf(null) }}>ยกเลิก</button>
+            <button className="primary" disabled={!priceForm.title.trim()} onClick={savePrice}>บันทึก</button>
+          </>}
+        >
+          <div className="row">
+            <label className="field"><span>หัวข้อ / ชื่อรายการราคา *</span>
+              <input value={priceForm.title}
+                onChange={e => setPriceForm({ ...priceForm, title: e.target.value })}
+                placeholder="ราคามาตรฐาน 115kV LBS + อุปกรณ์ประกอบ ปี 2026" />
+            </label>
+            <label className="field"><span>เลขเอกสารราคา (ห้ามซ้ำ · ว่างได้)</span>
+              <input className="mono" value={priceForm.priceNo}
+                onChange={e => setPriceForm({ ...priceForm, priceNo: e.target.value })}
+                placeholder="STD-PRICE-2026-01" />
+            </label>
+          </div>
+          <label className="field"><span>คำอธิบาย</span>
+            <textarea rows={2} value={priceForm.description}
+              onChange={e => setPriceForm({ ...priceForm, description: e.target.value })}
+              placeholder="เช่น ราคาอ้างอิงสำหรับตั้งงบ Job / ใช้ยื่นลูกค้า · มีผลถึงสิ้นปี" />
+          </label>
+          <label className="field">
+            <span>ไฟล์ PDF {priceForm.id ? '(เลือกใหม่ = แทนไฟล์เดิม · ไม่เลือก = คงไฟล์เดิม)' : ''}</span>
+            <input type="file" accept="application/pdf,.pdf"
+              onChange={e => pickPdf(e.target.files?.[0])} />
+          </label>
+          <div className="muted" style={{ marginBottom: 8 }}>
+            {pdf
+              ? <>ไฟล์ใหม่: <b>{pdf.file.name}</b> ({(pdf.file.size / 1024 / 1024).toFixed(2)} MB)</>
+              : priceForm.currentFileName
+                ? <>ไฟล์ปัจจุบัน: <b>{priceForm.currentFileName}</b></>
+                : 'ยังไม่ได้เลือกไฟล์'}
+            {!supabase && <> · โหมด demo รับไม่เกิน {DEMO_MAX_MB} MB</>}
+          </div>
+          {priceForm.id && (
+            <label className="field"><span>หมายเหตุการแก้ไขครั้งนี้ (จะแสดงในตารางพร้อมวันที่/ผู้แก้ไข)</span>
+              <input value={priceForm.revNote}
+                onChange={e => setPriceForm({ ...priceForm, revNote: e.target.value })}
+                placeholder="เช่น ปรับราคาตามต้นทุนนำเข้าใหม่ Q3" />
             </label>
           )}
         </Modal>

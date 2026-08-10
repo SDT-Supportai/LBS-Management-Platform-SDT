@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import { Modal, usePrompt, useTryAction } from '../ui/components'
+import { poCostSummary } from '../data/logic'
 import { fmtBaht, fmtDate, fmtDateTime, COST_CATEGORIES } from '../ui/format'
 import type { CostCategoryKey } from '../types'
 
@@ -112,7 +113,10 @@ export default function PurchasingPage() {
         จัดกลุ่มตามงานโครงการ — รับ PR จาก Project → ออก PO (หรือตีกลับพร้อมเหตุผล) → รับของทีละรายการ/ทีละจำนวน
         {!canManage && ' · แผนกของคุณดูได้อย่างเดียว'}
         {' · '}<span className="badge amber">PR รอออก PO {totalPendingPr}</span>{' '}
-        <span className="badge blue">PO รอรับของ {totalOpenPo}</span>
+        <span className="badge blue">PO รอรับของ {totalOpenPo}</span><br />
+        <b>มูลค่าสั่งซื้อ</b> = ราคา × จำนวนที่สั่ง (ยอดที่จ่ายซัพ) ·
+        <b> ตัดเข้างาน</b> = ยอดที่หักงบ Job จริง = ราคา × (จำนวนที่สั่ง − จำนวนที่โอนคืนคลัง) —
+        ปกติเท่ากัน จะต่างเมื่อ Project โอนวัสดุเหลือคืนคลัง ระบบจะโชว์ทั้งสองยอดในคอลัมน์ต้นทุนรวม
       </div>
 
       {jobsWithDocs.length === 0 && (
@@ -142,7 +146,7 @@ export default function PurchasingPage() {
                     <th>PR No.</th><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th>
                     <th style={{ textAlign: 'right' }}>จำนวน</th>
                     <th style={{ textAlign: 'right' }}>ราคา/หน่วย</th>
-                    <th style={{ textAlign: 'right' }}>มูลค่า</th>
+                    <th style={{ textAlign: 'right' }} title="ราคา/หน่วย × จำนวนที่สั่ง — ยอดที่จ่ายซัพ · ยอดที่ตัดงบ Job อาจน้อยกว่านี้ถ้าโอนของเหลือคืนคลัง">มูลค่าสั่งซื้อ</th>
                     <th>Phase Budget</th><th>ส่งเมื่อ</th><th></th>
                   </tr></thead>
                   <tbody>
@@ -196,12 +200,13 @@ export default function PurchasingPage() {
             {jobPos.length > 0 && (
               <div className="table-scroll">
                 <table>
-                  <thead><tr><th>PO No.</th><th>รายการใน PO · ราคาจริง</th><th>Supplier</th><th>กำหนดส่ง</th><th>รับของ</th><th>สถานะ</th><th></th></tr></thead>
+                  <thead><tr><th>PO No.</th><th>รายการใน PO · ราคาจริง</th><th style={{ textAlign: 'right' }}>ต้นทุนรวม</th><th>Supplier</th><th>กำหนดส่ง</th><th>รับของ</th><th>สถานะ</th><th></th></tr></thead>
                   <tbody>
                     {[...jobPos].reverse().map(po => {
                       const lines = poLines(po.id)
                       const totalOrdered = lines.reduce((s, r) => s + r.qtyRequested, 0)
                       const totalReceived = lines.reduce((s, r) => s + r.qtyReceived, 0)
+                      const cost = poCostSummary(db, po.id)   // 0054 — ต้นทุนรวมต่อ PO No.
                       return (
                         <tr key={po.id}>
                           <td className="mono"><b>{po.poNo}</b></td>
@@ -232,6 +237,24 @@ export default function PurchasingPage() {
                               </div>
                             )
                           })}</td>
+                          {/* ต้นทุนรวมต่อ PO (0054) — "สั่งซื้อ" คือยอดที่จ่ายซัพ · "ตัดเข้างาน" คือยอดที่หักงบ Job
+                              สองตัวนี้ต่างกันได้เมื่อโอนวัสดุเหลือคืนคลัง จึงต้องโชว์แยกไม่ยุบรวม */}
+                          <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                            <b>{fmtBaht(cost.ordered)}</b>
+                            <div className="muted" style={{ fontSize: 11 }}>สั่งซื้อ · {cost.lineCount} รายการ</div>
+                            {cost.charged !== cost.ordered && (
+                              <div style={{ fontSize: 11, color: 'var(--amber, #d97706)' }}
+                                title={`โอนวัสดุเหลือคืนคลังแล้ว ${cost.transferredQty} หน่วย — ส่วนนั้นไม่ถูกตัดเป็นต้นทุนของ Job`}>
+                                ตัดเข้างาน {fmtBaht(cost.charged)}
+                              </div>
+                            )}
+                            {cost.missingPrice > 0 && (
+                              <div style={{ fontSize: 11, color: 'var(--danger)' }}
+                                title="ยอดรวมยังไม่ครบ — กด 💰 ราคาจริง ให้ครบทุกรายการ">
+                                ⚠️ ยังไม่กรอกราคา {cost.missingPrice} รายการ
+                              </div>
+                            )}
+                          </td>
                           <td>{po.supplierName}</td>
                           <td>{fmtDate(po.expectedDate)}</td>
                           <td>
@@ -314,7 +337,7 @@ export default function PurchasingPage() {
                 <th></th><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th>
                 <th style={{ textAlign: 'right' }}>จำนวน</th>
                 <th style={{ textAlign: 'right' }}>ราคา/หน่วย</th>
-                <th style={{ textAlign: 'right' }}>มูลค่า</th>
+                <th style={{ textAlign: 'right' }}>มูลค่าสั่งซื้อ</th>
                 <th>Phase Budget</th>
               </tr></thead>
               <tbody>

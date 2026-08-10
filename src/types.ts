@@ -372,6 +372,23 @@ export interface StdDrawing {
   updatedAt?: string
 }
 
+// Standard Price list (0054) — โครงสร้างเดียวกับ StdDrawing เป๊ะ (1 รายการ = 1 แถว + ไฟล์ PDF ล่าสุด)
+// แยกตารางจาก Drawing เพราะเป็นทะเบียนคนละชุด (ราคามาตรฐาน vs แบบมาตรฐาน) และมีเลขเอกสารคนละระบบ
+// แก้ไข = ทับข้อมูลเดิม + stamp updatedAt/updatedBy · ไฟล์เก่าไม่ถูกลบจาก Storage
+export interface StdPrice {
+  id: string
+  title: string
+  priceNo?: string             // เลขเอกสารราคา (ว่างได้)
+  description?: string
+  fileUrl?: string             // ว่าง = ยังไม่แนบไฟล์
+  fileName?: string
+  revNote?: string
+  createdBy: string
+  createdAt: string
+  updatedBy?: string
+  updatedAt?: string
+}
+
 // Standard BOM List (0045) — หัวข้อ BOM + รายการวัสดุ · ตารางอ้างอิง/Export ยังไม่ต่อเข้า Job
 export interface StdBom {
   id: string
@@ -432,6 +449,7 @@ export interface DB {
   stockMovements: StockMovement[]
   jobPayments: JobPayment[]
   stdDrawings: StdDrawing[]
+  stdPrices: StdPrice[]
   stdBoms: StdBom[]
   stdBomLines: StdBomLine[]
 }

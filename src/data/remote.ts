@@ -4,7 +4,7 @@ import type {
   AccessoryRequest, PurchaseRequisition, PurchaseOrder, AuditLog, AppNotification,
   Department, ApprovalRequest, ApprovalComment, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit, UnitInstallation,
   TeamMember, JobAssignment, StockMovement, JobPayment, PaymentType,
-  StdDrawing, StdBom, StdBomLine,
+  StdDrawing, StdPrice, StdBom, StdBomLine,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -55,6 +55,16 @@ function mapUnit(r: Row): LbsUnit {
 function mapStdDrawing(r: Row): StdDrawing {
   return {
     id: r.id, title: r.title, drawingNo: r.drawing_no ?? undefined,
+    description: r.description ?? undefined,
+    fileUrl: r.file_url ?? undefined, fileName: r.file_name ?? undefined,
+    revNote: r.rev_note ?? undefined,
+    createdBy: r.created_by ?? '', createdAt: r.created_at,
+    updatedBy: r.updated_by ?? undefined, updatedAt: r.updated_at ?? undefined,
+  }
+}
+function mapStdPrice(r: Row): StdPrice {
+  return {
+    id: r.id, title: r.title, priceNo: r.price_no ?? undefined,
     description: r.description ?? undefined,
     fileUrl: r.file_url ?? undefined, fileName: r.file_name ?? undefined,
     revNote: r.rev_note ?? undefined,
@@ -236,7 +246,7 @@ async function q(sb: SupabaseClient, table: string, order?: { col: string; asc?:
 }
 
 export async function loadAll(sb: SupabaseClient): Promise<DB> {
-  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, approvalComments, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, boms, bomLines] =
+  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, approvalComments, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, prices, boms, bomLines] =
     await Promise.all([
       q(sb, 'profiles'),
       q(sb, 'items', { col: 'code', limit: 10000 }),
@@ -260,6 +270,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       q(sb, 'stock_movements', { col: 'performed_at', asc: false, limit: 1000 }),
       q(sb, 'job_payments', { col: 'created_at' }),
       q(sb, 'std_drawings', { col: 'title' }),
+      q(sb, 'std_prices', { col: 'title' }),
       q(sb, 'std_boms', { col: 'title' }),
       q(sb, 'std_bom_lines', { col: 'created_at' }),
     ])
@@ -303,6 +314,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     stockMovements: movements.map(mapStockMovement),
     jobPayments: payments.map(mapJobPayment),
     stdDrawings: drawings.map(mapStdDrawing),
+    stdPrices: prices.map(mapStdPrice),
     stdBoms: boms.map(mapStdBom),
     stdBomLines: bomLines.map(mapStdBomLine),
   }
@@ -492,6 +504,18 @@ export function remoteActions(sb: SupabaseClient) {
         p_file_url: p.fileUrl ?? null, p_file_name: p.fileName ?? null, p_rev_note: p.revNote ?? null,
       }),
     deleteStdDrawing: (p: { id: string }) => rpc(sb, 'rpc_delete_std_drawing', { p_id: p.id }),
+    // Standard Price list (0054) — กติกาเดียวกับ Drawing · p_file_url ว่าง = คงไฟล์เดิม
+    createStdPrice: (p: { title: string; priceNo?: string; description?: string; fileUrl?: string; fileName?: string }) =>
+      rpc(sb, 'rpc_create_std_price', {
+        p_title: p.title, p_price_no: p.priceNo ?? null, p_description: p.description ?? null,
+        p_file_url: p.fileUrl ?? null, p_file_name: p.fileName ?? null,
+      }),
+    updateStdPrice: (p: { id: string; title: string; priceNo?: string; description?: string; fileUrl?: string; fileName?: string; revNote?: string }) =>
+      rpc(sb, 'rpc_update_std_price', {
+        p_id: p.id, p_title: p.title, p_price_no: p.priceNo ?? null, p_description: p.description ?? null,
+        p_file_url: p.fileUrl ?? null, p_file_name: p.fileName ?? null, p_rev_note: p.revNote ?? null,
+      }),
+    deleteStdPrice: (p: { id: string }) => rpc(sb, 'rpc_delete_std_price', { p_id: p.id }),
     createStdBom: (p: { title: string; bomNo?: string; description?: string }) =>
       rpc(sb, 'rpc_create_std_bom', { p_title: p.title, p_bom_no: p.bomNo ?? null, p_description: p.description ?? null }),
     updateStdBom: (p: { id: string; title: string; bomNo?: string; description?: string }) =>

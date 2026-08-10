@@ -135,6 +135,7 @@ lbs-platform/
 | `0051_eta_lead_days_stock_comment.sql` | **ฟีเจอร์ (2026-08-08)**: (1) **ระยะขนส่งเลือกได้ 45–60 วัน** — `lbs_units.eta_lead_days` (NULL = ค่ามาตรฐาน 60 → ข้อมูลเดิมไม่ต้อง backfill) · ETA to WH = `fob_date + COALESCE(eta_lead_days, 60)` ยังเป็นค่าคำนวณตามเดิม · ตั้งได้ 3 ทาง: modal แก้รายเครื่อง / ปุ่ม 🚢 ตั้ง FOB ทั้งคลัง / คอลัมน์ "ระยะขนส่ง (วัน)" ใน Excel · helper `app_unit_lead(jsonb)` validate 1–365 (UI จำกัด 45–60 — เส้นทางใหม่แก้แค่ฝั่ง UI) · **DROP+recreate** `rpc_update_unit_plan` (8→9 args) และ `rpc_set_stock_fob` (+`p_lead_days`) ตาม §9.8 (2) **ความเห็นผู้บริหารเรื่องคลัง LBS** — `approval_comments.scope` ('approval' \| 'stock') + `request_id` เป็น NULL ได้เมื่อ scope='stock' + CHECK คู่ scope/target · `rpc_add_stock_comment` ใหม่ · ใช้ตารางเดิมเพราะเป็น thread ชนิดเดียวกัน (VIP ↔ Division) แค่คนละบริบท → UI/แจ้งเตือนใช้โค้ดชุดเดียว เพิ่ม scope ใหม่ได้ภายหลัง · demo sync `logic.ts`: `unitLeadDays` / `normalizeLeadDays` / `addStockComment` / `stockComments` |
 | `0052_lead_range_eta_issue_guard.sql` | **แก้ตาม code review (2026-08-08)**: (1) **Import: ช่องระยะขนส่งที่เว้นว่าง = คงค่าเดิม** — 0051 ล้างเป็นค่ามาตรฐาน 60 ซึ่งขัดกับกติกาข้อ 1 ที่เราเขียนในชีต "วิธีกรอก" เอง และขัดกับ demo · **กับดักที่ต้องรู้**: 0051 ให้ `app_unit_lead()` คืน NULL เมื่อค่า = 60 พอรวมกับกฎ "NULL = คงค่าเดิม" จะทำให้ **กรอก 60 เพื่อรีเซ็ตกลับค่ามาตรฐานไม่ได้** → 0052 แยก 2 ความหมาย: `app_unit_lead()` = ค่าที่กรอกมาจริง (NULL = ไม่ได้กรอก) · `NULLIF(x, 60)` = แปลงตอนเขียนลงคอลัมน์เท่านั้น (2) **ระยะขนส่งบังคับ 45–60** (เดิม 1–365) + CHECK ที่ DB + set NULL ให้แถวที่หลุดช่วงก่อน ADD CONSTRAINT (3) **`app_assert_job_eta_ready` — ห้ามเบิกให้ Service ถ้า Job ถือ LBS ที่ Status = Pending** แทรกเข้า `app_exec_issue_job` + `rpc_request_approval` · ⚠️ **ใช้ DO block ไม่ใช่ `app_swap_guard`** เพราะที่นี่ p_new มี p_old เป็น substring (ต่อท้ายบรรทัดเดิม) → `app_swap_guard` จะ patch ซ้อนทุกครั้งที่รันซ้ำ ไม่ idempotent · DO block เช็ค marker `app_assert_job_eta_ready` ก่อน · **นับเฉพาะ pending ไม่นับ '?'** — "ไม่รู้" ไม่ใช่ "รู้ว่ายังไม่มา" ถ้าบล็อก '?' ด้วยจะเบิกงานเดิมทั้งระบบไม่ได้ · demo sync `logic.ts`: `jobEtaBlockReason` / `leadDaysToStore` |
 | `0053_plan_po_date.sql` | **ฟีเจอร์ (2026-08-08)**: **Plan PO receipt รายเครื่อง** — `lbs_units.plan_po_date` = วันที่คาดว่าจะได้รับ PO จากลูกค้า (แผนฝั่งขาย) วางถัดจาก Location / Site · เขียนได้เฉพาะเครื่องที่ยังไม่ผูก Job (กฎ 0014 เดียวกับ Customer/Contact/Location) · **DROP+recreate `rpc_update_unit_plan`** (9→10 args, +`p_plan_po_date`) · patch `rpc_import_units_to_stock` รับ key `plan_po` (patch บรรทัดเดียวทั้งหมด — ห้าม recreate เพราะ 0052 patch ไว้แล้ว) · **⚠️⚠️ อย่าสับสน 2 คอลัมน์**: `plan_po_date` = วันรับ PO จากลูกค้า (ป้าย "Plan PO receipt") · `plan_po_receipt_date` = วันของเข้าคลังแบบกรอกเอง (ป้าย "ETA to WH" ตั้งแต่ 0049) — ฝั่ง UI **ถอด alias `'Plan PO receipt'` ออกจาก ETA to WH แล้ว** ไม่งั้น Import ไฟล์รูปแบบใหม่จะเขียนวันรับ PO ลง ETA ผิดช่อง (ไฟล์ที่ export ก่อน 0049 ต้องแก้หัวคอลัมน์เป็น "ETA to WH" ก่อน import) · เปลี่ยนป้ายคอลัมน์เป็นอังกฤษ: ชื่อลูกค้า→**Customer** · เบอร์ติดต่อ→**Contact Number** · สถานที่ติดตั้ง→**Location / Site** (import รับชื่อไทยเดิมผ่าน alias ไฟล์เก่ายังใช้ได้) |
+| `0054_std_price_list.sql` | **ฟีเจอร์ (2026-08-08)**: **Standard Price list** — ตาราง `std_prices` + `rpc_create/update/delete_std_price` · โครงสร้างและกติกาเดียวกับ `std_drawings` เป๊ะ (1 รายการ = 1 แถว + PDF ล่าสุด · แก้ = ทับข้อมูลเดิม + stamp ผู้แก้/เวลา · ลบ = ลบทะเบียน ไฟล์ยังอยู่ใน Storage) · `price_no` UNIQUE (ว่างได้) · RLS/realtime/สิทธิ์ copy จาก 0045 (`app_assert_standards` = project+sales+admin · ทุกแผนกอ่านได้) · ไฟล์ PDF เก็บ bucket `install-photos` prefix **`standard-prices/`** · **แยกตารางจาก std_drawings** เพราะเป็นทะเบียนคนละชุด เลขเอกสารต้อง unique แยกกัน (ยัดตารางเดียวด้วยคอลัมน์ kind จะทำ unique ต่อชนิดยุ่งกว่า) · demo sync `logic.ts createStdPrice/updateStdPrice/deleteStdPrice` |
 | `0026_job_install_sites.sql` | **ฟีเจอร์ (2026-07-23)**: หลายจุดติดตั้งต่อ Job — `jobs.install_sites` JSONB (array `{location, requiredDate}` = จุดที่ 2+; จุดที่ 1 ยังใช้ install_location/required_date เดิม) · drop+recreate `rpc_create_job`/`rpc_update_job` (+`p_install_sites`) · ข้อมูลวางแผนอย่างเดียว ไม่ผูก Serial/ไม่แตะ flow issue/confirm · UI: เปิด/แก้ Job โชว์ "เพิ่มจุดติดตั้ง" เมื่อ LBS>1 (≤ จำนวน LBS), JobDetail แผง "จุดติดตั้ง", list badge "+N จุด" · demo sync `logic.ts` (normalizeInstallSites) |
 
 > DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0041 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
@@ -246,12 +247,29 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
       ไฟล์ถูกใส่สลักนิรภัย (DO-block RAISE EXCEPTION) กันรันติดมือแล้ว · **หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่**
 - [ ] ตรวจว่า **service_role key ถูก rotate แล้ว** (ระหว่าง setup key เก่าเคยเปิดเผย — ตรวจ repo แล้ว 2026-07-19: **key ไม่เคยหลุดลง git** หลุดเฉพาะนอก repo) — Dashboard → Settings → API → สร้าง/roll secret key ใหม่ → อัปเดต `SUPABASE_SERVICE_ROLE_KEY` บน Cloudflare Pages env → Retry deployment
 
-### 🟠 Migrations — ✅ 0001–0051 รันครบ · 🔴 **ค้าง: 0052 + 0053**
-- [ ] 🔴 **รัน `0052_lead_range_eta_issue_guard.sql` แล้วตามด้วย `0053_plan_po_date.sql`** ก่อน push frontend
-      (0052 แก้ import ให้ "เว้นว่าง = คงค่าเดิม" · บังคับระยะขนส่ง 45–60 · guard ห้ามเบิกเมื่อของยังไม่ถึงคลัง ·
-      0053 เพิ่ม Plan PO receipt รายเครื่อง — **ห้ามสลับลำดับ** เพราะ 0053 patch ต่อจาก body ที่ 0052 แก้ไว้
-      และ 0053 DROP `rpc_update_unit_plan` 9 args ที่ 0052 สร้าง → ถ้าไม่รัน 0052 ก่อนจะเหลือ signature ค้าง)
-      ตรวจ 0053 เพิ่ม: `select exists(select 1 from information_schema.columns where table_name='lbs_units' and column_name='plan_po_date');`
+### 🟠 Migrations — ✅ 0001–0053 รันครบ · 🔴 **ค้าง: 0054 (Standard Price list)**
+- [ ] 🔴 **รัน `supabase/migrations/0054_std_price_list.sql`** ก่อน push frontend
+      (สร้างตาราง `std_prices` + RPC 3 ตัว · ไม่แตะของเดิมเลย — ปลอดภัยที่สุดในบรรดา migration ที่ผ่านมา)
+      ตรวจ: `select to_regclass('public.std_prices') is not null;` ต้องได้ `true`
+      **ถ้ายังไม่รันแล้ว push:** แท็บ Standard Price list จะโหลดข้อมูลไม่ได้ (`loadAll` query ตาราง `std_prices`)
+      → แบนเนอร์ "โหลดข้อมูลจากเซิร์ฟเวอร์ไม่สำเร็จ" ขึ้นทั้งแอป **จึงควรรัน SQL ก่อน push รอบนี้**
+
+### 🟠 Migrations — ✅ **0001–0053 รันครบ** (0052–0053 ยืนยัน 2026-08-08)
+- [x] ~~0052 + 0053~~ **รันแล้ว** — ตรวจผ่าน PostgREST (มี control case ทั้ง 2 ฝั่ง):
+      `lbs_units.plan_po_date` ตอบ HTTP 200 (คอลัมน์ปลอมตอบ `42703`/400) ·
+      `app_assert_job_eta_ready` ตอบ **204** (ฟังก์ชันปลอมตอบ `PGRST202`) ·
+      `rpc_update_unit_plan` + `p_plan_po_date` ตอบ `42501 permission denied` = signature 10 args มีจริง
+      (ส่งพารามิเตอร์มั่วตอบ `PGRST202` → PostgREST match ตามชื่อพารามิเตอร์จริง)
+      → `app_assert_job_eta_ready` ถูกสร้าง**ก่อน** DO block ที่ patch guard ในไฟล์เดียวกัน และ SQL Editor รันทั้งสคริปต์
+        เป็น transaction เดียว ⇒ ฟังก์ชันนี้มีอยู่ = DO block ผ่าน = guard เข้า `app_exec_issue_job` / `rpc_request_approval` แล้ว
+
+> **⚠️ วิธีตรวจ RPC ผ่าน REST — กับดักที่เจอจริง (2026-08-08)**
+> - อย่าส่ง body ด้วย `curl -d '{...}'` บน **PowerShell** — quote โดน mangle ได้ `PGRST102 "Empty or invalid json"`
+>   ซึ่ง **ไม่ใช่** PGRST202 → ถ้าเขียนตัวตรวจแบบ "ไม่ใช่ 202 = มีอยู่" จะได้ **false positive ทุกตัว**
+>   ✅ เขียน JSON ลงไฟล์แล้วใช้ `--data-binary "@file"`
+> - `PGRST202` **ไม่ได้แปลว่าฟังก์ชันหาย** — PostgREST match ตาม **ชื่อพารามิเตอร์ที่ส่งไป** ยิงด้วย `{}` เปล่าๆ
+>   ฟังก์ชันที่มีอยู่จริงก็ตอบ 202 · ต้องส่งชื่อพารามิเตอร์ให้ตรง signature ที่จะตรวจ
+> - **ต้องมี control case เสมอ** (ฟังก์ชัน/คอลัมน์ที่รู้ว่าไม่มีจริง) ไม่งั้นแยก "ไม่มี" กับ "เรียกไม่ถูกวิธี" ไม่ออก
       ตรวจว่าลง: ต้องได้ `true` ทุกแถว
       ```sql
       with f as (select p.proname, pg_get_functiondef(p.oid) def
