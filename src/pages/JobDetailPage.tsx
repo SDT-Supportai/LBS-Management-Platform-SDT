@@ -57,6 +57,7 @@ export default function JobDetailPage() {
   const { ask: askPrompt, element: promptEl } = usePrompt()      // แทน window.prompt (ชุด B)
   const { ask: askConfirm, element: confirmEl } = useConfirm()   // แทน window.confirm (ชุด B)
   const [payOpen, setPayOpen] = useState(false)         // ตารางงวดเงิน (0044 · เริ่มซ่อน เหมือน 7 หมวด)
+  const [poOpen, setPoOpen] = useState(false)           // ตารางวัสดุใน Purchase Orders — เริ่มซ่อน (หน้ายาวเกินไปเมื่อวัสดุเยอะ)
   const [payForm, setPayForm] = useState<PayForm | null>(null)
   const [drawStock, setDrawStock] = useState('')
   const [picked, setPicked] = useState<Set<string>>(new Set())
@@ -644,6 +645,11 @@ export default function JobDetailPage() {
         <div className="panel-head">
           <h3>Purchase Orders <span className="muted" style={{ fontWeight: 400 }}>· มูลค่าวัสดุ {fmtBaht(budget.materialValue)} · ต้นทุนคงเหลือ {fmtBaht(budget.remainingCost)}</span></h3>
           <div style={{ display: 'flex', gap: 8 }}>
+            {/* เริ่มต้นซ่อนตาราง — Job ที่มีวัสดุหลายสิบรายการทำให้ต้องเลื่อนยาวกว่าจะถึงแผงถัดไป
+                ปุ่มทำรายการ (Export / เพิ่มวัสดุ / ออก PR) ยังอยู่ครบตอนซ่อน ไม่ต้องกางก่อนถึงจะกดได้ */}
+            <button className="small" onClick={() => setPoOpen(v => !v)}>
+              {poOpen ? 'ซ่อนรายการ' : `แสดงรายการ (${accReqs.length})`}
+            </button>
             <button className="small" onClick={exportPurchaseOrders} disabled={accReqs.length === 0}>⬇ Export Excel</button>
             {canManage && !procureLocked && (
               <button className="small" onClick={() => { setAccSearch(''); setAccForm({ itemId: accessoryItems[0]?.id ?? '', qty: 1, source: 'central_stock', unitPrice: '', phaseBudget: 'raw_mat' }); openModal('accessory') }}>
@@ -666,7 +672,7 @@ export default function JobDetailPage() {
             )}
           </div>
         </div>
-        <div className="table-scroll">
+        {poOpen && <div className="table-scroll">
           <table>
             <thead><tr><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>จำนวน</th><th>ราคา/หน่วย</th><th>มูลค่า</th><th>Phase Budget</th><th>แหล่ง</th><th>สถานะ</th><th>PR / PO</th><th></th></tr></thead>
             <tbody>
@@ -779,7 +785,7 @@ export default function JobDetailPage() {
               })}
             </tbody>
           </table>
-        </div>
+        </div>}
         {jobPrs.length > 0 && (
           <div className="panel-body muted">
             PR ของ Job นี้: {jobPrs.map(p =>

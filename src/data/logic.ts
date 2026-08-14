@@ -911,6 +911,10 @@ export function stockCostOf(db: DB, itemId: string): number {
   return db.accessoryStock.find(r => r.itemId === itemId)?.avgUnitCost ?? 0
 }
 
+export function stockLotOf(db: DB, itemId: string): string | undefined {
+  return db.accessoryStock.find(r => r.itemId === itemId)?.lotNo
+}
+
 // qty > 0 = เข้าคลัง · qty < 0 = ออกจากคลัง
 // ต้นทุนถัวเฉลี่ยขยับเฉพาะขา "เข้า" ที่ระบุ unitCost มา (ขาออกไม่กระทบค่าเฉลี่ย)
 function applyStockMovement(
@@ -918,12 +922,15 @@ function applyStockMovement(
   p: {
     itemId: string; qty: number; unitCost?: number; type: StockMovementType
     refJobId?: string; refRequestId?: string; note?: string
+    /** Lot No. ของของที่เข้าคลัง (0055) — ใส่ได้เฉพาะขาเข้า · ขาออกใช้ล็อตที่อยู่ในคลังขณะนั้น */
+    lotNo?: string
   },
 ): DB {
   if (p.qty === 0) return db
   const row = db.accessoryStock.find(r => r.itemId === p.itemId)
   const oldQty = row?.qtyOnHand ?? 0
   const oldAvg = row?.avgUnitCost ?? 0
+  const oldLot = row?.lotNo
   const newQty = oldQty + p.qty
   if (newQty < 0) {
     const item = db.items.find(i => i.id === p.itemId)
@@ -937,16 +944,23 @@ function applyStockMovement(
   }
   if (newQty === 0) newAvg = 0   // ของหมดคลัง — รีเซ็ตค่าเฉลี่ยกันตัวเลขค้าง
 
+  // Lot No. (0055 · mirror ของ fn_log_stock_movement)
+  //   ล็อตบนแถวคลังทับก็ต่อเมื่อ "ของเข้าพร้อมระบุล็อต" — ขาออก/ขาเข้าที่ไม่ระบุ คงล็อตเดิม
+  //   ล็อตบนแถว ledger: ขาเข้า = ล็อตที่ระบุ · ขาออก = ล็อตที่อยู่ในคลังขณะนั้น
+  const inLot = p.lotNo?.trim() || undefined
+  const newLot = inLot && p.qty > 0 ? inLot : oldLot
+  const moveLot = (p.qty > 0 ? inLot : undefined) ?? oldLot
+
   return {
     ...db,
     accessoryStock: row
-      ? db.accessoryStock.map(r => r.itemId === p.itemId ? { ...r, qtyOnHand: newQty, avgUnitCost: newAvg } : r)
-      : [...db.accessoryStock, { itemId: p.itemId, qtyOnHand: newQty, avgUnitCost: newAvg }],
+      ? db.accessoryStock.map(r => r.itemId === p.itemId ? { ...r, qtyOnHand: newQty, avgUnitCost: newAvg, lotNo: newLot } : r)
+      : [...db.accessoryStock, { itemId: p.itemId, qtyOnHand: newQty, avgUnitCost: newAvg, lotNo: newLot }],
     stockMovements: [...db.stockMovements, {
       id: uid(), itemId: p.itemId, qty: p.qty,
       unitCost: p.qty > 0 ? p.unitCost : (oldAvg || undefined),
       balanceAfter: newQty, type: p.type,
-      refJobId: p.refJobId, refRequestId: p.refRequestId, note: p.note,
+      refJobId: p.refJobId, refRequestId: p.refRequestId, note: p.note, lotNo: moveLot,
       performedBy: actor.id, performedAt: now(),
     }],
   }
@@ -2208,7 +2222,7 @@ export function stockComments(db: DB) {
 
 export function createItem(
   db: DB, actor: User,
-  p: { code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean; initialQty?: number; initialUnitCost?: number },
+  p: { code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean; initialQty?: number; initialUnitCost?: number; initialLot?: string },
 ): DB {
   const code = p.code.trim()
   const epicorCode = p.epicorCode?.trim() || undefined
@@ -2230,11 +2244,12 @@ export function createItem(
     next = { ...next, accessoryStock: [...next.accessoryStock, { itemId, qtyOnHand: 0, avgUnitCost: 0 }] }
     if (qty0 > 0) next = applyStockMovement(next, actor, {
       itemId, qty: qty0, unitCost: p.initialUnitCost, type: 'initial',
-      note: 'ยอดเริ่มต้นตอนสร้างวัสดุ',
+      note: 'ยอดเริ่มต้นตอนสร้างวัสดุ', lotNo: p.initialLot,
     })
   }
+  const lot0 = p.stockableCentrally && (p.initialQty ?? 0) > 0 ? p.initialLot?.trim() : undefined
   return audit(next, actor, 'item', itemId, 'create_item',
-    `เพิ่ม Accessory ${p.name.trim()} (${code}) ${p.stockableCentrally ? `มีสต็อกกลาง เริ่มต้น ${p.initialQty ?? 0}` : 'สั่งซื้อผ่าน Purchasing เท่านั้น'}`)
+    `เพิ่ม Accessory ${p.name.trim()} (${code}) ${p.stockableCentrally ? `มีสต็อกกลาง เริ่มต้น ${p.initialQty ?? 0}` : 'สั่งซื้อผ่าน Purchasing เท่านั้น'}${lot0 ? ` · Lot ${lot0}` : ''}`)
 }
 
 export function updateItem(
@@ -2283,7 +2298,7 @@ export function deleteItem(db: DB, actor: User, p: { itemId: string }): DB {
 
 export function adjustAccessoryStock(
   db: DB, actor: User,
-  p: { itemId: string; newQty: number; note: string; unitCost?: number },
+  p: { itemId: string; newQty: number; note: string; unitCost?: number; lotNo?: string },
 ): DB {
   const item = db.items.find(i => i.id === p.itemId)
   if (!item || !item.stockableCentrally) throw new Error('รายการนี้ไม่มีสต็อกกลาง')
@@ -2294,14 +2309,38 @@ export function adjustAccessoryStock(
   if (p.newQty === oldQty) throw new Error('ยอดใหม่เท่ากับยอดเดิม ไม่มีอะไรต้องปรับ')
 
   const delta = p.newQty - oldQty
+  const lot = delta > 0 ? (p.lotNo?.trim() || undefined) : undefined
   const next = applyStockMovement(db, actor, {
     itemId: p.itemId, qty: delta, type: 'adjust', note: p.note.trim(),
-    // ใส่ต้นทุนได้เฉพาะตอนยอดเพิ่ม (ของเข้า) — ขาออกไม่กระทบต้นทุนถัวเฉลี่ย
-    unitCost: delta > 0 ? p.unitCost : undefined,
+    // ใส่ต้นทุน/ล็อตได้เฉพาะตอนยอดเพิ่ม (ของเข้า) — ขาออกไม่กระทบต้นทุนถัวเฉลี่ยและไม่เปลี่ยนล็อต
+    unitCost: delta > 0 ? p.unitCost : undefined, lotNo: lot,
   })
   const costTxt = delta > 0 && p.unitCost !== undefined ? ` @ ${p.unitCost} บาท/${item.uom}` : ''
+  const lotTxt = lot ? ` · Lot ${lot}` : ''
   return audit(next, actor, 'accessory_stock', p.itemId, 'adjust_stock',
-    `ปรับยอดคลังคงเหลือ ${item.name}: ${oldQty} → ${p.newQty} ${item.uom}${costTxt} (${p.note.trim()})`)
+    `ปรับยอดคลังคงเหลือ ${item.name}: ${oldQty} → ${p.newQty} ${item.uom}${costTxt}${lotTxt} (${p.note.trim()})`)
+}
+
+// แก้ Lot No. อย่างเดียว ไม่แตะยอด (sync 0055 rpc_set_stock_lot)
+// จำเป็นเพราะ adjustAccessoryStock ปฏิเสธเมื่อยอดใหม่ = ยอดเดิม — พิมพ์ล็อตผิดต้องแก้ได้
+// โดยไม่ต้องปรับยอดขึ้น-ลงหลอกๆ ให้ ledger สกปรก · เว้นว่าง = ล้าง Lot No.
+export function setStockLot(
+  db: DB, actor: User,
+  p: { itemId: string; lotNo?: string },
+): DB {
+  const item = db.items.find(i => i.id === p.itemId)
+  if (!item || !item.stockableCentrally) throw new Error('รายการนี้ไม่มีสต็อกกลาง')
+  const row = db.accessoryStock.find(r => r.itemId === p.itemId)
+  if (!row) throw new Error('ยังไม่มีแถวคลังของวัสดุนี้ — ปรับยอดเข้าคลังก่อน')
+  const lot = p.lotNo?.trim() || undefined
+  if (lot === row.lotNo) throw new Error('Lot No. เหมือนเดิม ไม่มีอะไรต้องแก้')
+
+  const next: DB = {
+    ...db,
+    accessoryStock: db.accessoryStock.map(r => r.itemId === p.itemId ? { ...r, lotNo: lot } : r),
+  }
+  return audit(next, actor, 'accessory_stock', p.itemId, 'set_stock_lot',
+    `แก้ Lot No. คลังคงเหลือ ${item.name}: ${row.lotNo ?? '(ไม่ระบุ)'} → ${lot ?? '(ไม่ระบุ)'}`)
 }
 
 // ---------------- Master Data: Users ----------------

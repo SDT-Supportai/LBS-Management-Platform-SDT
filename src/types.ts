@@ -141,6 +141,7 @@ export interface AccessoryStockRow {
   itemId: string
   qtyOnHand: number
   avgUnitCost?: number         // ต้นทุนถัวเฉลี่ยต่อหน่วย (moving average) — ใช้ตีราคาตอนเบิกเข้า Job
+  lotNo?: string               // Lot No. ของของที่อยู่ในคลังตอนนี้ = ล็อตล่าสุดที่รับเข้า (0055)
 }
 
 // บัญชีเดินสะพัดของคลังคงเหลือ (เฟส S1) — ทุกการเปลี่ยนยอดต้องมีแถวที่นี่
@@ -164,6 +165,8 @@ export interface StockMovement {
   refJobId?: string            // Job ต้นทาง/ปลายทาง
   refRequestId?: string        // line วัสดุที่เกี่ยวข้อง
   note?: string
+  // Lot No. ของรายการนี้ (0055) — ขาเข้า = ล็อตที่กรอก · ขาออก = ล็อตที่อยู่ในคลังขณะนั้น
+  lotNo?: string
   performedBy: string
   performedAt: string
 }

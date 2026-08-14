@@ -213,7 +213,8 @@ function mapStockMovement(r: Row): StockMovement {
     unitCost: r.unit_cost != null ? Number(r.unit_cost) : undefined,
     balanceAfter: Number(r.balance_after), type: r.movement_type,
     refJobId: r.ref_job_id ?? undefined, refRequestId: r.ref_request_id ?? undefined,
-    note: r.note ?? undefined, performedBy: r.performed_by ?? '', performedAt: r.performed_at,
+    note: r.note ?? undefined, lotNo: r.lot_no ?? undefined,
+    performedBy: r.performed_by ?? '', performedAt: r.performed_at,
   }
 }
 function mapTeamMember(r: Row): TeamMember {
@@ -299,6 +300,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     accessoryStock: accStock.map(r => ({
       itemId: r.item_id, qtyOnHand: Number(r.qty_on_hand),
       avgUnitCost: r.avg_unit_cost != null ? Number(r.avg_unit_cost) : undefined,
+      lotNo: r.lot_no ?? undefined,
     })),
     accessoryRequests: accReqs.map(mapAccReq),
     prs: prs.map(r => mapPr(r, reqIdsByPr.get(r.id) ?? [])),
@@ -484,13 +486,16 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_add_approval_comment', { p_request_id: p.requestId, p_body: p.body }),
     addStockComment: (p: { body: string }) =>
       rpc(sb, 'rpc_add_stock_comment', { p_body: p.body }),
-    createItem: (p: { code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean; initialQty?: number; initialUnitCost?: number }) =>
-      rpc(sb, 'rpc_create_item', { p_code: p.code, p_epicor_code: p.epicorCode ?? null, p_name: p.name, p_uom: p.uom, p_stockable: p.stockableCentrally, p_initial_qty: p.initialQty ?? 0, p_initial_unit_cost: p.initialUnitCost ?? null }),
+    createItem: (p: { code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean; initialQty?: number; initialUnitCost?: number; initialLot?: string }) =>
+      rpc(sb, 'rpc_create_item', { p_code: p.code, p_epicor_code: p.epicorCode ?? null, p_name: p.name, p_uom: p.uom, p_stockable: p.stockableCentrally, p_initial_qty: p.initialQty ?? 0, p_initial_unit_cost: p.initialUnitCost ?? null, p_initial_lot: p.initialLot ?? null }),
     updateItem: (p: { itemId: string; code: string; epicorCode?: string; name: string; uom: string; stockableCentrally: boolean }) =>
       rpc(sb, 'rpc_update_item', { p_item_id: p.itemId, p_code: p.code, p_epicor_code: p.epicorCode ?? null, p_name: p.name, p_uom: p.uom, p_stockable: p.stockableCentrally }),
     deleteItem: (p: { itemId: string }) => rpc(sb, 'rpc_delete_item', { p_item_id: p.itemId }),
-    adjustAccessoryStock: (p: { itemId: string; newQty: number; note: string; unitCost?: number }) =>
-      rpc(sb, 'rpc_adjust_accessory_stock', { p_item_id: p.itemId, p_new_qty: p.newQty, p_note: p.note, p_unit_cost: p.unitCost ?? null }),
+    adjustAccessoryStock: (p: { itemId: string; newQty: number; note: string; unitCost?: number; lotNo?: string }) =>
+      rpc(sb, 'rpc_adjust_accessory_stock', { p_item_id: p.itemId, p_new_qty: p.newQty, p_note: p.note, p_unit_cost: p.unitCost ?? null, p_lot_no: p.lotNo ?? null }),
+    // แก้ Lot No. อย่างเดียว ไม่แตะยอด (0055) — เว้นว่าง = ล้าง Lot No.
+    setStockLot: (p: { itemId: string; lotNo?: string }) =>
+      rpc(sb, 'rpc_set_stock_lot', { p_item_id: p.itemId, p_lot_no: p.lotNo ?? null }),
     // Standard Drawing / BOM (0045) — แก้ได้ Project/Division/Manage
     createStdDrawing: (p: { title: string; drawingNo?: string; description?: string; fileUrl?: string; fileName?: string }) =>
       rpc(sb, 'rpc_create_std_drawing', {

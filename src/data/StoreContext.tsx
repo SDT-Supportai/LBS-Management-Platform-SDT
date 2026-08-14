@@ -221,6 +221,7 @@ export interface StoreActions {
   updateItem: (p: Parameters<typeof L.updateItem>[2]) => MaybePromise
   deleteItem: (p: Parameters<typeof L.deleteItem>[2]) => MaybePromise
   adjustAccessoryStock: (p: Parameters<typeof L.adjustAccessoryStock>[2]) => MaybePromise
+  setStockLot: (p: Parameters<typeof L.setStockLot>[2]) => MaybePromise
   transferJobMaterialToStock: (p: Parameters<typeof L.transferJobMaterialToStock>[2]) => MaybePromise
   addJobPayment: (p: Parameters<typeof L.addJobPayment>[2]) => MaybePromise
   updateJobPayment: (p: Parameters<typeof L.updateJobPayment>[2]) => MaybePromise
@@ -408,6 +409,7 @@ function DemoProvider({ children }: { children: ReactNode }) {
         updateItem: run('master.manage', L.updateItem),
         deleteItem: run('master.manage', L.deleteItem),
         adjustAccessoryStock: run('stock.manage', L.adjustAccessoryStock),
+        setStockLot: run('stock.manage', L.setStockLot),
         // โอนวัสดุเหลือจาก Job เข้าคลังคงเหลือ — Project เป็นเจ้าของวัสดุใน Job
         transferJobMaterialToStock: run('job.manage', L.transferJobMaterialToStock),
         // Payment — Project (เจ้าของงาน ตาม 0042) + Manage

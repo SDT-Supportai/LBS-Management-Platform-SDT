@@ -8,6 +8,35 @@ import type { CostCategoryKey } from '../types'
 
 const COST_LABEL: Record<string, string> = Object.fromEntries(COST_CATEGORIES.map(c => [c.key, c.label]))
 
+// ---------------------------------------------------------------
+// สเปกคอลัมน์ไฟล์ Excel ของ "PR ที่ยังไม่ได้ออก PO" — แหล่งความจริงเดียวของทั้งชีตข้อมูลและชีตวิธีใช้
+// (แนวเดียวกับ SHEET_COLS ของ Project Stock — ห้ามพิมพ์หัวตารางซ้ำในสองที่)
+//   io 'auto'     = ระบบเติมให้จากข้อมูลใน PR
+//   io 'supplier' = **เว้นว่างไว้ให้ซัพพลายเออร์กรอก** — นี่คือส่วนที่ทำให้ไฟล์เป็น "template" ขอราคา
+// ไฟล์นี้เป็น export อย่างเดียว ไม่มี import กลับ (ราคาจริงบันทึกผ่านปุ่ม 💰 ราคาจริง หลังออก PO)
+// ---------------------------------------------------------------
+interface PrColSpec { key: string; io: 'auto' | 'supplier'; width: number; note: string }
+const PR_COLS: PrColSpec[] = [
+  { key: 'PR No.', io: 'auto', width: 16, note: 'เลขใบขอซื้อในระบบ (แก้ให้ตรงเอกสาร Epicor ได้ที่ปุ่ม ✏️ แก้เลข PR)' },
+  { key: 'Job No.', io: 'auto', width: 16, note: 'งานโครงการที่ขอวัสดุชุดนี้' },
+  { key: 'Customer', io: 'auto', width: 24, note: 'ลูกค้าเจ้าของงาน' },
+  { key: 'รหัส Epicor', io: 'auto', width: 14, note: 'รหัสวัสดุใน Epicor — ใช้อ้างอิงตอนสั่งซื้อ' },
+  { key: 'ชื่ออุปกรณ์', io: 'auto', width: 32, note: 'ชื่อวัสดุตามฐานข้อมูลวัสดุ' },
+  { key: 'จำนวน', io: 'auto', width: 10, note: 'จำนวนที่ขอซื้อ (เฉพาะส่วนที่ยังไม่ได้ออก PO)' },
+  { key: 'หน่วย', io: 'auto', width: 8, note: 'หน่วยนับตามฐานข้อมูลวัสดุ' },
+  { key: 'ราคาประมาณการ/หน่วย', io: 'auto', width: 20, note: 'ราคาที่ Project ตั้งไว้ใช้คิดงบ — ยังไม่ใช่ราคาจริง' },
+  { key: 'มูลค่าประมาณการ', io: 'auto', width: 18, note: 'ราคาประมาณการ × จำนวน' },
+  { key: 'Phase Budget', io: 'auto', width: 16, note: 'หมวดต้นทุนที่รายการนี้จะถูกตัดเข้า' },
+  { key: 'Phase', io: 'auto', width: 12, note: 'รหัส Phase ของหมวดต้นทุนนั้นใน Job' },
+  { key: 'วันที่ออก PR', io: 'auto', width: 14, note: 'วันที่ Project ส่ง PR เข้ามาที่ Purchasing' },
+  { key: 'ราคาที่เสนอ/หน่วย', io: 'supplier', width: 20, note: 'ให้ซัพพลายเออร์กรอกราคาต่อหน่วยที่เสนอ' },
+  { key: 'มูลค่าที่เสนอ', io: 'supplier', width: 18, note: 'ราคาที่เสนอ × จำนวน' },
+  { key: 'ยี่ห้อ/รุ่นที่เสนอ', io: 'supplier', width: 22, note: 'ระบุยี่ห้อ/รุ่นที่จะส่ง — ใช้เทียบสเปกก่อนออก PO' },
+  { key: 'กำหนดส่งได้', io: 'supplier', width: 14, note: 'วันที่ส่งของได้ (YYYY-MM-DD)' },
+  { key: 'หมายเหตุ', io: 'supplier', width: 30, note: 'เงื่อนไขอื่น เช่น MOQ / ค่าขนส่ง / ระยะเวลายืนราคา' },
+]
+const PR_HEADERS = PR_COLS.map(c => c.key)
+
 export default function PurchasingPage() {
   const { db, user, act } = useStore()
   const tryAction = useTryAction()
@@ -28,6 +57,14 @@ export default function PurchasingPage() {
   const prLines = (prId: string) => db.accessoryRequests.filter(r => r.prId === prId)
   const poLines = (poId: string) => db.accessoryRequests.filter(r => r.poId === poId)
   const unorderedLines = (prId: string) => db.accessoryRequests.filter(r => r.prId === prId && r.status === 'pr_sent')
+
+  // ตาราง PR / PO ต่อ Job — เริ่มต้นซ่อนทั้งคู่ (หน้านี้ยาวมากเมื่อมีงานหลายใบ)
+  // แยก state คนละตัวเพื่อให้กาง PR อย่างเดียวได้โดยไม่ต้องกาง PO ตามไปด้วย
+  // ⚠️ ชื่อ `openPo` ถูกใช้เป็นฟังก์ชันเปิดโมดัลออก PO อยู่แล้ว — state ใช้ชื่อ prOpen/poOpen แทน
+  const [prOpen, setPrOpen] = useState<Record<string, boolean>>({})
+  const [poOpen, setPoOpen] = useState<Record<string, boolean>>({})
+  const togglePr = (id: string) => setPrOpen(p => ({ ...p, [id]: !p[id] }))
+  const togglePo = (id: string) => setPoOpen(p => ({ ...p, [id]: !p[id] }))
 
   // สรุปประวัติ PR/PO ต่อ Job (collapsible, เริ่มซ่อน)
   const [openHist, setOpenHist] = useState<Record<string, boolean>>({})
@@ -54,6 +91,73 @@ export default function PurchasingPage() {
     .reverse()
   const totalPendingPr = db.prs.filter(p => p.status === 'pending').length
   const totalOpenPo = db.pos.filter(p => p.status === 'issued').length
+
+  // ---------------- Export PR ที่ยังไม่ได้ออก PO → Excel template ขอราคา ----------------
+  // นับเฉพาะ line ที่ยัง `pr_sent` (ยังไม่ผูก PO) — ใบที่ออก PO บางส่วนแล้วจะได้เฉพาะส่วนที่เหลือ
+  // jobId = undefined → ทั้งระบบ (Purchasing ใช้รวบยอดสั่งของประจำวัน) · ระบุ → เฉพาะงานนั้น
+  const prTemplateRows = (jobId?: string) =>
+    db.prs
+      .filter(pr => (pr.status === 'pending' || pr.status === 'po_issued') && (!jobId || pr.jobId === jobId))
+      .flatMap(pr => {
+        const job = db.jobs.find(j => j.id === pr.jobId)
+        return unorderedLines(pr.id).map(r => {
+          const it = itemOf(r.itemId)
+          const est = r.unitPrice !== undefined ? r.unitPrice * r.qtyRequested : undefined
+          const phaseKey = r.phaseBudget as CostCategoryKey | undefined
+          return {
+            'PR No.': pr.prNo,
+            'Job No.': job?.jobNo ?? '',
+            'Customer': job?.customerName ?? '',
+            'รหัส Epicor': it?.epicorCode || '',
+            'ชื่ออุปกรณ์': it?.name ?? '',
+            'จำนวน': r.qtyRequested,
+            'หน่วย': it?.uom ?? '',
+            'ราคาประมาณการ/หน่วย': r.unitPrice ?? '',
+            'มูลค่าประมาณการ': est ?? '',
+            'Phase Budget': phaseKey ? (COST_LABEL[phaseKey] ?? phaseKey) : '',
+            'Phase': phaseKey ? (job?.budgetCosts?.[phaseKey]?.phase ?? '') : '',
+            'วันที่ออก PR': pr.createdAt.slice(0, 10),
+            // ช่องให้ซัพพลายเออร์กรอก — ต้องออกเป็นสตริงว่าง ไม่ใช่ undefined
+            // ไม่งั้น SheetJS ข้ามคีย์นั้นแล้วเซลล์หายไปทั้งช่อง (หัวตารางมี แต่ไม่มีที่ให้พิมพ์)
+            'ราคาที่เสนอ/หน่วย': '', 'มูลค่าที่เสนอ': '',
+            'ยี่ห้อ/รุ่นที่เสนอ': '', 'กำหนดส่งได้': '', 'หมายเหตุ': '',
+          }
+        })
+      })
+
+  const exportPrTemplate = async (jobId?: string) => {
+    const rows = prTemplateRows(jobId)
+    const scope = jobId ? (db.jobs.find(j => j.id === jobId)?.jobNo ?? 'job') : 'ทุกงาน'
+    if (rows.length === 0) return
+    const XLSX = await import('xlsx')
+    // header: บังคับลำดับคอลัมน์ + ไม่มีรายการก็ยังได้หัวตารางครบ (ใช้เป็นแบบฟอร์มเปล่าได้)
+    const ws = XLSX.utils.json_to_sheet(rows, { header: PR_HEADERS })
+    ws['!cols'] = PR_COLS.map(c => ({ wch: c.width }))
+    ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(rows.length, 1), c: PR_COLS.length - 1 } }) }
+
+    const guide = [
+      [`ใบขอราคา (PR ที่ยังไม่ได้ออก PO) — ${scope}`],
+      [`ออกจากระบบเมื่อ ${fmtDateTime(new Date().toISOString())} · ${rows.length} รายการ`],
+      [],
+      ['คอลัมน์', 'ใครกรอก', 'คำอธิบาย'],
+      ...PR_COLS.map(c => [c.key, c.io === 'auto' ? 'ระบบเติมให้' : '⬅ ซัพพลายเออร์กรอก', c.note]),
+      [],
+      ['วิธีใช้'],
+      ['1', 'ส่งไฟล์นี้ให้ซัพพลายเออร์กรอก 5 คอลัมน์ท้าย (ราคาที่เสนอ / มูลค่า / ยี่ห้อ-รุ่น / กำหนดส่ง / หมายเหตุ)'],
+      ['2', 'ได้ราคากลับมาแล้ว เทียบเจ้าที่ถูกที่สุด แล้วกด "ออก PO" บนหน้าเว็บ — 1 PR แตกได้หลาย PO'],
+      ['3', 'ไฟล์นี้ Import กลับเข้าระบบไม่ได้ · ราคาจริงบันทึกที่ปุ่ม 💰 ราคาจริง ในตาราง PO หลังออก PO แล้ว'],
+      ['4', 'ราคาประมาณการเป็นตัวเลขที่ Project ใช้ตั้งงบ ไม่ใช่ราคาที่ตกลงกับซัพ — ใช้เป็นกรอบเทียบเท่านั้น'],
+      ['5', 'จำนวนที่แสดงคือส่วนที่ยังไม่ได้ออก PO เท่านั้น ส่วนที่ออก PO ไปแล้วไม่อยู่ในไฟล์นี้'],
+    ]
+    const wsGuide = XLSX.utils.aoa_to_sheet(guide)
+    wsGuide['!cols'] = [{ wch: 24 }, { wch: 22 }, { wch: 90 }]
+
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'PR รอออก PO')
+    XLSX.utils.book_append_sheet(wb, wsGuide, 'วิธีใช้')
+    XLSX.writeFile(wb, `PR-${scope.replace(/[\\/:*?"<>|]/g, '-')}-${new Date().toISOString().slice(0, 10)}.xlsx`)
+  }
+  const totalPrLines = prTemplateRows().length
 
   const receivePo = receiveFor ? db.pos.find(p => p.id === receiveFor) : null
   const receiveLines = receivePo
@@ -119,6 +223,18 @@ export default function PurchasingPage() {
         ปกติเท่ากัน จะต่างเมื่อ Project โอนวัสดุเหลือคืนคลัง ระบบจะโชว์ทั้งสองยอดในคอลัมน์ต้นทุนรวม
       </div>
 
+      {/* Export รวมทุกงาน — ใช้รวบยอดสั่งของประจำวัน · ต่อ Job มีปุ่มแยกในแต่ละการ์ด */}
+      {totalPrLines > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <button className="small" onClick={() => exportPrTemplate()}>
+            ⬇ Export PR รอออก PO ทุกงาน ({totalPrLines} รายการ)
+          </button>
+          <span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>
+            ไฟล์ Excel มีช่องว่างให้ซัพพลายเออร์กรอกราคา/กำหนดส่ง — ใช้ส่งขอราคาได้เลย
+          </span>
+        </div>
+      )}
+
       {jobsWithDocs.length === 0 && (
         <div className="panel"><div className="empty">ยังไม่มี PR/PO — Project Dept ออก PR จากหน้า Job ก่อน</div></div>
       )}
@@ -128,6 +244,8 @@ export default function PurchasingPage() {
         // PR ที่ยังมีรายการรอออก PO (pending หรือ po_issued ที่ยังสั่งไม่ครบ) — ออก PO เพิ่มได้เรื่อยๆ
         const prsToOrder = jobPrs.filter(p => (p.status === 'pending' || p.status === 'po_issued') && unorderedLines(p.id).length > 0)
         const jobPos = db.pos.filter(p => p.jobId === job.id)
+        // จำนวน line ที่ยังไม่ได้ออก PO ของงานนี้ — ใช้ทั้งป้ายปุ่มซ่อน/แสดง และปุ่ม Export
+        const prLineCount = prsToOrder.reduce((s, pr) => s + unorderedLines(pr.id).length, 0)
         return (
           <div className="panel" key={job.id}>
             <div className="panel-head">
@@ -137,9 +255,27 @@ export default function PurchasingPage() {
                 {prsToOrder.length > 0 && <span className="badge amber">มีรายการรอออก PO</span>}{' '}
                 {jobPos.filter(p => p.status === 'issued').length > 0 && <span className="badge blue">PO รอรับของ {jobPos.filter(p => p.status === 'issued').length}</span>}
               </h3>
+              {/* ตารางเริ่มต้นซ่อน — ป้ายบนหัวการ์ดบอกอยู่แล้วว่างานไหนต้องทำอะไร
+                  กางเฉพาะใบที่จะลงมือ ไม่ต้องเลื่อนผ่านทุกงานที่ไม่เกี่ยว */}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {prsToOrder.length > 0 && (
+                  <button className="small" onClick={() => togglePr(job.id)}>
+                    {prOpen[job.id] ? 'ซ่อน PR' : `แสดง PR รอออก PO (${prLineCount})`}
+                  </button>
+                )}
+                {prLineCount > 0 && (
+                  <button className="small" title="ไฟล์ Excel มีช่องว่างให้ซัพพลายเออร์กรอกราคา/กำหนดส่ง"
+                    onClick={() => exportPrTemplate(job.id)}>⬇ Export PR</button>
+                )}
+                {jobPos.length > 0 && (
+                  <button className="small" onClick={() => togglePo(job.id)}>
+                    {poOpen[job.id] ? 'ซ่อน PO' : `แสดง PO (${jobPos.length})`}
+                  </button>
+                )}
+              </div>
             </div>
 
-            {prsToOrder.length > 0 && (
+            {prsToOrder.length > 0 && prOpen[job.id] && (
               <div className="table-scroll">
                 <table>
                   <thead><tr>
@@ -197,7 +333,7 @@ export default function PurchasingPage() {
               </div>
             )}
 
-            {jobPos.length > 0 && (
+            {jobPos.length > 0 && poOpen[job.id] && (
               <div className="table-scroll">
                 <table>
                   <thead><tr><th>PO No.</th><th>รายการใน PO · ราคาจริง</th><th style={{ textAlign: 'right' }}>ต้นทุนรวม</th><th>Supplier</th><th>กำหนดส่ง</th><th>รับของ</th><th>สถานะ</th><th></th></tr></thead>

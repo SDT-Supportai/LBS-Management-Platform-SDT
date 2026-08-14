@@ -32,8 +32,9 @@ export function buildSeedDb(): DB {
     users: USERS,
     items: ITEMS,
     projectStocks: [], lbsUnits: [], jobs: [], allocations: [],
+    // Lot No. (0055) — ตัวอย่างมีทั้งแบบระบุล็อตและไม่ระบุ ให้เห็นทั้ง 2 สถานะในตาราง
     accessoryStock: [
-      { itemId: 'i-ct', qtyOnHand: 20, avgUnitCost: 80000 },
+      { itemId: 'i-ct', qtyOnHand: 20, avgUnitCost: 80000, lotNo: 'LOT-CT-2026-01' },
       { itemId: 'i-bracket', qtyOnHand: 15, avgUnitCost: 4500 },
     ],
     // ยอดตั้งต้นต้องมีแถวใน ledger ด้วย ไม่งั้นประวัติการเคลื่อนไหวจะไม่เริ่มจากศูนย์ (S1/S2)
