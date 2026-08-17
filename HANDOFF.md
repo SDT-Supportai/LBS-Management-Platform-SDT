@@ -1,6 +1,6 @@
 # HANDOFF — 115kV LBS Project Management Platform
 
-เอกสารส่งมอบ/สรุปสถานะระบบ (อัปเดต 2026-08-03) — อ่านไฟล์นี้ก่อนดูแลระบบต่อ
+เอกสารส่งมอบ/สรุปสถานะระบบ (อัปเดต 2026-08-14) — อ่านไฟล์นี้ก่อนดูแลระบบต่อ
 ประกอบกับ [README.md](README.md) (ภาพรวม), [SETUP.md](SETUP.md) (คู่มือ deploy),
 [VIDEO-SCRIPT.md](VIDEO-SCRIPT.md) (prompt + บทวีดีโอแนะนำระบบ), และ
 `../lbs-stock-project-instructions (1).md` (business rules = source of truth ห้ามเปลี่ยนโดยไม่ยืนยัน)
@@ -15,23 +15,30 @@
 
 **แผนที่เมนู UI ปัจจุบัน** (เรียงตาม sidebar · ชื่อไฟล์ใน `src/pages/` ยังเป็นชื่อเดิม เช่น JobsPage/ServicePage):
 - **Project Stock (LBS)** (`StocksPage`) — **ตารางรายเครื่องมี Plan PO receipt / Plan Delivery (กดปฏิทิน) + Actual Delivery (auto จากวันยืนยันติดตั้งรายเครื่อง) + สถานะละเอียดตาม flow Service · Division/Manage กด "แก้ข้อมูล" ต่อแถวเพื่อกรอกต้นทุน/ลูกค้า(แผน)/วันแผน ได้ก่อนเบิก (0043) · **Import Excel อัพเดทช่องพวกนี้เป็นชุดได้ (0048 — ช่องว่าง = คงค่าเดิม · เครื่องที่มี Job ข้ามช่องลูกค้า · เครื่องที่เบิกแล้วข้ามทั้งแถว)** · คลัง LBS + ดูรายเครื่อง (ข้อมูลลูกค้า ref จาก Job) + Export/Import Excel ต่อคลัง · **ต้นทุนตัว LBS ต่อเครื่อง** กรอกตอนสร้าง/รับเข้า/Import (คอลัมน์ "ต้นทุน/เครื่อง") → badge "มูลค่าคลัง" = Σ ต้นทุน (0024) · **Import เจอ Serial ซ้ำ (คู่ตรงในคลังนี้) → ถามว่าอัพเดทต้นทุน/ข้าม** ส่วนที่ชนคลังอื่นหรือคู่ไม่ตรงเป็น error (0025) · ตอนสร้าง/แก้คลังมีช่อง **PO No.** + **Remark** (ว่างได้ · แก้ภายหลังได้, 0029)
-- **Project ID (Jobs)** (`JobsPage`/`JobDetailPage`) — **Payment รายงวด (Advance / Progress-Delivery / PAC-Retention · Invoice No./Date/% → ยอดเงิน · รับเงินแล้วเมื่อ) เป็นพาเนลพับก่อนตาราง 7 หมวด (0044)** · เปิด Job, **Project Budget ต้นทุน 7 หมวด** (การ์ดแก้ได้/ตาราง Raw Material→Finance ซ่อนได้ · **Manage แก้งบได้แม้ Job ล็อก** 0023), ดึง-คืน LBS, ขอวัสดุ, ออก PR — ปุ่มออก PR/เบิก/ยกเลิกของ project เป็น "ขออนุมัติ" (Manage ทำตรง) · Purchase Orders มีปุ่ม **⬇ Export Excel** + คอลัมน์ Phase Budget โชว์ Phase ที่กรอกในงบ · **ดึง LBS เข้า Job → ต้นทุนเครื่องบวกเข้า actual หมวด Raw Material** (0024) · **หลายจุดติดตั้งต่อ Job เมื่อ LBS>1** (จุดที่ 1 = ฟิลด์เดิม + จุดที่ 2+ = install_sites, 0026) · ปุ่ม **🖨️ ปริ้นสรุปโครงการ (PDF)**
-- **Purchasing (PR/PO)** (`PurchasingPage`) — **แก้เลข PR ได้ (0047 · เฉพาะใบที่ยังไม่ออก PO — หน้า Project เห็นเลขใหม่เองทันที)** · จัดกลุ่มตาม Job, **1 PR → หลาย PO** (เลือกอุปกรณ์เข้าแต่ละ PO), ยกเลิก PO, ตีกลับ PR, รับของ partial · **รายการรอออก PO แสดงครบ** (Epicor, ชื่อ, จำนวน, ราคา/หน่วย, มูลค่า, Phase Budget) · popup ออก PO เป็น Modal กว้าง · สรุปประวัติ PR/PO ต่อ Job (ซ่อนได้)
+- **Project ID (Jobs)** (`JobsPage`/`JobDetailPage`) — **Payment รายงวด (Advance / Progress-Delivery / PAC-Retention · Invoice No./Date/% → ยอดเงิน · รับเงินแล้วเมื่อ) เป็นพาเนลพับก่อนตาราง 7 หมวด (0044)** · เปิด Job, **Project Budget ต้นทุน 7 หมวด** (การ์ดแก้ได้/ตาราง Raw Material→Finance ซ่อนได้ · **Manage แก้งบได้แม้ Job ล็อก** 0023), ดึง-คืน LBS, ขอวัสดุ, ออก PR — ปุ่มออก PR/เบิก/ยกเลิกของ project เป็น "ขออนุมัติ" (Manage ทำตรง) · Purchase Orders มีปุ่ม **⬇ Export Excel** + คอลัมน์ Phase Budget โชว์ Phase ที่กรอกในงบ · **ดึง LBS เข้า Job → ต้นทุนเครื่องบวกเข้า actual หมวด Raw Material** (0024) · **หลายจุดติดตั้งต่อ Job เมื่อ LBS>1** (จุดที่ 1 = ฟิลด์เดิม + จุดที่ 2+ = install_sites, 0026) · ปุ่ม **🖨️ ปริ้นสรุปโครงการ (PDF)** · **ตาราง Purchase Orders เริ่มต้นซ่อน (2026-08-14)** — ปุ่ม `แสดงรายการ (n)` / `ซ่อนรายการ` · **ปุ่มทำรายการ (Export / เพิ่มวัสดุ / ออก PR) ยังอยู่ครบตอนซ่อน** ไม่ต้องกางก่อนถึงจะกดได้
+- **Purchasing (PR/PO)** (`PurchasingPage`) — **แก้เลข PR ได้ (0047 · เฉพาะใบที่ยังไม่ออก PO — หน้า Project เห็นเลขใหม่เองทันที)** · จัดกลุ่มตาม Job, **1 PR → หลาย PO** (เลือกอุปกรณ์เข้าแต่ละ PO), ยกเลิก PO, ตีกลับ PR, รับของ partial · **รายการรอออก PO แสดงครบ** (Epicor, ชื่อ, จำนวน, ราคา/หน่วย, มูลค่า, Phase Budget) · popup ออก PO เป็น Modal กว้าง · สรุปประวัติ PR/PO ต่อ Job (ซ่อนได้) · **ตาราง PR และ PO เริ่มต้นซ่อน แยกปุ่มคนละตัวต่อ Job (2026-08-14)** — `แสดง PR รอออก PO (n)` / `แสดง PO (n)` · ป้ายบนหัวการ์ด ("มีรายการรอออก PO" / "PO รอรับของ n") บอกอยู่แล้วว่างานไหนต้องลงมือ จึงกางเฉพาะใบที่จะทำ · **⬇ Export PR รอออก PO → Excel template ขอราคา (2026-08-14)** 2 ระดับ: ปุ่มรวมทุกงานบนหัวหน้า (รวบยอดสั่งของประจำวัน) + ปุ่มต่อ Job ในการ์ด · 12 คอลัมน์ระบบเติมให้ + **5 คอลัมน์เว้นว่างให้ซัพพลายเออร์กรอก** (ราคาที่เสนอ/หน่วย · มูลค่าที่เสนอ · ยี่ห้อ-รุ่นที่เสนอ · กำหนดส่งได้ · หมายเหตุ) + ชีต "วิธีใช้" + autofilter · **export อย่างเดียว ไม่มี import กลับ** (ราคาจริงบันทึกที่ปุ่ม 💰 ราคาจริง หลังออก PO)
 - **Service (Installation)** (`ServicePage`) — **ยืนยันติดตั้งรายเครื่อง** (per serial): แต่ละเครื่องบังคับ วันที่ + Check-in GPS + รูป + เลือกช่างผู้ติดตั้ง (0035/0036) · เครื่องที่ติดตั้งไม่ได้ระบุเหตุผลรายเครื่องได้ · **เลื่อนนัด/ติดปัญหาหน้างาน** (0034 — เลื่อนแล้ววันนัดของ Job ขยับเอง) · **มอบหมายทีมช่าง + หัวหน้าทีม** (0036) · **ปิดงานเป็นขั้นแยก** ต้องได้ข้อสรุปทุกเครื่อง + สำเร็จ ≥1 และ **บังคับสรุปปัญหา (มี/ไม่มี) + แนบไฟล์** ก่อนปิด (0040) · พาเนล **⚠️ ปัญหางานบริการ** รวมปัญหาจาก 3 แหล่ง (0041)
 - **Service & Scheduling** (`ServiceSchedulingPage`) — **ทะเบียนทีมช่าง** (ชื่อ/สกุล/เบอร์/ตำแหน่ง · ผูกบัญชี login ได้ถ้ามี) + **ตารางงานรายบุคคล** (งานที่รับ + วันนัด + บทบาท + คืบหน้า) + เตือนงานที่เบิกแล้วยังไม่มอบหมายทีม (0036)
-- **Material Database** (`MasterDataPage`) — **แยก 2 พาเนลชัดเจน**: (1) **ฐานข้อมูลวัสดุ** = รายการที่ใช้ออก PR/PO (รหัส Epicor/ชื่อ/หน่วย/การจัดหา) ไม่มียอด (2) **คลังคงเหลือ** = ของที่มีจริง (คงเหลือ/ต้นทุนถัวเฉลี่ย/มูลค่า) + ปรับยอด + **📜 ประวัติการเคลื่อนไหว** (ledger 0038) — ทั้ง 2 พาเนลซ่อนได้/เริ่มซ่อน · **ใช้ "รหัส Epicor" เป็นตัวระบุหลัก** (เบื้องหลัง client set `code`=Epicor คง schema เดิม) · Export/Import Excel **round-trip ครบ 5 คอลัมน์** (รวม การจัดหา + คลังคงเหลือ — เปลี่ยนยอดต้องใส่เหตุผล → ลง ledger)
+- **Material Database** (`MasterDataPage`) — **แยก 2 พาเนลชัดเจน**: (1) **ฐานข้อมูลวัสดุ** = รายการที่ใช้ออก PR/PO (รหัส Epicor/ชื่อ/หน่วย/การจัดหา) ไม่มียอด (2) **คลังคงเหลือ** = ของที่มีจริง (**Lot No.**/คงเหลือ/ต้นทุนถัวเฉลี่ย/มูลค่า) + ปรับยอด + **📜 ประวัติการเคลื่อนไหว** (ledger 0038) — ทั้ง 2 พาเนลซ่อนได้/เริ่มซ่อน · **ใช้ "รหัส Epicor" เป็นตัวระบุหลัก** (เบื้องหลัง client set `code`=Epicor คง schema เดิม) · Export/Import Excel **round-trip ครบ 6 คอลัมน์** (รวม การจัดหา + คลังคงเหลือ + Lot No. — เปลี่ยนยอดต้องใส่เหตุผล → ลง ledger) · **Lot No. รายวัสดุ (0055 · 2026-08-14)** — กรอกได้ 4 ทาง: โมดัล **ปรับยอด** (ช่องล็อตใช้เฉพาะขาเข้า เหมือนช่องต้นทุน) · โมดัล **+ เพิ่ม Accessory** · ปุ่ม **🏷 Lot** (แก้ล็อตอย่างเดียว ไม่แตะยอด ไม่ลง ledger) · **Import Excel** (ช่องว่าง = คงค่าเดิม · ล้างล็อตต้องใช้ปุ่ม 🏷 Lot) · ประวัติการเคลื่อนไหวมีคอลัมน์ Lot No. — **ขาเข้า = ล็อตที่กรอก · ขาออก = ล็อตที่อยู่ในคลังขณะนั้น** (ตอบได้ว่าของที่เบิกไป Job เมื่อไหร่เป็นล็อตไหน)
 - **Standard Drawing & BOM** (`StandardsPage`) — **เอกสารมาตรฐานของ LBS (0045)**: แท็บ **Standard Drawing** (หัวข้อ/เลขแบบ + แนบ PDF ให้ทุกแผนกโหลด · แก้ไขแล้ว stamp วันที่/ผู้แก้ไข/หมายเหตุ) และแท็บ **Standard BOM List** (หัวข้อ BOM + รายการ Epicor/ชื่อ/จำนวน/หน่วย/ต้นทุนประมาณการ + มูลค่ารวม + **Export / Import Excel** — Import มี preview + เลือกเพิ่มต่อท้าย/แทนที่ทั้งหมด, 0046) · **ทุกแผนกดู/ดาวน์โหลดได้ · เพิ่ม/แก้ได้เฉพาะ Project/Division/Manage**
 - **Awaiting Approval** (`ApprovalsPage`) — คิวคำขอจาก project ให้ Division ตัดสิน + ประวัติแยกตาม Job (ซ่อนได้) · badge จำนวนค้าง · **อยู่ล่าง Material Database**
 - **Dev Settings** (`DevSettingsPage`) — เฉพาะ Manage: ผู้ใช้งาน (เพิ่ม/แก้ชื่อ-อีเมล-รหัส-แผนก), สวิตช์ LINE (global), backup — **Audit Log** ปุ่มล่าง sidebar
 
 ## 2. สถานะปัจจุบัน — 🟢 LIVE บน production
 
+> 🔴 **ค้างอยู่ตอนนี้ (2026-08-14)**: push commit `048b35f` ขึ้น `main` แล้ว (Cloudflare auto-deploy)
+> แต่ **ยังไม่ได้รัน `0055_stock_lot_no.sql` บน Supabase** → ปุ่ม **"ปรับยอด"** และ **"+ เพิ่ม Accessory"**
+> ที่หน้า Material Database จะ 404 `PGRST202` จนกว่าจะรัน (0055 เปลี่ยน signature ของ
+> `rpc_adjust_accessory_stock` 4→5 args และ `rpc_create_item` 7→8 args — §9 ข้อ 8)
+> **ส่วนอื่นของ commit นี้ไม่กระทบ** (ซ่อนตาราง PR/PO/Purchase Orders + Export PR เป็น frontend ล้วน)
+> วิธีแก้: SQL Editor → วางทั้งไฟล์ → Run → ตรวจ `GET /rest/v1/accessory_stock?select=lot_no` = 200
+
 | ส่วน | ค่า / สถานะ |
 |---|---|
 | Hosting | **Cloudflare Pages — LIVE แล้ว** https://lbs-platform-sdt.pages.dev (ย้ายจาก Netlify 2026-07-15, auto-deploy จาก `main`) |
 | GitHub repo | https://github.com/SDT-Supportai/LBS-Management-Platform-SDT (root = โฟลเดอร์นี้) |
 | Supabase project ref | `mrdnxajwnvkgvfyaclwv` (region: ตามที่สร้าง) |
-| Migrations ที่รันแล้ว | **0001–0054 รันครบ** (0042–0048 รัน 2026-08-07 · **0049–0054 รัน 2026-08-08**) · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูป/ไฟล์แนบไม่ได้ เช็ค bucket `install-photos` (0019 — ไฟล์แนบปัญหา prefix `job-issues/` · Drawing `standard-drawings/` · Price list `standard-prices/`) |
+| Migrations ที่รันแล้ว | **0001–0054 รันครบ** (0042–0048 รัน 2026-08-07 · **0049–0054 รัน 2026-08-08**) · ⚠️ **0055 ยังไม่รัน — ดูกล่องแดงด้านบน** · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูป/ไฟล์แนบไม่ได้ เช็ค bucket `install-photos` (0019 — ไฟล์แนบปัญหา prefix `job-issues/` · Drawing `standard-drawings/` · Price list `standard-prices/`) |
 | E2E บน DB จริง | ✅ ผ่านทั้ง flow · demo E2E: approval, LINE dispatch, budget 7 หมวด, 1 PR→N PO (12/12), check-in/photo, ยืนยันรายเครื่อง, โอนวัสดุเข้าคลัง, Import Excel แก้ยอด, ปิดงาน+สรุปปัญหา, reopen, FOB/ETA + Status flow, VIP comment, guard ห้ามเบิกเมื่อของยังไม่ถึงคลัง |
 | ตรวจ LIVE แบบไม่แตะข้อมูล | probe ผ่าน PostgREST ด้วย anon key — **อ่าน §9 ข้อ 12 ก่อนใช้** (มีกับดัก 3 อย่างที่ทำให้ได้ false positive ทั้งชุด) · โดยย่อ: `GET /rest/v1/<table>?select=<col>` → 200 = มี · `42703`/`PGRST205` = ไม่มี · `POST /rest/v1/rpc/<fn>` **ต้องส่งชื่อพารามิเตอร์ให้ตรง signature + ส่ง body ผ่านไฟล์** → `42501 permission denied` = มีจริง · `PGRST202` = ไม่มี signature นั้น |
 | Admin จริง | `siradanai.s@precise.co.th` (department = admin, แสดงเป็น "Manage") |
@@ -193,7 +200,7 @@ lbs-platform/
 
 | แผนก (DB) | แสดงผล | ทำอะไรได้ |
 |---|---|---|
-| `sales` | **Division** | สร้าง/แก้/ลบ Project Stock, รับ LBS เข้า, **แก้ข้อมูลรายเครื่อง — รวม Serial + ต้นทุน + ลูกค้าแผน + FOB date + ETA to WH + Plan Delivery ในฟอร์มเดียว (0043/0049)**, **ตั้ง FOB ทั้งคลัง (0049)**, ปรับยอดคลังสินค้า accessory + **อนุมัติ/ตีกลับคำขอจาก project** (หน้า "รออนุมัติ") + ตอบกลับความเห็น VIP (0050) |
+| `sales` | **Division** | สร้าง/แก้/ลบ Project Stock, รับ LBS เข้า, **แก้ข้อมูลรายเครื่อง — รวม Serial + ต้นทุน + ลูกค้าแผน + FOB date + ETA to WH + Plan Delivery ในฟอร์มเดียว (0043/0049)**, **ตั้ง FOB ทั้งคลัง (0049)**, ปรับยอดคลังสินค้า accessory + **ตั้ง/แก้ Lot No. คลังคงเหลือ (0055 — ปุ่ม 🏷 Lot + ช่องในโมดัลปรับยอด)** + **อนุมัติ/ตีกลับคำขอจาก project** (หน้า "รออนุมัติ") + ตอบกลับความเห็น VIP (0050) |
 | `project` | Project | เปิด/แก้/ลบ Job, ดึง-คืน LBS, ขอวัสดุ (+Phase Budget), **บันทึกงวดเงิน Payment (0044 — ทำได้แม้ปิดงานแล้ว)** — ส่วน **ออก PR / เบิกให้ Service / ยกเลิก Job ต้องส่งคำขอให้ Division อนุมัติ** (`rpc_request_approval`) · **⚠️ ทำรายการได้เฉพาะ Job ที่อีเมลตัวเองเปิด (0042) — Job ของคนอื่นดูได้อย่างเดียว** |
 | `purchasing` | Purchasing | ออก PO / ยกเลิก PO (ยังไม่รับของ) / ตีกลับ PR / รับของ (partial ได้) / **แก้เลข PR ให้ตรงเอกสารจริง — เฉพาะใบที่ยังไม่ออก PO (0047)** |
 | `service` | Service | ยืนยันติดตั้งเสร็จ (+วันที่จริง) |
@@ -290,10 +297,13 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 - [x] ~~0049–0051~~ FOB/ETA to WH · VIP + ความเห็นผู้บริหาร · ระยะขนส่ง 45–60 + ความเห็นเรื่องคลัง
 - [x] ~~0052–0053~~ แก้ตาม code review (import คงค่าเดิม · guard ห้ามเบิกเมื่อของยังไม่ถึงคลัง) · Plan PO receipt
 - [x] ~~0054~~ Standard Price list (`std_prices` + RPC 3 ตัว) — ยืนยัน 2026-08-08
-- [ ] 🔴 **0055_stock_lot_no.sql — ต้องรันก่อน push frontend** (2026-08-14)
-      เปลี่ยน signature ของ `rpc_adjust_accessory_stock` (+`p_lot_no`) และ `rpc_create_item` (+`p_initial_lot`)
-      → **ถ้า push frontend ก่อนรัน migration ปุ่ม "ปรับยอด" และ "+ เพิ่ม Accessory" จะพัง 404 `PGRST202` ทันที** (§9 ข้อ 8)
+- [ ] 🔴 **0055_stock_lot_no.sql — frontend push ไปแล้ว (`048b35f`) แต่ SQL ยังไม่ได้รัน · ต้องรันด่วน** (2026-08-14)
+      เปลี่ยน signature ของ `rpc_adjust_accessory_stock` (4→5 args, +`p_lot_no`) และ `rpc_create_item` (7→8 args, +`p_initial_lot`)
+      → **ตอนนี้บน production ปุ่ม "ปรับยอด" และ "+ เพิ่ม Accessory" ที่หน้า Material Database 404 `PGRST202`** (§9 ข้อ 8)
+      ส่วนอื่นของ commit นั้นไม่กระทบ (ซ่อนตาราง PR/PO/Purchase Orders + Export PR เป็น frontend ล้วน)
+      วิธีแก้: SQL Editor → วางทั้งไฟล์ `supabase/migrations/0055_stock_lot_no.sql` → Run (idempotent รันซ้ำได้)
       ตรวจว่าลงแล้ว (ปลอดภัยกว่ายิง RPC — §9 ข้อ 12 ง): `GET /rest/v1/accessory_stock?select=lot_no` → 200 = ลงแล้ว · `42703` = ยังไม่ลง
+      **บทเรียน: commit ที่มี migration เปลี่ยน signature ต้องรัน SQL ก่อน push เสมอ — รอบนี้ push ไปก่อน**
 
 <details>
 <summary><b>SQL ตรวจว่า 0042–0054 ลงครบจริง</b> (รันได้ตลอด ไม่แตะข้อมูล — ต้องได้ <code>true</code> ทุกแถว)</summary>
