@@ -26,19 +26,21 @@
 
 ## 2. สถานะปัจจุบัน — 🟢 LIVE บน production
 
-> 🔴 **ค้างอยู่ตอนนี้ (2026-08-14)**: push commit `048b35f` ขึ้น `main` แล้ว (Cloudflare auto-deploy)
-> แต่ **ยังไม่ได้รัน `0055_stock_lot_no.sql` บน Supabase** → ปุ่ม **"ปรับยอด"** และ **"+ เพิ่ม Accessory"**
-> ที่หน้า Material Database จะ 404 `PGRST202` จนกว่าจะรัน (0055 เปลี่ยน signature ของ
-> `rpc_adjust_accessory_stock` 4→5 args และ `rpc_create_item` 7→8 args — §9 ข้อ 8)
-> **ส่วนอื่นของ commit นี้ไม่กระทบ** (ซ่อนตาราง PR/PO/Purchase Orders + Export PR เป็น frontend ล้วน)
-> วิธีแก้: SQL Editor → วางทั้งไฟล์ → Run → ตรวจ `GET /rest/v1/accessory_stock?select=lot_no` = 200
+> ✅ **0055 + 0056 รันบน production แล้ว (2026-08-20)** — Lot No. คลังคงเหลือ · สลับ LBS พาต้นทุน/FOB/ETA ไปกับ Serial
+>
+> 🟠 **ค้างอยู่ตอนนี้ (2026-08-20)**: ชุดแก้จาก code review รอบ 2 (#2 #3 #4) อยู่ที่ repo แล้ว **ยังไม่ push**
+> SQL ลงครบแล้ว → **push ได้เลย** (0056 ไม่เปลี่ยน signature จึงไม่มีเรื่อง `PGRST202`)
+> ⚠️ **ต้องทำด้วยคน 1 อย่าง**: งานที่ **เคยสลับ LBS ก่อน 0056** ต้นทุน/ETA ยังผูกผิดอยู่ (0056 ไม่ auto-repair)
+> `SELECT created_at, detail FROM audit_logs WHERE action = 'swap_lbs_serial' ORDER BY created_at DESC;`
+> → ถ้ามีแถว ให้ Division เทียบ `unit_cost` รายเครื่องกับ Serial จริงหน้างาน แล้วแก้ผ่าน "แก้ข้อมูล" ในหน้า Project Stock
+> (เครื่องที่ยังไม่เบิกแก้ได้ · เครื่องที่ `issued` แล้ว `trg_block_issued_edit` ล็อก — ต้องแก้ที่งบ Job ตรงๆ)
 
 | ส่วน | ค่า / สถานะ |
 |---|---|
 | Hosting | **Cloudflare Pages — LIVE แล้ว** https://lbs-platform-sdt.pages.dev (ย้ายจาก Netlify 2026-07-15, auto-deploy จาก `main`) |
 | GitHub repo | https://github.com/SDT-Supportai/LBS-Management-Platform-SDT (root = โฟลเดอร์นี้) |
 | Supabase project ref | `mrdnxajwnvkgvfyaclwv` (region: ตามที่สร้าง) |
-| Migrations ที่รันแล้ว | **0001–0054 รันครบ** (0042–0048 รัน 2026-08-07 · **0049–0054 รัน 2026-08-08**) · ⚠️ **0055 ยังไม่รัน — ดูกล่องแดงด้านบน** · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูป/ไฟล์แนบไม่ได้ เช็ค bucket `install-photos` (0019 — ไฟล์แนบปัญหา prefix `job-issues/` · Drawing `standard-drawings/` · Price list `standard-prices/`) |
+| Migrations ที่รันแล้ว | **0001–0056 รันครบ** (0042–0048 รัน 2026-08-07 · 0049–0054 รัน 2026-08-08 · **0055–0056 รัน 2026-08-20**) · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูป/ไฟล์แนบไม่ได้ เช็ค bucket `install-photos` (0019 — ไฟล์แนบปัญหา prefix `job-issues/` · Drawing `standard-drawings/` · Price list `standard-prices/`) |
 | E2E บน DB จริง | ✅ ผ่านทั้ง flow · demo E2E: approval, LINE dispatch, budget 7 หมวด, 1 PR→N PO (12/12), check-in/photo, ยืนยันรายเครื่อง, โอนวัสดุเข้าคลัง, Import Excel แก้ยอด, ปิดงาน+สรุปปัญหา, reopen, FOB/ETA + Status flow, VIP comment, guard ห้ามเบิกเมื่อของยังไม่ถึงคลัง |
 | ตรวจ LIVE แบบไม่แตะข้อมูล | probe ผ่าน PostgREST ด้วย anon key — **อ่าน §9 ข้อ 12 ก่อนใช้** (มีกับดัก 3 อย่างที่ทำให้ได้ false positive ทั้งชุด) · โดยย่อ: `GET /rest/v1/<table>?select=<col>` → 200 = มี · `42703`/`PGRST205` = ไม่มี · `POST /rest/v1/rpc/<fn>` **ต้องส่งชื่อพารามิเตอร์ให้ตรง signature + ส่ง body ผ่านไฟล์** → `42501 permission denied` = มีจริง · `PGRST202` = ไม่มี signature นั้น |
 | Admin จริง | `siradanai.s@precise.co.th` (department = admin, แสดงเป็น "Manage") |
@@ -144,6 +146,7 @@ lbs-platform/
 | `0053_plan_po_date.sql` | **ฟีเจอร์ (2026-08-08)**: **Plan PO receipt รายเครื่อง** — `lbs_units.plan_po_date` = วันที่คาดว่าจะได้รับ PO จากลูกค้า (แผนฝั่งขาย) วางถัดจาก Location / Site · เขียนได้เฉพาะเครื่องที่ยังไม่ผูก Job (กฎ 0014 เดียวกับ Customer/Contact/Location) · **DROP+recreate `rpc_update_unit_plan`** (9→10 args, +`p_plan_po_date`) · patch `rpc_import_units_to_stock` รับ key `plan_po` (patch บรรทัดเดียวทั้งหมด — ห้าม recreate เพราะ 0052 patch ไว้แล้ว) · **⚠️⚠️ อย่าสับสน 2 คอลัมน์**: `plan_po_date` = วันรับ PO จากลูกค้า (ป้าย "Plan PO receipt") · `plan_po_receipt_date` = วันของเข้าคลังแบบกรอกเอง (ป้าย "ETA to WH" ตั้งแต่ 0049) — ฝั่ง UI **ถอด alias `'Plan PO receipt'` ออกจาก ETA to WH แล้ว** ไม่งั้น Import ไฟล์รูปแบบใหม่จะเขียนวันรับ PO ลง ETA ผิดช่อง (ไฟล์ที่ export ก่อน 0049 ต้องแก้หัวคอลัมน์เป็น "ETA to WH" ก่อน import) · เปลี่ยนป้ายคอลัมน์เป็นอังกฤษ: ชื่อลูกค้า→**Customer** · เบอร์ติดต่อ→**Contact Number** · สถานที่ติดตั้ง→**Location / Site** (import รับชื่อไทยเดิมผ่าน alias ไฟล์เก่ายังใช้ได้) |
 | `0054_std_price_list.sql` | **ฟีเจอร์ (2026-08-08)**: **Standard Price list** — ตาราง `std_prices` + `rpc_create/update/delete_std_price` · โครงสร้างและกติกาเดียวกับ `std_drawings` เป๊ะ (1 รายการ = 1 แถว + PDF ล่าสุด · แก้ = ทับข้อมูลเดิม + stamp ผู้แก้/เวลา · ลบ = ลบทะเบียน ไฟล์ยังอยู่ใน Storage) · `price_no` UNIQUE (ว่างได้) · RLS/realtime/สิทธิ์ copy จาก 0045 (`app_assert_standards` = project+sales+admin · ทุกแผนกอ่านได้) · ไฟล์ PDF เก็บ bucket `install-photos` prefix **`standard-prices/`** · **แยกตารางจาก std_drawings** เพราะเป็นทะเบียนคนละชุด เลขเอกสารต้อง unique แยกกัน (ยัดตารางเดียวด้วยคอลัมน์ kind จะทำ unique ต่อชนิดยุ่งกว่า) · demo sync `logic.ts createStdPrice/updateStdPrice/deleteStdPrice` |
 | `0055_stock_lot_no.sql` | **ฟีเจอร์ (2026-08-14)**: **Lot No. ในคลังคงเหลือ** — `accessory_stock.lot_no` (ล็อตของของที่อยู่ในคลัง**ตอนนี้**) + `stock_movements.lot_no` (ล็อตของ**การเคลื่อนไหวครั้งนั้น**) · **เก็บ 2 ที่โดยตั้งใจ** เพราะตอบคนละคำถาม — ถ้าเก็บแค่แถวคลัง จะตอบไม่ได้ว่าของที่เบิกไป Job เมื่อเดือนที่แล้วเป็นล็อตไหน · วิธีเดียวกับ 0038: **ไม่ patch ทุก RPC** แต่ส่งล็อตผ่านบริบท `app_set_stock_lot(lot)` แล้วให้ trigger `fn_log_stock_movement` หยิบไปเขียนทั้ง 2 ที่ (RPC ที่ไม่ตั้งล็อต — เบิก/คืน/โอน/ยกเลิก Job — ทำงานเหมือนเดิม และ ledger บันทึกล็อตปัจจุบันของคลังให้เอง) · **⚠️ ไม่แตะ signature ของ `app_set_stock_ctx`** เพราะจะได้ overload 2 ตัว → PostgREST ambiguous (§9 ข้อ 8) จึงแยกเป็น setter ตัวใหม่ · recreate `fn_log_stock_movement` ปลอดภัย (ไม่มี `app_notify` จึงไม่โดน 0031 patch — ตรวจแล้วชื่อนี้โผล่เฉพาะใน 0038, §9 ข้อ 5) · **DROP+recreate** `rpc_adjust_accessory_stock` (4→5 args, +`p_lot_no`) และ `rpc_create_item` (7→8 args, +`p_initial_lot`) ตาม §9.8 · **`rpc_set_stock_lot` ใหม่** — แก้ล็อตอย่างเดียวไม่แตะยอด (จำเป็นเพราะ `rpc_adjust_accessory_stock` ปฏิเสธเมื่อยอดใหม่ = ยอดเดิม · ไม่ลง ledger เพราะของไม่ได้เคลื่อนไหว ร่องรอยอยู่ใน audit แทน) · demo sync `logic.ts`: `applyStockMovement(lotNo)` / `adjustAccessoryStock` / `createItem` / `setStockLot` / `stockLotOf` |
+| `0056_swap_carries_unit_data.sql` | **แก้บั๊ก (2026-08-20)**: **สลับ LBS ต้องพาข้อมูลตัวเครื่องไปกับ Serial** — 0028/0032 สลับแค่ `serial_lvb`/`serial_om` ⇒ `unit_cost` / `fob_date` / `eta_lead_days` / `plan_po_receipt_date` ค้างอยู่กับ **แถว** ไม่ตามไปกับ **เครื่อง** · ผลจริง: (1) `jobLbsCost()` + actual หมวด Raw Material คิดเงินของเครื่องที่ยังอยู่ในคลัง (2) Status/ETA to WH ของทั้งสอง Serial ผิดสลับกัน · **เกณฑ์แบ่ง**: identity ของเครื่องจริง = คู่ Serial → ย้ายตาม Serial = ต้นทุน + ล็อตเรือ/วันของเข้าคลัง · อยู่กับที่ = `project_stock_id`/`status`/`job_id` (ตำแหน่ง ซึ่งเป็นสิ่งที่ swap ตั้งใจเปลี่ยน) และ `plan_customer_name`/`plan_contact_phone`/`plan_install_location`/`plan_po_date`/`plan_delivery_date` (แผนฝั่งขายของ "ช่อง") · recreate `app_exec_swap_lbs` ทั้งก้อนได้เพราะ body ล่าสุด = ของ 0032 (§9 ข้อ 5 grep แล้ว: 0031 ไม่แตะ · 0033/0041 แค่ `PERFORM`) · **ไม่เปลี่ยน signature** → ไม่มีความเสี่ยง `PGRST202` · audit เพิ่มท้ายข้อความว่าต้นทุนย้ายเท่าไร ↔ เท่าไร · **ไม่ auto-repair ของเก่า** — RAISE NOTICE จำนวนครั้งที่เคยสลับให้ Division ไปตรวจงบเอง · demo sync `logic.ts` (`swapLbs` → `machineOf`) + โมดัลสลับโชว์ต้นทุนที่จะเปลี่ยนก่อนกดยืนยัน |
 | `0026_job_install_sites.sql` | **ฟีเจอร์ (2026-07-23)**: หลายจุดติดตั้งต่อ Job — `jobs.install_sites` JSONB (array `{location, requiredDate}` = จุดที่ 2+; จุดที่ 1 ยังใช้ install_location/required_date เดิม) · drop+recreate `rpc_create_job`/`rpc_update_job` (+`p_install_sites`) · ข้อมูลวางแผนอย่างเดียว ไม่ผูก Serial/ไม่แตะ flow issue/confirm · UI: เปิด/แก้ Job โชว์ "เพิ่มจุดติดตั้ง" เมื่อ LBS>1 (≤ จำนวน LBS), JobDetail แผง "จุดติดตั้ง", list badge "+N จุด" · demo sync `logic.ts` (normalizeInstallSites) |
 
 > DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0041 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
@@ -275,7 +278,30 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
     ⚠️ **การทดสอบด้วยการ set `.value` แล้ว dispatch `input` ตรวจไม่เจอบั๊กนี้** — ต้องเช็ค `activeElement`
        และ node identity ระหว่างกดแป้นทีละตัว
 
+15. **เพิ่ม enum ใหม่แล้วลืมที่ map ปลายทาง = การ์ดในมือถือบอกเรื่องผิด (2026-08-20)**
+    0041 เพิ่ม approval type `reopen_job` แต่ไม่ได้แก้ `functions/line-approval-push.js`
+    → `TYPE_LABEL` ไม่มี key และ `summarize()` ไม่มีสาขา แล้ว **ตกลงมาที่ `return` ท้ายฟังก์ชันซึ่งเป็นข้อความของ `cancel_job`**
+    ⇒ ผู้อนุมัติได้การ์ดว่า "**ยกเลิก Job** · เหตุผล: …" แต่กด ✅ แล้วระบบ **เปิดงานใหม่** — อนุมัติผิดเรื่องโดยไม่รู้ตัว
+    → แก้: เติมทุก type + **ทำ default เป็น fail-loud** (`คำขอประเภท "x" — การ์ดนี้อธิบายไม่ได้`) และ **ตัดปุ่ม ✅ ออก**
+      เมื่อ type ไม่รู้จัก (ปุ่มอนุมัติไม่ควรมีเมื่อการ์ดอธิบายเรื่องที่จะอนุมัติไม่ได้)
+    ⚠️ **กติกา: `default`/`else` ท้าย mapping ห้ามคืนค่าของเคสอื่น** — ต้องคืนค่าที่อ่านออกว่า "ไม่รู้จัก"
+       ฝั่ง TS ใช้ `Record<ApprovalType, string>` ให้ compiler จับ · ฝั่ง `functions/*.js` (ไม่มี type) ต้องเช็คเอง
+    **ทดสอบ: เรียก `summarize()` ตรงทุก type + 1 type ปลอม** — เกณฑ์ผ่าน = type ที่ไม่ใช่ cancel_job ห้ามมีคำว่า "ยกเลิก Job"
+
+16. **ผ่อน guard ฝั่ง SQL แล้วลืมเงื่อนไข UI ที่คู่กัน = ฟีเจอร์ที่ทำไว้ใช้ไม่ได้เลย (2026-08-20)**
+    0037 ตั้งใจปลดล็อกให้ **บันทึกราคาจริงย้อนหลังได้แม้ปิดงานแล้ว** (`rpc_update_po_line_price` →
+    `app_assert_job_cost_editable` = ปิดเฉพาะ cancelled) เพราะใบแจ้งหนี้มาช้ากว่าของเสมอ
+    แต่ `PurchasingPage` ยังเหลือ `!job.terminalStatus` → **ปุ่ม 💰 ราคาจริง หายตั้งแต่ Job = Issued**
+    ⇒ raw_mat/outsourcing actual ค้างที่ค่าประมาณการ **ทุกงาน** (งานปกติออก PO ก่อนเบิกเสมอ) → งบ vs ใช้จริงผิดทั้งระบบ
+    **อยู่มา 3 สัปดาห์โดยไม่มีใครเห็น เพราะไม่มี error — แค่ปุ่มไม่โผล่**
+    ⚠️ **กติกา: migration ที่ผ่อน guard ต้อง grep เงื่อนไข `terminalStatus` / `can*` ในหน้าที่คู่กันด้วย**
+       และเขียนใน migration header ว่า UI ตัวไหนต้องแก้ตาม
+    **ทดสอบ: ต้องสร้างสถานะจริงแล้วดูปุ่ม** — งานที่ `issued` + มี PO แล้ว (seed ไม่มี ต้องรับของ→เบิก เอง)
+       เช็คแค่ "หน้าเปิดได้" ตรวจไม่เจอ
+
 > demo mode ไม่มี trigger/RLS/functions/plpgsql จึงไม่เจอบั๊กพวกนี้ — ต้องทดสอบบน DB จริงเท่านั้น
+> กลับกัน **บั๊กสูตรเงิน/สถานะ ทดสอบใน demo mode ได้ดีกว่า** (`npm run dev -- --mode demo`) เพราะเขียนลง
+> localStorage อ่านตัวเลขก่อน/หลังได้ตรงๆ และ**ไม่แตะข้อมูลจริง** — `.env` ชี้ production เสมอ ห้ามทดสอบ swap/เบิก/รับของบนนั้น
 
 ## 10. งานค้าง (TODO)
 
@@ -288,7 +314,7 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
       ไฟล์ถูกใส่สลักนิรภัย (DO-block RAISE EXCEPTION) กันรันติดมือแล้ว · **หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่**
 - [ ] ตรวจว่า **service_role key ถูก rotate แล้ว** (ระหว่าง setup key เก่าเคยเปิดเผย — ตรวจ repo แล้ว 2026-07-19: **key ไม่เคยหลุดลง git** หลุดเฉพาะนอก repo) — Dashboard → Settings → API → สร้าง/roll secret key ใหม่ → อัปเดต `SUPABASE_SERVICE_ROLE_KEY` บน Cloudflare Pages env → Retry deployment
 
-### 🟠 Migrations — ✅ 0001–0054 รันครบ · ⚠️ **0055 ยังไม่ได้รันบน production**
+### 🟠 Migrations — ✅ **0001–0056 รันครบ** (0055 + 0056 รัน 2026-08-20)
 
 **กติกา: หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่ (ผมจะบอกชื่อไฟล์และลำดับ)**
 ทุกไฟล์ idempotent — แถวไหนตรวจได้ `false` รันไฟล์นั้นซ้ำได้เลย
@@ -297,13 +323,13 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 - [x] ~~0049–0051~~ FOB/ETA to WH · VIP + ความเห็นผู้บริหาร · ระยะขนส่ง 45–60 + ความเห็นเรื่องคลัง
 - [x] ~~0052–0053~~ แก้ตาม code review (import คงค่าเดิม · guard ห้ามเบิกเมื่อของยังไม่ถึงคลัง) · Plan PO receipt
 - [x] ~~0054~~ Standard Price list (`std_prices` + RPC 3 ตัว) — ยืนยัน 2026-08-08
-- [ ] 🔴 **0055_stock_lot_no.sql — frontend push ไปแล้ว (`048b35f`) แต่ SQL ยังไม่ได้รัน · ต้องรันด่วน** (2026-08-14)
-      เปลี่ยน signature ของ `rpc_adjust_accessory_stock` (4→5 args, +`p_lot_no`) และ `rpc_create_item` (7→8 args, +`p_initial_lot`)
-      → **ตอนนี้บน production ปุ่ม "ปรับยอด" และ "+ เพิ่ม Accessory" ที่หน้า Material Database 404 `PGRST202`** (§9 ข้อ 8)
-      ส่วนอื่นของ commit นั้นไม่กระทบ (ซ่อนตาราง PR/PO/Purchase Orders + Export PR เป็น frontend ล้วน)
-      วิธีแก้: SQL Editor → วางทั้งไฟล์ `supabase/migrations/0055_stock_lot_no.sql` → Run (idempotent รันซ้ำได้)
-      ตรวจว่าลงแล้ว (ปลอดภัยกว่ายิง RPC — §9 ข้อ 12 ง): `GET /rest/v1/accessory_stock?select=lot_no` → 200 = ลงแล้ว · `42703` = ยังไม่ลง
-      **บทเรียน: commit ที่มี migration เปลี่ยน signature ต้องรัน SQL ก่อน push เสมอ — รอบนี้ push ไปก่อน**
+- [x] ~~0055~~ Lot No. คลังคงเหลือ — รัน 2026-08-20 (ค้างจาก push `048b35f` · **บทเรียน: commit ที่มี migration
+      เปลี่ยน signature ต้องรัน SQL ก่อน push เสมอ** — รอบนั้น push ไปก่อน ปุ่ม 3 จุดเลย 404 `PGRST202` อยู่ 6 วัน)
+- [x] ~~0056~~ สลับ LBS พา `unit_cost` / `fob_date` / `eta_lead_days` / `plan_po_receipt_date` ไปกับคู่ Serial — รัน 2026-08-20
+      (เดิม 0028/0032 สลับแค่ serial → `jobLbsCost()` คิดเงินของเครื่องที่ยังอยู่ในคลัง และ Status/ETA ผิดสลับกัน)
+      ตรวจว่าลงแล้ว: `SELECT position('unit_cost = a.unit_cost' IN pg_get_functiondef('app_exec_swap_lbs(profiles,uuid,uuid,uuid,text)'::regprocedure)) > 0;`
+- [ ] 🟠 **ตรวจงานที่เคยสลับ LBS ก่อน 0056** — `SELECT created_at, detail FROM audit_logs WHERE action='swap_lbs_serial' ORDER BY created_at DESC;`
+      ต้นทุน/ETA ของเครื่องเหล่านั้นยังผูกผิด (0056 แก้เฉพาะการสลับ**ครั้งต่อไป** ไม่ย้อนหลัง — เดาเจตนาเดิมไม่ได้) · **รอ Division พิจารณา**
 
 <details>
 <summary><b>SQL ตรวจว่า 0042–0054 ลงครบจริง</b> (รันได้ตลอด ไม่แตะข้อมูล — ต้องได้ <code>true</code> ทุกแถว)</summary>

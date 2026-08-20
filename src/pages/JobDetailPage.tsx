@@ -897,7 +897,8 @@ export default function JobDetailPage() {
             </button>
           </>}>
           <div className="muted" style={{ marginBottom: 12 }}>
-            สลับเฉพาะ <b>เลข Serial (LVB + OM)</b> ระหว่างเครื่องบน Job กับเครื่องว่างในคลัง — เครื่องไม่ย้าย/ไม่เปลี่ยนสถานะ
+            สลับ <b>เลข Serial (LVB + OM)</b> ระหว่างเครื่องบน Job กับเครื่องว่างในคลัง — เครื่องไม่ย้าย/ไม่เปลี่ยนสถานะ-สังกัดคลัง
+            {' '}· <b>ต้นทุน/เครื่อง และ FOB/ETA to WH ย้ายตามเลข Serial ไปด้วย</b> (0056) เพราะเป็นข้อมูลของตัวเครื่องนั้น
             {!isManage && <> · ต้องให้ <b>Division</b> อนุมัติก่อน</>}
           </div>
           <div className="row">
@@ -916,6 +917,13 @@ export default function JobDetailPage() {
             <div className="budget-profit" style={{ marginBottom: 12 }}>
               <span>ผลหลังสลับ</span>
               <b className="mono" style={{ fontSize: 12 }}>บน Job: {b.serialLvb}/{b.serialOm} · คลัง: {a.serialLvb}/{a.serialOm}</b>
+            </div>
+          )}
+          {/* ต้นทุนย้ายตาม Serial (0056) → ผู้อนุมัติต้องเห็นตัวเลขที่จะเปลี่ยนก่อนกดยืนยัน */}
+          {a && b && a.unitCost !== b.unitCost && (
+            <div className="muted" style={{ marginBottom: 12, fontSize: 12 }}>
+              ต้นทุนตัว LBS ของงานนี้จะเปลี่ยน: {fmtBaht(a.unitCost)} → <b>{fmtBaht(b.unitCost)}</b>
+              {' '}(กระทบ actual หมวด Raw Material)
             </div>
           )}
           <label className="field"><span>เหตุผลการสลับ * (แจ้ง Division)</span>

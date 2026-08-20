@@ -868,8 +868,14 @@ export function returnLbs(
 }
 
 // สลับเลข Serial (LVB+OM เป็นคู่) ระหว่างเครื่องที่ดึงเข้า Job (allocated) กับเครื่องในคลัง (in_stock)
-// เครื่องไม่ย้าย/ไม่เปลี่ยนสถานะ-สังกัดคลัง — แค่แลกคู่เลข · ทำได้หลังดึง LBS จนถึงก่อนเบิก (assertJobEditable)
+// ทำได้หลังดึง LBS จนถึงก่อนเบิก (assertJobEditable)
 // เป็น core execute — ถูกเรียกโดย Manage ตรง หรือ approveRequest (หลัง Division อนุมัติ)
+//
+// ⚠️ identity ของเครื่องจริง = คู่ Serial ดังนั้น "ข้อเท็จจริงของตัวเครื่อง" ต้องย้ายตาม Serial ด้วย (sync 0056)
+//   ย้ายตาม Serial : unitCost (เงินที่จ่ายซื้อเครื่องนั้น) · fobDate/etaLeadDays/planPoReceiptDate (ล็อตเรือ/วันของเข้าคลังของเครื่องนั้น)
+//   อยู่กับที่      : projectStockId/status/jobId (= ตำแหน่ง ซึ่งเป็นสิ่งที่ swap ตั้งใจเปลี่ยน)
+//                    planCustomerName/planContactPhone/planInstallLocation/planPoDate/planDeliveryDate (แผนฝั่งขายของ "ช่อง" ไม่ใช่ของเครื่อง)
+//   เดิม (0028/0032) สลับแค่ Serial → jobLbsCost() คิดเงินของเครื่องที่ยังอยู่ในคลัง และ Status/ETA ผิดทั้งสองฝั่ง
 export function swapLbs(
   db: DB, actor: User,
   p: { jobId: string; allocatedUnitId: string; stockUnitId: string; reason: string },
@@ -883,21 +889,27 @@ export function swapLbs(
   if (!b || b.status !== 'in_stock')
     throw new Error('เครื่องที่จะสลับต้องเป็นเครื่องว่างในคลัง (in_stock)')
   if (a.id === b.id) throw new Error('เลือกเครื่องสลับซ้ำกันไม่ได้')
-  // แลกคู่ Serial (permutation → ไม่ชน unique)
+  // แลกคู่ Serial + ข้อมูลตัวเครื่อง (permutation → ไม่ชน unique)
+  const machineOf = (u: LbsUnit) => ({
+    serialLvb: u.serialLvb, serialOm: u.serialOm, unitCost: u.unitCost,
+    fobDate: u.fobDate, etaLeadDays: u.etaLeadDays, planPoReceiptDate: u.planPoReceiptDate,
+  })
   let next: DB = {
     ...db,
     lbsUnits: db.lbsUnits.map(u => {
-      if (u.id === a.id) return { ...u, serialLvb: b.serialLvb, serialOm: b.serialOm }
-      if (u.id === b.id) return { ...u, serialLvb: a.serialLvb, serialOm: a.serialOm }
+      if (u.id === a.id) return { ...u, ...machineOf(b) }
+      if (u.id === b.id) return { ...u, ...machineOf(a) }
       return u
     }),
   }
+  const costTxt = `ต้นทุน/เครื่องย้ายตาม Serial: ${a.unitCost ?? '-'} ↔ ${b.unitCost ?? '-'} ฿`
   next = notify(next, {
     type: 'lbs_swapped', dept: 'all', jobId: p.jobId,
     message: `🔁 ${job.jobNo} สลับ LBS: ${a.serialLvb}/${a.serialOm} ↔ ${b.serialLvb}/${b.serialOm} (คลัง) · เหตุผล: ${p.reason.trim()}`,
   })
   return audit(next, actor, 'lbs_unit', a.id, 'swap_lbs_serial',
-    `${job.jobNo} สลับ LBS: ${a.serialLvb}/${a.serialOm} ↔ ${b.serialLvb}/${b.serialOm} (คลัง) — เหตุผล: ${p.reason.trim()}`)
+    `${job.jobNo} สลับ LBS: ${a.serialLvb}/${a.serialOm} ↔ ${b.serialLvb}/${b.serialOm} (คลัง) — เหตุผล: ${p.reason.trim()}` +
+    ` [${costTxt}]`)
 }
 
 // ---------------- คลังคงเหลือ: ledger + ต้นทุนถัวเฉลี่ย (เฟส S1 · sync 0038) ----------------

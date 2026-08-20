@@ -5,8 +5,16 @@
 //      VITE_SUPABASE_ANON_KEY (validate JWT ผู้เรียก), APP_URL (ลิงก์ตรวจสอบ)
 import { createClient } from '@supabase/supabase-js'
 
-const TYPE_LABEL = { create_pr: 'ออก PR', issue_job: 'เบิกให้ Service', cancel_job: 'ยกเลิก Job', swap_lbs: 'สลับ LBS' }
+// ⚠️ ต้องครบทุก type ใน approval_requests_req_type_check — เพิ่ม type ใหม่ที่ 0016/0028/0041
+//    ต้องมาเติมที่นี่ด้วย ไม่งั้นการ์ดในมือถือบอกประเภทผิด
+const TYPE_LABEL = {
+  create_pr: 'ออก PR', issue_job: 'เบิกให้ Service', cancel_job: 'ยกเลิก Job',
+  swap_lbs: 'สลับ LBS', reopen_job: 'เปิดงานใหม่',
+}
 
+// ⚠️ ห้าม fallback เป็นข้อความของ type อื่น — ผู้อนุมัติจะกด ✅ ให้เรื่องที่เข้าใจผิด
+//    เคยพลาดจริง: 0041 เพิ่ม reopen_job แต่ไม่ได้แก้ที่นี่ → ไม่มีสาขาแล้วตกลงมาที่ 'ยกเลิก Job'
+//    การ์ดบอกว่า "ยกเลิก Job" แต่กด ✅ แล้วระบบเปิดงานใหม่
 function summarize(type, payload) {
   if (type === 'create_pr') return `ออก PR · ${(payload.request_ids ?? []).length} รายการ`
   if (type === 'issue_job') {
@@ -15,10 +23,14 @@ function summarize(type, payload) {
     return `ติดตั้ง ${range}${payload.location ? ' · ' + payload.location : ''}`
   }
   if (type === 'swap_lbs') return `สลับ LBS · เหตุผล: ${payload.reason ?? '-'}`
-  return `ยกเลิก Job · เหตุผล: ${payload.reason ?? '-'}`
+  if (type === 'reopen_job') return `เปิดงานใหม่ · เหตุผล: ${payload.reason ?? '-'}`
+  if (type === 'cancel_job') return `ยกเลิก Job · เหตุผล: ${payload.reason ?? '-'}`
+  return `คำขอประเภท "${type}" — การ์ดนี้อธิบายรายละเอียดไม่ได้ กรุณาเปิดตรวจในระบบ`
 }
 
-function buildFlex(appUrl, reqId, typeLabel, jobNo, customer, detail, requester) {
+// canApprove = false เมื่อ type ไม่รู้จัก → ตัดปุ่ม ✅ ออก เหลือแค่ลิงก์เข้าระบบ
+// (ปุ่มอนุมัติในมือถือไม่ควรมี เมื่อการ์ดอธิบายเรื่องที่จะอนุมัติไม่ได้)
+function buildFlex(appUrl, reqId, typeLabel, jobNo, customer, detail, requester, canApprove) {
   const row = (label, val) => ({
     type: 'box', layout: 'baseline', spacing: 'sm',
     contents: [
@@ -48,11 +60,13 @@ function buildFlex(appUrl, reqId, typeLabel, jobNo, customer, detail, requester)
       footer: {
         type: 'box', layout: 'vertical', spacing: 'sm',
         contents: [
-          { type: 'button', style: 'primary', color: '#16a34a', height: 'sm',
-            action: { type: 'postback', label: '✅ อนุมัติ', data: `action=approve&req=${reqId}`, displayText: `อนุมัติ ${jobNo}` } },
+          ...(canApprove ? [{ type: 'button', style: 'primary', color: '#16a34a', height: 'sm',
+            action: { type: 'postback', label: '✅ อนุมัติ', data: `action=approve&req=${reqId}`, displayText: `อนุมัติ ${jobNo}` } }] : []),
           { type: 'button', style: 'secondary', height: 'sm',
             action: { type: 'uri', label: '🔎 ตรวจสอบในระบบ', uri: `${appUrl}/approvals` } },
-          { type: 'text', text: 'ตีกลับได้ที่หน้าเว็บ (ต้องระบุเหตุผล)', size: 'xxs', color: '#aaaaaa', align: 'center' },
+          { type: 'text',
+            text: canApprove ? 'ตีกลับได้ที่หน้าเว็บ (ต้องระบุเหตุผล)' : 'ประเภทคำขอนี้ต้องอนุมัติที่หน้าเว็บ',
+            size: 'xxs', color: '#aaaaaa', align: 'center' },
         ],
       },
     },
@@ -102,9 +116,10 @@ export async function onRequestPost(context) {
   if (recipients.length === 0) return Response.json({ ok: true, skipped: 'ยังไม่มีผู้อนุมัติที่เชื่อม LINE' })
 
   const appUrl = (env.APP_URL || 'https://lbs-platform-sdt.pages.dev').replace(/\/$/, '')
-  const typeLabel = TYPE_LABEL[r.req_type] ?? r.req_type
+  const known = Object.prototype.hasOwnProperty.call(TYPE_LABEL, r.req_type)
+  const typeLabel = known ? TYPE_LABEL[r.req_type] : `คำขอ (${r.req_type})`
   const flex = buildFlex(appUrl, r.id, typeLabel, job?.job_no ?? '-', job?.customer_name ?? '-',
-    summarize(r.req_type, r.payload ?? {}), requester?.full_name ?? '-')
+    summarize(r.req_type, r.payload ?? {}), requester?.full_name ?? '-', known)
 
   const results = await Promise.all(recipients.map(to =>
     fetch('https://api.line.me/v2/bot/message/push', {

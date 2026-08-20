@@ -349,8 +349,14 @@ export default function PurchasingPage() {
                           <td>{lines.map(r => {
                             const it = itemOf(r.itemId)!
                             const value = r.unitPrice !== undefined ? r.unitPrice * r.qtyRequested : undefined
-                            // Purchasing บันทึกราคาจริงหลังออก PO (Job ยังไม่ล็อก) — ราคาทับค่าประมาณการ กระทบงบ actual
-                            const canEditPrice = canManage && po.status !== 'cancelled' && !job.terminalStatus && (r.status === 'po_ordered' || r.status === 'received')
+                            // Purchasing บันทึกราคาจริงหลังออก PO — ราคาทับค่าประมาณการ กระทบงบ actual
+                            // ⚠️ ใบแจ้งหนี้มาช้ากว่าของเสมอ → 0037 ปลดล็อกฝั่ง RPC ให้แก้ได้แม้ปิดงานแล้ว
+                            //    (rpc_update_po_line_price ใช้ app_assert_job_cost_editable = ปิดเฉพาะ cancelled)
+                            //    gate เดิม `!job.terminalStatus` ซ่อนปุ่มตั้งแต่ Issued → actual หมวด raw_mat/outsourcing
+                            //    ค้างที่ค่าประมาณการถาวรทุกงาน ต้องตรงกับ guard ฝั่ง server
+                            const canEditPrice = canManage && po.status !== 'cancelled'
+                              && job.terminalStatus !== 'cancelled'
+                              && (r.status === 'po_ordered' || r.status === 'received')
                             return (
                               <div key={r.id} style={{ marginBottom: 3 }}>
                                 {it.name} × {r.qtyRequested} {it.uom} · <span className="mono">{fmtBaht(r.unitPrice)}</span>{value !== undefined ? ` = ${fmtBaht(value)}` : ''}
