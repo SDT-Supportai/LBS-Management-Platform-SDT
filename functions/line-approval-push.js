@@ -83,14 +83,18 @@ export async function onRequestPost(context) {
   const serviceKey = env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !serviceKey) return Response.json({ ok: false, error: 'Supabase not configured' }, { status: 500 })
 
-  // ตรวจ JWT ผู้เรียก (ต้อง login) — แบบเดียวกับ /line-notify
-  if (anonKey) {
-    const jwt = (request.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '')
-    if (!jwt) return Response.json({ ok: false, error: 'กรุณาเข้าสู่ระบบก่อน' }, { status: 401 })
-    const asCaller = createClient(url, anonKey, { auth: { persistSession: false } })
-    const { data: caller, error: authErr } = await asCaller.auth.getUser(jwt)
-    if (authErr || !caller?.user) return Response.json({ ok: false, error: 'token ไม่ถูกต้อง' }, { status: 401 })
+  // ตรวจ JWT ผู้เรียก — fail-CLOSED
+  // ⚠️ ห้ามห่อด้วย `if (anonKey)` (โค้ดเดิมเป็นแบบนั้น) — endpoint นี้ดันการ์ดที่มี
+  //    ปุ่ม ✅ อนุมัติจริง เข้าแชท 1:1 ของผู้อนุมัติทุกคน · ตรวจตัวตนไม่ได้ = ต้องปฏิเสธ ไม่ใช่ปล่อยผ่าน
+  if (!anonKey) {
+    console.error('[line-approval-push] VITE_SUPABASE_ANON_KEY ไม่ได้ตั้งค่า — ปฏิเสธทุก request (fail-closed)')
+    return Response.json({ ok: false, error: 'Auth not configured' }, { status: 503 })
   }
+  const jwt = (request.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '')
+  if (!jwt) return Response.json({ ok: false, error: 'กรุณาเข้าสู่ระบบก่อน' }, { status: 401 })
+  const asCaller = createClient(url, anonKey, { auth: { persistSession: false } })
+  const { data: caller, error: authErr } = await asCaller.auth.getUser(jwt)
+  if (authErr || !caller?.user) return Response.json({ ok: false, error: 'token ไม่ถูกต้อง' }, { status: 401 })
 
   // รับ requestId ตรง ๆ หรือระบุ jobId+type (คำขอ pending ต่อ job+type มีได้ตัวเดียว — unique index)
   let body
@@ -99,6 +103,16 @@ export async function onRequestPost(context) {
   if (!requestId && !(jobId && type)) return Response.json({ ok: false, error: 'requestId หรือ jobId+type จำเป็น' }, { status: 400 })
 
   const sb = createClient(url, serviceKey, { auth: { persistSession: false } })
+
+  // ด่านแผนก — เดิมเช็คแค่ "เป็น user ที่ login" ⇒ VIP (อ่านอย่างเดียว) / Service / session ที่หลุด
+  // ดันการ์ดปุ่ม ✅ เข้าแชทผู้อนุมัติได้ทุกคน · ผู้เรียกที่ถูกต้องมีแค่คนที่ "ขออนุมัติ" ได้จริง
+  // = ตรงกับ rpc_request_approval → app_assert_dept(ARRAY['project']) ซึ่งอนุญาต admin ในตัวอยู่แล้ว
+  // (Division เป็นฝ่ายรับการ์ด ไม่ใช่ฝ่ายส่ง จึงไม่อยู่ในรายการนี้)
+  const { data: me } = await sb.from('profiles')
+    .select('department, is_active').eq('id', caller.user.id).maybeSingle()
+  if (!me?.is_active || !['project', 'admin'].includes(me.department)) {
+    return Response.json({ ok: false, error: 'แผนกของคุณไม่มีสิทธิ์ส่งการ์ดขออนุมัติ' }, { status: 403 })
+  }
 
   let q = sb.from('approval_requests').select('*').eq('status', 'pending')
   q = requestId ? q.eq('id', requestId) : q.eq('job_id', jobId).eq('req_type', type)

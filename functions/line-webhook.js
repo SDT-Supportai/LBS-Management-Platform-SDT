@@ -37,6 +37,20 @@ async function hmacSha256Base64(secret, message) {
   return btoa(String.fromCharCode(...new Uint8Array(sig)))
 }
 
+// Workers ไม่มี crypto.timingSafeEqual — ต้องเขียนเอง
+// `===` ของ JS หยุดที่ตัวอักษรแรกที่ต่าง ⇒ เวลาที่ใช้บอกได้ว่า prefix ถูกไปกี่ตัว
+// ตัวนี้วนครบทุกตำแหน่งเสมอ ไม่ return กลางคัน · ความยาวที่ต่างกันถูก XOR เข้า diff ตั้งแต่ต้น
+function timingSafeEqual(a, b) {
+  const len = Math.max(a.length, b.length)
+  let diff = a.length ^ b.length
+  for (let i = 0; i < len; i++) {
+    const ca = i < a.length ? a.charCodeAt(i) : 0
+    const cb = i < b.length ? b.charCodeAt(i) : 0
+    diff |= ca ^ cb
+  }
+  return diff === 0
+}
+
 async function reply(token, replyToken, text) {
   await fetch('https://api.line.me/v2/bot/message/reply', {
     method: 'POST',
@@ -139,16 +153,31 @@ export async function onRequestPost(context) {
   const accessToken = env.LINE_CHANNEL_ACCESS_TOKEN
   const body = await request.text()
 
-  // ตรวจ signature กันคนอื่นยิง webhook ปลอม
+  // ตรวจ signature กันคนอื่นยิง webhook ปลอม — fail-CLOSED
+  // ⚠️ ห้ามห่อด้วย `if (secret)` เด็ดขาด (โค้ดเดิมเป็นแบบนั้น)
+  //    path นี้ execute การอนุมัติจริงผ่าน handleApprovePostback → rpc_line_approve
+  //    ซึ่งเชื่อ p_line_user_id เป็นตัวตน · ถ้า secret หายจาก env (redeploy / preview environment /
+  //    เปลี่ยนชื่อตัวแปร) แบบเดิมจะรับ POST จากใครก็ได้ ⇒ ยิง postback ปลอม
+  //    action=approve&req=<uuid> พร้อม source.userId ของผู้อนุมัติ = อนุมัติได้โดยไม่ต้อง auth
   const secret = env.LINE_CHANNEL_SECRET
-  if (secret) {
-    const signature = await hmacSha256Base64(secret, body)
-    if (signature !== request.headers.get('x-line-signature')) {
-      return new Response('Bad signature', { status: 403 })
-    }
+  if (!secret) {
+    console.error('[line-webhook] LINE_CHANNEL_SECRET ไม่ได้ตั้งค่า — ปฏิเสธทุก request (fail-closed)')
+    return new Response('Webhook not configured', { status: 503 })
+  }
+  const expected = await hmacSha256Base64(secret, body)
+  if (!timingSafeEqual(expected, request.headers.get('x-line-signature') ?? '')) {
+    return new Response('Bad signature', { status: 403 })
   }
 
-  const { events = [] } = JSON.parse(body)
+  // body ที่ผ่าน signature แล้วยังพังได้ (LINE เปลี่ยน format / retry ที่ตั้งค่าผิด)
+  // เดิมไม่มี try/catch → throw = 500 → LINE นับเป็นส่งไม่สำเร็จแล้ว retry · 5xx ซ้ำ ๆ ทำให้ webhook ถูกปิด
+  let events
+  try {
+    ({ events = [] } = JSON.parse(body))
+  } catch {
+    return new Response('Invalid JSON', { status: 400 })
+  }
+  if (!Array.isArray(events)) return new Response('Invalid payload', { status: 400 })
   for (const ev of events) {
     // ปุ่มใน Flex (อนุมัติ) — postback จากแชท 1:1 ของผู้อนุมัติ
     if (ev.type === 'postback') {
