@@ -485,8 +485,11 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
   // ส่ง notification ค้างเข้า LINE — ผ่าน rpc_claim_line_pending (0017):
   // server เป็นคนตัดสินจากสวิตช์ global + atomic claim กันหลายเครื่องส่งซ้ำ
   // เครื่องนี้ส่งเฉพาะรายการที่ claim ได้ / ส่ง fail ค่อย mark 'failed'
-  const dispatchLine = useCallback(async (data: DB) => {
-    if (!data.notifications.some(n => n.lineStatus === 'pending')) return
+  // ⚠️ ห้ามใส่ gate ที่อ่านจาก db.notifications ที่โหลดมา (เดิมเช็ค some(lineStatus==='pending'))
+  //    เพราะ loadAll ตัดมาแค่ 300 แถว → คิวที่ค้างอยู่นอก slice ทำให้ gate เป็น false ตลอดกาล
+  //    แล้ว LINE หยุดส่งทั้งระบบโดยไม่มี error · ตัวตัดสินที่ถูกคือ server: rpc_claim_line_pending
+  //    คืน array ว่างเองเมื่อสวิตช์ปิด/ไม่มีคิว/เครื่องอื่น claim ไปแล้ว
+  const dispatchLine = useCallback(async () => {
     const { data: claimed, error } = await sb.rpc('rpc_claim_line_pending')
     if (error || !claimed || claimed.length === 0) return   // สวิตช์ปิด (server mark off เอง) / เครื่องอื่น claim ไปแล้ว / ยังไม่รัน 0017
     const { data: { session } } = await sb.auth.getSession()
@@ -566,8 +569,8 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
     const wrap = <P,>(fn: (p: P) => Promise<void>) => async (p: P) => {
       await fn(p)
       try {
-        const data = await reload()
-        dispatchLine(data).catch(() => undefined)
+        await reload()
+        dispatchLine().catch(() => undefined)
       } catch {
         setStale(true)                   // แบนเนอร์ "ข้อมูลบนจออาจไม่ล่าสุด · กดโหลดใหม่"
       }

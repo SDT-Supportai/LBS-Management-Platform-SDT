@@ -262,7 +262,10 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       q(sb, 'approval_requests', { col: 'requested_at' }),
       q(sb, 'approval_comments', { col: 'created_at' }),
       q(sb, 'audit_logs', { col: 'created_at', asc: false, limit: 500 }),
-      q(sb, 'notifications', { col: 'created_at', asc: true, limit: 300 }),
+      // ⚠️ ต้อง asc:false — ดึง "ใหม่สุด 300" แล้วกลับด้านตอน map ด้านล่าง
+      //    เดิม asc:true ได้ "เก่าสุด 300" → เกิน 300 แถวแล้วแจ้งเตือนใหม่ไม่เคยโหลดมาเลย
+      //    และ dispatchLine ที่เช็ค lineStatus='pending' จาก slice นี้ก็หยุดส่ง LINE ทั้งระบบเงียบ ๆ
+      q(sb, 'notifications', { col: 'created_at', asc: false, limit: 300 }),
       q(sb, 'notification_reads'),
       q(sb, 'job_site_visits', { col: 'performed_at' }),
       q(sb, 'unit_installations', { col: 'performed_at' }),
@@ -308,7 +311,9 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     approvalRequests: approvals.map(mapApproval),
     approvalComments: approvalComments.map(mapApprovalComment),
     auditLogs: audits.map(mapAudit),
-    notifications: notifs.map(r => mapNotif(r, readsByNotif.get(r.id) ?? [])),
+    // กลับด้านให้เป็น เก่า→ใหม่ เหมือน demo mode (logic.ts ต่อท้าย array) — TopBar/NotificationsPage
+    // reverse() เองอีกชั้นเพื่อโชว์ใหม่สุดก่อน ถ้าไม่กลับด้านที่นี่ทั้ง 2 หน้าจะเรียงกลับหัว
+    notifications: [...notifs].reverse().map(r => mapNotif(r, readsByNotif.get(r.id) ?? [])),
     siteVisits: visits.map(mapSiteVisit),
     unitInstallations: unitInstalls.map(mapUnitInstall),
     teamMembers: members.map(mapTeamMember),
