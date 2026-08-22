@@ -1,6 +1,6 @@
 # HANDOFF — 115kV LBS Project Management Platform
 
-เอกสารส่งมอบ/สรุปสถานะระบบ (อัปเดต 2026-08-14) — อ่านไฟล์นี้ก่อนดูแลระบบต่อ
+เอกสารส่งมอบ/สรุปสถานะระบบ (อัปเดต 2026-08-22) — อ่านไฟล์นี้ก่อนดูแลระบบต่อ
 ประกอบกับ [README.md](README.md) (ภาพรวม), [SETUP.md](SETUP.md) (คู่มือ deploy),
 [VIDEO-SCRIPT.md](VIDEO-SCRIPT.md) (prompt + บทวีดีโอแนะนำระบบ), และ
 `../lbs-stock-project-instructions (1).md` (business rules = source of truth ห้ามเปลี่ยนโดยไม่ยืนยัน)
@@ -26,21 +26,43 @@
 
 ## 2. สถานะปัจจุบัน — 🟢 LIVE บน production
 
-> ✅ **0055 + 0056 รันบน production แล้ว (2026-08-20)** — Lot No. คลังคงเหลือ · สลับ LBS พาต้นทุน/FOB/ETA ไปกับ Serial
+> ✅ **ไม่มี SQL / frontend ค้าง (2026-08-20)** — 0055 + 0056 รันบน production แล้ว และ code review รอบ 2
+> (#2 #3 #4) push ขึ้น `main` แล้วที่ commit **`4d11d75`** · **ลำดับถูก: รัน SQL ก่อน push** (ต่างจากรอบ 0055)
 >
-> 🟠 **ค้างอยู่ตอนนี้ (2026-08-20)**: ชุดแก้จาก code review รอบ 2 (#2 #3 #4) อยู่ที่ repo แล้ว **ยังไม่ push**
-> SQL ลงครบแล้ว → **push ได้เลย** (0056 ไม่เปลี่ยน signature จึงไม่มีเรื่อง `PGRST202`)
-> ⚠️ **ต้องทำด้วยคน 1 อย่าง**: งานที่ **เคยสลับ LBS ก่อน 0056** ต้นทุน/ETA ยังผูกผิดอยู่ (0056 ไม่ auto-repair)
+> 🟠 **ต้องทำด้วยคน 1 อย่าง — งานที่เคยสลับ LBS ก่อน 0056** ต้นทุน/ETA ยังผูกผิดอยู่ (0056 แก้เฉพาะการสลับครั้งต่อไป ไม่ย้อนหลัง)
 > `SELECT created_at, detail FROM audit_logs WHERE action = 'swap_lbs_serial' ORDER BY created_at DESC;`
-> → ถ้ามีแถว ให้ Division เทียบ `unit_cost` รายเครื่องกับ Serial จริงหน้างาน แล้วแก้ผ่าน "แก้ข้อมูล" ในหน้า Project Stock
+> → ไม่มีแถว = จบ · มีแถว = ให้ Division เทียบ `unit_cost` รายเครื่องกับ Serial จริงหน้างาน แล้วแก้ผ่าน "แก้ข้อมูล" ในหน้า Project Stock
 > (เครื่องที่ยังไม่เบิกแก้ได้ · เครื่องที่ `issued` แล้ว `trg_block_issued_edit` ล็อก — ต้องแก้ที่งบ Job ตรงๆ)
+>
+> ---
+>
+> ### 🔒 code review รอบ 3 (2026-08-22) — ปิดช่องความปลอดภัยแล้ว 3 ก้อน
+>
+> รีวิวทั้งระบบอีกรอบ (frontend + Functions + RLS + grant + git history) **เจอของใหม่ 11 ข้อ นอกเหนือจาก #5–#10 เดิม**
+> เรียกว่า **F1–F11** (รายละเอียดครบใน §10) · ที่ทำไปแล้ว 3 ก้อน — **ไม่มี SQL / frontend ค้าง**:
+>
+> | commit | ก้อน | ปิดข้อ | ต้องรัน SQL |
+> |---|---|---|---|
+> | `e996a42` | A — notifications + LINE dispatch | **F2** | ไม่ต้อง |
+> | `54a48ed` | C — LINE endpoints fail-closed | **#5 · F4 · F9** | ไม่ต้อง |
+> | `10a5b04` | B — ปิดประตูเขียนตารางตรง | **F1 (critical) · F6** | ✅ `0057` รันแล้ว 2026-08-22 |
+>
+> **F2 คือของที่พังอยู่จริงบน production มาหลายสัปดาห์** — `loadAll` ดึง notifications แบบ `asc:true limit 300`
+> = "เก่าสุด 300 แถว" ⇒ เกิน 300 แถวแล้วกระดิ่งค้างอยู่ที่ข้อมูลเดือน ก.ค. และ **LINE หยุดส่งทั้งระบบเงียบ ๆ**
+> (`dispatchLine` เช็ค `pending` จาก slice นั้น) · ดู §9 ข้อ 17
+>
+> **F1 คือช่องที่อยู่มาตั้งแต่ 0001** — ดู §9 ข้อ 18 · §3 ที่เคยเขียนว่า "ยิง API ตรงก็ข้าม rule ไม่ได้" **ไม่จริงจนกระทั่ง 0057**
+>
+> 🔵 **ชุดถัดไป**: ก้อน **D** = **F3** (ปิดบัญชีแล้วยังอ่านข้อมูลทั้งบริษัทได้) — ทำ **ขั้น 1 ก่อน** (ban auth user ตอนปิดบัญชี,
+> ไม่แตะ RLS = ความเสี่ยงศูนย์) แล้วค่อยขั้น 2 (เติม `my_is_active()` เข้า policy อ่าน 25 ตาราง ทดสอบทีละตาราง)
+> · ที่เหลือ #6–#10 + F5, F7, F8, F10, F11 = ค้างได้ มีเงื่อนไข "เมื่อไรจะกลายเป็นต้องแก้" กำกับไว้ใน §10
 
 | ส่วน | ค่า / สถานะ |
 |---|---|
 | Hosting | **Cloudflare Pages — LIVE แล้ว** https://lbs-platform-sdt.pages.dev (ย้ายจาก Netlify 2026-07-15, auto-deploy จาก `main`) |
 | GitHub repo | https://github.com/SDT-Supportai/LBS-Management-Platform-SDT (root = โฟลเดอร์นี้) |
 | Supabase project ref | `mrdnxajwnvkgvfyaclwv` (region: ตามที่สร้าง) |
-| Migrations ที่รันแล้ว | **0001–0056 รันครบ** (0042–0048 รัน 2026-08-07 · 0049–0054 รัน 2026-08-08 · **0055–0056 รัน 2026-08-20**) · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูป/ไฟล์แนบไม่ได้ เช็ค bucket `install-photos` (0019 — ไฟล์แนบปัญหา prefix `job-issues/` · Drawing `standard-drawings/` · Price list `standard-prices/`) |
+| Migrations ที่รันแล้ว | **0001–0057 รันครบ** (0042–0048 รัน 2026-08-07 · 0049–0054 รัน 2026-08-08 · 0055–0056 รัน 2026-08-20 · **0057 รัน 2026-08-22**) · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูป/ไฟล์แนบไม่ได้ เช็ค bucket `install-photos` (0019 — ไฟล์แนบปัญหา prefix `job-issues/` · Drawing `standard-drawings/` · Price list `standard-prices/`) |
 | E2E บน DB จริง | ✅ ผ่านทั้ง flow · demo E2E: approval, LINE dispatch, budget 7 หมวด, 1 PR→N PO (12/12), check-in/photo, ยืนยันรายเครื่อง, โอนวัสดุเข้าคลัง, Import Excel แก้ยอด, ปิดงาน+สรุปปัญหา, reopen, FOB/ETA + Status flow, VIP comment, guard ห้ามเบิกเมื่อของยังไม่ถึงคลัง |
 | ตรวจ LIVE แบบไม่แตะข้อมูล | probe ผ่าน PostgREST ด้วย anon key — **อ่าน §9 ข้อ 12 ก่อนใช้** (มีกับดัก 3 อย่างที่ทำให้ได้ false positive ทั้งชุด) · โดยย่อ: `GET /rest/v1/<table>?select=<col>` → 200 = มี · `42703`/`PGRST205` = ไม่มี · `POST /rest/v1/rpc/<fn>` **ต้องส่งชื่อพารามิเตอร์ให้ตรง signature + ส่ง body ผ่านไฟล์** → `42501 permission denied` = มีจริง · `PGRST202` = ไม่มี signature นั้น |
 | Admin จริง | `siradanai.s@precise.co.th` (department = admin, แสดงเป็น "Manage") |
@@ -54,7 +76,14 @@
   - **ไม่ตั้ง env** → โหมด **Demo** (localStorage, business logic ฝั่ง client ที่ `src/data/logic.ts`, login จำลอง)
   - **ตั้ง env** → โหมด **LIVE** (Supabase, business logic ฝั่ง server ที่ `supabase/migrations/0002_rpc.sql`)
   - สลับอัตโนมัติที่ `src/lib/supabase.ts` (มี `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` = LIVE)
-- **หลักความปลอดภัย**: business rules ทั้งหมดอยู่ใน **PostgreSQL RPC (SECURITY DEFINER)** — ตรวจสิทธิ์แผนกจาก JWT (`app_assert_dept`) และกัน race ด้วย atomic UPDATE → ต่อให้ยิง API ตรงก็ข้าม rule ไม่ได้ ปุ่มใน UI เป็นแค่ convenience
+- **หลักความปลอดภัย**: business rules ทั้งหมดอยู่ใน **PostgreSQL RPC (SECURITY DEFINER)** — ตรวจสิทธิ์แผนกจาก JWT (`app_assert_dept`) และกัน race ด้วย atomic UPDATE · ปุ่มใน UI เป็นแค่ convenience
+  - **ที่ทำให้ "ยิง API ตรงก็ข้าม rule ไม่ได้" เป็นจริง คือ `0057` ไม่ใช่ตัว RPC เอง** (แก้ 2026-08-22)
+    ⚠️ ประโยคเดิมตรงนี้เขียนว่า RPC ทำให้ข้ามไม่ได้ **ซึ่งผิด** — "ทุก write ของ*เรา*ผ่าน RPC" เป็นเรื่องของโค้ดฝั่งเรา
+    ไม่ได้แปลว่า client เขียนตารางตรงไม่ได้ · Supabase ให้ role `authenticated` มี INSERT/UPDATE/DELETE
+    ครบทุกตารางใน `public` เป็น **default grant** ⇒ RLS เป็นประตูเดียว และ 0001 ดันเปิดประตูนั้นไว้
+    (policy 12 ตัวแบบ `FOR ALL TO authenticated`) · `0057` ตัด grant ทิ้ง ตอนนี้ประโยคข้างบนถึงเป็นจริง
+    **กติกาต่อจากนี้: เพิ่มตารางใหม่แล้วอย่า `GRANT` DML ให้ `authenticated`/`anon` เด็ดขาด** —
+    `ALTER DEFAULT PRIVILEGES` ใน 0057 กันให้แล้ว แต่ `GRANT` ตรง ๆ ยังทับได้ · ดู §9 ข้อ 18
 
 ## 4. โครงสร้างโปรเจกต์
 
@@ -147,9 +176,10 @@ lbs-platform/
 | `0054_std_price_list.sql` | **ฟีเจอร์ (2026-08-08)**: **Standard Price list** — ตาราง `std_prices` + `rpc_create/update/delete_std_price` · โครงสร้างและกติกาเดียวกับ `std_drawings` เป๊ะ (1 รายการ = 1 แถว + PDF ล่าสุด · แก้ = ทับข้อมูลเดิม + stamp ผู้แก้/เวลา · ลบ = ลบทะเบียน ไฟล์ยังอยู่ใน Storage) · `price_no` UNIQUE (ว่างได้) · RLS/realtime/สิทธิ์ copy จาก 0045 (`app_assert_standards` = project+sales+admin · ทุกแผนกอ่านได้) · ไฟล์ PDF เก็บ bucket `install-photos` prefix **`standard-prices/`** · **แยกตารางจาก std_drawings** เพราะเป็นทะเบียนคนละชุด เลขเอกสารต้อง unique แยกกัน (ยัดตารางเดียวด้วยคอลัมน์ kind จะทำ unique ต่อชนิดยุ่งกว่า) · demo sync `logic.ts createStdPrice/updateStdPrice/deleteStdPrice` |
 | `0055_stock_lot_no.sql` | **ฟีเจอร์ (2026-08-14)**: **Lot No. ในคลังคงเหลือ** — `accessory_stock.lot_no` (ล็อตของของที่อยู่ในคลัง**ตอนนี้**) + `stock_movements.lot_no` (ล็อตของ**การเคลื่อนไหวครั้งนั้น**) · **เก็บ 2 ที่โดยตั้งใจ** เพราะตอบคนละคำถาม — ถ้าเก็บแค่แถวคลัง จะตอบไม่ได้ว่าของที่เบิกไป Job เมื่อเดือนที่แล้วเป็นล็อตไหน · วิธีเดียวกับ 0038: **ไม่ patch ทุก RPC** แต่ส่งล็อตผ่านบริบท `app_set_stock_lot(lot)` แล้วให้ trigger `fn_log_stock_movement` หยิบไปเขียนทั้ง 2 ที่ (RPC ที่ไม่ตั้งล็อต — เบิก/คืน/โอน/ยกเลิก Job — ทำงานเหมือนเดิม และ ledger บันทึกล็อตปัจจุบันของคลังให้เอง) · **⚠️ ไม่แตะ signature ของ `app_set_stock_ctx`** เพราะจะได้ overload 2 ตัว → PostgREST ambiguous (§9 ข้อ 8) จึงแยกเป็น setter ตัวใหม่ · recreate `fn_log_stock_movement` ปลอดภัย (ไม่มี `app_notify` จึงไม่โดน 0031 patch — ตรวจแล้วชื่อนี้โผล่เฉพาะใน 0038, §9 ข้อ 5) · **DROP+recreate** `rpc_adjust_accessory_stock` (4→5 args, +`p_lot_no`) และ `rpc_create_item` (7→8 args, +`p_initial_lot`) ตาม §9.8 · **`rpc_set_stock_lot` ใหม่** — แก้ล็อตอย่างเดียวไม่แตะยอด (จำเป็นเพราะ `rpc_adjust_accessory_stock` ปฏิเสธเมื่อยอดใหม่ = ยอดเดิม · ไม่ลง ledger เพราะของไม่ได้เคลื่อนไหว ร่องรอยอยู่ใน audit แทน) · demo sync `logic.ts`: `applyStockMovement(lotNo)` / `adjustAccessoryStock` / `createItem` / `setStockLot` / `stockLotOf` |
 | `0056_swap_carries_unit_data.sql` | **แก้บั๊ก (2026-08-20)**: **สลับ LBS ต้องพาข้อมูลตัวเครื่องไปกับ Serial** — 0028/0032 สลับแค่ `serial_lvb`/`serial_om` ⇒ `unit_cost` / `fob_date` / `eta_lead_days` / `plan_po_receipt_date` ค้างอยู่กับ **แถว** ไม่ตามไปกับ **เครื่อง** · ผลจริง: (1) `jobLbsCost()` + actual หมวด Raw Material คิดเงินของเครื่องที่ยังอยู่ในคลัง (2) Status/ETA to WH ของทั้งสอง Serial ผิดสลับกัน · **เกณฑ์แบ่ง**: identity ของเครื่องจริง = คู่ Serial → ย้ายตาม Serial = ต้นทุน + ล็อตเรือ/วันของเข้าคลัง · อยู่กับที่ = `project_stock_id`/`status`/`job_id` (ตำแหน่ง ซึ่งเป็นสิ่งที่ swap ตั้งใจเปลี่ยน) และ `plan_customer_name`/`plan_contact_phone`/`plan_install_location`/`plan_po_date`/`plan_delivery_date` (แผนฝั่งขายของ "ช่อง") · recreate `app_exec_swap_lbs` ทั้งก้อนได้เพราะ body ล่าสุด = ของ 0032 (§9 ข้อ 5 grep แล้ว: 0031 ไม่แตะ · 0033/0041 แค่ `PERFORM`) · **ไม่เปลี่ยน signature** → ไม่มีความเสี่ยง `PGRST202` · audit เพิ่มท้ายข้อความว่าต้นทุนย้ายเท่าไร ↔ เท่าไร · **ไม่ auto-repair ของเก่า** — RAISE NOTICE จำนวนครั้งที่เคยสลับให้ Division ไปตรวจงบเอง · demo sync `logic.ts` (`swapLbs` → `machineOf`) + โมดัลสลับโชว์ต้นทุนที่จะเปลี่ยนก่อนกดยืนยัน |
+| `0057_lock_direct_writes.sql` | **ความปลอดภัย (2026-08-22 · F1 critical + F6)**: **ปิดประตูเขียนตารางตรง** — `REVOKE INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public` จาก **`authenticated` + `anon`** และ `ALTER DEFAULT PRIVILEGES ... REVOKE` (ข้อหลังสำคัญเท่ากัน: ไม่ทำ ตารางใหม่ใน 0058+ จะได้สิทธิ์คืนเงียบ ๆ จาก default ของ Supabase) · **`SELECT` ไม่แตะเลย** — policy `read_all` คงเดิมทั้งหมด หน้าจอทำงานเหมือนเดิม 100% · **ต้นเหตุ**: Supabase ให้ `authenticated` มี DML ครบทุกตารางเป็น default grant (ไม่มี `GRANT` บนตารางในไฟล์ migration ไหนเลย) ⇒ RLS เป็นประตูเดียว แต่ 0001 สร้าง policy ฝั่งเขียน 12 ตัวแบบ `FOR ALL TO authenticated` = ประตูเปิด · **ทำได้จริงจาก DevTools ด้วย JWT ตัวเอง**: Project ยิง `PATCH /rest/v1/jobs {"terminal_status":"issued"}` → งานเป็น Issued ทันที ไม่ผ่าน Division ไม่มี audit ไม่มี notification ข้าม guard ETA ของ 0052 (`v_job_status` อ่านคอลัมน์นี้ตรง ๆ · ทั้งระบบมี trigger 4 ตัว ไม่มีตัวไหนคุม `jobs`) · `PATCH /rest/v1/accessory_stock {"qty_on_hand":9999}` → ยอดเปลี่ยนโดยไม่มีแถวใน `stock_movements` ⇒ ledger 0038 กระทบยอดไม่ได้อีก · `POST /rest/v1/audit_logs` ได้จากทุกบัญชี = ปลอมหลักฐาน · **ยืนยันว่าไม่กระทบการใช้งาน 4 ข้อ**: (1) frontend ไม่เขียนตารางตรงสักจุด (`grep '.from(' src/` เจอแต่ `.select()` + `storage.from('install-photos')` ซึ่งคนละ schema) (2) RPC ที่เขียนตารางทุกตัวเป็น SECURITY DEFINER = bypass ทั้ง RLS และ grant อยู่แล้ว — ตัวที่ไม่ใช่ DEFINER 5 ตัวเป็น pure helper ไม่แตะตาราง (`app_next_no`/`app_sum_budget_costs`/`app_unit_cost`/`app_unit_lead`/`app_payment_amount`) + trigger `fn_block_issued_job_edit` ที่ SELECT อย่างเดียว (3) Pages Functions ทั้ง 4 ใช้ `service_role` (4) `LoginPage` ไม่อ่านตารางก่อน login ⇒ revoke จาก `anon` ปลอดภัย · **ยังไม่ DROP policy 12 ตัว** (ไม่มีผลแล้วเมื่อ grant หาย) เพื่อให้ rollback ด้วยคำสั่งเดียว → ลบใน `0058` · **+ F6**: `FOR UPDATE` ใน `rpc_receive_po_items` ผ่าน `app_swap_guard` (§9.5 ห้าม recreate ทั้งก้อน — 0031 patch ข้อความ `app_notify` ของฟังก์ชันนี้ไว้ · §9.6 patch บรรทัดเดียว) — เดิม `SELECT INTO` ไม่ล็อกแถวแล้ว UPDATE เขียนค่าสัมบูรณ์ ⇒ Purchasing 2 คนรับ line เดียวกันใส่ 5 ทั้งคู่ ได้ 5 ไม่ใช่ 10 ทั้งคู่เห็น toast สำเร็จ · **ไม่เปลี่ยน signature** → ไม่มีเรื่อง `PGRST202` · **ไม่ต้อง demo sync** (logic.ts เป็น single-user localStorage ไม่มี concurrency/grant) · มี DO block ตรวจผล 3 ข้อท้ายไฟล์ + สคริปต์ rollback 4 บรรทัด |
 | `0026_job_install_sites.sql` | **ฟีเจอร์ (2026-07-23)**: หลายจุดติดตั้งต่อ Job — `jobs.install_sites` JSONB (array `{location, requiredDate}` = จุดที่ 2+; จุดที่ 1 ยังใช้ install_location/required_date เดิม) · drop+recreate `rpc_create_job`/`rpc_update_job` (+`p_install_sites`) · ข้อมูลวางแผนอย่างเดียว ไม่ผูก Serial/ไม่แตะ flow issue/confirm · UI: เปิด/แก้ Job โชว์ "เพิ่มจุดติดตั้ง" เมื่อ LBS>1 (≤ จำนวน LBS), JobDetail แผง "จุดติดตั้ง", list badge "+N จุด" · demo sync `logic.ts` (normalizeInstallSites) |
 
-> DB ใหม่บนโปรเจกต์เปล่า: รัน 0001→0041 เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
+> DB ใหม่บนโปรเจกต์เปล่า: รัน **0001→0057** เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
 > ⚠️ **production: รันเฉพาะ migration "ไฟล์ใหม่ที่ยังไม่เคยรัน" ก่อน push frontend** — ไม่ต้องรันไฟล์เก่าซ้ำทุกรอบ (ไฟล์ migration idempotent รันซ้ำได้ก็จริง แต่ไม่จำเป็น) และ **ห้ามรัน `cleanup_e2e.sql` ซ้ำเด็ดขาด** — มันลบ transaction ทั้งหมด (Jobs/LBS/audit) ใช้ครั้งเดียวตอนล้างระบบก่อนเปิดใช้จริงเท่านั้น มีสลักนิรภัยกันรันติดมือแล้ว (2026-07-19)
 
 ## 6. Environment variables (ตั้งใน Cloudflare Pages → Settings → Environment variables · Production)
@@ -184,6 +214,9 @@ lbs-platform/
 
 - `POST /line-notify` — `{message}` → push เข้ากลุ่ม LINE (frontend เรียกอัตโนมัติเมื่อเปิดสวิตช์ใน Dev Settings) · ต้องมี JWT
 - `POST /line-webhook` — ตั้งเป็น Webhook URL ใน LINE Developers (ต้องเปิด **Use webhook** ด้วย); ตรวจ signature ด้วย Web Crypto
+  - 🔒 **fail-closed ตั้งแต่ `54a48ed` (2026-08-22)**: ไม่มี `LINE_CHANNEL_SECRET` = ตอบ **503 ทุก request** (เดิมปล่อยผ่าน = #5)
+    · เทียบ signature ด้วย `timingSafeEqual` ที่เขียนเอง (Workers ไม่มี `crypto.timingSafeEqual`) · body ไม่ใช่ JSON = 400 ไม่ใช่ 500
+    · ⚠️ **ตั้ง env ให้ครบก่อน deploy เสมอ** — ตอนนี้ถ้า env หาย LINE จะตายทันที ไม่ใช่ทำงานต่อแบบไม่ปลอดภัยอีกแล้ว
   - ⚠️ **กลุ่ม = แจ้งเตือนเท่านั้น (มติ 2026-08-05)** — บอท**ไม่ตอบข้อความใดๆ ในกลุ่ม/ห้องแชท**
     (เดิมมี fallback ตอบทุกข้อความ → บอทแทรกทุกบทสนทนาในกลุ่มทีม) · การแจ้งเตือนใช้ **push** ผ่าน `/line-notify` คนละทางกับ webhook จึงไม่กระทบ
     · **ต้องปิดฝั่ง LINE ด้วย**: LINE Official Account Manager → Response settings → `Chat = ปิด · Webhook = เปิด · Auto-response = ปิด · Greeting message = ปิด` (ไม่งั้น LINE ตอบเองแม้โค้ดไม่ตอบ)
@@ -191,7 +224,10 @@ lbs-platform/
   - **แชท 1:1 ยังตอบตามเดิม** (จำเป็นกับ flow อนุมัติ 0033): พิมพ์ **โค้ด 6 หลัก** → ผูกบัญชี LINE · ปุ่ม ✅ อนุมัติ (postback) · ข้อความอื่นตอบข้อความช่วยเหลือสั้นๆ
   - คำสั่ง `สถานะ <Job No.>` (สถานะจริงจาก Supabase + คืบหน้ารายเครื่อง + ทีม) **ยังอยู่ในโค้ดแต่ใช้ไม่ได้แล้ว** เพราะถูกจำกัดให้ตอบเฉพาะในกลุ่ม `LINE_GROUP_ID` ซึ่งตอนนี้เงียบ — เปิดคืนได้ด้วย env `LINE_BOT_REPLY_IN_GROUP=1`
   - รับ **postback** จากปุ่ม ✅ อนุมัติ ในการ์ด Flex → `rpc_line_approve` (map `line_user_id` → user → เช็ค role sales/admin)
-- `POST /line-approval-push` — `{requestId}` หรือ `{jobId, type}` → ดันการ์ด **Flex (ปุ่ม ✅ อนุมัติ + 🔎 ตรวจสอบ)** เข้าแชท 1:1 ของผู้อนุมัติที่ผูก LINE แล้ว · StoreContext ยิงหลัง `requestApproval` สำเร็จ (LIVE + เปิดสวิตช์ LINE) · ต้องมี JWT
+- `POST /line-approval-push` — `{requestId}` หรือ `{jobId, type}` → ดันการ์ด **Flex (ปุ่ม ✅ อนุมัติ + 🔎 ตรวจสอบ)** เข้าแชท 1:1 ของผู้อนุมัติที่ผูก LINE แล้ว · StoreContext ยิงหลัง `requestApproval` สำเร็จ (LIVE + เปิดสวิตช์ LINE)
+  - 🔒 **`54a48ed`**: ต้องมี JWT **แบบ fail-closed** (ไม่มี `VITE_SUPABASE_ANON_KEY` = 503 · เดิมปล่อยผ่าน) **+ ด่านแผนก `['project','admin']`**
+    ให้ตรงกับ `rpc_request_approval` → `app_assert_dept(ARRAY['project'])` · เดิมเช็คแค่ "login แล้ว" ⇒ VIP (อ่านอย่างเดียว)/Service ก็ดันการ์ดปุ่ม ✅ ได้ (F4)
+    · Division เป็นฝ่าย**รับ**การ์ด ไม่ใช่ฝ่ายส่ง จึงไม่อยู่ในรายการ
 - `GET /line-quota` — โควตา push ของ Messaging API (ปุ่ม 📊 ใน Dev Settings)
 - `POST /admin-users` — ต้องมี JWT admin, action `create`/`set_password`; ใช้ service role สร้าง user + auto-confirm email
 - รูปแบบ: `export async function onRequestPost({ request, env })` · อ่าน env ผ่าน `env.XXX` (ไม่ใช่ `process.env`)
@@ -299,6 +335,40 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
     **ทดสอบ: ต้องสร้างสถานะจริงแล้วดูปุ่ม** — งานที่ `issued` + มี PO แล้ว (seed ไม่มี ต้องรับของ→เบิก เอง)
        เช็คแค่ "หน้าเปิดได้" ตรวจไม่เจอ
 
+17. **query ที่มี `limit` ต้องเรียง `DESC` เสมอ — และห้ามเอา slice ที่ถูก limit ไปตัดสินใจอะไร (2026-08-22 · F1 ชุด A)**
+    `loadAll` ดึง notifications ด้วย `asc:true limit 300` = **"เก่าสุด 300 แถว"** ขณะที่ตารางใหญ่ตัวอื่น
+    ในไฟล์เดียวกัน (`audit_logs`, `stock_movements`) ใช้ `asc:false` หมด · ผลจริง 2 ชั้น เมื่อตารางเกิน 300 แถว:
+    - **ชั้นที่เห็น**: TopBar + NotificationsPage ทำ `.reverse()` ต่อ ⇒ โชว์ "ใหม่สุดของ 300 แถวเก่าสุด"
+      = ค้างอยู่ที่ข้อมูลเดือน ก.ค. ถาวร แถวใหม่ไม่เคยถูกโหลดมาเลย
+    - **ชั้นที่ไม่เห็น (หนักกว่า)**: `dispatchLine` เช็ค `some(n => n.lineStatus === 'pending')` **จาก slice นั้น**
+      พอ 300 แถวเก่าสุดถูก mark ครบ เงื่อนไขเป็น false ตลอดกาล ⇒ `rpc_claim_line_pending` ไม่ถูกเรียกอีก
+      ⇒ **แจ้งเตือน LINE หยุดทั้งบริษัทโดยไม่มี error ที่ไหนเลย** ไม่มีใครสังเกตหลายสัปดาห์
+    → แก้: `asc:false` แล้ว `[...notifs].reverse()` ตอน map เพื่อคง shape เก่า→ใหม่ ให้เหมือน demo mode
+      (`logic.ts` ต่อท้าย array) ⇒ **ไม่ต้องแตะหน้าจอเลย และ demo/live ไม่แยกทิศทางกัน** ·
+      และย้ายตัวตัดสินไปฝั่ง server: เรียก `rpc_claim_line_pending` ตรง (คืน array ว่างเองเมื่อสวิตช์ปิด/ไม่มีคิว)
+    ⚠️ **กติกา 2 ข้อ**: (ก) `limit` คู่กับ `DESC` เสมอ ถ้าต้องการ ASC ให้ reverse ทีหลัง ไม่ใช่เปลี่ยนทิศที่ query
+    (ข) **ห้าม gate อะไรด้วยข้อมูลที่ถูก `limit` มา** — ตัวตัดสินต้องเป็น server หรือ `count` ไม่ใช่ slice
+    **ยังมีเพดานเงียบตัวอื่นรอแก้**: `lbs_units` 5000 · `stock_movements` 1000 · `audit_logs` 500 (#7) ·
+    และ `q()` ไม่ใส่ `.limit()` เลยเมื่อไม่ส่ง `order` ⇒ `profiles`/`accessory_stock`/`notification_reads`
+    ตกไปใช้ max-rows ของโปรเจกต์ (F5)
+
+18. **RLS policy `FOR ALL TO authenticated` ≠ defense in depth — มันคือประตูที่เปิดอยู่ (2026-08-22 · F1 critical)**
+    เข้าใจผิดกันมาตั้งแต่ 0001: คิดว่า "ทุก write ผ่าน RPC ที่ SECURITY DEFINER อยู่แล้ว policy จึงเป็นแค่ชั้นสำรอง"
+    **แต่ Supabase ให้ role `authenticated` มี INSERT/UPDATE/DELETE ครบทุกตารางใน `public` เป็น default grant**
+    (ไม่มี `GRANT` บนตารางในไฟล์ migration ไหนเลย — มาจาก `ALTER DEFAULT PRIVILEGES` ของ Supabase เอง)
+    ⇒ **RLS เป็นประตูเดียว** และ policy 12 ตัวใน 0001/0042 แบบ `FOR ALL TO authenticated` = เปิดประตูให้เลย
+    ⇒ ใครก็ได้ที่ login เปิด DevTools แล้วยิง PostgREST **เขียนตารางตรง ข้าม RPC / approval / audit / ledger ทั้งหมด**
+    ตัวอย่างที่ทำได้จริง: Project `PATCH /rest/v1/jobs {"terminal_status":"issued"}` → งานเป็น Issued ทันที
+    (เพราะ `v_job_status` อ่านคอลัมน์นี้ตรง ๆ · ทั้งระบบมี trigger 4 ตัว ไม่มีตัวไหนคุม `jobs`)
+    → แก้ที่ `0057` (REVOKE + `ALTER DEFAULT PRIVILEGES`) · `SELECT` ไม่แตะ
+    ⚠️ **คอมเมนต์ที่ `0042_job_ownership.sql:135` ("client เขียนตารางตรงไม่ได้อยู่แล้ว") ผิด — อย่าเชื่อ**
+       เก็บไฟล์ไว้ตามเดิมเพราะเป็นสิ่งที่รันไปแล้ว แต่รู้ไว้ว่าประโยคนั้นคือต้นเหตุที่ช่องนี้อยู่มา 56 migration
+       โดยไม่มีใครไปตรวจซ้ำ · **บทเรียนกว้างกว่านั้น: คอมเมนต์/เอกสารที่ยืนยันความปลอดภัย ต้องมีวิธีพิสูจน์แนบไว้ด้วย**
+       (0057 จึงมี DO block ตรวจ `has_table_privilege` และคำสั่งทดสอบใน DevTools เขียนไว้ท้ายไฟล์)
+    **ทดสอบ**: `await supabase.from('jobs').update({scope:'x'}).eq('id','<job ตัวเอง>')` — ต้องได้ `42501`
+       · หรือจากนอกระบบด้วย anon key: `POST /rest/v1/audit_logs` body `{}` — ข้อความต้องเป็น
+       `permission denied for table audit_logs` (ระดับ grant) **ไม่ใช่** `new row violates row-level security policy` (ระดับ RLS)
+
 > demo mode ไม่มี trigger/RLS/functions/plpgsql จึงไม่เจอบั๊กพวกนี้ — ต้องทดสอบบน DB จริงเท่านั้น
 > กลับกัน **บั๊กสูตรเงิน/สถานะ ทดสอบใน demo mode ได้ดีกว่า** (`npm run dev -- --mode demo`) เพราะเขียนลง
 > localStorage อ่านตัวเลขก่อน/หลังได้ตรงๆ และ**ไม่แตะข้อมูลจริง** — `.env` ชี้ production เสมอ ห้ามทดสอบ swap/เบิก/รับของบนนั้น
@@ -313,8 +383,21 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
       การรันซ้ำหลัง push ทำให้ LBS ที่รับเข้าคลังจริงถูกลบหมด (เหตุการณ์จริง 2026-07-19 — จำนวนเครื่องใน Project Stock หาย)
       ไฟล์ถูกใส่สลักนิรภัย (DO-block RAISE EXCEPTION) กันรันติดมือแล้ว · **หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่**
 - [ ] ตรวจว่า **service_role key ถูก rotate แล้ว** (ระหว่าง setup key เก่าเคยเปิดเผย — ตรวจ repo แล้ว 2026-07-19: **key ไม่เคยหลุดลง git** หลุดเฉพาะนอก repo) — Dashboard → Settings → API → สร้าง/roll secret key ใหม่ → อัปเดต `SUPABASE_SERVICE_ROLE_KEY` บน Cloudflare Pages env → Retry deployment
+      ✅ **ตรวจซ้ำ 2026-08-22 — ยืนยันว่า service key ไม่เคยหลุดลง git จริง**: `git log --all -S"sb_secret_"` เจอแค่ HANDOFF ที่พูดถึง *ชื่อ prefix* · `.env.live-backup` ที่เคยเผลอ commit (`9933461`, untrack ที่ `adaf6a8`) มีแค่ `VITE_SUPABASE_URL` + anon key ซึ่งเป็น publishable · **ยังควร rotate อยู่ดีเพราะเคยหลุดนอก repo**
+- [ ] 🟠 **F3 — ปิดบัญชีแล้วยังอ่านข้อมูลทั้งบริษัทได้ (ก้อน D · ยังไม่ทำ)**
+      `is_active` บังคับที่ `app_assert_dept` (ฝั่งเขียน) และหน้า login แต่ **policy อ่านทุกตัวเป็น `USING (true)`**
+      และการปิดบัญชีไม่แตะ `auth.users` เลย ⇒ พนักงานที่ถูกปิดบัญชี รหัสผ่านยังเดิม ยิง
+      `POST /auth/v1/token?grant_type=password` ตรงไปที่ Supabase ได้ JWT ที่ใช้ได้ →
+      อ่าน jobs / ราคาขาย / งบ 7 หมวด / ข้อมูลติดต่อลูกค้า / ราคาซัพ / audit ครบผ่าน PostgREST
+      **ขั้น 1 (ทำก่อน — ไม่แตะ RLS ความเสี่ยงศูนย์)**: เพิ่ม action `set_active` ใน `functions/admin-users.js`
+      ให้เรียก `admin.auth.admin.updateUserById(id, { ban_duration })` ตอนปิดบัญชี (ปลด ban ตอนเปิดคืน)
+      → บัญชีที่ปิดขอ token ไม่ได้อีก · **และ ban 4 บัญชีทดสอบข้างบนทันที** (`e2e-runner@example.org` เคยเป็น admin)
+      **ขั้น 2**: ทำ `my_is_active()` (SECURITY DEFINER **STABLE** — ไม่งั้น query profile ทุกแถว) แล้วเติมเข้า policy อ่าน
+      ⚠️ **`is_active` เป็น `BOOLEAN DEFAULT true` ที่ nullable** — ต้อง `COALESCE(is_active, true)` ไม่งั้นคนที่ค่าเป็น NULL
+      จะมองไม่เห็นข้อมูลอะไรเลย · ตรวจก่อน: `SELECT count(*) FROM profiles WHERE is_active IS NULL;` ต้องได้ 0
+      · ทำทีละตาราง ทดสอบด้วยบัญชี Project 1 ตัวว่ายังเห็นข้อมูลครบ ก่อนไล่ครบทั้ง 25 ตาราง
 
-### 🟠 Migrations — ✅ **0001–0056 รันครบ** (0055 + 0056 รัน 2026-08-20)
+### 🟠 Migrations — ✅ **0001–0057 รันครบ** (0057 รัน 2026-08-22)
 
 **กติกา: หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่ (ผมจะบอกชื่อไฟล์และลำดับ)**
 ทุกไฟล์ idempotent — แถวไหนตรวจได้ `false` รันไฟล์นั้นซ้ำได้เลย
@@ -330,6 +413,79 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
       ตรวจว่าลงแล้ว: `SELECT position('unit_cost = a.unit_cost' IN pg_get_functiondef('app_exec_swap_lbs(profiles,uuid,uuid,uuid,text)'::regprocedure)) > 0;`
 - [ ] 🟠 **ตรวจงานที่เคยสลับ LBS ก่อน 0056** — `SELECT created_at, detail FROM audit_logs WHERE action='swap_lbs_serial' ORDER BY created_at DESC;`
       ต้นทุน/ETA ของเครื่องเหล่านั้นยังผูกผิด (0056 แก้เฉพาะการสลับ**ครั้งต่อไป** ไม่ย้อนหลัง — เดาเจตนาเดิมไม่ได้) · **รอ Division พิจารณา**
+- [x] ~~0057~~ ปิดประตูเขียนตารางตรง (F1 critical) + `FOR UPDATE` ตอนรับของ (F6) — รัน 2026-08-22 แล้ว push (`10a5b04`) · **ลำดับถูก: SQL ก่อน push**
+      ตรวจว่าลงแล้ว **โดยไม่ต้องเข้า SQL Editor** — ยิงด้วย anon key ก็พอ (INSERT ว่างไม่มีทางสร้างแถวได้):
+      `curl -X POST "$URL/rest/v1/audit_logs" -H "apikey: $ANON" -H "Authorization: Bearer $ANON" -H "Content-Type: application/json" --data-binary '@{}'`
+      → **`"permission denied for table audit_logs"` = ลงแล้ว** (ระดับ grant) · `"new row violates row-level security policy"` = **ยังไม่ลง** (ระดับ RLS)
+      และต้องเช็คคู่กันว่า `GET /rest/v1/jobs?select=id&limit=1` ยังได้ `200 []` — ถ้าได้ permission denied แปลว่า revoke เกินไปโดน SELECT ด้วย ให้ rollback ทันที
+      💡 SQL Editor รันทั้งสคริปต์เป็น transaction เดียว ⇒ **REVOKE ติด = DO block ตรวจผลผ่านครบ 3 ข้อ** (รวม `FOR UPDATE` ของ F6) ไม่งั้น rollback ทั้งก้อน
+
+### 🔵 Code review 2026-08-20 — รอบ 3 (#1–#4 ปิดที่ `4d11d75` · #5 ปิดที่ `54a48ed`)
+
+รีวิวทั้งระบบเจอ 10 ข้อ · **#1 (0055 ไม่ได้รัน) #2 (การ์ด LINE reopen_job) #3 (swap ไม่พาต้นทุน) #4 (ปุ่มราคาจริงหลังเบิก) แก้แล้ว**
+ที่เหลือแบ่ง 2 ก้อนตามลักษณะงาน — **3a ไม่ต้องรัน SQL เลย ทำก่อนได้**
+
+**ก้อน 3a — ความปลอดภัย (frontend/Functions ล้วน · push ได้ทันที)**
+
+- [x] ~~🟠 **#5 `line-webhook` ตรวจ signature แบบ fail-open**~~ — **แก้แล้ว `54a48ed` (2026-08-22)** พร้อม F4 + F9
+      เดิมห่อด้วย `if (secret)` ⇒ `LINE_CHANNEL_SECRET` หายจาก env = รับ POST จากใครก็ได้ **ทั้งที่ path นั้น execute การอนุมัติจริง**
+      (ยิง postback ปลอม `action=approve&req=<uuid>` + `source.userId` ของผู้อนุมัติ → `rpc_line_approve` เชื่อ `p_line_user_id` เป็นตัวตน)
+      แก้: ไม่มี secret = **503 fail-closed** + เทียบ signature ด้วย `timingSafeEqual` ที่เขียนเอง (Workers ไม่มี `crypto.timingSafeEqual`)
+      ⚠️ **ตรวจ env ก่อนเปลี่ยนเป็น fail-closed เสมอ** — ไม่งั้นถ้า env หายจริง LINE ตายทันทีที่ deploy
+      วิธีตรวจโดยไม่ต้อง deploy อะไร (ใช้ตัวบั๊กเองเป็นเครื่องมือ · ไม่มี side effect เพราะส่ง `events: []`):
+      `POST /line-webhook` + `x-line-signature` มั่ว → **403 = secret มีจริง** · 200 = fail-open ยืนยันแล้ว
+      `POST /line-approval-push` ไม่มี Authorization → **401 = anon key มีจริง** · 400 = fail-open
+      และยิง path ที่ไม่มีจริงเป็น control ด้วย (ได้ 405) เพื่อแยก "function ปฏิเสธ" ออกจาก "ไม่มี function"
+- [ ] 🟠 **#6 `/line-notify` เป็น relay ข้อความอิสระ** — [`functions/line-notify.js:32`](functions/line-notify.js) push `message` ที่ผู้เรียกส่งมาตรงๆ
+      เช็คแค่ว่า "เป็น user ที่ login" ⇒ **VIP (อ่านอย่างเดียว) / Service / session ที่หลุด ส่งข้อความอะไรก็ได้เข้ากลุ่มทีม** แยกจากข้อความระบบไม่ออก
+      ต้นเหตุ: **client เป็นคนถือข้อความ** ทั้งที่ server มีอยู่แล้วใน `notifications.message`
+      แก้: เปลี่ยน contract เป็น `{}` = ให้ function เรียก `rpc_claim_line_pending` เองด้วย **JWT ของผู้เรียก** (`global.headers.Authorization`)
+      แล้ว push ข้อความจาก DB · `{ mode: 'test' }` = admin เท่านั้น ข้อความ fix ฝั่ง server (ให้ปุ่มทดสอบใน Dev Settings ยังใช้ได้)
+      ⚠️ แก้ 3 ที่พร้อมกัน: `functions/line-notify.js` + `StoreContext.dispatchLine` (ทั้ง demo + supabase) + `DevSettingsPage` (ปุ่มทดสอบ)
+      ผลพลอยได้: ตัด race ที่หลายเครื่อง claim/ส่งซ้ำ
+
+**ก้อน 3b — Audit + Performance (ต้องรัน `0057`/`0058` ก่อน push)**
+
+- [ ] 🟠 **#7 Audit Log เห็นได้แค่ 500 แถวล่าสุด** — [`remote.ts:264`](src/data/remote.ts) `limit: 500` + `AuditPage` filter ฝั่ง client
+      ⇒ ค้น Serial/Job No. ของเดือนก่อนได้ "ไม่พบรายการ" **ทั้งที่มีใน DB** — แยกไม่ออกจาก "ไม่เคยบันทึก" · หน้านั้นเขียนว่า "trace ย้อนหลังได้ทั้งหมด" ซึ่งไม่จริง
+      แก้: `0057` = `rpc_search_audit(p_q, p_actor, p_from, p_to, p_limit, p_offset)` คืน `total` ด้วย (`count(*) OVER ()`)
+      \+ `CREATE EXTENSION pg_trgm` + GIN index บน `detail` (ไม่งั้น `ILIKE '%…%'` seq scan ทั้งตาราง) + index `created_at DESC`
+      \+ `AuditPage` query ตรง มีปุ่ม "โหลดเพิ่ม" · `loadAll` เหลือ `limit: 50` ไว้แค่การ์ด "กิจกรรมล่าสุด" · **แก้คำโฆษณาในหน้าให้ตรงความจริง**
+      ⚠️ **เพดานเงียบตัวอื่นในไฟล์เดียวกัน**: `lbs_units` 5000 · `stock_movements` 1000 · `notifications` 300
+      → ใส่ guard กลางใน `q()` ให้ `console.warn` เมื่อ `data.length >= cap` (ตัดข้อมูลเงียบ = ผู้ใช้เห็นตัวเลขผิดโดยไม่รู้ตัว)
+- [ ] 🟡 **#8 `rpc_confirm_install` (เก่า) ยัง grant อยู่แต่ไม่มี UI เรียก** — `ServicePage` ใช้ per-unit ทั้งหมดตั้งแต่ 0035
+      เหลือไว้ = ทางลัดปิดงานโดยไม่มีหลักฐานรายเครื่อง ⇒ `jobInstallSummary` อ่านได้ 0/N · `serviceIssues()` มองไม่เห็นงาน ·
+      Actual Delivery ว่างทุก Serial · ไม่ได้ตอบสรุปปัญหา (0040)
+      แก้: `0058` = **REVOKE ไม่ DROP** (0031 patch ข้อความแจ้งเตือนของฟังก์ชันนี้ไว้ — เก็บ definition เป็นประวัติ)
+      \+ ลบ `confirmInstall` ออกจาก `StoreActions` / `remoteActions` / `logic.ts` (dead code ที่ถือสิทธิ์อยู่คือหนี้ ไม่ใช่ทางเลือกสำรอง)
+- [ ] 🟡 **#9 realtime reload ทั้ง DB ทุกครั้งที่มีคนเขียน** — [`StoreContext.tsx:546`](src/data/StoreContext.tsx) subscribe ทั้ง schema แล้วเรียก `loadAll` (25 query)
+      ⇒ 1 การเขียน = 25 query เต็มชุด **× จำนวนคน online** (5 คน = 125 query) · โตตาม คน × การเขียน × จำนวนแถวรวม ไม่ใช่ตามขนาดที่เปลี่ยน
+      แก้แบบลงทุนน้อยได้ผลมากก่อน: แยก HOT (`notifications` / `notification_reads` / `audit_logs` / `approval_comments`) → โหลดเฉพาะตารางนั้น
+      ที่เหลือ → reload เต็มตามเดิม · **~80% ของ event คือ HOT** (ทุก RPC เขียน notifications + audit_logs เสมอ)
+      การ patch state ต่อ row ค่อยทำเมื่อจำนวนเครื่องเกิน 5,000
+- [ ] 🟢 **#10 Import Excel ที่ไม่มีอะไรเปลี่ยน ขึ้นว่าสำเร็จ** — [`logic.ts:390`](src/data/logic.ts) เช็คแค่ payload ว่าง
+      re-import ไฟล์ที่ export มาเอง → ทุกแถว `hasAny` = false ⇒ `updatedCount`/`lockedCount` = 0 แต่ guard ไม่ยิง
+      toast บอกสำเร็จ + audit เขียน "รับใหม่ 0 เครื่อง" → ผู้ใช้ไม่รู้ว่าเลือกคลัง/ไฟล์ผิด
+      แก้ทั้ง `logic.ts` และ `rpc_import_units_to_stock` ให้ error บอกจำนวนแถวที่ตรงกับของเดิมทุกช่อง
+
+### 🟣 Code review 2026-08-22 — F1–F11 (ของใหม่ นอกเหนือจาก #5–#10)
+
+รีวิวทั้งระบบตามที่ deploy จริง: `src/` 13,089 บรรทัด · `functions/` 4 ไฟล์ · migrations 0001–0056 (RLS/RPC/trigger/grant) · git history
+**ปิดไปแล้ว 4 ข้อ (F1 F2 F4 F6) · เหลือ 7 ข้อ** — แต่ละข้อที่ค้างมี **"เมื่อไรจะกลายเป็นต้องแก้"** กำกับไว้ เพื่อไม่ให้ต้องมานั่งเดาความเร่งด่วนใหม่ทุกรอบ
+
+| ข้อ | เรื่อง | สถานะ |
+|---|---|---|
+| **F1** 🔴 | RLS `FOR ALL TO authenticated` + default grant ⇒ client เขียนตารางตรง ข้าม RPC/approval/audit/ledger | ✅ **`0057` + `10a5b04`** · ดู §9 ข้อ 18 |
+| **F2** 🟠 | notifications โหลด `asc:true limit 300` = เก่าสุด 300 ⇒ กระดิ่งค้าง + **LINE หยุดส่งทั้งระบบเงียบ ๆ** | ✅ **`e996a42`** · ดู §9 ข้อ 17 |
+| **F4** 🟠 | `line-approval-push` fail-open + ไม่เช็คแผนก ⇒ VIP/Service ดันการ์ดปุ่ม ✅ เข้าแชทผู้อนุมัติได้ | ✅ **`54a48ed`** (ด่าน `['project','admin']` ตรงกับ `rpc_request_approval`) |
+| **F6** 🟠 | `rpc_receive_po_items` `SELECT INTO` ไม่ล็อกแถว ⇒ รับของพร้อมกัน 2 คน ยอดหายไปเงียบ ๆ | ✅ **`0057`** (`FOR UPDATE`) |
+| **F9** 🟡 | `JSON.parse` ใน webhook ไม่มี try/catch ⇒ 500 → LINE retry → webhook ถูกปิด | ✅ **`54a48ed`** |
+| **F3** 🟠 | ปิดบัญชีแล้วยังอ่านข้อมูลทั้งบริษัทได้ (policy อ่าน `USING (true)` + ไม่ ban auth user) | ⏳ **ก้อน D — ทำต่อ** · รายละเอียดใน 🔴 ความปลอดภัย ด้านบน |
+| **F5** 🟡 | `q()` ไม่ใส่ `.limit()` เมื่อไม่ส่ง `order` ⇒ `notification_reads` ตกไปใช้ max-rows (default 1000) · เกินแล้ว "อ่านแล้ว" กลับมาเป็นยังไม่อ่านถาวร | ⏳ **แก้เมื่อ** `SELECT count(*) FROM notification_reads;` เข้าใกล้ 1000 · ทำพร้อม **#7** เพราะรากเดียวกัน · แก้ถูกคือ `.eq('user_id', uid)` ไม่โหลดของทุกคน |
+| **F7** 🟡 | `xlsx@0.18.5` ติด CVE-2023-30533 (prototype pollution ใน `XLSX.read`) + CVE-2024-22363 · ใช้อ่านไฟล์ที่ผู้ใช้อัปโหลด 3 จุด | ⏳ **แก้เมื่อ** มีเวลาเทสต์ Import ครบ 3 จุด (catalog / แผนรายเครื่อง / BOM) · คำสั่งเดียว: `npm i https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz` (API เดิม · `npm audit fix` แก้ไม่ได้เพราะ npm ไม่มีเวอร์ชันที่แก้แล้ว) |
+| **F8** 🟡 | `admin-users` action `create` ทิ้ง error ของ `profiles.update` + ไม่ validate `department` ⇒ สร้าง user สำเร็จแต่แผนกผิด แล้วตอบ `{ok:true}` | ⏳ **แก้เมื่อ** จะเพิ่มแผนกใหม่ (เคยเกิดจริงตอนเพิ่ม `vip` ใน 0050) · ตอนนี้ UI เป็น `<select>` ผูก type `Department` จึงส่งค่าผิดไม่ได้ในทางปฏิบัติ · **checklist เพิ่มแผนก = แก้ 3 ที่: TS type + `profiles_department_check` + `DEPT_LABEL`** |
+| **F10** 🟢 | session 2 ชม. เก็บ deadline ใน localStorage + refresh token ก็อยู่ localStorage ไม่มีเพดาน ⇒ แก้ค่าเองก็ไม่ถูก logout | ⏳ **ไม่ต้องแก้โค้ด** — มันทำงานถูกสำหรับคนใช้ปกติ · ปัญหาคือ**ป้ายชื่อ**: เป็น UX convenience (auto-logout กันลืม) **ไม่ใช่มาตรการความปลอดภัย** อย่าเอาไปอ้างตอนตอบ audit · อยากได้เพดานจริงให้ตั้งที่ Supabase Auth (JWT expiry + refresh token rotation) |
+| **F11** 🟢 | ไม่มี `public/_headers` ⇒ **ไม่มี CSP และ `frame-ancestors`** · token อยู่ใน localStorage ⇒ XSS ครั้งเดียวได้ session ครบ · frame แล้ว clickjack ปุ่ม ✅ / ปุ่มลบได้ | ⏳ **ทำได้แบบเสี่ยงศูนย์**: `frame-ancestors 'none'` ใส่ได้เลยไม่มีทางพัง · CSP เริ่มด้วย `Content-Security-Policy-Report-Only` ดู report 1 สัปดาห์ก่อนค่อย enforce (CSP ผิด = บล็อก Supabase/Google Fonts/รูปจาก Storage = แอปพังทั้งใบ) · **หมายเหตุ: Cloudflare ใส่ `x-content-type-options: nosniff` และ `referrer-policy` มาให้แล้ว** (ตรวจ header จริง 2026-08-22) เหลือแค่ 2 อันข้างต้น |
 
 <details>
 <summary><b>SQL ตรวจว่า 0042–0054 ลงครบจริง</b> (รันได้ตลอด ไม่แตะข้อมูล — ต้องได้ <code>true</code> ทุกแถว)</summary>
@@ -500,6 +656,7 @@ npm run build     # tsc + vite build -> dist/
 - **Status รายเครื่องใน Project Stock เป็น derive ทั้งหมด** — `unitFlowState()` + `UNIT_FLOW` (format.ts): `? → Pending → On Hand → ถูกดึงเข้า Job → เบิกแล้ว รอติดตั้ง → ติดตั้งแล้ว/ติดตั้งไม่ได้` · **ไม่มีคอลัมน์ status ใน DB สำหรับช่วงต้น** (คำนวณจาก ETA to WH + วันปัจจุบัน) · **ไม่ระบุ ETA = `?` ไม่ใช่ On Hand** — ระบบไม่เดาว่าของถึงคลังแล้ว
 - **ETA to WH = `fob_date + COALESCE(eta_lead_days, 60)`** คำนวณตอนแสดงผล ไม่เก็บคอลัมน์ · `plan_po_receipt_date` = ETA แบบกรอกเอง (ใช้เมื่อไม่มี FOB) · ⚠️ **คนละตัวกับ `plan_po_date`** ที่เป็น "Plan PO receipt = วันรับ PO จากลูกค้า" (0053) — สองคอลัมน์นี้ชื่อคล้ายกันมาก อ่าน comment ใน 0053 ก่อนแตะ
 - **ห้ามเบิกให้ Service ถ้า Job ถือ LBS ที่ Status = Pending** (0052 `app_assert_job_eta_ready`) — guard อยู่ทั้ง `app_exec_issue_job` และ `rpc_request_approval` · **นับเฉพาะ pending ไม่นับ `?`** ("ไม่รู้" ไม่ใช่ "รู้ว่ายังไม่มา" — ถ้าบล็อก `?` ด้วยจะเบิกงานเดิมทั้งระบบไม่ได้)
+- **สลับ LBS (0056) — "ข้อมูลตัวเครื่อง" ต้องย้ายตามคู่ Serial เสมอ**: identity ของเครื่องจริงคือ `serial_lvb + serial_om` ดังนั้น `unit_cost` (เงินที่จ่ายซื้อเครื่องนั้น) + `fob_date` / `eta_lead_days` / `plan_po_receipt_date` (ล็อตเรือ + วันของเข้าคลังของเครื่องนั้น) **ย้ายตาม Serial** · ส่วน `project_stock_id` / `status` / `job_id` (= ตำแหน่ง ซึ่งเป็นสิ่งที่ swap ตั้งใจเปลี่ยน) และ `plan_customer_name` / `plan_contact_phone` / `plan_install_location` / `plan_po_date` / `plan_delivery_date` (= แผนฝั่งขายของ "ช่อง") **อยู่กับที่** · **เพิ่มคอลัมน์ใหม่บน `lbs_units` ต้องตัดสินว่าอยู่ฝั่งไหน แล้วเติมใน `app_exec_swap_lbs` + `machineOf()` ให้ครบ** — ลืมแล้วเงินผูกผิดเครื่องแบบเงียบ (เคสจริง: 0028 ลืม `unit_cost` ⇒ งบ Job คิดเงินของเครื่องที่ยังอยู่ในคลัง)
 - **`profiles.id` อ้าง `auth.users`** → ทุก user ต้องมีบัญชี login · คนที่ไม่ต้อง login (ช่างภาคสนาม/outsource) ต้องเก็บใน `team_members` ไม่ใช่ profiles (0036)
 - **ทดสอบ UI ด้วย Browser pane**: พิกัดคลิกเพี้ยนสเกล (สัดส่วนต่างกันต่อ tab เช่น ~0.59 หรือ ~0.73 เทียบ CSS pixel) และ screenshot ไม่ render modal overlay → วิธีที่ใช้ได้: อ่าน `getBoundingClientRect()` ผ่าน `javascript_tool` แล้วคูณสเกลก่อนคลิก · อ่านเนื้อ modal จาก `document.querySelector('.modal').innerText` · `form_input` ใช้ได้กับ text/textarea/select แต่ **checkbox/radio ต้องคลิกจริง** (React onChange ไม่รับค่าจากการ set `.checked`)
 - `.env`, `.env.*.local`, `.env.live-backup`, `node_modules` อยู่ใน `.gitignore` — อย่า commit
