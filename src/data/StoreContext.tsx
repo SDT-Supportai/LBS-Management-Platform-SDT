@@ -599,7 +599,15 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
       db, user, settings, mode: 'supabase', loading, loadError, stale,
       login: async (email, password) => {
         const { data, error } = await sb.auth.signInWithPassword({ email: email.trim(), password })
-        if (error) throw new Error('อีเมลหรือรหัสผ่านไม่ถูกต้อง')
+        if (error) {
+          // บัญชีที่ถูกปิดการใช้งานถูก ban ที่ระดับ auth ด้วย (F3) → GoTrue ตอบ user_banned ไม่ใช่รหัสผ่านผิด
+          // ถ้าไม่แยกเคสนี้ ผู้ใช้จะเห็น "อีเมลหรือรหัสผ่านไม่ถูกต้อง" แล้วไปนั่งลองรหัสผ่านใหม่/โทรหา admin ผิดเรื่อง
+          const banned = (error as { code?: string }).code === 'user_banned' || /banned/i.test(error.message)
+          throw new Error(banned
+            ? 'บัญชีนี้ถูกปิดการใช้งาน ติดต่อผู้ดูแลระบบ'
+            : 'อีเมลหรือรหัสผ่านไม่ถูกต้อง')
+        }
+        // ยังเช็คซ้ำที่ profiles — บัญชีเก่าที่ถูกปิดก่อนมีระบบ ban จะยังไม่ถูก ban ที่ auth
         const { data: profile } = await sb.from('profiles').select('is_active').eq('id', data.user.id).single()
         if (profile && !profile.is_active) {
           await sb.auth.signOut()

@@ -76,6 +76,35 @@ export async function onRequestPost(context) {
       return Response.json({ ok: true })
     }
 
+    // เปิด/ปิดบัญชีที่ระดับ auth (F3) — ต้องทำคู่กับ profiles.is_active เสมอ
+    // ⚠️ ทำไมแค่ is_active ไม่พอ: is_active บังคับที่ app_assert_dept (ฝั่งเขียน) และหน้า login เท่านั้น
+    //    แต่ policy อ่านทุกตัวเป็น USING (true) และการปิดบัญชีไม่แตะ auth.users เลย
+    //    ⇒ คนที่ถูกปิดบัญชี รหัสผ่านยังเดิม ยิง POST /auth/v1/token ตรงไปที่ Supabase ได้ JWT ที่ใช้ได้
+    //      แล้วอ่าน jobs / ราคาขาย / งบ / ข้อมูลลูกค้า / audit ครบผ่าน PostgREST
+    //    การ ban ตัด "การออก token ใหม่" ทั้ง password grant และ refresh token
+    //    (access token ที่ถืออยู่แล้วยังใช้ได้จนหมดอายุ — ค่า default 1 ชม.)
+    if (body.action === 'set_active') {
+      const { userId, isActive } = body
+      if (!userId || typeof isActive !== 'boolean') {
+        return Response.json({ error: 'กรุณาระบุผู้ใช้และสถานะ (isActive)' }, { status: 400 })
+      }
+      // กติกาเดียวกับ rpc_update_profile — ปิดบัญชีตัวเองไม่ได้ (กัน admin ล็อกตัวเองออกจากระบบ)
+      if (userId === caller.user.id && !isActive) {
+        return Response.json({ error: 'ปิดการใช้งานบัญชีตัวเองไม่ได้' }, { status: 400 })
+      }
+      // 876000h ≈ 100 ปี · 'none' = ปลด ban
+      const { error } = await admin.auth.admin.updateUserById(userId, {
+        ban_duration: isActive ? 'none' : '876000h',
+      })
+      if (error) return Response.json({ error: error.message }, { status: 400 })
+      await admin.from('audit_logs').insert({
+        entity_type: 'user', entity_id: userId, action: isActive ? 'unban_user' : 'ban_user',
+        actor_id: caller.user.id,
+        detail: isActive ? 'เปิดใช้งานบัญชี (ปลดล็อกที่ระดับ auth)' : 'ปิดใช้งานบัญชี (ตัดการออก token ที่ระดับ auth)',
+      })
+      return Response.json({ ok: true })
+    }
+
     if (body.action === 'set_password') {
       const { userId, password } = body
       if (!userId || !password) return Response.json({ error: 'กรุณาระบุผู้ใช้และรหัสผ่านใหม่' }, { status: 400 })

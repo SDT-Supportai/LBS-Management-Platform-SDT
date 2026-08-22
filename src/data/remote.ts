@@ -559,10 +559,16 @@ export function remoteActions(sb: SupabaseClient) {
       await callAdminFn(sb, { action: 'create', ...p })
     },
     updateUser: async (p: { userId: string; email?: string; fullName: string; department: Department; password?: string; isActive: boolean }) => {
+      // rpc_update_profile ก่อนเสมอ — มี guard "ปิดบัญชีตัวเองไม่ได้" ถ้าโดนปฏิเสธจะไม่ไป ban ต่อ
       await rpc(sb, 'rpc_update_profile', { p_user_id: p.userId, p_full_name: p.fullName, p_department: p.department, p_is_active: p.isActive })
       // เปลี่ยนอีเมล (login) ต้องใช้ service role → ผ่าน admin function (UI ส่ง email มาเฉพาะตอนเปลี่ยนจริง)
       if (p.email) await callAdminFn(sb, { action: 'set_email', userId: p.userId, email: p.email })
       if (p.password) await callAdminFn(sb, { action: 'set_password', userId: p.userId, password: p.password })
+      // ปิด/เปิดบัญชีต้องตัดที่ระดับ auth ด้วย (F3) — profiles.is_active กันได้แค่ฝั่งเขียน (app_assert_dept)
+      // และหน้า login เท่านั้น · policy อ่านเป็น USING (true) ⇒ ถ้าไม่ ban คนที่ถูกปิดบัญชียังขอ token
+      // จาก /auth/v1/token ตรงได้ แล้วอ่านข้อมูลทั้งบริษัทผ่าน PostgREST
+      // ส่งทุกครั้งแม้สถานะไม่เปลี่ยน — idempotent และช่วย re-sync บัญชีที่ ban/profiles หลุดจากกันไปแล้ว
+      await callAdminFn(sb, { action: 'set_active', userId: p.userId, isActive: p.isActive })
     },
   }
 }
