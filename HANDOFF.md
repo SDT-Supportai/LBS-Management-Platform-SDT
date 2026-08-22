@@ -46,6 +46,7 @@
 > | `e996a42` | A — notifications + LINE dispatch | **F2** | ไม่ต้อง |
 > | `54a48ed` | C — LINE endpoints fail-closed | **#5 · F4 · F9** | ไม่ต้อง |
 > | `10a5b04` | B — ปิดประตูเขียนตารางตรง | **F1 (critical) · F6** | ✅ `0057` รันแล้ว 2026-08-22 |
+> | `b24f262` + `ddcbd70` | D — ปิดบัญชีแล้วต้องอ่านไม่ได้ | **F3** | ✅ `0058` รันแล้ว 2026-08-22 |
 >
 > **F2 คือของที่พังอยู่จริงบน production มาหลายสัปดาห์** — `loadAll` ดึง notifications แบบ `asc:true limit 300`
 > = "เก่าสุด 300 แถว" ⇒ เกิน 300 แถวแล้วกระดิ่งค้างอยู่ที่ข้อมูลเดือน ก.ค. และ **LINE หยุดส่งทั้งระบบเงียบ ๆ**
@@ -53,16 +54,29 @@
 >
 > **F1 คือช่องที่อยู่มาตั้งแต่ 0001** — ดู §9 ข้อ 18 · §3 ที่เคยเขียนว่า "ยิง API ตรงก็ข้าม rule ไม่ได้" **ไม่จริงจนกระทั่ง 0057**
 >
-> 🔵 **ชุดถัดไป**: ก้อน **D** = **F3** (ปิดบัญชีแล้วยังอ่านข้อมูลทั้งบริษัทได้) — ทำ **ขั้น 1 ก่อน** (ban auth user ตอนปิดบัญชี,
-> ไม่แตะ RLS = ความเสี่ยงศูนย์) แล้วค่อยขั้น 2 (เติม `my_is_active()` เข้า policy อ่าน 25 ตาราง ทดสอบทีละตาราง)
-> · ที่เหลือ #6–#10 + F5, F7, F8, F10, F11 = ค้างได้ มีเงื่อนไข "เมื่อไรจะกลายเป็นต้องแก้" กำกับไว้ใน §10
+> 🔴 **สิ่งที่ 0058 ปิดไป กว้างกว่าที่ประเมินไว้ตอนแรก — เคยรั่วถึงระดับ `anon`**
+> ตอนรีวิวคิดว่า view เป็นช่องให้ "บัญชีที่ถูกปิด" อ่านข้อมูลได้ · **ผิด — เปิดถึงคนที่ไม่ได้ login เลยด้วยซ้ำ**
+> view รันด้วยสิทธิ์ owner (ไม่ใช่ `security_invoker`) จึง bypass RLS ของตารางข้างใต้ทั้งหมด
+> และ `anon` มี `SELECT` grant มาโดย default (0057 ตัดแค่ INSERT/UPDATE/DELETE)
+> ⇒ **ใครก็ตามที่มี anon key ยิง `/rest/v1/v_job_status` ได้ Job No. + ชื่อลูกค้า + สถานะทุกงาน โดยไม่ต้องมีบัญชี**
+> และ anon key อยู่ใน bundle ที่โหลดได้จากเว็บสาธารณะ · ปิดแล้วที่ 0058 (ยืนยัน: `permission denied for view`)
+> 🔎 **อยากรู้ว่าเคยมีใครใช้ช่องนี้จริงไหม** — Supabase → Logs → API/PostgREST ย้อนหลัง กรอง path `v_job_status`
+>
+> ⏳ **ต้องทดสอบด้วยบัญชีจริง (ยังไม่ได้ทำ)** — `0058` เพิ่ม restrictive policy บน 28 ตาราง
+> DO block ตรวจได้แค่ว่า policy ถูกสร้างและเป็น RESTRICTIVE จริง **ตรวจไม่ได้ว่าคนใช้งานยังเห็นข้อมูล**
+> → login ด้วย Project / Purchasing / Service / VIP อย่างละ 1 บัญชี ต้องเห็นข้อมูลครบทุกหน้า
+> จอว่าง/แบนเนอร์ "โหลดข้อมูลไม่สำเร็จ" = rollback ทันที (สคริปต์ท้ายไฟล์ `0058`)
+>
+> 🔵 **ชุดถัดไป**: #6–#10 + F5, F7, F8, F10, F11 = **ค้างได้** ทุกข้อมีเงื่อนไข "เมื่อไรจะกลายเป็นต้องแก้" กำกับไว้ใน §10
+> · งานที่คุ้มที่สุดถัดไปไม่ใช่บั๊กตัวไหน แต่คือ **ยังไม่มี test เลยในโปรเจกต์** ขณะที่มี business logic 2 ชุด
+> ที่ต้องตรงกัน (`logic.ts` 2,810 บรรทัด vs `0002_rpc.sql` + 57 migrations) — ดู §10 🟢 พัฒนาต่อ
 
 | ส่วน | ค่า / สถานะ |
 |---|---|
 | Hosting | **Cloudflare Pages — LIVE แล้ว** https://lbs-platform-sdt.pages.dev (ย้ายจาก Netlify 2026-07-15, auto-deploy จาก `main`) |
 | GitHub repo | https://github.com/SDT-Supportai/LBS-Management-Platform-SDT (root = โฟลเดอร์นี้) |
 | Supabase project ref | `mrdnxajwnvkgvfyaclwv` (region: ตามที่สร้าง) |
-| Migrations ที่รันแล้ว | **0001–0057 รันครบ** (0042–0048 รัน 2026-08-07 · 0049–0054 รัน 2026-08-08 · 0055–0056 รัน 2026-08-20 · **0057 รัน 2026-08-22**) · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูป/ไฟล์แนบไม่ได้ เช็ค bucket `install-photos` (0019 — ไฟล์แนบปัญหา prefix `job-issues/` · Drawing `standard-drawings/` · Price list `standard-prices/`) |
+| Migrations ที่รันแล้ว | **0001–0058 รันครบ** (0042–0048 รัน 2026-08-07 · 0049–0054 รัน 2026-08-08 · 0055–0056 รัน 2026-08-20 · **0057–0058 รัน 2026-08-22**) · ถ้า LINE ไม่ส่ง เช็คตาราง `app_settings` (0017) · อัปโหลดรูป/ไฟล์แนบไม่ได้ เช็ค bucket `install-photos` (0019 — ไฟล์แนบปัญหา prefix `job-issues/` · Drawing `standard-drawings/` · Price list `standard-prices/`) |
 | E2E บน DB จริง | ✅ ผ่านทั้ง flow · demo E2E: approval, LINE dispatch, budget 7 หมวด, 1 PR→N PO (12/12), check-in/photo, ยืนยันรายเครื่อง, โอนวัสดุเข้าคลัง, Import Excel แก้ยอด, ปิดงาน+สรุปปัญหา, reopen, FOB/ETA + Status flow, VIP comment, guard ห้ามเบิกเมื่อของยังไม่ถึงคลัง |
 | ตรวจ LIVE แบบไม่แตะข้อมูล | probe ผ่าน PostgREST ด้วย anon key — **อ่าน §9 ข้อ 12 ก่อนใช้** (มีกับดัก 3 อย่างที่ทำให้ได้ false positive ทั้งชุด) · โดยย่อ: `GET /rest/v1/<table>?select=<col>` → 200 = มี · `42703`/`PGRST205` = ไม่มี · `POST /rest/v1/rpc/<fn>` **ต้องส่งชื่อพารามิเตอร์ให้ตรง signature + ส่ง body ผ่านไฟล์** → `42501 permission denied` = มีจริง · `PGRST202` = ไม่มี signature นั้น |
 | Admin จริง | `siradanai.s@precise.co.th` (department = admin, แสดงเป็น "Manage") |
@@ -81,7 +95,8 @@
     ⚠️ ประโยคเดิมตรงนี้เขียนว่า RPC ทำให้ข้ามไม่ได้ **ซึ่งผิด** — "ทุก write ของ*เรา*ผ่าน RPC" เป็นเรื่องของโค้ดฝั่งเรา
     ไม่ได้แปลว่า client เขียนตารางตรงไม่ได้ · Supabase ให้ role `authenticated` มี INSERT/UPDATE/DELETE
     ครบทุกตารางใน `public` เป็น **default grant** ⇒ RLS เป็นประตูเดียว และ 0001 ดันเปิดประตูนั้นไว้
-    (policy 12 ตัวแบบ `FOR ALL TO authenticated`) · `0057` ตัด grant ทิ้ง ตอนนี้ประโยคข้างบนถึงเป็นจริง
+    (policy ฝั่งเขียน **19 ตัว** แบบ `FOR ALL/INSERT/UPDATE TO authenticated` — 16 ตัวเขียนตรง + 3 ตัวจาก `format()` loop ใน 0045)
+    · `0057` ตัด grant ทิ้ง ตอนนี้ประโยคข้างบนถึงเป็นจริง
     **กติกาต่อจากนี้: เพิ่มตารางใหม่แล้วอย่า `GRANT` DML ให้ `authenticated`/`anon` เด็ดขาด** —
     `ALTER DEFAULT PRIVILEGES` ใน 0057 กันให้แล้ว แต่ `GRANT` ตรง ๆ ยังทับได้ · ดู §9 ข้อ 18
 
@@ -176,10 +191,11 @@ lbs-platform/
 | `0054_std_price_list.sql` | **ฟีเจอร์ (2026-08-08)**: **Standard Price list** — ตาราง `std_prices` + `rpc_create/update/delete_std_price` · โครงสร้างและกติกาเดียวกับ `std_drawings` เป๊ะ (1 รายการ = 1 แถว + PDF ล่าสุด · แก้ = ทับข้อมูลเดิม + stamp ผู้แก้/เวลา · ลบ = ลบทะเบียน ไฟล์ยังอยู่ใน Storage) · `price_no` UNIQUE (ว่างได้) · RLS/realtime/สิทธิ์ copy จาก 0045 (`app_assert_standards` = project+sales+admin · ทุกแผนกอ่านได้) · ไฟล์ PDF เก็บ bucket `install-photos` prefix **`standard-prices/`** · **แยกตารางจาก std_drawings** เพราะเป็นทะเบียนคนละชุด เลขเอกสารต้อง unique แยกกัน (ยัดตารางเดียวด้วยคอลัมน์ kind จะทำ unique ต่อชนิดยุ่งกว่า) · demo sync `logic.ts createStdPrice/updateStdPrice/deleteStdPrice` |
 | `0055_stock_lot_no.sql` | **ฟีเจอร์ (2026-08-14)**: **Lot No. ในคลังคงเหลือ** — `accessory_stock.lot_no` (ล็อตของของที่อยู่ในคลัง**ตอนนี้**) + `stock_movements.lot_no` (ล็อตของ**การเคลื่อนไหวครั้งนั้น**) · **เก็บ 2 ที่โดยตั้งใจ** เพราะตอบคนละคำถาม — ถ้าเก็บแค่แถวคลัง จะตอบไม่ได้ว่าของที่เบิกไป Job เมื่อเดือนที่แล้วเป็นล็อตไหน · วิธีเดียวกับ 0038: **ไม่ patch ทุก RPC** แต่ส่งล็อตผ่านบริบท `app_set_stock_lot(lot)` แล้วให้ trigger `fn_log_stock_movement` หยิบไปเขียนทั้ง 2 ที่ (RPC ที่ไม่ตั้งล็อต — เบิก/คืน/โอน/ยกเลิก Job — ทำงานเหมือนเดิม และ ledger บันทึกล็อตปัจจุบันของคลังให้เอง) · **⚠️ ไม่แตะ signature ของ `app_set_stock_ctx`** เพราะจะได้ overload 2 ตัว → PostgREST ambiguous (§9 ข้อ 8) จึงแยกเป็น setter ตัวใหม่ · recreate `fn_log_stock_movement` ปลอดภัย (ไม่มี `app_notify` จึงไม่โดน 0031 patch — ตรวจแล้วชื่อนี้โผล่เฉพาะใน 0038, §9 ข้อ 5) · **DROP+recreate** `rpc_adjust_accessory_stock` (4→5 args, +`p_lot_no`) และ `rpc_create_item` (7→8 args, +`p_initial_lot`) ตาม §9.8 · **`rpc_set_stock_lot` ใหม่** — แก้ล็อตอย่างเดียวไม่แตะยอด (จำเป็นเพราะ `rpc_adjust_accessory_stock` ปฏิเสธเมื่อยอดใหม่ = ยอดเดิม · ไม่ลง ledger เพราะของไม่ได้เคลื่อนไหว ร่องรอยอยู่ใน audit แทน) · demo sync `logic.ts`: `applyStockMovement(lotNo)` / `adjustAccessoryStock` / `createItem` / `setStockLot` / `stockLotOf` |
 | `0056_swap_carries_unit_data.sql` | **แก้บั๊ก (2026-08-20)**: **สลับ LBS ต้องพาข้อมูลตัวเครื่องไปกับ Serial** — 0028/0032 สลับแค่ `serial_lvb`/`serial_om` ⇒ `unit_cost` / `fob_date` / `eta_lead_days` / `plan_po_receipt_date` ค้างอยู่กับ **แถว** ไม่ตามไปกับ **เครื่อง** · ผลจริง: (1) `jobLbsCost()` + actual หมวด Raw Material คิดเงินของเครื่องที่ยังอยู่ในคลัง (2) Status/ETA to WH ของทั้งสอง Serial ผิดสลับกัน · **เกณฑ์แบ่ง**: identity ของเครื่องจริง = คู่ Serial → ย้ายตาม Serial = ต้นทุน + ล็อตเรือ/วันของเข้าคลัง · อยู่กับที่ = `project_stock_id`/`status`/`job_id` (ตำแหน่ง ซึ่งเป็นสิ่งที่ swap ตั้งใจเปลี่ยน) และ `plan_customer_name`/`plan_contact_phone`/`plan_install_location`/`plan_po_date`/`plan_delivery_date` (แผนฝั่งขายของ "ช่อง") · recreate `app_exec_swap_lbs` ทั้งก้อนได้เพราะ body ล่าสุด = ของ 0032 (§9 ข้อ 5 grep แล้ว: 0031 ไม่แตะ · 0033/0041 แค่ `PERFORM`) · **ไม่เปลี่ยน signature** → ไม่มีความเสี่ยง `PGRST202` · audit เพิ่มท้ายข้อความว่าต้นทุนย้ายเท่าไร ↔ เท่าไร · **ไม่ auto-repair ของเก่า** — RAISE NOTICE จำนวนครั้งที่เคยสลับให้ Division ไปตรวจงบเอง · demo sync `logic.ts` (`swapLbs` → `machineOf`) + โมดัลสลับโชว์ต้นทุนที่จะเปลี่ยนก่อนกดยืนยัน |
-| `0057_lock_direct_writes.sql` | **ความปลอดภัย (2026-08-22 · F1 critical + F6)**: **ปิดประตูเขียนตารางตรง** — `REVOKE INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public` จาก **`authenticated` + `anon`** และ `ALTER DEFAULT PRIVILEGES ... REVOKE` (ข้อหลังสำคัญเท่ากัน: ไม่ทำ ตารางใหม่ใน 0058+ จะได้สิทธิ์คืนเงียบ ๆ จาก default ของ Supabase) · **`SELECT` ไม่แตะเลย** — policy `read_all` คงเดิมทั้งหมด หน้าจอทำงานเหมือนเดิม 100% · **ต้นเหตุ**: Supabase ให้ `authenticated` มี DML ครบทุกตารางเป็น default grant (ไม่มี `GRANT` บนตารางในไฟล์ migration ไหนเลย) ⇒ RLS เป็นประตูเดียว แต่ 0001 สร้าง policy ฝั่งเขียน 12 ตัวแบบ `FOR ALL TO authenticated` = ประตูเปิด · **ทำได้จริงจาก DevTools ด้วย JWT ตัวเอง**: Project ยิง `PATCH /rest/v1/jobs {"terminal_status":"issued"}` → งานเป็น Issued ทันที ไม่ผ่าน Division ไม่มี audit ไม่มี notification ข้าม guard ETA ของ 0052 (`v_job_status` อ่านคอลัมน์นี้ตรง ๆ · ทั้งระบบมี trigger 4 ตัว ไม่มีตัวไหนคุม `jobs`) · `PATCH /rest/v1/accessory_stock {"qty_on_hand":9999}` → ยอดเปลี่ยนโดยไม่มีแถวใน `stock_movements` ⇒ ledger 0038 กระทบยอดไม่ได้อีก · `POST /rest/v1/audit_logs` ได้จากทุกบัญชี = ปลอมหลักฐาน · **ยืนยันว่าไม่กระทบการใช้งาน 4 ข้อ**: (1) frontend ไม่เขียนตารางตรงสักจุด (`grep '.from(' src/` เจอแต่ `.select()` + `storage.from('install-photos')` ซึ่งคนละ schema) (2) RPC ที่เขียนตารางทุกตัวเป็น SECURITY DEFINER = bypass ทั้ง RLS และ grant อยู่แล้ว — ตัวที่ไม่ใช่ DEFINER 5 ตัวเป็น pure helper ไม่แตะตาราง (`app_next_no`/`app_sum_budget_costs`/`app_unit_cost`/`app_unit_lead`/`app_payment_amount`) + trigger `fn_block_issued_job_edit` ที่ SELECT อย่างเดียว (3) Pages Functions ทั้ง 4 ใช้ `service_role` (4) `LoginPage` ไม่อ่านตารางก่อน login ⇒ revoke จาก `anon` ปลอดภัย · **ยังไม่ DROP policy 12 ตัว** (ไม่มีผลแล้วเมื่อ grant หาย) เพื่อให้ rollback ด้วยคำสั่งเดียว → ลบใน `0058` · **+ F6**: `FOR UPDATE` ใน `rpc_receive_po_items` ผ่าน `app_swap_guard` (§9.5 ห้าม recreate ทั้งก้อน — 0031 patch ข้อความ `app_notify` ของฟังก์ชันนี้ไว้ · §9.6 patch บรรทัดเดียว) — เดิม `SELECT INTO` ไม่ล็อกแถวแล้ว UPDATE เขียนค่าสัมบูรณ์ ⇒ Purchasing 2 คนรับ line เดียวกันใส่ 5 ทั้งคู่ ได้ 5 ไม่ใช่ 10 ทั้งคู่เห็น toast สำเร็จ · **ไม่เปลี่ยน signature** → ไม่มีเรื่อง `PGRST202` · **ไม่ต้อง demo sync** (logic.ts เป็น single-user localStorage ไม่มี concurrency/grant) · มี DO block ตรวจผล 3 ข้อท้ายไฟล์ + สคริปต์ rollback 4 บรรทัด |
+| `0058_read_requires_active.sql` | **ความปลอดภัย (2026-08-22 · F3 ขั้น 2)**: **ปิดบัญชีแล้วต้องอ่านข้อมูลไม่ได้** — คู่กับขั้น 1 (`b24f262`) ที่ ban ที่ระดับ auth · ขั้น 1 ตัด "การออก token ใหม่" แต่ access token ที่ถืออยู่แล้วยังใช้ได้จนหมดอายุ (default 1 ชม.) ไฟล์นี้คือชั้นที่สอง · **ใช้ `AS RESTRICTIVE` policy ชื่อ `require_active` ไม่ recreate `read_all`** — restrictive ถูก **AND** เข้ากับ permissive ที่มีอยู่ = "เพิ่มเงื่อนไข" ไม่แตะ policy เดิมสักตัว (ถ้า DROP+CREATE 25+ ตัว พลาดตัวเดียว = แผนกนั้นมองไม่เห็นข้อมูลทั้งตาราง และต้องไล่ทดสอบ 25 รอบ) · rollback = DROP เฉพาะ `require_active` · **ข้อยกเว้นเดียว `profiles`**: เปิดให้อ่าน**แถวของตัวเอง**ได้เสมอ (`my_is_active() OR id = auth.uid()`) เพราะ `StoreContext.login` อ่าน profiles ตัวเองทันทีหลัง `signInWithPassword` เพื่อเช็ค `is_active` — ถ้า restrict ตรงไปตรงมา แถวตัวเองหายไปด้วย → `.single()` error → โค้ดข้าม `signOut` → ผู้ใช้เจอแอปว่างเปล่าแทนข้อความ "บัญชีนี้ถูกปิดการใช้งาน" · **+ ตัดสิทธิ์ view (ข้อ 3b) — ขาดไม่ได้** ไม่งั้นข้อ 3 แทบไม่มีความหมาย เพราะ view รันด้วยสิทธิ์ owner ⇒ bypass RLS ทั้งหมด (ดู §9 ข้อ 19 — ของจริงที่รั่วถึง `anon`) · **รายละเอียดที่พลาดง่าย**: `is_active` เป็น `BOOLEAN DEFAULT true` ที่ **nullable** ⇒ ต้อง `COALESCE(is_active, true)` ไม่งั้นบัญชีที่ค่าเป็น NULL มองไม่เห็นอะไรเลยทั้งที่ยังใช้งานอยู่ · `my_is_active()` ต้อง **STABLE** (ไม่งั้น query profiles ทุกแถว) **+ SECURITY DEFINER** (ไม่งั้นตัวมันเองติด policy ที่เพิ่งสร้าง = recursive) · วนจาก `pg_class` ไม่ hardcode รายชื่อ → ครอบ `std_drawings`/`std_boms`/`std_bom_lines` ที่ 0045 สร้างผ่าน `format()` loop ด้วย · **⚠️ รันครั้งแรกล้ม** `42P01 relation "public.pg_stat_statements_info" does not exist` เพราะไม่ได้กรอง view ของ extension — แก้ที่ `ddcbd70` (กรอง `pg_depend deptype='e'` ครบ 4 ที่ + `to_regclass` guard + เพิ่มข้อ 0 PREFLIGHT) ดู §9 ข้อ 20 · มี DO block ตรวจผล 4 ข้อ (ทุกตาราง RLS มี `require_active` · policy เป็น RESTRICTIVE จริง · helper STABLE+SECDEF · ไม่มี view ที่ยังอ่านได้) **แต่ตรวจได้แค่โครงสร้าง ไม่ได้ตรวจว่าคนใช้งานจริงยังเห็นข้อมูล — ต้องทดสอบด้วยตา** |
+| `0057_lock_direct_writes.sql` | **ความปลอดภัย (2026-08-22 · F1 critical + F6)**: **ปิดประตูเขียนตารางตรง** — `REVOKE INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public` จาก **`authenticated` + `anon`** และ `ALTER DEFAULT PRIVILEGES ... REVOKE` (ข้อหลังสำคัญเท่ากัน: ไม่ทำ ตารางใหม่ใน 0058+ จะได้สิทธิ์คืนเงียบ ๆ จาก default ของ Supabase) · **`SELECT` ไม่แตะเลย** — policy `read_all` คงเดิมทั้งหมด หน้าจอทำงานเหมือนเดิม 100% · **ต้นเหตุ**: Supabase ให้ `authenticated` มี DML ครบทุกตารางเป็น default grant (ไม่มี `GRANT` บนตารางในไฟล์ migration ไหนเลย) ⇒ RLS เป็นประตูเดียว แต่มี policy ฝั่งเขียน **19 ตัว** แบบ `FOR ALL/INSERT/UPDATE TO authenticated` (0001 เป็นหลัก + `standards_write` ที่ 0045/0054) = ประตูเปิด · **ทำได้จริงจาก DevTools ด้วย JWT ตัวเอง**: Project ยิง `PATCH /rest/v1/jobs {"terminal_status":"issued"}` → งานเป็น Issued ทันที ไม่ผ่าน Division ไม่มี audit ไม่มี notification ข้าม guard ETA ของ 0052 (`v_job_status` อ่านคอลัมน์นี้ตรง ๆ · ทั้งระบบมี trigger 4 ตัว ไม่มีตัวไหนคุม `jobs`) · `PATCH /rest/v1/accessory_stock {"qty_on_hand":9999}` → ยอดเปลี่ยนโดยไม่มีแถวใน `stock_movements` ⇒ ledger 0038 กระทบยอดไม่ได้อีก · `POST /rest/v1/audit_logs` ได้จากทุกบัญชี = ปลอมหลักฐาน · **ยืนยันว่าไม่กระทบการใช้งาน 4 ข้อ**: (1) frontend ไม่เขียนตารางตรงสักจุด (`grep '.from(' src/` เจอแต่ `.select()` + `storage.from('install-photos')` ซึ่งคนละ schema) (2) RPC ที่เขียนตารางทุกตัวเป็น SECURITY DEFINER = bypass ทั้ง RLS และ grant อยู่แล้ว — ตัวที่ไม่ใช่ DEFINER 5 ตัวเป็น pure helper ไม่แตะตาราง (`app_next_no`/`app_sum_budget_costs`/`app_unit_cost`/`app_unit_lead`/`app_payment_amount`) + trigger `fn_block_issued_job_edit` ที่ SELECT อย่างเดียว (3) Pages Functions ทั้ง 4 ใช้ `service_role` (4) `LoginPage` ไม่อ่านตารางก่อน login ⇒ revoke จาก `anon` ปลอดภัย · **ยังไม่ DROP policy 19 ตัวนั้น** (ไม่มีผลแล้วเมื่อ grant หาย) เพื่อให้ rollback ด้วยคำสั่งเดียว → ลบใน `0058` · **+ F6**: `FOR UPDATE` ใน `rpc_receive_po_items` ผ่าน `app_swap_guard` (§9.5 ห้าม recreate ทั้งก้อน — 0031 patch ข้อความ `app_notify` ของฟังก์ชันนี้ไว้ · §9.6 patch บรรทัดเดียว) — เดิม `SELECT INTO` ไม่ล็อกแถวแล้ว UPDATE เขียนค่าสัมบูรณ์ ⇒ Purchasing 2 คนรับ line เดียวกันใส่ 5 ทั้งคู่ ได้ 5 ไม่ใช่ 10 ทั้งคู่เห็น toast สำเร็จ · **ไม่เปลี่ยน signature** → ไม่มีเรื่อง `PGRST202` · **ไม่ต้อง demo sync** (logic.ts เป็น single-user localStorage ไม่มี concurrency/grant) · มี DO block ตรวจผล 3 ข้อท้ายไฟล์ + สคริปต์ rollback 4 บรรทัด |
 | `0026_job_install_sites.sql` | **ฟีเจอร์ (2026-07-23)**: หลายจุดติดตั้งต่อ Job — `jobs.install_sites` JSONB (array `{location, requiredDate}` = จุดที่ 2+; จุดที่ 1 ยังใช้ install_location/required_date เดิม) · drop+recreate `rpc_create_job`/`rpc_update_job` (+`p_install_sites`) · ข้อมูลวางแผนอย่างเดียว ไม่ผูก Serial/ไม่แตะ flow issue/confirm · UI: เปิด/แก้ Job โชว์ "เพิ่มจุดติดตั้ง" เมื่อ LBS>1 (≤ จำนวน LBS), JobDetail แผง "จุดติดตั้ง", list badge "+N จุด" · demo sync `logic.ts` (normalizeInstallSites) |
 
-> DB ใหม่บนโปรเจกต์เปล่า: รัน **0001→0057** เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
+> DB ใหม่บนโปรเจกต์เปล่า: รัน **0001→0058** เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
 > ⚠️ **production: รันเฉพาะ migration "ไฟล์ใหม่ที่ยังไม่เคยรัน" ก่อน push frontend** — ไม่ต้องรันไฟล์เก่าซ้ำทุกรอบ (ไฟล์ migration idempotent รันซ้ำได้ก็จริง แต่ไม่จำเป็น) และ **ห้ามรัน `cleanup_e2e.sql` ซ้ำเด็ดขาด** — มันลบ transaction ทั้งหมด (Jobs/LBS/audit) ใช้ครั้งเดียวตอนล้างระบบก่อนเปิดใช้จริงเท่านั้น มีสลักนิรภัยกันรันติดมือแล้ว (2026-07-19)
 
 ## 6. Environment variables (ตั้งใน Cloudflare Pages → Settings → Environment variables · Production)
@@ -229,7 +245,13 @@ lbs-platform/
     ให้ตรงกับ `rpc_request_approval` → `app_assert_dept(ARRAY['project'])` · เดิมเช็คแค่ "login แล้ว" ⇒ VIP (อ่านอย่างเดียว)/Service ก็ดันการ์ดปุ่ม ✅ ได้ (F4)
     · Division เป็นฝ่าย**รับ**การ์ด ไม่ใช่ฝ่ายส่ง จึงไม่อยู่ในรายการ
 - `GET /line-quota` — โควตา push ของ Messaging API (ปุ่ม 📊 ใน Dev Settings)
-- `POST /admin-users` — ต้องมี JWT admin, action `create`/`set_password`; ใช้ service role สร้าง user + auto-confirm email
+- `POST /admin-users` — ต้องมี JWT admin; ใช้ service role · action: `create` (สร้าง user + auto-confirm email) · `set_email` · `set_password` · **`set_active`**
+  - 🔒 **`set_active` (`b24f262`, F3 ขั้น 1)** — `updateUserById(id, { ban_duration })` · ban 100 ปีตอนปิด / `'none'` ตอนเปิดคืน
+    `remote.updateUser` เรียกให้อัตโนมัติทุกครั้งที่บันทึกผู้ใช้ (idempotent + re-sync ถ้า ban กับ `profiles.is_active` หลุดจากกัน)
+    · **ทำไมแค่ `is_active` ไม่พอ**: มันบังคับที่ `app_assert_dept` (ฝั่งเขียน) และหน้า login เท่านั้น —
+    คนที่ถูกปิดบัญชียังยิง `/auth/v1/token` ตรงไปที่ Supabase ได้ JWT แล้วอ่านข้อมูลผ่าน PostgREST
+    · ban ตัด "การออก token ใหม่" (password grant + refresh) · **access token ที่ถืออยู่แล้วยังใช้ได้จนหมดอายุ (default 1 ชม.)**
+    ⇒ จึงต้องมี `0058` เป็นชั้นที่สองคู่กันเสมอ
 - รูปแบบ: `export async function onRequestPost({ request, env })` · อ่าน env ผ่าน `env.XXX` (ไม่ใช่ `process.env`)
 - ทดสอบ functions ในเครื่อง: `npx wrangler pages dev dist` (build ก่อน) — Vite `npm run dev` ไม่รัน functions
 
@@ -356,7 +378,7 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
     เข้าใจผิดกันมาตั้งแต่ 0001: คิดว่า "ทุก write ผ่าน RPC ที่ SECURITY DEFINER อยู่แล้ว policy จึงเป็นแค่ชั้นสำรอง"
     **แต่ Supabase ให้ role `authenticated` มี INSERT/UPDATE/DELETE ครบทุกตารางใน `public` เป็น default grant**
     (ไม่มี `GRANT` บนตารางในไฟล์ migration ไหนเลย — มาจาก `ALTER DEFAULT PRIVILEGES` ของ Supabase เอง)
-    ⇒ **RLS เป็นประตูเดียว** และ policy 12 ตัวใน 0001/0042 แบบ `FOR ALL TO authenticated` = เปิดประตูให้เลย
+    ⇒ **RLS เป็นประตูเดียว** และ policy ฝั่งเขียน **19 ตัว** (0001/0042 + `standards_write` ที่ 0045/0054) แบบ `FOR ALL/INSERT/UPDATE TO authenticated` = เปิดประตูให้เลย
     ⇒ ใครก็ได้ที่ login เปิด DevTools แล้วยิง PostgREST **เขียนตารางตรง ข้าม RPC / approval / audit / ledger ทั้งหมด**
     ตัวอย่างที่ทำได้จริง: Project `PATCH /rest/v1/jobs {"terminal_status":"issued"}` → งานเป็น Issued ทันที
     (เพราะ `v_job_status` อ่านคอลัมน์นี้ตรง ๆ · ทั้งระบบมี trigger 4 ตัว ไม่มีตัวไหนคุม `jobs`)
@@ -368,6 +390,38 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
     **ทดสอบ**: `await supabase.from('jobs').update({scope:'x'}).eq('id','<job ตัวเอง>')` — ต้องได้ `42501`
        · หรือจากนอกระบบด้วย anon key: `POST /rest/v1/audit_logs` body `{}` — ข้อความต้องเป็น
        `permission denied for table audit_logs` (ระดับ grant) **ไม่ใช่** `new row violates row-level security policy` (ระดับ RLS)
+
+19. **view ไม่มี RLS และรันด้วยสิทธิ์ owner — เปิด view ใน `public` = เปิดข้อมูลให้ `anon` (2026-08-22 · F3 ขั้น 2)**
+    ตอนวางแผน 0058 คิดว่า view เป็นช่องให้ "บัญชีที่ถูกปิด" อ่านข้อมูลได้ · **ประเมินต่ำไป**
+    view ที่ไม่ได้ตั้ง `security_invoker` รันด้วยสิทธิ์ของ **owner** (postgres) ⇒ **bypass RLS ของตารางข้างใต้ทั้งหมด**
+    และ Supabase ให้ `anon` มี `SELECT` grant มาโดย default (0057 ตัดแค่ INSERT/UPDATE/DELETE)
+    ⇒ **ใครก็ตามที่มี anon key ยิง `/rest/v1/v_job_status` ได้ Job No. + ชื่อลูกค้า + สถานะทุกงาน โดยไม่ต้อง login**
+    และ anon key อยู่ใน bundle ที่โหลดได้จากเว็บสาธารณะ = เปิดสู่อินเทอร์เน็ตจริง ๆ
+    → แก้: `REVOKE ALL ON <view> FROM authenticated, anon` (0058 ข้อ 3b)
+      ปลอดภัยเพราะ frontend ไม่ใช้ view เลย (`grep 'v_job_status\|v_unit_install_state' src/` = 0)
+      ผู้ใช้จริงมีแค่ `line-webhook` (service_role — ไม่โดน revoke) และ RPC (SECURITY DEFINER รันเป็น owner)
+    ⚠️ **กติกา: สร้าง view ใน `public` เมื่อไร ต้องตัดสินใจเรื่องสิทธิ์ทันที** — ไม่มี RLS มาช่วย
+       เลือกอย่างใดอย่างหนึ่ง: (ก) `REVOKE` จาก `authenticated`/`anon` ถ้า client ไม่ได้ใช้
+       (ข) `ALTER VIEW ... SET (security_invoker = true)` ถ้า client ต้องใช้ (RLS ของตารางข้างใต้จะทำงาน)
+    **ทดสอบ**: `GET /rest/v1/<view>` ด้วย **anon key เปล่า ๆ ไม่ต้อง login**
+       — ได้ข้อมูลกลับมา = รั่ว · `permission denied for view` = ปิดแล้ว
+    **สืบย้อนหลังได้**: Supabase → Logs → API/PostgREST กรอง path ของ view นั้น
+
+20. **migration ที่วนจาก catalog ต้องกรอง object ของ extension และต้องมี preflight (2026-08-22)**
+    0058 รอบแรกวน view **ทุกตัว** ใน `public` แล้วล้มบน production ทันที:
+    `42P01 relation "public.pg_stat_statements_info" does not exist`
+    Supabase ติดตั้ง extension ที่ทิ้ง view ไว้ใน `public` ซึ่ง `has_table_privilege` resolve ไม่ได้
+    ⚠️ **ที่สำคัญกว่า error**: ถ้ามันไม่ล้ม ลูปนั้นจะไป `REVOKE` สิทธิ์บน view ของ extension ที่ไม่ใช่ของเรา
+       = อาจทำ dashboard/extension ของ Supabase พัง · **เป็นบั๊กจริง ไม่ใช่แค่ error กวนใจ — ดีที่ล้มก่อน**
+    → แก้: กรองด้วย `NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = c.oid
+      AND d.classid = 'pg_class'::regclass AND d.deptype = 'e')` = "ไม่ใช่สมาชิกของ extension"
+      ใส่ให้ครบ**ทุกที่ที่วน** (ลูปตาราง · ลูป view · บล็อกตรวจทุกอัน) ไม่ใช่เฉพาะที่พัง
+      \+ `to_regclass(...) IS NOT NULL` กันชื่อที่ resolve ไม่ได้ทุกกรณี
+    ⚠️ **กติกา: migration ที่วนจาก `pg_class`/`pg_tables` ต้องมี "ข้อ 0 PREFLIGHT"** —
+       query อ่านอย่างเดียวไว้ดูรายชื่อ object ที่จะโดนก่อนรันจริง พร้อมบอกจำนวนที่คาดไว้
+       (0058 คาด table ~28 + view **2 ตัวเท่านั้น**) · เห็นชื่อแปลก = หยุด
+    💡 ผลดีของ transaction เดียว: ล้มกลางทาง = rollback ทั้งก้อน DB ไม่เหลือสถานะครึ่ง ๆ กลาง ๆ
+       (ใช้ข้อนี้ยืนยันย้อนกลับได้ด้วย — 0057 REVOKE ติด ⇒ DO block ตรวจผลผ่านครบทุกข้อแน่นอน)
 
 > demo mode ไม่มี trigger/RLS/functions/plpgsql จึงไม่เจอบั๊กพวกนี้ — ต้องทดสอบบน DB จริงเท่านั้น
 > กลับกัน **บั๊กสูตรเงิน/สถานะ ทดสอบใน demo mode ได้ดีกว่า** (`npm run dev -- --mode demo`) เพราะเขียนลง
@@ -384,20 +438,23 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
       ไฟล์ถูกใส่สลักนิรภัย (DO-block RAISE EXCEPTION) กันรันติดมือแล้ว · **หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่**
 - [ ] ตรวจว่า **service_role key ถูก rotate แล้ว** (ระหว่าง setup key เก่าเคยเปิดเผย — ตรวจ repo แล้ว 2026-07-19: **key ไม่เคยหลุดลง git** หลุดเฉพาะนอก repo) — Dashboard → Settings → API → สร้าง/roll secret key ใหม่ → อัปเดต `SUPABASE_SERVICE_ROLE_KEY` บน Cloudflare Pages env → Retry deployment
       ✅ **ตรวจซ้ำ 2026-08-22 — ยืนยันว่า service key ไม่เคยหลุดลง git จริง**: `git log --all -S"sb_secret_"` เจอแค่ HANDOFF ที่พูดถึง *ชื่อ prefix* · `.env.live-backup` ที่เคยเผลอ commit (`9933461`, untrack ที่ `adaf6a8`) มีแค่ `VITE_SUPABASE_URL` + anon key ซึ่งเป็น publishable · **ยังควร rotate อยู่ดีเพราะเคยหลุดนอก repo**
-- [ ] 🟠 **F3 — ปิดบัญชีแล้วยังอ่านข้อมูลทั้งบริษัทได้ (ก้อน D · ยังไม่ทำ)**
-      `is_active` บังคับที่ `app_assert_dept` (ฝั่งเขียน) และหน้า login แต่ **policy อ่านทุกตัวเป็น `USING (true)`**
-      และการปิดบัญชีไม่แตะ `auth.users` เลย ⇒ พนักงานที่ถูกปิดบัญชี รหัสผ่านยังเดิม ยิง
-      `POST /auth/v1/token?grant_type=password` ตรงไปที่ Supabase ได้ JWT ที่ใช้ได้ →
-      อ่าน jobs / ราคาขาย / งบ 7 หมวด / ข้อมูลติดต่อลูกค้า / ราคาซัพ / audit ครบผ่าน PostgREST
-      **ขั้น 1 (ทำก่อน — ไม่แตะ RLS ความเสี่ยงศูนย์)**: เพิ่ม action `set_active` ใน `functions/admin-users.js`
-      ให้เรียก `admin.auth.admin.updateUserById(id, { ban_duration })` ตอนปิดบัญชี (ปลด ban ตอนเปิดคืน)
-      → บัญชีที่ปิดขอ token ไม่ได้อีก · **และ ban 4 บัญชีทดสอบข้างบนทันที** (`e2e-runner@example.org` เคยเป็น admin)
-      **ขั้น 2**: ทำ `my_is_active()` (SECURITY DEFINER **STABLE** — ไม่งั้น query profile ทุกแถว) แล้วเติมเข้า policy อ่าน
-      ⚠️ **`is_active` เป็น `BOOLEAN DEFAULT true` ที่ nullable** — ต้อง `COALESCE(is_active, true)` ไม่งั้นคนที่ค่าเป็น NULL
-      จะมองไม่เห็นข้อมูลอะไรเลย · ตรวจก่อน: `SELECT count(*) FROM profiles WHERE is_active IS NULL;` ต้องได้ 0
-      · ทำทีละตาราง ทดสอบด้วยบัญชี Project 1 ตัวว่ายังเห็นข้อมูลครบ ก่อนไล่ครบทั้ง 25 ตาราง
+- [x] ~~🟠 **F3 — ปิดบัญชีแล้วยังอ่านข้อมูลทั้งบริษัทได้**~~ — **แก้แล้ว 2 ชั้น (ก้อน D · 2026-08-22)**
+      **ชั้น 1 `b24f262`** — `admin-users` action `set_active` → `updateUserById(id, { ban_duration })`
+      ban 100 ปีตอนปิด / `'none'` ตอนเปิดคืน · `remote.updateUser` เรียกต่อจาก `rpc_update_profile`
+      (ลำดับสำคัญ — RPC มี guard ปิดบัญชีตัวเองไม่ได้ ถ้าโดนปฏิเสธจะไม่ไป ban)
+      \+ `StoreContext.login` แยกเคส `user_banned` → "บัญชีนี้ถูกปิดการใช้งาน ติดต่อผู้ดูแลระบบ"
+      (ไม่งั้นผู้ใช้เห็น "รหัสผ่านไม่ถูกต้อง" แล้วไปนั่งลองรหัสใหม่ผิดเรื่อง)
+      **ชั้น 2 `0058`** — `require_active` restrictive policy 28 ตาราง + ตัดสิทธิ์ view · ดู §5 และ §9 ข้อ 19
+- [ ] 🟠 **ทดสอบ 0058 ด้วยบัญชีจริง — ยังไม่ได้ทำ · ทำก่อนอย่างอื่น**
+      DO block ใน 0058 ตรวจได้แค่โครงสร้าง (policy ถูกสร้าง + เป็น RESTRICTIVE จริง)
+      **ตรวจไม่ได้ว่าคนใช้งานยังเห็นข้อมูล** → ต้อง login ด้วย **Project / Purchasing / Service / VIP**
+      อย่างละ 1 บัญชี แล้วเปิดทุกเมนู · เห็นข้อมูลครบ = ผ่าน
+      จอว่าง หรือขึ้นแบนเนอร์ "โหลดข้อมูลไม่สำเร็จ" = `my_is_active()` คืน false ผิด → **rollback ทันที**
+      (สคริปต์ท้ายไฟล์ `0058` — วนจาก `pg_policies` ลบเฉพาะ `require_active` ที่ไฟล์นั้นสร้าง)
+- [ ] 🟠 **ปิด 4 บัญชี e2e ที่ค้าง** — ตอนนี้ปิดผ่านหน้า "ผู้ใช้งาน" ได้เลย ระบบจะ ban ที่ auth ให้เองแล้ว (ชั้น 1)
+      ไม่ต้องรัน `cleanup_e2e_accounts.sql` แล้วก็ได้ · `e2e-runner@example.org` เคยเป็น admin และรหัสผ่านเคยเปิดเผย = เร่งสุด
 
-### 🟠 Migrations — ✅ **0001–0057 รันครบ** (0057 รัน 2026-08-22)
+### 🟠 Migrations — ✅ **0001–0058 รันครบ** (0057 + 0058 รัน 2026-08-22)
 
 **กติกา: หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่ (ผมจะบอกชื่อไฟล์และลำดับ)**
 ทุกไฟล์ idempotent — แถวไหนตรวจได้ `false` รันไฟล์นั้นซ้ำได้เลย
@@ -419,6 +476,13 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
       → **`"permission denied for table audit_logs"` = ลงแล้ว** (ระดับ grant) · `"new row violates row-level security policy"` = **ยังไม่ลง** (ระดับ RLS)
       และต้องเช็คคู่กันว่า `GET /rest/v1/jobs?select=id&limit=1` ยังได้ `200 []` — ถ้าได้ permission denied แปลว่า revoke เกินไปโดน SELECT ด้วย ให้ rollback ทันที
       💡 SQL Editor รันทั้งสคริปต์เป็น transaction เดียว ⇒ **REVOKE ติด = DO block ตรวจผลผ่านครบ 3 ข้อ** (รวม `FOR UPDATE` ของ F6) ไม่งั้น rollback ทั้งก้อน
+- [x] ~~0058~~ ปิดบัญชีแล้วอ่านข้อมูลไม่ได้ (F3 ขั้น 2) — รัน 2026-08-22 แล้ว push (`ddcbd70`)
+      **รอบแรกล้ม** ที่ `pg_stat_statements_info` (ไม่ได้กรอง view ของ extension) → rollback ทั้งก้อน DB ไม่เปลี่ยนอะไร → แก้แล้วรันใหม่ผ่าน · ดู §9 ข้อ 20
+      ตรวจว่าลงแล้ว **ด้วย anon key ไม่ต้องเข้า SQL Editor** — และเป็นการทดสอบช่องรั่วจริงไปในตัว:
+      `curl "$URL/rest/v1/v_job_status?select=job_no&limit=1" -H "apikey: $ANON" -H "Authorization: Bearer $ANON"`
+      → **`"permission denied for view v_job_status"` = ลงแล้ว** · ได้ข้อมูลกลับมา = **ยังไม่ลง และกำลังรั่วสู่อินเทอร์เน็ต**
+      เช็คคู่กัน: `GET /rest/v1/jobs?select=id&limit=1` ต้องยังได้ `200 []` (grant SELECT ของตารางยังอยู่ RLS กรองออก)
+      ⏳ **ยังเหลือทดสอบด้วยบัญชีจริง** — ดูรายการใน 🔴 ความปลอดภัย ด้านบน
 
 ### 🔵 Code review 2026-08-20 — รอบ 3 (#1–#4 ปิดที่ `4d11d75` · #5 ปิดที่ `54a48ed`)
 
@@ -471,7 +535,7 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 ### 🟣 Code review 2026-08-22 — F1–F11 (ของใหม่ นอกเหนือจาก #5–#10)
 
 รีวิวทั้งระบบตามที่ deploy จริง: `src/` 13,089 บรรทัด · `functions/` 4 ไฟล์ · migrations 0001–0056 (RLS/RPC/trigger/grant) · git history
-**ปิดไปแล้ว 4 ข้อ (F1 F2 F4 F6) · เหลือ 7 ข้อ** — แต่ละข้อที่ค้างมี **"เมื่อไรจะกลายเป็นต้องแก้"** กำกับไว้ เพื่อไม่ให้ต้องมานั่งเดาความเร่งด่วนใหม่ทุกรอบ
+**ปิดไปแล้ว 6 ข้อ (F1 F2 F3 F4 F6 F9) · เหลือ 5 ข้อ** — แต่ละข้อที่ค้างมี **"เมื่อไรจะกลายเป็นต้องแก้"** กำกับไว้ เพื่อไม่ให้ต้องมานั่งเดาความเร่งด่วนใหม่ทุกรอบ
 
 | ข้อ | เรื่อง | สถานะ |
 |---|---|---|
@@ -480,7 +544,7 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 | **F4** 🟠 | `line-approval-push` fail-open + ไม่เช็คแผนก ⇒ VIP/Service ดันการ์ดปุ่ม ✅ เข้าแชทผู้อนุมัติได้ | ✅ **`54a48ed`** (ด่าน `['project','admin']` ตรงกับ `rpc_request_approval`) |
 | **F6** 🟠 | `rpc_receive_po_items` `SELECT INTO` ไม่ล็อกแถว ⇒ รับของพร้อมกัน 2 คน ยอดหายไปเงียบ ๆ | ✅ **`0057`** (`FOR UPDATE`) |
 | **F9** 🟡 | `JSON.parse` ใน webhook ไม่มี try/catch ⇒ 500 → LINE retry → webhook ถูกปิด | ✅ **`54a48ed`** |
-| **F3** 🟠 | ปิดบัญชีแล้วยังอ่านข้อมูลทั้งบริษัทได้ (policy อ่าน `USING (true)` + ไม่ ban auth user) | ⏳ **ก้อน D — ทำต่อ** · รายละเอียดใน 🔴 ความปลอดภัย ด้านบน |
+| **F3** 🔴 | ปิดบัญชีแล้วยังอ่านข้อมูลทั้งบริษัทได้ · **และ view รั่วถึง `anon` ไม่ต้อง login เลย** (พบตอนแก้) | ✅ **`b24f262` + `0058`** (2 ชั้น: ban ที่ auth + restrictive policy/view) · ⏳ **ยังต้องทดสอบด้วยบัญชีจริง** |
 | **F5** 🟡 | `q()` ไม่ใส่ `.limit()` เมื่อไม่ส่ง `order` ⇒ `notification_reads` ตกไปใช้ max-rows (default 1000) · เกินแล้ว "อ่านแล้ว" กลับมาเป็นยังไม่อ่านถาวร | ⏳ **แก้เมื่อ** `SELECT count(*) FROM notification_reads;` เข้าใกล้ 1000 · ทำพร้อม **#7** เพราะรากเดียวกัน · แก้ถูกคือ `.eq('user_id', uid)` ไม่โหลดของทุกคน |
 | **F7** 🟡 | `xlsx@0.18.5` ติด CVE-2023-30533 (prototype pollution ใน `XLSX.read`) + CVE-2024-22363 · ใช้อ่านไฟล์ที่ผู้ใช้อัปโหลด 3 จุด | ⏳ **แก้เมื่อ** มีเวลาเทสต์ Import ครบ 3 จุด (catalog / แผนรายเครื่อง / BOM) · คำสั่งเดียว: `npm i https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz` (API เดิม · `npm audit fix` แก้ไม่ได้เพราะ npm ไม่มีเวอร์ชันที่แก้แล้ว) |
 | **F8** 🟡 | `admin-users` action `create` ทิ้ง error ของ `profiles.update` + ไม่ validate `department` ⇒ สร้าง user สำเร็จแต่แผนกผิด แล้วตอบ `{ok:true}` | ⏳ **แก้เมื่อ** จะเพิ่มแผนกใหม่ (เคยเกิดจริงตอนเพิ่ม `vip` ใน 0050) · ตอนนี้ UI เป็น `<select>` ผูก type `Department` จึงส่งค่าผิดไม่ได้ในทางปฏิบัติ · **checklist เพิ่มแผนก = แก้ 3 ที่: TS type + `profiles_department_check` + `DEPT_LABEL`** |
