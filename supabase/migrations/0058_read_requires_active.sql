@@ -29,6 +29,23 @@
 --  idempotent (DROP POLICY IF EXISTS ก่อน CREATE ทุกตัว) · รันหลัง 0057
 -- =====================================================================
 
+-- ---------- 0) PREFLIGHT — รันอันนี้ก่อน แล้วดูรายชื่อว่าใช่ของเราทั้งหมดไหม ----------
+-- อ่านอย่างเดียว ไม่แตะอะไร · คาดว่าได้ table ~28 ตัว + view **2 ตัวเท่านั้น**
+-- (v_job_status, v_unit_install_state) · ถ้าเห็นชื่อแปลก ๆ ที่ไม่ใช่ของระบบเรา = หยุด อย่ารันต่อ
+--
+--   SELECT 'table' AS kind, c.relname
+--     FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
+--    WHERE ns.nspname='public' AND c.relkind='r' AND c.relrowsecurity
+--      AND NOT EXISTS (SELECT 1 FROM pg_depend d
+--                       WHERE d.objid=c.oid AND d.classid='pg_class'::regclass AND d.deptype='e')
+--   UNION ALL
+--   SELECT 'view', c.relname
+--     FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
+--    WHERE ns.nspname='public' AND c.relkind='v'
+--      AND NOT EXISTS (SELECT 1 FROM pg_depend d
+--                       WHERE d.objid=c.oid AND d.classid='pg_class'::regclass AND d.deptype='e')
+--   ORDER BY 1, 2;
+
 -- ---------- 1) helper ----------
 CREATE OR REPLACE FUNCTION my_is_active() RETURNS BOOLEAN
 LANGUAGE sql SECURITY DEFINER STABLE SET search_path = public AS $$
@@ -56,6 +73,9 @@ BEGIN
   FOR t IN
     SELECT c.relname FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
      WHERE ns.nspname = 'public' AND c.relkind = 'r' AND c.relrowsecurity
+       -- กันตารางของ extension แบบเดียวกับข้อ 3b (ดูเหตุผลที่นั่น)
+       AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                        WHERE d.objid = c.oid AND d.classid = 'pg_class'::regclass AND d.deptype = 'e')
      ORDER BY c.relname
   LOOP
     EXECUTE format('DROP POLICY IF EXISTS require_active ON public.%I', t);
@@ -78,17 +98,31 @@ END $$;
 --      อ่านสถานะ + Job No. + ลูกค้าได้ ทั้งที่ตาราง jobs ปิดไปแล้ว
 -- ปลอดภัยที่จะ revoke: frontend ไม่ได้ใช้ view เลย (grep 'v_job_status\|v_unit_install_state' src/ = 0)
 --   ผู้ใช้จริงมีแค่ line-webhook (service_role — ไม่โดน revoke นี้) และ RPC (SECURITY DEFINER รันเป็น owner)
+-- ⚠️ ต้องกรอง view ของ extension ออก — ครั้งแรกไม่ได้กรอง แล้วชนของจริง (2026-08-22):
+--    Supabase ติดตั้ง extension ที่ทิ้ง view ไว้ใน public (เช่น pg_stat_statements_info)
+--    ⇒ ลูปนี้จะไป REVOKE ของที่ไม่ใช่ของเรา (เสี่ยงทำ dashboard/extension พัง)
+--      และบล็อกตรวจข้อ 4.4 ก็ล้มด้วย `42P01 relation "public.pg_stat_statements_info" does not exist`
+--    กรองด้วย pg_depend deptype='e' = "object นี้เป็นสมาชิกของ extension"
+--    + `to_regclass(...) IS NOT NULL` กันชื่อที่ resolve ไม่ได้ทุกกรณี (กัน error ซ้ำแบบเดิม)
 DO $$
 DECLARE v TEXT; n INT := 0;
 BEGIN
   FOR v IN
     SELECT c.relname FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
-     WHERE ns.nspname = 'public' AND c.relkind = 'v' ORDER BY c.relname
+     WHERE ns.nspname = 'public' AND c.relkind = 'v'
+       AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                        WHERE d.objid = c.oid AND d.classid = 'pg_class'::regclass AND d.deptype = 'e')
+     ORDER BY c.relname
   LOOP
+    IF to_regclass(format('public.%I', v)) IS NULL THEN
+      RAISE NOTICE '0058: ข้าม view % (resolve ไม่ได้)', v;
+      CONTINUE;
+    END IF;
     EXECUTE format('REVOKE ALL ON public.%I FROM authenticated, anon', v);
+    RAISE NOTICE '0058:   revoke view %', v;
     n := n + 1;
   END LOOP;
-  RAISE NOTICE '0058: ตัดสิทธิ์ authenticated/anon ออกจาก view % ตัว', n;
+  RAISE NOTICE '0058: ตัดสิทธิ์ authenticated/anon ออกจาก view % ตัว (คาดว่า 2: v_job_status, v_unit_install_state)', n;
 END $$;
 
 -- ---------- 4) ตรวจผล ----------
@@ -99,6 +133,8 @@ BEGIN
   SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO missing
     FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
    WHERE ns.nspname = 'public' AND c.relkind = 'r' AND c.relrowsecurity
+     AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                      WHERE d.objid = c.oid AND d.classid = 'pg_class'::regclass AND d.deptype = 'e')
      AND NOT EXISTS (SELECT 1 FROM pg_policies p
                       WHERE p.schemaname = 'public' AND p.tablename = c.relname
                         AND p.policyname = 'require_active');
@@ -117,10 +153,14 @@ BEGIN
     RAISE EXCEPTION '0058 ไม่สมบูรณ์ — my_is_active ต้องเป็น STABLE + SECURITY DEFINER';
   END IF;
 
-  -- 4.4 view ต้องอ่านไม่ได้แล้ว (ไม่งั้นข้อ 3 ถูก bypass ทั้งชุด)
+  -- 4.4 view ของเราต้องอ่านไม่ได้แล้ว (ไม่งั้นข้อ 3 ถูก bypass ทั้งชุด)
+  --     กรอง extension view + to_regclass ให้ตรงกับลูปข้อ 3b เป๊ะ ๆ
   SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO missing
     FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
    WHERE ns.nspname = 'public' AND c.relkind = 'v'
+     AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                      WHERE d.objid = c.oid AND d.classid = 'pg_class'::regclass AND d.deptype = 'e')
+     AND to_regclass(format('public.%I', c.relname)) IS NOT NULL
      AND (has_table_privilege('authenticated', format('public.%I', c.relname), 'SELECT')
        OR has_table_privilege('anon',          format('public.%I', c.relname), 'SELECT'));
   IF missing IS NOT NULL THEN
@@ -139,8 +179,10 @@ END $$;
 
 -- ---------- 6) ROLLBACK ----------
 --   DO $$ DECLARE t TEXT; BEGIN
---     FOR t IN SELECT c.relname FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
---               WHERE ns.nspname = 'public' AND c.relkind = 'r' AND c.relrowsecurity
+--     FOR t IN SELECT p.tablename FROM pg_policies p
+--               WHERE p.schemaname = 'public' AND p.policyname = 'require_active'
 --     LOOP EXECUTE format('DROP POLICY IF EXISTS require_active ON public.%I', t); END LOOP;
 --   END $$;
+--   (วนจาก pg_policies ตรง ๆ = ลบเฉพาะที่ไฟล์นี้สร้าง ไม่ต้องเดารายชื่อตาราง)
 --   (ไม่ต้องแตะ my_is_active() — ไม่มีใครเรียกแล้วก็ไม่มีผลอะไร)
+--   ถ้าจะคืนสิทธิ์ view ด้วย: GRANT SELECT ON public.v_job_status, public.v_unit_install_state TO authenticated;
