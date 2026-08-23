@@ -30,7 +30,12 @@ function summarize(type, payload) {
 
 // canApprove = false เมื่อ type ไม่รู้จัก → ตัดปุ่ม ✅ ออก เหลือแค่ลิงก์เข้าระบบ
 // (ปุ่มอนุมัติในมือถือไม่ควรมี เมื่อการ์ดอธิบายเรื่องที่จะอนุมัติไม่ได้)
-function buildFlex(appUrl, reqId, typeLabel, jobNo, customer, detail, requester, canApprove) {
+//
+// ⚠️ ลิงก์กลับเข้าเว็บต้องมี `#` เสมอ — แอปใช้ HashRouter (src/main.tsx)
+//    URL จริงของหน้าคือ /#/approvals ไม่ใช่ /approvals
+//    ถ้าลืม `#`: Cloudflare เสิร์ฟ index.html → hash ว่าง → route ตกไปที่ `*` → เด้งไป Dashboard
+//    (เป็นแบบนั้นมาตั้งแต่ 0033 — ปุ่ม "ตรวจสอบในระบบ" ไม่เคยพาไปหน้าที่รออนุมัติเลย)
+function buildFlex(appUrl, reqId, typeLabel, jobNo, customer, detail, requester, canApprove, jobId) {
   const row = (label, val) => ({
     type: 'box', layout: 'baseline', spacing: 'sm',
     contents: [
@@ -63,7 +68,10 @@ function buildFlex(appUrl, reqId, typeLabel, jobNo, customer, detail, requester,
           ...(canApprove ? [{ type: 'button', style: 'primary', color: '#16a34a', height: 'sm',
             action: { type: 'postback', label: '✅ อนุมัติ', data: `action=approve&req=${reqId}`, displayText: `อนุมัติ ${jobNo}` } }] : []),
           { type: 'button', style: 'secondary', height: 'sm',
-            action: { type: 'uri', label: '🔎 ตรวจสอบในระบบ', uri: `${appUrl}/approvals` } },
+            action: { type: 'uri', label: '🔎 ตรวจสอบในระบบ', uri: `${appUrl}/#/approvals` } },
+          // เปิดหน้า Job ตรง ๆ — ผู้อนุมัติมักอยากดูงบ/รายการวัสดุก่อนกด ✅
+          ...(jobId ? [{ type: 'button', style: 'link', height: 'sm',
+            action: { type: 'uri', label: `📄 เปิดงาน ${jobNo}`, uri: `${appUrl}/#/jobs/${jobId}` } }] : []),
           { type: 'text',
             text: canApprove ? 'ตีกลับได้ที่หน้าเว็บ (ต้องระบุเหตุผล)' : 'ประเภทคำขอนี้ต้องอนุมัติที่หน้าเว็บ',
             size: 'xxs', color: '#aaaaaa', align: 'center' },
@@ -133,7 +141,7 @@ export async function onRequestPost(context) {
   const known = Object.prototype.hasOwnProperty.call(TYPE_LABEL, r.req_type)
   const typeLabel = known ? TYPE_LABEL[r.req_type] : `คำขอ (${r.req_type})`
   const flex = buildFlex(appUrl, r.id, typeLabel, job?.job_no ?? '-', job?.customer_name ?? '-',
-    summarize(r.req_type, r.payload ?? {}), requester?.full_name ?? '-', known)
+    summarize(r.req_type, r.payload ?? {}), requester?.full_name ?? '-', known, r.job_id)
 
   const results = await Promise.all(recipients.map(to =>
     fetch('https://api.line.me/v2/bot/message/push', {

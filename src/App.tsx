@@ -45,26 +45,67 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   // ปัญหางานบริการที่ยังไม่ปิดงาน — เตือนที่เมนู Service
   const openServiceIssues = serviceIssues(db).filter(i => !i.jobClosed).length
 
-  const MENU: { to: string; icon: string; label: string; badge?: { text: string; cls: string } }[] = [
-    { to: '/dashboard', icon: '📊', label: 'Dashboard' },
-    { to: '/stocks', icon: '📦', label: 'Project Stock (LBS)' },
-    { to: '/jobs', icon: '🗂️', label: 'Project ID (Jobs)', badge: readyJobs > 0 ? { text: `${readyJobs} พร้อมเบิก`, cls: 'green' } : undefined },
-    { to: '/purchasing', icon: '🛒', label: 'Purchasing (PR/PO)', badge: (pendingPrs + openPos) > 0 ? { text: `${pendingPrs + openPos}`, cls: 'amber' } : undefined },
-    { to: '/service', icon: '🔧', label: 'Service (Installation)',
-      // ปัญหาค้างสำคัญกว่าจำนวนงานรอติดตั้ง → โชว์ก่อนถ้ามี
-      badge: openServiceIssues > 0 ? { text: `⚠️ ${openServiceIssues} ปัญหา`, cls: 'red' }
-        : awaitingInstall > 0 ? { text: `${awaitingInstall} รอติดตั้ง`, cls: 'blue' } : undefined },
-    { to: '/scheduling', icon: '👷', label: 'Service & Scheduling', badge: unassignedJobs > 0 ? { text: `${unassignedJobs} ยังไม่มอบหมาย`, cls: 'amber' } : undefined },
-    { to: '/master', icon: '🗄️', label: 'Material Database' },
-    // เอกสารมาตรฐาน (0045) — ข้อมูลอ้างอิงเหมือน Material Database จึงวางต่อกัน · ทุกแผนกเปิดดูได้
-    { to: '/standards', icon: '📐', label: 'Standard Price / Drawing / BOM' },
-    // Awaiting Approval ย้ายมาอยู่ล่าง Material Database (มติ 2026-07-19)
-    { to: '/approvals', icon: '✅', label: 'Awaiting Approval',
-      badge: pendingApprovals > 0
-        ? { text: `${pendingApprovals}${pendingComments > 0 ? ` · 💬${pendingComments}` : ''}`, cls: 'amber' }
-        : undefined },
-    // Dev Settings เฉพาะ Manage (admin) — แผนกอื่น "not can DevSettings"
-    ...(can(user, 'master.manage') ? [{ to: '/dev', icon: '⚙️', label: 'Dev Settings' }] : []),
+  const unread = unreadNotifications(db, user)
+
+  // ---------------------------------------------------------------------------
+  // เมนู 2 ชั้น: Module → หน้า (มติ 2026-08-22)
+  //
+  // เกณฑ์แบ่ง Module = "หน้านี้ทำอะไรกับสายงาน" ไม่ใช่ "หน้านี้ของแผนกไหน"
+  //   (แผนกปรับโครงสร้างได้ แต่ลำดับที่ของจริงเดินไม่เปลี่ยน)
+  //   1. เปลี่ยนสถานะ Serial/Job ไหม → Operations
+  //   2. ขวางสายงานไหม / เป็นหลักฐานไหม → Approvals & Audit
+  //   3. เป็นข้อมูลอ้างอิงที่ตั้งครั้งเดียวใช้ยาวไหม → Master Data
+  //   4. จัดคน+เวลาให้งาน แต่ไม่ทำให้ Job ขยับสถานะ → Workforce & Scheduling
+  //
+  // เดิมเป็น list ชั้นเดียว 10 รายการที่เอา 4 ประเภทนี้มาปนกัน — ข้อมูลตั้งต้น
+  // (Material/Standards) แทรกกลางสายงานทั้งที่แตะเดือนละครั้ง ส่วน Awaiting Approval
+  // ซึ่งขวางทั้งสายกลับอยู่ล่างสุด
+  //
+  // มติที่คุยกันไว้: หัวข้อ Module เป็น "หัวข้อคั่นแบบกางตลอด" ไม่ใช่ accordion
+  //   → ไม่ต้องเก็บสถานะพับ/กาง และไม่ต้องมี badge รวมขึ้นหัว Module
+  // มติ: ไม่ซ่อน Module ตามแผนก (คงพฤติกรรมเดิม ตรงกับ RLS read_all)
+  //   → ยกเว้น Administration ที่เป็น Manage เท่านั้น ซึ่งเป็นของเดิมของ Dev Settings อยู่แล้ว
+  //
+  // ⚠️ ไม่แตะ route เลย — ทุก `to` เป็นเส้นทางเดิมทั้งหมด bookmark เก่าใช้ได้ปกติ
+  // ⚠️ ป้าย badge เป็นอังกฤษให้เข้าชุดกับชื่อ Job status ที่เป็นอังกฤษอยู่แล้ว
+  //    (Ready to Issue / Issued / Installed) — ทั้ง sidebar เป็นภาษาเดียว
+  // ---------------------------------------------------------------------------
+  type MenuItem = { to: string; icon: string; label: string; badge?: { text: string; cls: string } }
+  const MENU: { mod: string; icon: string; items: MenuItem[] }[] = [
+    { mod: 'Overview', icon: '📊', items: [
+      { to: '/dashboard', icon: '📊', label: 'Dashboard' },
+    ] },
+    // เรียงตามลำดับที่ของจริงเดิน: เข้าคลัง → เปิดงาน → ซื้อของ → ติดตั้ง
+    { mod: 'Operations', icon: '🏭', items: [
+      { to: '/stocks', icon: '📦', label: 'LBS Inventory' },
+      { to: '/jobs', icon: '🗂️', label: 'Jobs', badge: readyJobs > 0 ? { text: `${readyJobs} Ready to Issue`, cls: 'green' } : undefined },
+      { to: '/purchasing', icon: '🛒', label: 'Purchasing (PR/PO)', badge: (pendingPrs + openPos) > 0 ? { text: `${pendingPrs + openPos}`, cls: 'amber' } : undefined },
+      { to: '/service', icon: '🔧', label: 'Site Installation',
+        // ปัญหาค้างสำคัญกว่าจำนวนงานรอติดตั้ง → โชว์ก่อนถ้ามี
+        badge: openServiceIssues > 0 ? { text: `⚠️ ${openServiceIssues} Issues`, cls: 'red' }
+          : awaitingInstall > 0 ? { text: `${awaitingInstall} Awaiting Install`, cls: 'blue' } : undefined },
+    ] },
+    // ทะเบียนทีมช่างยังอยู่ใน ServicePage — เฟส 2 จะย้ายมาที่ /scheduling แล้วแยก 2 เมนูจริง
+    { mod: 'Workforce & Scheduling', icon: '👷', items: [
+      { to: '/scheduling', icon: '👷', label: 'Assignment & Schedule', badge: unassignedJobs > 0 ? { text: `${unassignedJobs} Unassigned`, cls: 'amber' } : undefined },
+    ] },
+    // ขวางสายงาน + เป็นหลักฐาน · Notifications/Audit เคยไม่มีในเมนู (ซ่อนอยู่ในกระดิ่งกับปุ่มท้าย sidebar)
+    { mod: 'Approvals & Audit', icon: '✅', items: [
+      { to: '/approvals', icon: '✅', label: 'Approval Queue',
+        badge: pendingApprovals > 0
+          ? { text: `${pendingApprovals}${pendingComments > 0 ? ` · 💬${pendingComments}` : ''}`, cls: 'amber' }
+          : undefined },
+      { to: '/notifications', icon: '🔔', label: 'Notifications', badge: unread.length > 0 ? { text: `${unread.length}`, cls: 'red' } : undefined },
+      { to: '/audit', icon: '📜', label: 'Audit Log' },
+    ] },
+    { mod: 'Master Data', icon: '📚', items: [
+      { to: '/master', icon: '🗄️', label: 'Material Master' },
+      { to: '/standards', icon: '📐', label: 'Standards Library' },
+    ] },
+    // Administration เฉพาะ Manage (admin) — เดิมคือ Dev Settings
+    ...(can(user, 'master.manage')
+      ? [{ mod: 'Administration', icon: '⚙️', items: [{ to: '/dev', icon: '⚙️', label: 'Users & System Settings' }] }]
+      : []),
   ]
 
   return (
@@ -78,15 +119,26 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
         <button className="drawer-close" onClick={onClose} aria-label="ปิดเมนู">✕</button>
       </div>
       <nav>
-        {MENU.map(m => (
-          <NavLink key={m.to} to={m.to} onClick={onClose}>
-            <span className="nav-main">
-              <span className="nav-icon">{m.icon}</span>
-              <span>{m.label}</span>
-            </span>
-            {m.badge && <span className={`badge ${m.badge.cls}`}>{m.badge.text}</span>}
-            <span className="glow-dot" aria-hidden="true" />
-          </NavLink>
+        {MENU.map(g => (
+          // role=group + aria-label ให้ screen reader อ่านว่าอยู่ Module ไหน
+          // ส่วนหัวข้อที่มองเห็นตั้ง aria-hidden กัน announce ซ้ำ
+          <div className="nav-group" role="group" aria-label={g.mod} key={g.mod}>
+            <div className="nav-mod" aria-hidden="true">
+              <span className="nav-mod-icon">{g.icon}</span>
+              <span className="nav-mod-text">{g.mod}</span>
+              <span className="nav-mod-line" />
+            </div>
+            {g.items.map(m => (
+              <NavLink key={`${g.mod}:${m.to}:${m.label}`} to={m.to} onClick={onClose}>
+                <span className="nav-main">
+                  <span className="nav-icon">{m.icon}</span>
+                  <span>{m.label}</span>
+                </span>
+                {m.badge && <span className={`badge ${m.badge.cls}`}>{m.badge.text}</span>}
+                <span className="glow-dot" aria-hidden="true" />
+              </NavLink>
+            ))}
+          </div>
         ))}
       </nav>
       <div className="userbox">

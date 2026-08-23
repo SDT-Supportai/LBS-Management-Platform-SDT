@@ -54,7 +54,33 @@ body {
 }
 .sidebar .brand .drawer-close { display: none; }
 .sidebar .brand small { display: block; font-weight: 400; color: #8f9bb3; font-size: 11px; margin-top: 2px; }
-.sidebar nav { flex: 1; padding: 12px 10px; display: flex; flex-direction: column; gap: 4px; }
+/* ⚠️ min-height:0 + overflow-y:auto จำเป็นตั้งแต่เมนูเป็น 2 ชั้น (2026-08-22)
+   เมนูยาวขึ้น ~300px (12 ลิงก์ + 6 หัวข้อ) → บนจอสูง 720px กล่องผู้ใช้ท้าย sidebar
+   ถูกดันหลุดออกนอกจอ และ .sidebar เป็น overflow:visible จึงตัดทิ้งเฉย ๆ กดออกจากระบบไม่ได้
+   flex child ไม่ยอมหดต่ำกว่าเนื้อหาถ้าไม่ตั้ง min-height:0 — ขาดบรรทัดนี้ overflow-y ไม่มีผล */
+.sidebar nav {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  padding: 12px 10px; display: flex; flex-direction: column; gap: 4px;
+}
+.sidebar nav::-webkit-scrollbar { width: 6px; }
+.sidebar nav::-webkit-scrollbar-thumb { background: #33405a; border-radius: 3px; }
+.sidebar nav::-webkit-scrollbar-track { background: transparent; }
+
+/* เมนู 2 ชั้น: Module = หัวข้อคั่นแบบกางตลอด (ไม่ใช่ accordion — มติ 2026-08-22)
+   หัวข้อไม่ใช่ปุ่ม กดไม่ได้ ตั้งใจให้เป็นป้ายกำกับอย่างเดียว */
+.sidebar .nav-group { display: flex; flex-direction: column; gap: 4px; }
+.sidebar .nav-group + .nav-group { margin-top: 8px; }
+.sidebar .nav-mod {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 12px 2px;
+  font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+  color: #7c89a3; font-weight: 600; user-select: none;
+}
+.sidebar .nav-mod-icon { font-size: 11px; opacity: .85; }
+.sidebar .nav-mod-text { white-space: nowrap; }
+/* เส้นคั่นยืดเต็มที่เหลือ — แยกกลุ่มโดยไม่ต้องเพิ่มบรรทัดว่าง */
+.sidebar .nav-mod-line { flex: 1; height: 1px; background: #2e3a52; }
+
 .sidebar nav a {
   position: relative;
   color: #cfd6e4; text-decoration: none; padding: 10px 12px 12px; border-radius: 10px; font-size: 13.5px;
