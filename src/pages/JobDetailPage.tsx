@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
-import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, PAYMENT_TYPES } from '../data/logic'
+import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, PAYMENT_TYPES } from '../data/logic'
 import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
 import { ACC_STATUS_LABEL, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType } from '../types'
@@ -66,6 +66,9 @@ export default function JobDetailPage() {
   const [accForm, setAccForm] = useState({ itemId: '', qty: 1, source: 'central_stock' as 'central_stock' | 'purchasing', unitPrice: '', phaseBudget: 'raw_mat' as CostCategoryKey })
   const [accSearch, setAccSearch] = useState('')   // ค้นหาวัสดุในโมดัลเพิ่มวัสดุ
   const [issueForm, setIssueForm] = useState({ startDate: '', endDate: '', location: '', note: '' })
+  // 0059: popup "จะเบิกอะไร" — เลือก LBS รายเครื่อง + วัสดุรายบรรทัด (จัดกลุ่มตาม PO)
+  const [pickedUnits, setPickedUnits] = useState<Set<string>>(new Set())
+  const [pickedReqs, setPickedReqs] = useState<Set<string>>(new Set())
   const [cancelReason, setCancelReason] = useState('')
   const [receivedToCentral, setReceivedToCentral] = useState(true)
   const [editForm, setEditForm] = useState({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '' })
@@ -118,11 +121,62 @@ export default function JobDetailPage() {
   const drawableUnits = db.lbsUnits.filter(u => u.projectStockId === drawStock && u.status === 'in_stock')
   const returnableUnits = db.lbsUnits.filter(u => u.jobId === jobId && u.status === 'allocated')
   // cap ตาม Scope: ดึงรวมได้ไม่เกินจำนวนตอนเปิด Job
-  const drawCap = Math.max(0, job.lbsQtyRequired - returnableUnits.length)
+  // 0059: นับเครื่องที่เบิกออกไปแล้วด้วย (allocatedUnits = allocated + issued)
+  //   ไม่งั้นหลังเบิก LBS บางส่วน ช่องว่างจะเปิดให้ดึงเกิน Scope
+  const drawCap = Math.max(0, job.lbsQtyRequired - allocatedUnits.length)
   // เครื่องที่เลือกอยู่แต่ ETA ยังไม่ถึง (0049) — ดึงจองล่วงหน้าได้ แต่กันตอนเบิก (0052)
   const pickedPending = drawableUnits.filter(u => picked.has(u.id) && unitStockState(u) === 'pending').length
-  // Job ถือของที่ยังไม่ถึงคลัง → เบิกให้ Service ไม่ได้ (guard ตัวจริงอยู่ที่ logic/RPC)
+  // Job ถือของที่ยังไม่ถึงคลัง → เบิกเครื่องนั้นไม่ได้ (0059 บล็อกรายเครื่อง ไม่เหมาทั้งใบแล้ว)
   const etaBlock = jobEtaBlockReason(db, job.id)
+  // 0059: แหล่งความจริงเดียวว่า "อะไรเบิกได้ / อะไรยังไม่ได้" — ใช้ทั้ง popup, ปุ่ม และแผงสรุป
+  const plan = jobIssuePlan(db, job.id)
+  const canIssueAnything = plan.accReady.length > 0 || (plan.lbsShort === 0 && plan.lbsReady.length > 0)
+  const toggleUnit = (id: string) => setPickedUnits(prev => {
+    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n
+  })
+  const toggleReq = (id: string) => setPickedReqs(prev => {
+    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n
+  })
+  const toggleGroup = (ids: string[], on: boolean) => setPickedReqs(prev => {
+    const n = new Set(prev); ids.forEach(id => on ? n.add(id) : n.delete(id)); return n
+  })
+  // เปิด popup พร้อมติ๊กทุกอย่างที่พร้อมไว้ให้ (เคสปกติ = เบิกทุกอย่างที่ได้)
+  const openIssueModal = () => {
+    setPickedUnits(new Set(plan.lbsShort === 0 ? plan.lbsReady.map(u => u.id) : []))
+    setPickedReqs(new Set(plan.accReady.map(r => r.id)))
+    setIssueForm({
+      startDate: job.installStartDate || job.requiredDate || '',
+      endDate: job.installEndDate || job.requiredDate || '',
+      location: job.issueLocation || job.installLocation || '',
+      note: '',
+    })
+    setModal('issue')
+  }
+  /**
+   * เบิกวัสดุก่อน แล้วค่อย LBS — เรียงแบบนี้เพราะ LBS เป็นชิ้นสุดท้ายที่ทำให้ใบครบ
+   * (finalizeIssue จะปิดใบในก้าวเดียว ไม่ใช่ปิดแล้วยังมีวัสดุค้าง)
+   * ⚠️ 2 คำสั่งแยก transaction กันบนโหมด Supabase — ถ้าตัวหลังพลาด ตัวแรกยังอยู่
+   *    ซึ่งถูกต้องตามโมเดลใหม่: "เบิกบางส่วน" เป็นสถานะที่ถูกกฎหมาย ไม่ใช่ข้อมูลพัง
+   */
+  const submitIssue = async () => {
+    const reqIds = [...pickedReqs]
+    const unitIds = [...pickedUnits]
+    if (reqIds.length > 0) {
+      const ok = await tryAction(
+        () => act.issueJobAccessory({ jobId: job.id, requestIds: reqIds, ...issueForm }),
+        `เบิกวัสดุ ${reqIds.length} รายการของ ${job.jobNo} ให้ Service แล้ว`)
+      if (!ok) return
+    }
+    if (unitIds.length > 0) {
+      const ok = isManage
+        ? await tryAction(() => act.issueJobLbs({ jobId: job.id, unitIds, ...issueForm }),
+            `เบิก LBS ${unitIds.length} เครื่องของ ${job.jobNo} ให้ Service แล้ว`)
+        : await tryAction(() => act.requestApproval({ type: 'issue_job', jobId: job.id, payload: { unitIds, ...issueForm } }),
+            `ส่งคำขอเบิก LBS ${unitIds.length} เครื่องของ ${job.jobNo} ให้ Division พิจารณาแล้ว`)
+      if (!ok) return
+    }
+    close()
+  }
   const toggleDraw = (id: string) => setPicked(prev => {
     const next = new Set(prev)
     if (next.has(id)) next.delete(id)
@@ -220,6 +274,30 @@ export default function JobDetailPage() {
             </table>
           </div>
         </div>
+      )}
+
+      {/* 0059: เบิกออกไปแล้วบางส่วน — ต้องเห็นจากหน้าแรกว่าอะไรออกไปแล้ว อะไรค้าง */}
+      {!job.terminalStatus && (plan.lbsIssued.length > 0 || accReqs.some(r => !!r.issuedToServiceAt)) && (
+        <div className="panel" style={{ borderLeft: '4px solid #d97706' }}><div className="panel-body">
+          <b>เบิกให้ Service แล้วบางส่วน</b>{job.lbsIssuedAt && <> · เริ่มเบิกเมื่อ {fmtDateTime(job.lbsIssuedAt)}</>}
+          <div style={{ marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <span className={`badge ${plan.lbsReady.length + plan.lbsBlocked.length === 0 ? 'green' : 'amber'}`}>
+              LBS เบิกแล้ว {plan.lbsIssued.length}/{allocatedUnits.length} เครื่อง
+            </span>
+            <span className={`badge ${plan.accPending.length === 0 ? 'green' : 'amber'}`}>
+              วัสดุค้างรอเบิก {plan.accPending.length} รายการ
+            </span>
+            {plan.lbsBlocked.length > 0 && <span className="badge red">LBS รอ ETA {plan.lbsBlocked.length} เครื่อง</span>}
+          </div>
+          {job.installStartDate && (
+            <div style={{ marginTop: 4 }}>📅 นัดติดตั้ง <b>{fmtDate(job.installStartDate)} – {fmtDate(job.installEndDate)}</b> ที่ <b>{job.issueLocation || '-'}</b></div>
+          )}
+          <div className="muted" style={{ marginTop: 4 }}>
+            เครื่องที่เบิกออกไปแล้ว<b>ล็อก คืน/สลับไม่ได้</b> · ที่เหลือยังจัดการได้ตามปกติ ·
+            ยกเลิก Job ไม่ได้แล้วเพราะของอยู่ในมือ Service · ครบทั้งใบเมื่อไหร่ระบบปิดเป็น Issued ให้เอง
+            <br /><b>Service ยืนยันติดตั้งได้เมื่อเบิกครบทั้งใบ</b> — กันทีมออกไซต์แล้วขาดของหน้างาน
+          </div>
+        </div></div>
       )}
 
       {job.terminalStatus === 'issued' && (() => {
@@ -403,8 +481,9 @@ export default function JobDetailPage() {
           <div className="panel-body">
             🚢 <b>{etaBlock}</b>
             <div className="muted" style={{ marginTop: 4 }}>
-              เบิกได้เมื่อ ETA to WH ผ่านไปแล้ว · ถ้าของถึงคลังก่อนกำหนดให้แก้ ETA ที่หน้า Project Stock →
-              ปุ่ม "แก้ข้อมูล" รายเครื่อง · หรือคืนเครื่องที่ยังไม่มาแล้วดึงเครื่องที่ On Hand แทน
+              เฉพาะ<b>เครื่องเหล่านั้น</b>ที่เบิกไม่ได้ — เครื่องอื่นและวัสดุที่รับของแล้วยังเบิกได้ตามปกติ (0059) ·
+              ถ้าของถึงคลังก่อนกำหนดให้แก้ ETA ที่หน้า LBS Inventory → ปุ่ม "แก้ข้อมูล" รายเครื่อง ·
+              หรือคืนเครื่องที่ยังไม่มาแล้วดึงเครื่องที่ On Hand แทน
             </div>
           </div>
         </div>
@@ -414,14 +493,20 @@ export default function JobDetailPage() {
         <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
           <button className="primary" onClick={() => { setDrawStock(db.projectStocks.find(s => s.status === 'open')?.id ?? ''); openModal('draw') }}>+ ดึง LBS เข้า Job</button>
           <button onClick={() => { setReturnTarget(''); openModal('return') }} disabled={returnableUnits.length === 0}>คืน LBS กลับสต็อก</button>
-          <button className="success" onClick={() => {
-            setIssueForm({ startDate: job.requiredDate || '', endDate: job.requiredDate || '', location: job.installLocation || '', note: '' })
-            openModal('issue')
-          }} disabled={status !== 'ready_to_issue' || pendingApprovalOf('issue_job') || !!etaBlock}
-            title={status !== 'ready_to_issue' ? 'ต้องมี LBS ครบตาม Scope และ Accessory ครบทุกรายการ'
-              : pendingApprovalOf('issue_job') ? 'มีคำขอเบิกรอ Division พิจารณาอยู่แล้ว'
-              : etaBlock ?? ''}>
-            {isManage ? 'เบิกทั้งหมดให้ Service' : 'ขออนุมัติเบิกให้ Service'}
+          {/* 0059: ปุ่มเดียวเปิด popup ให้เลือกว่ารอบนี้เบิกอะไร — ไม่ใช่เบิกทั้งใบทีเดียวอีกแล้ว
+              เงื่อนไขเปิดใช้ = "มีของอะไรเบิกได้บ้าง" (ไม่ผูกกับสถานะ ready_to_issue ทั้งใบ)
+              เพราะทั้งหมดของฟีเจอร์นี้คือเบิก LBS ได้ระหว่างที่ Accessory ยังรอ PO */}
+          <button className="success" onClick={openIssueModal}
+            disabled={!canIssueAnything || (plan.accReady.length === 0 && pendingApprovalOf('issue_job'))}
+            title={plan.lbsShort > 0 && plan.accReady.length === 0
+              ? `ดึง LBS ยังไม่ครบ Scope — ขาดอีก ${plan.lbsShort} เครื่อง`
+              : !canIssueAnything ? 'ยังไม่มีของที่พร้อมเบิก — LBS รอ ETA to WH / วัสดุรอรับของจาก PO'
+              : pendingApprovalOf('issue_job') ? 'มีคำขอเบิก LBS รอ Division พิจารณาอยู่แล้ว — เบิกวัสดุได้ตามปกติ'
+              : ''}>
+            เบิกให้ Service{canIssueAnything && <> ({[
+              plan.lbsShort === 0 && plan.lbsReady.length > 0 ? `LBS ${plan.lbsReady.length}` : null,
+              plan.accReady.length > 0 ? `วัสดุ ${plan.accReady.length}` : null,
+            ].filter(Boolean).join(' + ')})</>}
           </button>
           <button onClick={() => {
             setEditForm({
@@ -624,17 +709,26 @@ export default function JobDetailPage() {
         </div>
         <div className="table-scroll">
           <table>
-            <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th>มาจาก Stock</th><th>สถานะ</th></tr></thead>
+            <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th>มาจาก Stock</th><th>สถานะ</th><th>เบิกให้ Service</th></tr></thead>
             <tbody>
-              {allocatedUnits.length === 0 && <tr><td colSpan={4}><div className="empty">ยังไม่ได้ดึง LBS — Job อยู่สถานะ Draft</div></td></tr>}
-              {allocatedUnits.map(u => (
-                <tr key={u.id}>
-                  <td className="mono">{u.serialLvb}</td>
-                  <td className="mono">{u.serialOm}</td>
-                  <td>{stockOf(u.projectStockId)?.stockNo}</td>
-                  <td>{u.status === 'allocated' ? <span className="badge blue">Allocated</span> : <span className="badge neutral">Issued</span>}</td>
-                </tr>
-              ))}
+              {allocatedUnits.length === 0 && <tr><td colSpan={5}><div className="empty">ยังไม่ได้ดึง LBS — Job อยู่สถานะ Draft</div></td></tr>}
+              {allocatedUnits.map(u => {
+                // 0059: บอกรายเครื่องว่าเบิกได้หรือยัง — เดิมเห็นแค่ Allocated/Issued แล้วต้องเดาเอง
+                const blocked = plan.lbsBlocked.find(x => x.unit.id === u.id)
+                return (
+                  <tr key={u.id}>
+                    <td className="mono">{u.serialLvb}</td>
+                    <td className="mono">{u.serialOm}</td>
+                    <td>{stockOf(u.projectStockId)?.stockNo}</td>
+                    <td>{u.status === 'allocated' ? <span className="badge blue">Allocated</span> : <span className="badge neutral">Issued</span>}</td>
+                    <td>
+                      {u.status === 'issued' ? <span className="badge green">✅ เบิกแล้ว</span>
+                        : blocked ? <><span className="badge red">Not Ready</span><div className="muted">{blocked.block}</div></>
+                        : <span className="badge green">Ready</span>}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -674,9 +768,9 @@ export default function JobDetailPage() {
         </div>
         {poOpen && <div className="table-scroll">
           <table>
-            <thead><tr><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>จำนวน</th><th>ราคา/หน่วย</th><th>มูลค่า</th><th>Phase Budget</th><th>แหล่ง</th><th>สถานะ</th><th>PR / PO</th><th></th></tr></thead>
+            <thead><tr><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>จำนวน</th><th>ราคา/หน่วย</th><th>มูลค่า</th><th>Phase Budget</th><th>แหล่ง</th><th>สถานะ</th><th>เบิกให้ Service</th><th>PR / PO</th><th></th></tr></thead>
             <tbody>
-              {accReqs.length === 0 && <tr><td colSpan={10}><div className="empty">ยังไม่มีรายการวัสดุ</div></td></tr>}
+              {accReqs.length === 0 && <tr><td colSpan={11}><div className="empty">ยังไม่มีรายการวัสดุ</div></td></tr>}
               {accReqs.map(r => {
                 const item = itemOf(r.itemId)!
                 const pr = db.prs.find(p => p.id === r.prId)
@@ -711,6 +805,15 @@ export default function JobDetailPage() {
                     </td>
                     <td>{r.source === 'central_stock' ? <span className="badge green">คลังคงเหลือ</span> : <span className="badge amber">Purchasing</span>}</td>
                     <td><span className={`badge ${r.status === 'issued' || r.status === 'received' ? 'green' : r.status === 'cancelled' || r.status === 'returned' ? 'neutral' : 'amber'}`}>{ACC_STATUS_LABEL[r.status]}</span></td>
+                    {/* 0059: Ready = เบิกให้ Service ได้ตอนนี้ · Not Ready = บอกเหตุผลตรงนั้น ไม่ต้องไปเดาที่อื่น */}
+                    <td>{(() => {
+                      if (r.issuedToServiceAt) return <><span className="badge green">✅ เบิกแล้ว</span><div className="muted">{fmtDate(r.issuedToServiceAt)}</div></>
+                      if (!active) return <span className="muted">-</span>
+                      const blk = accIssueBlockReason(db, r)
+                      return blk
+                        ? <><span className="badge amber">Not Ready</span><div className="muted">{blk}</div></>
+                        : <span className="badge green">Ready</span>
+                    })()}</td>
                     <td className="mono">{[pr?.prNo, po?.poNo].filter(Boolean).join(' / ') || '-'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       {canManage && !procureLocked && active && (
@@ -1003,6 +1106,9 @@ export default function JobDetailPage() {
             <select value={accForm.source} onChange={e => setAccForm({ ...accForm, source: e.target.value as typeof accForm.source })}>
               <option value="central_stock" disabled={selAccStockQty <= 0}>
                 เบิกจากคลังคงเหลือ {selAccStockQty > 0 ? `(มี ${selAccStockQty} ${selAccItem?.uom ?? ''})` : '(ไม่มีของในคลัง)'}
+                <div className="muted" style={{ fontWeight: 400 }}>
+                  ⏱️ ยอดคลัง<b>ลดทันทีที่กดปุ่มนี้</b> (ไม่ใช่ตอนเบิกให้ Service) — ของมาอยู่ในมือ Job แล้ว
+                </div>
               </option>
               <option value="purchasing">สั่งซื้อผ่าน Purchasing (ออก PR → PO)</option>
             </select>
@@ -1035,50 +1141,201 @@ export default function JobDetailPage() {
         </Modal>
       )}
 
-      {modal === 'issue' && (
-        <Modal title={isManage ? 'เบิกทั้งหมดให้ Service ติดตั้ง' : 'ขออนุมัติเบิกให้ Service (Division)'} onClose={close}
-          footer={<>
-            <button onClick={close}>ยกเลิก</button>
-            <button className="success"
-              disabled={!issueForm.startDate || !issueForm.endDate || !issueForm.location.trim()}
-              title={!issueForm.startDate || !issueForm.endDate || !issueForm.location.trim() ? 'กรอกวันติดตั้ง Start–End และ Location ให้ครบก่อน' : ''}
-              onClick={async () => {
-                const ok = isManage
-                  ? await tryAction(() => act.issueJob({ jobId: job.id, ...issueForm }), `เบิก ${job.jobNo} ให้ Service แล้ว`)
-                  : await tryAction(() => act.requestApproval({ type: 'issue_job', jobId: job.id, payload: { ...issueForm } }),
-                      `ส่งคำขอเบิก ${job.jobNo} ให้ Division พิจารณาแล้ว`)
-                if (ok) close()
-              }}>
-              {isManage ? 'ยืนยันการเบิก' : 'ส่งคำขออนุมัติ'}
-            </button>
-          </>}>
-          <p style={{ marginBottom: 10 }}>
-            เบิก <b>LBS {allocatedUnits.length} เครื่อง</b> + Accessory ทั้งหมดของ <b>{job.jobNo}</b> ให้ Service
-            — กำหนดนัดหมายติดตั้งจริงด้านล่าง (แผนเดิม: {job.installLocation || '-'} · {fmtDate(job.requiredDate)})
-          </p>
-          <p className="muted" style={{ marginBottom: 12 }}>
-            {isManage
-              ? 'หลังยืนยัน Job จะล็อก แก้ไข allocation หรือคืนของไม่ได้อีก'
-              : 'คำขอจะส่งให้ Division พิจารณา — เมื่ออนุมัติระบบเบิกให้ทันที แล้ว Job จะล็อก แก้ไข allocation ไม่ได้อีก'}
-          </p>
-          <div className="row">
-            <label className="field"><span>วันเริ่มติดตั้ง (Start) *</span>
-              <input type="date" value={issueForm.startDate}
-                onChange={e => setIssueForm({ ...issueForm, startDate: e.target.value, endDate: issueForm.endDate && issueForm.endDate >= e.target.value ? issueForm.endDate : e.target.value })} />
+      {/* ---------------- popup "จะเบิกอะไร" (0059) ----------------
+          เดิมโมดัลนี้แค่ถามวันนัด แล้วเบิกทั้งใบ · ตอนนี้เป็นที่ที่ผู้ใช้เลือกของทีละชิ้น
+          กติกาที่ต้องเห็นจากจอตรง ๆ: Ready ติ๊กได้ · Not Ready ติ๊กไม่ได้ + บอกเหตุผลข้างรายการ */}
+      {modal === 'issue' && (() => {
+        const nUnits = pickedUnits.size
+        const nReqs = pickedReqs.size
+        const needPlan = !job.installStartDate || !job.installEndDate || !job.issueLocation
+        const planFilled = !!issueForm.startDate && !!issueForm.endDate && !!issueForm.location.trim()
+        const nothingPicked = nUnits === 0 && nReqs === 0
+        // Manage เบิก LBS ตรงได้ · Project ต้องส่งคำขอ → ปุ่มเดียวแต่ผลต่างกัน จึงต้องบอกให้ชัด
+        const label = nUnits > 0 && !isManage
+          ? (nReqs > 0 ? `เบิกวัสดุ ${nReqs} + ส่งคำขอ LBS` : 'ส่งคำขออนุมัติเบิก LBS')
+          : 'ยืนยันการเบิก'
+        return (
+          <Modal title={`เบิกให้ Service — ${job.jobNo}`} onClose={close} size="wide"
+            footer={<>
+              <button onClick={close}>ยกเลิก</button>
+              <button className="success"
+                disabled={nothingPicked || (needPlan && !planFilled)}
+                title={nothingPicked ? 'เลือกของที่จะเบิกอย่างน้อย 1 รายการ'
+                  : needPlan && !planFilled ? 'กรอกวันติดตั้ง Start–End และ Location ให้ครบก่อน' : ''}
+                onClick={submitIssue}>
+                {label}
+              </button>
+            </>}>
+            <p className="muted" style={{ marginBottom: 12 }}>
+              เลือกได้ว่ารอบนี้จะส่งอะไรให้ Service — <b>ไม่ต้องรอให้ครบทั้งใบ</b> ·
+              ของที่เหลือเบิกตามมาได้ภายหลัง เมื่อครบทั้งใบระบบจะปิดงานเป็น <b>Issued</b> ให้เอง
+            </p>
+
+            {/* ---- LBS ---- */}
+            <div className="panel" style={{ marginBottom: 12 }}>
+              <div className="panel-head">
+                <h3>LBS <span className="muted" style={{ fontWeight: 400 }}>
+                  · เบิกได้ {plan.lbsReady.length} · เบิกไม่ได้ {plan.lbsBlocked.length} · เบิกไปแล้ว {plan.lbsIssued.length}
+                </span></h3>
+                {plan.lbsReady.length > 0 && (
+                  <button className="small" onClick={() => setPickedUnits(
+                    nUnits === plan.lbsReady.length ? new Set() : new Set(plan.lbsReady.map(u => u.id)))}>
+                    {nUnits === plan.lbsReady.length ? 'ไม่เลือกเลย' : 'เลือกทั้งหมดที่พร้อม'}
+                  </button>
+                )}
+              </div>
+              <div className="panel-body">
+                {plan.lbsShort > 0 && (
+                  <div style={{ color: 'var(--danger)', marginBottom: 8 }}>
+                    ⚠️ ดึง LBS ยังไม่ครบ Scope — ขาดอีก <b>{plan.lbsShort} เครื่อง</b> เบิก LBS ไม่ได้จนกว่าจะดึงครบ
+                  </div>
+                )}
+                {plan.lbsReady.length === 0 && plan.lbsBlocked.length === 0 && (
+                  <div className="muted">เบิก LBS ครบทุกเครื่องแล้ว</div>
+                )}
+                <div className="serial-grid">
+                  {plan.lbsReady.map(u => (
+                    <div key={u.id} className={`serial-pick${pickedUnits.has(u.id) ? ' selected' : ''}`}
+                      onClick={() => plan.lbsShort === 0 && toggleUnit(u.id)}
+                      style={plan.lbsShort > 0 ? { opacity: .5, cursor: 'not-allowed' } : undefined}>
+                      <span className="pick-main">
+                        <input type="checkbox" readOnly checked={pickedUnits.has(u.id)} disabled={plan.lbsShort > 0} />
+                        <span className="mono">{u.serialLvb}</span>
+                      </span>
+                      <span className="badge green">Ready</span>
+                    </div>
+                  ))}
+                  {plan.lbsBlocked.map(({ unit, block }) => (
+                    <div key={unit.id} className="serial-pick" style={{ opacity: .55, cursor: 'not-allowed' }} title={block}>
+                      <span className="pick-main">
+                        <input type="checkbox" readOnly checked={false} disabled />
+                        <span className="mono">{unit.serialLvb}</span>
+                      </span>
+                      <span className="pick-eta">⚠️ {block}</span>
+                    </div>
+                  ))}
+                </div>
+                {nUnits > 0 && (
+                  <div className="muted" style={{ marginTop: 8 }}>
+                    {isManage
+                      ? <>เบิก LBS ตรงได้ (Manage) — เครื่องที่เบิกออกไปจะ<b>ล็อก คืนหรือสลับไม่ได้อีก</b></>
+                      : <>LBS ต้องผ่าน <b>Division</b> — ระบบจะส่งคำขอไป ไม่ได้เบิกทันที</>}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* ---- Accessory จัดกลุ่มตาม PO ---- */}
+            <div className="panel" style={{ marginBottom: 12 }}>
+              <div className="panel-head">
+                <h3>Accessory <span className="muted" style={{ fontWeight: 400 }}>
+                  · เบิกได้ {plan.accReady.length} / ค้างทั้งหมด {plan.accPending.length} รายการ
+                </span></h3>
+                {plan.accReady.length > 0 && (
+                  <button className="small" onClick={() => setPickedReqs(
+                    nReqs === plan.accReady.length ? new Set() : new Set(plan.accReady.map(r => r.id)))}>
+                    {nReqs === plan.accReady.length ? 'ไม่เลือกเลย' : 'เลือกทั้งหมดที่พร้อม'}
+                  </button>
+                )}
+              </div>
+              <div className="panel-body">
+                {plan.groups.length === 0 && <div className="muted">ไม่มีวัสดุค้างรอเบิก</div>}
+                {plan.groups.map(g => {
+                  const allPicked = g.ready.length > 0 && g.ready.every(r => pickedReqs.has(r.id))
+                  return (
+                    <div key={g.key} style={{ marginBottom: 10 }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        {g.ready.length > 0 ? (
+                          <label style={{ display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+                            <input type="checkbox" checked={allPicked} onChange={() => toggleGroup(g.ready.map(r => r.id), !allPicked)} />
+                            <b className="mono">{g.label}</b>
+                          </label>
+                        ) : <b className="mono" style={{ opacity: .6 }}>{g.label}</b>}
+                        {g.po
+                          ? (g.po.status === 'received'
+                              ? <span className="badge green">รับของแล้ว</span>
+                              : g.po.status === 'cancelled'
+                                ? <span className="badge neutral">ยกเลิก</span>
+                                : <span className="badge amber">รอรับของ</span>)
+                          : <span className="badge green">คลังคงเหลือ</span>}
+                        <span className="muted">{g.rows.length} รายการ</span>
+                        {g.block && <span style={{ color: 'var(--danger)' }}>⚠️ {g.block} — เบิกไม่ได้</span>}
+                      </div>
+                      <div style={{ paddingLeft: 24, marginTop: 4 }}>
+                        {g.rows.map(({ req: r, block }) => {
+                          const it = itemOf(r.itemId)
+                          return (
+                            <div key={r.id} style={{ display: 'flex', gap: 8, alignItems: 'center', opacity: block ? .55 : 1 }}>
+                              <input type="checkbox" disabled={!!block} checked={pickedReqs.has(r.id)}
+                                onChange={() => toggleReq(r.id)} />
+                              <span>{it?.name ?? '-'} <span className="muted">{effectiveQty(r)} {it?.uom ?? ''}</span></span>
+                              {block
+                                ? <span className="muted">— {block}</span>
+                                : <span className="badge green">Ready</span>}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })}
+                {plan.accReady.length > 0 && (
+                  <div className="muted" style={{ marginTop: 6 }}>
+                    วัสดุที่รับของแล้ว <b>เบิกได้เลยไม่ต้องรอ Division</b> — บันทึกลง Audit Log ทุกครั้ง
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* ---- นัดติดตั้ง ---- */}
+            {needPlan ? (
+              <>
+                <p style={{ marginBottom: 6 }}>
+                  กำหนดนัดหมายติดตั้งจริง <span className="muted">(แผนเดิม: {job.installLocation || '-'} · {fmtDate(job.requiredDate)})</span>
+                </p>
+                <div className="row">
+                  <label className="field"><span>วันเริ่มติดตั้ง (Start) *</span>
+                    <input type="date" value={issueForm.startDate}
+                      onChange={e => setIssueForm({ ...issueForm, startDate: e.target.value, endDate: issueForm.endDate && issueForm.endDate >= e.target.value ? issueForm.endDate : e.target.value })} />
+                  </label>
+                  <label className="field"><span>วันสิ้นสุด (End) *</span>
+                    <input type="date" min={issueForm.startDate || undefined} value={issueForm.endDate}
+                      onChange={e => setIssueForm({ ...issueForm, endDate: e.target.value })} />
+                  </label>
+                </div>
+                <label className="field"><span>Location (สถานที่ติดตั้งจริง) *</span>
+                  <input value={issueForm.location} onChange={e => setIssueForm({ ...issueForm, location: e.target.value })} placeholder="สถานีไฟฟ้า..." />
+                </label>
+              </>
+            ) : (
+              <p className="muted" style={{ marginBottom: 10 }}>
+                📅 นัดติดตั้งของงานนี้ตั้งไว้แล้ว <b>{fmtDate(job.installStartDate)} – {fmtDate(job.installEndDate)}</b>{' '}
+                ที่ <b>{job.issueLocation}</b> — แก้ได้ด้านล่างถ้าต้องเลื่อน (เว้นว่าง = คงเดิม)
+              </p>
+            )}
+            {!needPlan && (
+              <>
+                <div className="row">
+                  <label className="field"><span>เลื่อนวันเริ่ม (ไม่บังคับ)</span>
+                    <input type="date" value={issueForm.startDate}
+                      onChange={e => setIssueForm({ ...issueForm, startDate: e.target.value, endDate: issueForm.endDate && issueForm.endDate >= e.target.value ? issueForm.endDate : e.target.value })} />
+                  </label>
+                  <label className="field"><span>เลื่อนวันสิ้นสุด (ไม่บังคับ)</span>
+                    <input type="date" min={issueForm.startDate || undefined} value={issueForm.endDate}
+                      onChange={e => setIssueForm({ ...issueForm, endDate: e.target.value })} />
+                  </label>
+                </div>
+                <label className="field"><span>เปลี่ยน Location (ไม่บังคับ)</span>
+                  <input value={issueForm.location} onChange={e => setIssueForm({ ...issueForm, location: e.target.value })} placeholder={job.issueLocation} />
+                </label>
+              </>
+            )}
+            <label className="field"><span>บันทึกถึงทีม Service (ทีม/นัดหมาย)</span>
+              <textarea rows={2} value={issueForm.note} onChange={e => setIssueForm({ ...issueForm, note: e.target.value })} placeholder="ทีม Service A นัดเข้าไซต์ ..." />
             </label>
-            <label className="field"><span>วันสิ้นสุด (End) *</span>
-              <input type="date" min={issueForm.startDate || undefined} value={issueForm.endDate}
-                onChange={e => setIssueForm({ ...issueForm, endDate: e.target.value })} />
-            </label>
-          </div>
-          <label className="field"><span>Location (สถานที่ติดตั้งจริง) *</span>
-            <input value={issueForm.location} onChange={e => setIssueForm({ ...issueForm, location: e.target.value })} placeholder="สถานีไฟฟ้า..." />
-          </label>
-          <label className="field"><span>บันทึกถึงทีม Service (ทีม/นัดหมาย)</span>
-            <textarea rows={2} value={issueForm.note} onChange={e => setIssueForm({ ...issueForm, note: e.target.value })} placeholder="ทีม Service A นัดเข้าไซต์ ..." />
-          </label>
-        </Modal>
-      )}
+          </Modal>
+        )
+      })()}
 
       {modal === 'cancel' && (
         <Modal title={isManage ? `ยกเลิก ${job.jobNo}` : `ขออนุมัติยกเลิก ${job.jobNo} (Division)`} onClose={close}

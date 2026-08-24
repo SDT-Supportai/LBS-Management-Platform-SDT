@@ -5,6 +5,7 @@ import { ErrorBoundary, ToastProvider, useConfirm, useTryAction } from './ui/com
 import { DEPT_LABEL, fmtDateTime } from './ui/format'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
+import MapTrackingPage from './pages/MapTrackingPage'
 import StocksPage from './pages/StocksPage'
 import JobsPage from './pages/JobsPage'
 import JobDetailPage from './pages/JobDetailPage'
@@ -28,7 +29,6 @@ function BrandLogo() {
 
 function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { db, user, logout, resetDemo, mode } = useStore()
-  const navigate = useNavigate()
   const { ask: askConfirm, element: confirmEl } = useConfirm()
   if (!user) return null
   const pendingPrs = db.prs.filter(p => p.status === 'pending').length
@@ -44,8 +44,10 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
     j.terminalStatus === 'issued' && !db.jobAssignments.some(a => a.jobId === j.id)).length
   // ปัญหางานบริการที่ยังไม่ปิดงาน — เตือนที่เมนู Service
   const openServiceIssues = serviceIssues(db).filter(i => !i.jobClosed).length
-
-  const unread = unreadNotifications(db, user)
+  // จำนวนจุดที่มีพิกัดบนแผนที่ (เช็คอินราย Serial) — นับเครื่องที่มีพิกัด ไม่ใช่จำนวนแถว log
+  const mapPins = new Set(
+    db.unitInstallations.filter(r => r.checkinLat != null && r.checkinLng != null).map(r => r.unitId),
+  ).size
 
   // ---------------------------------------------------------------------------
   // เมนู 2 ชั้น: Module → หน้า (มติ 2026-08-22)
@@ -72,8 +74,11 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   // ---------------------------------------------------------------------------
   type MenuItem = { to: string; icon: string; label: string; badge?: { text: string; cls: string } }
   const MENU: { mod: string; icon: string; items: MenuItem[] }[] = [
+    // อ่านอย่างเดียว รวมทุกแผนก — Map Tracking อยู่ที่นี่เพราะเป็นมุมมองสรุป ไม่ทำให้อะไรขยับสถานะ
     { mod: 'Overview', icon: '📊', items: [
       { to: '/dashboard', icon: '📊', label: 'Dashboard' },
+      { to: '/map', icon: '🗺️', label: 'Map Tracking — ประเทศไทย',
+        badge: mapPins > 0 ? { text: `${mapPins} จุด`, cls: 'blue' } : undefined },
     ] },
     // เรียงตามลำดับที่ของจริงเดิน: เข้าคลัง → เปิดงาน → ซื้อของ → ติดตั้ง
     { mod: 'Operations', icon: '🏭', items: [
@@ -89,14 +94,15 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
     { mod: 'Workforce & Scheduling', icon: '👷', items: [
       { to: '/scheduling', icon: '👷', label: 'Assignment & Schedule', badge: unassignedJobs > 0 ? { text: `${unassignedJobs} Unassigned`, cls: 'amber' } : undefined },
     ] },
-    // ขวางสายงาน + เป็นหลักฐาน · Notifications/Audit เคยไม่มีในเมนู (ซ่อนอยู่ในกระดิ่งกับปุ่มท้าย sidebar)
-    { mod: 'Approvals & Audit', icon: '✅', items: [
+    // ขวางสายงาน = อยู่ในเมนู · Notifications/Audit Log ย้ายไปมุมขวาบน (มติ 2026-08-23)
+    //   เหตุผล: 2 หน้านั้นเป็น "เปิดดูตอนสงสัย" ไม่ใช่ "ขั้นที่ต้องเดิน" — อยู่ในเมนูสายงานทำให้เมนูยาวขึ้น
+    //   โดยไม่ช่วยให้เดินงานเร็วขึ้น · Notifications ยังซ้ำกับกระดิ่งมุมขวาบนที่มีของเดิมอยู่แล้ว
+    //   ⚠️ route ยังอยู่ครบ (/notifications · /audit) — bookmark เก่า ลิงก์ "ดูทั้งหมด →" และลิงก์ใน LINE ใช้ได้ปกติ
+    { mod: 'Approvals', icon: '✅', items: [
       { to: '/approvals', icon: '✅', label: 'Approval Queue',
         badge: pendingApprovals > 0
           ? { text: `${pendingApprovals}${pendingComments > 0 ? ` · 💬${pendingComments}` : ''}`, cls: 'amber' }
           : undefined },
-      { to: '/notifications', icon: '🔔', label: 'Notifications', badge: unread.length > 0 ? { text: `${unread.length}`, cls: 'red' } : undefined },
-      { to: '/audit', icon: '📜', label: 'Audit Log' },
     ] },
     { mod: 'Master Data', icon: '📚', items: [
       { to: '/master', icon: '🗄️', label: 'Material Master' },
@@ -145,7 +151,6 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
         <div className="name">{user.fullName} {mode === 'demo' ? <span className="badge amber">DEMO</span> : <span className="badge green">LIVE</span>}</div>
         <div className="dept">แผนก {DEPT_LABEL[user.department]} · {user.email}</div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button className="small" onClick={() => { navigate('/audit'); onClose() }}>📜 Audit Log</button>
           <button className="small" onClick={() => logout()}>ออกจากระบบ</button>
           {mode === 'demo' && (
             <button className="small" onClick={async () => {
@@ -163,7 +168,9 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   )
 }
 
-// การแจ้งเตือน + Refresh ย้ายมามุมบนขวา (bell dropdown)
+// การแจ้งเตือน + Refresh + Audit Log อยู่มุมบนขวาทั้งชุด (2026-08-23)
+//   เกณฑ์: "เครื่องมือประจำหน้าจอ" (โหลดใหม่ / ดูว่ามีอะไรเกิดขึ้น / ย้อนดูว่าใครทำอะไร)
+//   ไม่ใช่ขั้นตอนในสายงาน จึงไม่ควรกินที่ในเมนูซ้าย — ดู §13 ใน HANDOFF
 // แบนเนอร์สถานะการเชื่อมต่อ — ต้องบอกให้ชัดว่า "โหลดไม่ได้" ไม่ใช่ "ไม่มีข้อมูล"
 function ConnectionBanner() {
   const { loadError, stale, refresh } = useStore()
@@ -223,6 +230,10 @@ function TopBar() {
     <div className="topbar">
       <button className="topbar-btn" onClick={doRefresh} disabled={refreshing} title="โหลดข้อมูลล่าสุด">
         <span className={`tb-icon${refreshing ? ' spin' : ''}`}>↻</span> Refresh
+      </button>
+      {/* Audit Log — ย้ายจากเมนูซ้าย + กล่องผู้ใช้ท้าย sidebar มารวมที่นี่ (ที่เดียว ไม่ซ้ำ) */}
+      <button className="topbar-btn" onClick={() => navigate('/audit')} title="ประวัติการทำรายการทั้งระบบ">
+        <span className="tb-icon">📜</span> Audit Log
       </button>
       <div className="notif-wrap" ref={wrapRef}>
         <button className="topbar-btn bell" onClick={() => setOpen(o => !o)} title="การแจ้งเตือน">
@@ -300,6 +311,7 @@ export default function App() {
             <ErrorBoundary resetKey={pathname}>
             <Routes>
               <Route path="/dashboard" element={<DashboardPage />} />
+              <Route path="/map" element={<MapTrackingPage />} />
               <Route path="/stocks" element={<StocksPage />} />
               <Route path="/jobs" element={<JobsPage />} />
               <Route path="/jobs/:jobId" element={<JobDetailPage />} />

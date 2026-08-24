@@ -242,6 +242,8 @@ table.grid td { vertical-align: middle; }
 .badge.draft { background: var(--gray-soft); color: #444; }
 .badge.allocated, .badge.procuring_accessory { background: var(--violet-soft); color: var(--violet); }
 .badge.ready_to_issue { background: var(--green-soft); color: var(--green); }
+/* เบิกบางส่วน (0059) — สีอยู่ระหว่าง ready_to_issue (เขียว) กับ issued (ฟ้า) เพื่อสื่อว่า "กำลังส่งของ" */
+.badge.partially_issued { background: #fdf0d5; color: #8a5a00; }
 .badge.issued { background: #ddeffc; color: #145a8a; }
 .badge.installed { background: #eaf3de; color: #3b6d11; }
 .badge.cancelled { background: var(--red-soft); color: var(--red); }
@@ -459,8 +461,39 @@ body.is-busy button.danger { opacity: .55; pointer-events: none; cursor: progres
   .sidebar { transition: none; }
 }
 
+/* ---------- Map Tracking (Leaflet + OSM) ----------
+   หมุดเป็น divIcon (HTML ล้วน) ไม่ใช่ marker-icon.png ของ Leaflet
+   เพราะ path รูปใน CSS ของ Leaflet พังเวลาผ่าน bundler — และวิธีนี้ระบายสีตามผลติดตั้งได้ */
+.map-box {
+  height: 520px;
+  min-height: 320px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--line, #e2e8f0);
+  /* Leaflet วาง overlay ที่ z-index สูง — กันทับ modal/dropdown ของแอป */
+  z-index: 0;
+}
+@media (max-width: 768px) { .map-box { height: 380px; } }
+
+.mp-pin-wrap { background: none; border: none; }
+.mp-pin, .mp-legend {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: #2e7d32; color: #fff;
+  font: 600 11px/1 system-ui, sans-serif;
+  border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .4);
+}
+.mp-pin.blocked, .mp-legend.blocked { background: #c62828; }
+.mp-legend { width: 14px; height: 14px; vertical-align: -2px; margin-right: 4px; }
+
+.mp-pop { max-height: 260px; overflow-y: auto; }
+.mp-pop .mp-row + .mp-row { border-top: 1px solid #e2e8f0; margin-top: 6px; padding-top: 6px; }
+.mp-pop .mp-sub { color: #667085; font-size: 12px; }
+.mp-pop .mp-mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+
 /* ---------- print: สรุปโครงการ (Job Detail → Ctrl+P / บันทึก PDF) ---------- */
 @media print {
+  .map-box,
   .sidebar, .topbar, .mobile-header, .nav-backdrop, .modal-overlay,
   button, .glow-dot, .aurora { display: none !important; }
   .app { display: block; }

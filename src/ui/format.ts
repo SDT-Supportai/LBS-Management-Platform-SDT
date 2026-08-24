@@ -18,6 +18,8 @@ export const JOB_STATUS_LABEL: Record<JobStatus, string> = {
   allocated: 'Allocated',
   procuring_accessory: 'Procuring Accessory',
   ready_to_issue: 'Ready to Issue',
+  // 0059: เบิกออกไปแล้วบางส่วน (LBS หรือวัสดุบาง PO) แต่ยังไม่ครบทั้งใบ
+  partially_issued: 'Partially Issued (เบิกบางส่วน)',
   issued: 'Issued (รอติดตั้ง)',
   installed: 'Installed',
   cancelled: 'Cancelled',
@@ -56,7 +58,8 @@ export const DEPT_LABEL: Record<Department, string> = {
 
 export const APPROVAL_TYPE_LABEL: Record<string, string> = {
   create_pr: 'ออก PR',
-  issue_job: 'เบิกให้ Service',
+  // 0059: คำขอนี้ครอบเฉพาะ LBS แล้ว — Accessory ตาม PO ที่รับของครบ Project เบิกเองได้
+  issue_job: 'เบิก LBS ให้ Service',
   cancel_job: 'ยกเลิก Job',
   swap_lbs: 'สลับ LBS',
   reopen_job: 'เปิดงานใหม่',

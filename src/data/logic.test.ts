@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest'
 import type { DB, Job, AccessoryRequest, LbsUnit } from '../types'
 import {
   effectiveQty, poCostSummary, jobMaterialValue, jobLbsCost, jobBudgetSummary,
-  deriveJobStatus, jobDueDate, jobDaysLeft,
+  deriveJobStatus, jobDueDate, jobDaysLeft, jobAllocatedQty,
+  unitIssueBlockReason, accIssueBlockReason, jobPendingIssueAccessories, jobIssuePlan,
+  issueJobLbs, issueJobAccessory, cancelJob,
   unitEta, unitLeadDays, normalizeLeadDays, leadDaysToStore,
   ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX,
   addDaysIso, daysBetweenIso, nextNo,
@@ -258,11 +260,165 @@ describe('deriveJobStatus — สถานะเป็นผลลัพธ์ �
     expect(deriveJobStatus(d, job({ terminalStatus: 'issued' }))).toBe('issued')
   })
 
-  it('เครื่องที่ issued แล้วไม่นับเป็น allocated — งานที่เบิกแล้วต้องมี terminalStatus พาไป', () => {
-    // §9.7: v_job_status เคยนับเฉพาะ allocated ทำให้บอทรายงาน "LBS: 0/N" หลังเบิก
+  it('เครื่องที่ issued แล้วยังนับว่าอยู่บน Job — ไม่ตกกลับเป็น Draft (0059)', () => {
+    // §9.7 เดิม: v_job_status นับเฉพาะ allocated ทำให้บอทรายงาน "LBS: 0/N" หลังเบิก
+    //   ตอนนั้นแก้ด้วยการให้ terminalStatus พาไป เพราะการเบิกเป็น all-or-nothing
+    // 0059 เบิกแยกส่วนได้ → มีช่วงที่ "เครื่องออกไปแล้วแต่ terminalStatus ยังว่าง"
+    //   ถ้ายังนับแค่ allocated งานจะโชว์ Draft ทั้งที่ของอยู่ในมือ Service แล้ว
     const issued = db({ lbsUnits: [unit({ id: 'a', status: 'issued', jobId: 'j1' })] })
-    expect(deriveJobStatus(issued, job())).toBe('draft')
+    expect(deriveJobStatus(issued, job())).toBe('partially_issued')
     expect(deriveJobStatus(issued, job({ terminalStatus: 'issued' }))).toBe('issued')
+    expect(jobAllocatedQty(issued, 'j1')).toBe(1)
+  })
+})
+
+// =============================================================================
+// เบิกให้ Service แบบแยกส่วน (0059) — Ready / Not Ready รายรายการ
+//
+// กฎที่ต้องล็อก:
+//   1) PO ที่ยัง "รอรับของ" ทั้งใบเบิกไม่ได้ แม้บรรทัดนั้นจะรับของครบแล้ว
+//   2) ของจากคลังคงเหลือเบิกได้ทันทีที่เบิกออกจากคลังเข้า Job แล้ว
+//   3) LBS ที่ ETA ยังไม่ถึง (Pending) เบิกไม่ได้ · "ไม่ระบุ ETA (?)" ไม่บล็อก
+//   4) เบิกครบทั้งใบเมื่อไหร่ terminalStatus ต้องเป็น 'issued' เอง ไม่ต้องกดปิด
+// =============================================================================
+describe('เบิกแยกส่วน — เกณฑ์ Ready / Not Ready', () => {
+  const poReceived = { id: 'po1', poNo: 'PO-001', prId: 'pr1', jobId: 'j1', supplierName: 'ซัพ A', expectedDate: '2026-06-01', status: 'received' as const, createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' }
+  const poWaiting = { ...poReceived, id: 'po2', poNo: 'PO-002', status: 'issued' as const }
+
+  it('PO รับของครบแล้ว = เบิกได้', () => {
+    const d = db({ pos: [poReceived], accessoryRequests: [req({ status: 'received', poId: 'po1' })] })
+    expect(accIssueBlockReason(d, d.accessoryRequests[0])).toBeUndefined()
+  })
+
+  it('PO ยังรอรับของ = เบิกไม่ได้ แม้บรรทัดนี้รับของครบแล้ว (ข้อ 3 ของโจทย์)', () => {
+    const d = db({ pos: [poWaiting], accessoryRequests: [req({ status: 'received', poId: 'po2' })] })
+    expect(accIssueBlockReason(d, d.accessoryRequests[0])).toContain('PO-002')
+  })
+
+  it('บรรทัดที่ยังไม่รับของบอกเหตุผลตามขั้นที่ค้างอยู่', () => {
+    const d = db({ pos: [poWaiting] })
+    expect(accIssueBlockReason(d, req({ status: 'pending', poId: null }))).toContain('PR')
+    expect(accIssueBlockReason(d, req({ status: 'po_ordered', poId: 'po2' }))).toContain('รอรับของ')
+  })
+
+  it('ของจากคลังคงเหลือที่เบิกเข้า Job แล้ว = เบิกได้ทันที', () => {
+    const d = db()
+    expect(accIssueBlockReason(d, req({ source: 'central_stock', status: 'issued', poId: null, prId: null }))).toBeUndefined()
+  })
+
+  it('โอนคืนคลังหมดแล้ว = ไม่มีของให้เบิก (ไม่ค้างขวางการปิดใบ)', () => {
+    const d = db({ pos: [poReceived] })
+    const r = req({ status: 'received', qtyRequested: 5, qtyTransferred: 5 })
+    expect(accIssueBlockReason(d, r)).toContain('โอนคืนคลัง')
+    expect(jobPendingIssueAccessories(db({ accessoryRequests: [r] }), 'j1')).toHaveLength(0)
+  })
+
+  it('เบิกไปแล้วไม่ถูกนับเป็นของค้างอีก', () => {
+    const r = req({ status: 'received', issuedToServiceAt: '2026-06-01T00:00:00.000Z' })
+    expect(accIssueBlockReason(db(), r)).toBe('เบิกให้ Service ไปแล้ว')
+    expect(jobPendingIssueAccessories(db({ accessoryRequests: [r] }), 'j1')).toHaveLength(0)
+  })
+
+  it('LBS: ETA ยังไม่ถึงเบิกไม่ได้ · ไม่ระบุ ETA ไม่บล็อก · On Hand เบิกได้', () => {
+    const alloc = (over = {}) => unit({ status: 'allocated', jobId: 'j1', ...over })
+    expect(unitIssueBlockReason(alloc({ planPoReceiptDate: '2026-12-31' }), '2026-06-01')).toContain('ETA')
+    expect(unitIssueBlockReason(alloc(), '2026-06-01')).toBeUndefined()
+    expect(unitIssueBlockReason(alloc({ planPoReceiptDate: '2026-01-01' }), '2026-06-01')).toBeUndefined()
+    expect(unitIssueBlockReason(unit({ status: 'issued', jobId: 'j1' }), '2026-06-01')).toBe('เบิกให้ Service ไปแล้ว')
+  })
+
+  it('jobIssuePlan จัดกลุ่มตาม PO และแยก Ready / Not Ready ให้ครบ', () => {
+    const d = db({
+      jobs: [job({ lbsQtyRequired: 2 })],
+      pos: [poReceived, poWaiting],
+      lbsUnits: [
+        unit({ id: 'a', status: 'allocated', jobId: 'j1' }),
+        unit({ id: 'b', serialLvb: 'LVB-002', status: 'allocated', jobId: 'j1', planPoReceiptDate: '2099-01-01' }),
+      ],
+      accessoryRequests: [
+        req({ id: 'r1', status: 'received', poId: 'po1' }),
+        req({ id: 'r2', status: 'po_ordered', poId: 'po2' }),
+      ],
+    })
+    const plan = jobIssuePlan(d, 'j1', '2026-06-01')
+    expect(plan.lbsShort).toBe(0)
+    expect(plan.lbsReady.map(u => u.id)).toEqual(['a'])
+    expect(plan.lbsBlocked.map(x => x.unit.id)).toEqual(['b'])
+    expect(plan.groups.map(g => g.label)).toEqual(['PO-001', 'PO-002'])
+    expect(plan.accReady.map(r => r.id)).toEqual(['r1'])
+    expect(plan.groups[1].block).toContain('รอรับของ')
+    expect(plan.completeIfAllReady).toBe(false)   // ยังมีทั้ง LBS และวัสดุที่ยังไม่พร้อม
+  })
+
+  it('ดึง LBS ไม่ครบ Scope → lbsShort บอกจำนวนที่ขาด', () => {
+    const d = db({
+      jobs: [job({ lbsQtyRequired: 3 })],
+      lbsUnits: [unit({ id: 'a', status: 'allocated', jobId: 'j1' })],
+    })
+    expect(jobIssuePlan(d, 'j1', '2026-06-01').lbsShort).toBe(2)
+  })
+})
+
+// =============================================================================
+describe('เบิกแยกส่วน — เดินสถานะจนปิดใบเอง', () => {
+  const actor = { id: 'u1', email: 'p@x.co', password: '', fullName: 'สมชาย', department: 'admin' as const, isActive: true }
+  const poReceived = { id: 'po1', poNo: 'PO-001', prId: 'pr1', jobId: 'j1', supplierName: 'ซัพ A', expectedDate: '2026-06-01', status: 'received' as const, createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' }
+  const base = () => db({
+    users: [actor],
+    items: [{ id: 'i1', code: 'ACC-1', name: 'ลูกถ้วย', itemType: 'accessory' as const, uom: 'ea', stockableCentrally: false }],
+    jobs: [job({ lbsQtyRequired: 1 })],
+    pos: [poReceived],
+    lbsUnits: [unit({ id: 'a', status: 'allocated', jobId: 'j1' })],
+    accessoryRequests: [req({ id: 'r1', status: 'received', poId: 'po1' })],
+  })
+  const plan = { startDate: '2026-07-01', endDate: '2026-07-02', location: 'สถานีไฟฟ้า A' }
+
+  it('เบิก LBS ก่อน → Partially Issued (ยังไม่ปิดใบ เพราะวัสดุยังไม่ออก)', () => {
+    const after = issueJobLbs(base(), actor, { jobId: 'j1', ...plan })
+    expect(after.jobs[0].terminalStatus).toBeNull()
+    expect(deriveJobStatus(after, after.jobs[0])).toBe('partially_issued')
+    expect(after.lbsUnits[0].status).toBe('issued')
+    expect(after.jobs[0].lbsIssuedAt).toBeTruthy()
+  })
+
+  it('เบิกวัสดุตามด้วย LBS → ปิดใบเป็น Issued เอง', () => {
+    let d = issueJobAccessory(base(), actor, { jobId: 'j1', ...plan })
+    expect(deriveJobStatus(d, d.jobs[0])).toBe('partially_issued')
+    d = issueJobLbs(d, actor, { jobId: 'j1' })            // ไม่ต้องกรอกนัดซ้ำ
+    expect(d.jobs[0].terminalStatus).toBe('issued')
+    expect(d.jobs[0].issuedAt).toBeTruthy()
+    expect(d.accessoryRequests[0].issuedToServiceAt).toBeTruthy()
+    expect(d.notifications.some(n => n.type === 'job_issued')).toBe(true)
+  })
+
+  it('เบิก LBS ที่ ETA ยังไม่ถึงไม่ได้ — กันทีมออกหน้างานเสียเที่ยว', () => {
+    const d = { ...base(), lbsUnits: [unit({ id: 'a', status: 'allocated', jobId: 'j1', planPoReceiptDate: '2099-01-01' })] }
+    expect(() => issueJobLbs(d, actor, { jobId: 'j1', ...plan })).toThrow(/ETA/)
+  })
+
+  it('เบิกวัสดุของ PO ที่ยังรอรับของไม่ได้', () => {
+    const d = { ...base(), pos: [{ ...poReceived, status: 'issued' as const }] }
+    expect(() => issueJobAccessory(d, actor, { jobId: 'j1', requestIds: ['r1'], ...plan })).toThrow(/PO-001/)
+  })
+
+  it('เบิกซ้ำรายการเดิมไม่ได้', () => {
+    const d = issueJobAccessory(base(), actor, { jobId: 'j1', ...plan })
+    expect(() => issueJobAccessory(d, actor, { jobId: 'j1', requestIds: ['r1'] })).toThrow(/เบิกให้ Service ไปแล้ว/)
+  })
+
+  it('เบิกก่อนดึง LBS ครบ Scope ไม่ได้', () => {
+    const d = { ...base(), jobs: [job({ lbsQtyRequired: 3 })] }
+    expect(() => issueJobLbs(d, actor, { jobId: 'j1', ...plan })).toThrow(/ครบ Scope/)
+  })
+
+  it('เบิกออกไปแล้วบางส่วน → ยกเลิก Job ไม่ได้ (ของอยู่ในมือ Service)', () => {
+    const d = issueJobLbs(base(), actor, { jobId: 'j1', ...plan })
+    expect(() => cancelJob(d, actor, { jobId: 'j1', reason: 'ลูกค้าเลื่อน', receivedAccessoryToCentral: true }))
+      .toThrow(/ยกเลิกไม่ได้/)
+  })
+
+  it('ไม่มีนัดติดตั้งเดิมและไม่กรอกมา → ต้องเตือน ไม่ใช่เบิกผ่าน', () => {
+    expect(() => issueJobLbs(base(), actor, { jobId: 'j1' })).toThrow(/กำหนดวันติดตั้ง/)
   })
 })
 

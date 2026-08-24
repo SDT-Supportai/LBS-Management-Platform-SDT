@@ -79,6 +79,9 @@ export type JobStatus =
   | 'allocated'
   | 'procuring_accessory'
   | 'ready_to_issue'
+  // เบิกออกไปให้ Service แล้วบางส่วน แต่ยังไม่ครบทั้งใบ (0059) — derive ไม่ใช่ terminal
+  //   เกิดได้เมื่อเบิก LBS ก่อน Accessory หรือเบิก Accessory ทีละ PO ที่รับของแล้ว
+  | 'partially_issued'
   | 'issued'
   | 'installed'
   | 'cancelled'
@@ -103,7 +106,10 @@ export interface Job {
   terminalStatus: 'issued' | 'installed' | 'cancelled' | null
   openedBy: string
   createdAt: string
-  issuedAt?: string
+  issuedAt?: string            // เบิกครบทั้งใบเมื่อ (terminalStatus = issued)
+  // เบิก LBS ล็อตแรกเมื่อ (0059) — คนละตัวกับ issuedAt ที่เป็น "ครบทั้งใบ"
+  // ว่าง = ยังไม่เบิก LBS เลย · สถานะรายเครื่องยังเป็นแหล่งความจริง (lbsUnits.status)
+  lbsIssuedAt?: string
   issuedNote?: string
   // นัดหมายติดตั้งจริง — กรอกตอนเบิกให้ Service (แยกจาก requiredDate/installLocation ที่เป็นแผนตอนเปิด Job)
   installStartDate?: string
@@ -192,6 +198,10 @@ export interface AccessoryRequest {
   phaseBudget?: string         // รหัส Phase Budget (อ้างอิงงบประมาณภายใน) — กรอกตอนขอวัสดุ
   source: 'central_stock' | 'purchasing'
   status: AccReqStatus
+  // เบิกให้ Service แล้วเมื่อ / โดยใคร (0059) — ว่าง = ของยังอยู่กับ Job
+  // ⚠️ คนละเรื่องกับ status = 'issued' ที่หมายถึง "เบิกจากคลังคงเหลือเข้า Job แล้ว"
+  issuedToServiceAt?: string
+  issuedToServiceBy?: string
   prId: string | null
   poId?: string | null         // PO ที่สั่ง line นี้ (1 PR → หลาย PO, 0022)
   requestedBy: string
@@ -225,10 +235,15 @@ export interface PurchaseOrder {
 
 // คำขออนุมัติจาก Division (dept ใน DB = 'sales', แสดงผลเป็น "Division")
 // project ขอ → division/admin อนุมัติ (execute ทันที) หรือตีกลับพร้อมเหตุผล
+// issue_job = "เบิก LBS ให้ Service" (0059 · เดิมหมายถึงเบิกทั้งใบ)
+//   Accessory ตาม PO ที่รับของแล้ว = Project เบิกได้เอง ไม่ต้องผ่านอนุมัติ (มติ 2026-08-23)
+//   คงค่า enum เดิมไว้ ไม่ rename เพื่อไม่ต้องแก้ CHECK constraint + ประวัติคำขอเก่า
 export type ApprovalType = 'create_pr' | 'issue_job' | 'cancel_job' | 'swap_lbs' | 'reopen_job'
 
 export interface ApprovalPayload {
   requestIds?: string[]            // create_pr
+  // issue_job (0059): เครื่องที่ขอเบิกรอบนี้ — ว่าง/undefined = เบิกทุกเครื่องที่พร้อม (คำขอเก่าก่อน 0059)
+  unitIds?: string[]
   startDate?: string               // issue_job
   endDate?: string
   location?: string

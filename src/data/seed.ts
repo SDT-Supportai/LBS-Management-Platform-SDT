@@ -184,5 +184,17 @@ export function buildSeedDb(): DB {
     location: 'อมตะซิตี้ จ.ระยอง', note: 'ทีม Service A นัดติดตั้ง 5 ก.ค. 2026',
   })
 
+  // ---- Check-in ราย Serial ของ JOB-0004 (2026-08-23) ----
+  // ใส่ไว้เพื่อให้หน้า Map Tracking มีหมุดให้ดูในโหมด demo — ไม่งั้นแผนที่ว่างเปล่าทุกครั้งที่รีเซ็ต
+  // พิกัดจริงย่านนิคมอมตะซิตี้ ระยอง · ทีมช่างเป็นคนเดียวกับที่ทะเบียนทีมมีอยู่
+  const svcUser = db.users.find(u => u.department === 'service')!
+  db = L.confirmUnitInstall(db, svcUser, {
+    unitId: db.lbsUnits.find(u => u.jobId === job4)!.id,
+    installedDate: '2026-07-05',
+    checkinLat: 12.9236, checkinLng: 101.1467,
+    photoUrl: 'https://placehold.co/600x400?text=Site+Photo',
+    note: 'ติดตั้งวงจรสำรองโรงงาน 1 เสร็จ ทดสอบสวิตช์ผ่าน',
+  })
+
   return db
 }

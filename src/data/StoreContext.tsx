@@ -201,6 +201,8 @@ export interface StoreActions {
   cancelPO: (p: Parameters<typeof L.cancelPO>[2]) => MaybePromise
   receivePOItems: (p: Parameters<typeof L.receivePOItems>[2]) => MaybePromise
   issueJob: (p: Parameters<typeof L.issueJob>[2]) => MaybePromise
+  issueJobLbs: (p: Parameters<typeof L.issueJobLbs>[2]) => MaybePromise
+  issueJobAccessory: (p: Parameters<typeof L.issueJobAccessory>[2]) => MaybePromise
   confirmInstall: (p: Parameters<typeof L.confirmInstall>[2]) => MaybePromise
   logSiteVisit: (p: Parameters<typeof L.logSiteVisit>[2]) => MaybePromise
   confirmUnitInstall: (p: Parameters<typeof L.confirmUnitInstall>[2]) => MaybePromise
@@ -387,6 +389,10 @@ function DemoProvider({ children }: { children: ReactNode }) {
         cancelPO: run('purchasing.manage', L.cancelPO),
         receivePOItems: run('purchasing.manage', L.receivePOItems),
         issueJob: run('master.manage', L.issueJob),
+        // 0059 — เบิก LBS ตรง = Manage เท่านั้น (Project ผ่าน requestApproval type issue_job)
+        issueJobLbs: run('master.manage', L.issueJobLbs),
+        // เบิก Accessory ที่รับของแล้ว = Project เจ้าของงาน + Manage (ไม่ต้องผ่าน Division · มติ 2026-08-23)
+        issueJobAccessory: run('job.manage', L.issueJobAccessory),
         confirmInstall: run('service.confirm', L.confirmInstall),
         logSiteVisit: run('service.confirm', L.logSiteVisit),
         confirmUnitInstall: run('service.confirm', L.confirmUnitInstall),

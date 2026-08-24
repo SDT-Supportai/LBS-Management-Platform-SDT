@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore } from '../data/StoreContext'
 import {
-  deriveJobStatus, stockSummary, jobInstallSummary,
+  deriveJobStatus, stockSummary, jobInstallSummary, jobAllocatedQty,
   jobDueDate, jobDaysLeft, todayIso, DUE_WARN_DAYS,
 } from '../data/logic'
 import { JobStatusBadge } from '../ui/components'
@@ -79,7 +79,11 @@ export default function DashboardPage() {
           <div className="hint">
             {overdue > 0 && <><b style={{ color: 'var(--danger)' }}>เลยกำหนดส่ง {overdue} งาน</b> · </>}
             {dueSoon > 0 && <><b style={{ color: 'var(--amber, #d97706)' }}>ใกล้ครบกำหนด {dueSoon} งาน</b> · </>}
-            พร้อมเบิก {statusCount.get('ready_to_issue') ?? 0} · รอติดตั้ง {statusCount.get('issued') ?? 0} งาน
+            พร้อมเบิก {statusCount.get('ready_to_issue') ?? 0}
+            {(statusCount.get('partially_issued') ?? 0) > 0 && (
+              <> · <b style={{ color: '#8a5a00' }}>เบิกบางส่วน {statusCount.get('partially_issued')}</b></>
+            )}
+            {' '}· รอติดตั้ง {statusCount.get('issued') ?? 0} งาน
           </div>
         </div>
         <div className="card">
@@ -181,7 +185,7 @@ export default function DashboardPage() {
                 <tr><td colSpan={6}><div className="empty">ไม่มีงานที่กำลังดำเนินการ</div></td></tr>
               )}
               {jobList.slice(0, 8).map(({ job: j, due, daysLeft }) => {
-                const allocated = db.lbsUnits.filter(u => u.jobId === j.id && u.status !== 'in_stock').length
+                const allocated = jobAllocatedQty(db, j.id)   // 0059: allocated + issued (แหล่งเดียวกับหน้า Jobs)
                 const late = daysLeft !== undefined && daysLeft < 0
                 const soon = daysLeft !== undefined && daysLeft >= 0 && daysLeft <= DUE_WARN_DAYS
                 // หลายจุดติดตั้ง → วันที่แสดงคือจุดที่ใกล้ที่สุด บอกจำนวนจุดที่เหลือให้เห็นด้วย

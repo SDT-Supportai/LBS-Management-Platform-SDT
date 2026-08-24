@@ -6,7 +6,7 @@ import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, u
 import { fmtDate, JOB_STATUS_LABEL } from '../ui/format'
 import type { JobStatus } from '../types'
 
-const FILTERS: (JobStatus | 'all' | 'active')[] = ['all', 'active', 'draft', 'allocated', 'procuring_accessory', 'ready_to_issue', 'issued', 'installed', 'cancelled']
+const FILTERS: (JobStatus | 'all' | 'active')[] = ['all', 'active', 'draft', 'allocated', 'procuring_accessory', 'ready_to_issue', 'partially_issued', 'issued', 'installed', 'cancelled']
 
 export default function JobsPage() {
   const { db, user, act } = useStore()
@@ -107,9 +107,9 @@ export default function JobsPage() {
             <tbody>
               {jobs.length === 0 && <tr><td colSpan={8}><div className="empty">ไม่มี Job ในสถานะนี้</div></td></tr>}
               {jobs.map(({ job, status, due, daysLeft }) => {
-                const allocated = (status === 'issued' || status === 'installed')
-                  ? db.lbsUnits.filter(u => u.jobId === job.id && u.status === 'issued').length
-                  : jobAllocatedQty(db, job.id)
+                // 0059: jobAllocatedQty นับ allocated + issued แล้ว — ไม่ต้องแยกเคสตามสถานะอีก
+                //   (workaround เดิมมีเพราะฟังก์ชันนับแค่ allocated ทำให้งานที่เบิกแล้วโชว์ 0/N)
+                const allocated = jobAllocatedQty(db, job.id)
                 // งานที่จบแล้วไม่ต้องเตือน — เหลือแต่ข้อมูลกำหนดส่งไว้อ้างอิง
                 const active = status !== 'installed' && status !== 'cancelled'
                 const late = active && daysLeft !== undefined && daysLeft < 0

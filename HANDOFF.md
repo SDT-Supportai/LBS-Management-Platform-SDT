@@ -206,7 +206,9 @@ lbs-platform/
 | `0057_lock_direct_writes.sql` | **ความปลอดภัย (2026-08-22 · F1 critical + F6)**: **ปิดประตูเขียนตารางตรง** — `REVOKE INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public` จาก **`authenticated` + `anon`** และ `ALTER DEFAULT PRIVILEGES ... REVOKE` (ข้อหลังสำคัญเท่ากัน: ไม่ทำ ตารางใหม่ใน 0058+ จะได้สิทธิ์คืนเงียบ ๆ จาก default ของ Supabase) · **`SELECT` ไม่แตะเลย** — policy `read_all` คงเดิมทั้งหมด หน้าจอทำงานเหมือนเดิม 100% · **ต้นเหตุ**: Supabase ให้ `authenticated` มี DML ครบทุกตารางเป็น default grant (ไม่มี `GRANT` บนตารางในไฟล์ migration ไหนเลย) ⇒ RLS เป็นประตูเดียว แต่มี policy ฝั่งเขียน **19 ตัว** แบบ `FOR ALL/INSERT/UPDATE TO authenticated` (0001 เป็นหลัก + `standards_write` ที่ 0045/0054) = ประตูเปิด · **ทำได้จริงจาก DevTools ด้วย JWT ตัวเอง**: Project ยิง `PATCH /rest/v1/jobs {"terminal_status":"issued"}` → งานเป็น Issued ทันที ไม่ผ่าน Division ไม่มี audit ไม่มี notification ข้าม guard ETA ของ 0052 (`v_job_status` อ่านคอลัมน์นี้ตรง ๆ · ทั้งระบบมี trigger 4 ตัว ไม่มีตัวไหนคุม `jobs`) · `PATCH /rest/v1/accessory_stock {"qty_on_hand":9999}` → ยอดเปลี่ยนโดยไม่มีแถวใน `stock_movements` ⇒ ledger 0038 กระทบยอดไม่ได้อีก · `POST /rest/v1/audit_logs` ได้จากทุกบัญชี = ปลอมหลักฐาน · **ยืนยันว่าไม่กระทบการใช้งาน 4 ข้อ**: (1) frontend ไม่เขียนตารางตรงสักจุด (`grep '.from(' src/` เจอแต่ `.select()` + `storage.from('install-photos')` ซึ่งคนละ schema) (2) RPC ที่เขียนตารางทุกตัวเป็น SECURITY DEFINER = bypass ทั้ง RLS และ grant อยู่แล้ว — ตัวที่ไม่ใช่ DEFINER 5 ตัวเป็น pure helper ไม่แตะตาราง (`app_next_no`/`app_sum_budget_costs`/`app_unit_cost`/`app_unit_lead`/`app_payment_amount`) + trigger `fn_block_issued_job_edit` ที่ SELECT อย่างเดียว (3) Pages Functions ทั้ง 4 ใช้ `service_role` (4) `LoginPage` ไม่อ่านตารางก่อน login ⇒ revoke จาก `anon` ปลอดภัย · **ยังไม่ DROP policy 19 ตัวนั้น** (ไม่มีผลแล้วเมื่อ grant หาย) เพื่อให้ rollback ด้วยคำสั่งเดียว → ลบใน `0058` · **+ F6**: `FOR UPDATE` ใน `rpc_receive_po_items` ผ่าน `app_swap_guard` (§9.5 ห้าม recreate ทั้งก้อน — 0031 patch ข้อความ `app_notify` ของฟังก์ชันนี้ไว้ · §9.6 patch บรรทัดเดียว) — เดิม `SELECT INTO` ไม่ล็อกแถวแล้ว UPDATE เขียนค่าสัมบูรณ์ ⇒ Purchasing 2 คนรับ line เดียวกันใส่ 5 ทั้งคู่ ได้ 5 ไม่ใช่ 10 ทั้งคู่เห็น toast สำเร็จ · **ไม่เปลี่ยน signature** → ไม่มีเรื่อง `PGRST202` · **ไม่ต้อง demo sync** (logic.ts เป็น single-user localStorage ไม่มี concurrency/grant) · มี DO block ตรวจผล 3 ข้อท้ายไฟล์ + สคริปต์ rollback 4 บรรทัด |
 | `0026_job_install_sites.sql` | **ฟีเจอร์ (2026-07-23)**: หลายจุดติดตั้งต่อ Job — `jobs.install_sites` JSONB (array `{location, requiredDate}` = จุดที่ 2+; จุดที่ 1 ยังใช้ install_location/required_date เดิม) · drop+recreate `rpc_create_job`/`rpc_update_job` (+`p_install_sites`) · ข้อมูลวางแผนอย่างเดียว ไม่ผูก Serial/ไม่แตะ flow issue/confirm · UI: เปิด/แก้ Job โชว์ "เพิ่มจุดติดตั้ง" เมื่อ LBS>1 (≤ จำนวน LBS), JobDetail แผง "จุดติดตั้ง", list badge "+N จุด" · demo sync `logic.ts` (normalizeInstallSites) |
 
-> DB ใหม่บนโปรเจกต์เปล่า: รัน **0001→0058** เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
+| `0059_partial_issue_to_service.sql` | **ฟีเจอร์ (2026-08-23)**: **เบิกให้ Service แบบแยกส่วน — LBS / Accessory ตาม PO** · เดิมเบิกเป็น all-or-nothing (`app_exec_issue_job` พลิก `lbs_units` ทุกเครื่อง + `terminal_status='issued'` ในคำสั่งเดียว) ⇒ LBS ถึงคลังแล้วแต่ Accessory ยังรอ PO อีก 2 ใบ = เข้าไซต์ไม่ได้ทั้งงาน · **โมเดลใหม่**: LBS ใช้ `lbs_units.status` รายเครื่องตามเดิม · Accessory ใช้คอลัมน์ใหม่ `job_accessory_requests.issued_to_service_at` (⚠️ **คนละเรื่องกับ `status='issued'`** ที่หมายถึง "เบิกจากคลังคงเหลือเข้า Job แล้ว") · `jobs.terminal_status='issued'` ตั้งเมื่อ **ครบทั้งใบ** เท่านั้น โดย `app_finalize_issue` เรียกท้ายทุก action ที่เบิกของออกไป — ระหว่างทาง `v_job_status` คืนสถานะใหม่ **`partially_issued`** · **เกณฑ์ Ready/Not Ready**: LBS = allocated + ETA to WH ผ่านแล้ว ('?' ไม่บล็อก ตามกฎเดียวกับ 0052) · Accessory = คลังคงเหลือ ต้อง `status='issued'` · สั่งซื้อ ต้องรับของครบทั้งบรรทัด **และ PO ใบนั้น `status='received'`** (PO ที่ยัง "รอรับของ" เบิกไม่ได้แม้บางบรรทัดครบแล้ว) · **สิทธิ์**: เบิก LBS ผ่าน Division (approval `issue_job` ความหมายแคบลงเป็น "เบิก LBS" — **คงค่า enum เดิม ไม่แก้ CHECK** เพื่อไม่ให้ประวัติคำขอเก่าเสีย) · Manage ตรงผ่าน `rpc_issue_job_lbs` · เบิก Accessory ที่รับของแล้ว = Project เจ้าของงานกดเอง (`rpc_issue_job_accessory`) ไม่ผ่าน Division · **⚠️ `v_job_status` เดิมนับเฉพาะ `status='allocated'`** ซึ่งใช้ได้ตอนเบิกเป็น all-or-nothing (terminal_status พาไป) — พอเบิกแยกส่วนได้ เครื่องที่ออกไปแล้วหลุดจากการนับ ⇒ งานตกกลับเป็น `draft` ทั้งที่ของอยู่ในมือ Service (บั๊กเดียวกับ §9 ข้อ 7 คนละทาง) จึงเปลี่ยนเป็นนับ `IN ('allocated','issued')` · **ล็อกรายเครื่อง**: `fn_block_issued_job_edit` เพิ่มเงื่อนไข "`OLD.status='issued'` ห้ามแก้" เพราะช่วง `partially_issued` ค่า `terminal_status` ยังว่าง ล็อกระดับใบจึงไม่ทำงาน · `app_exec_cancel_job` เพิ่ม `app_assert_no_issued_out` — ของอยู่ในมือ Service ระบบคืนเข้าคลังเองไม่ได้ · **วิธีแก้ฟังก์ชันเดิม (§9.5/§9.6)**: `app_exec_issue_job` + `app_exec_cancel_job` patch แบบต่อท้ายบรรทัดเดียว + เช็ค marker (ทั้งคู่โดน 0031 ย่อข้อความ · ตัวแรกโดน 0052 แทรก guard) · `app_exec_approve` recreate ได้ (0041 เป็นเจ้าของ body ล่าสุด grep แล้วไม่มี patch ตามหลัง) · `rpc_request_approval` **recreate พร้อม pre-check** ที่ RAISE ถ้า marker ของ 0031/0037/0041/0052 หายไปแม้ชั้นเดียว (สะสม patch มา 5 ชั้น — ตรวจก่อนทับ ไม่ใช่ทับแล้วค่อยรู้) · **backfill**: งานที่เบิกครบก่อน 0059 ตั้ง `issued_to_service_at = issued_at` ให้ ไม่งั้นหน้าจอโชว์ "ยังมีวัสดุค้างรอเบิก" ของงานที่ปิดไปหลายเดือน · demo sync `logic.ts`: `jobIssuePlan` / `unitIssueBlockReason` / `accIssueBlockReason` / `issueJobLbs` / `issueJobAccessory` / `finalizeIssue` + 17 เคสใน `logic.test.ts` · **+ แก้บั๊กที่เจอระหว่างทาง**: `mapAccReq` ใน `remote.ts` **ไม่เคย map `qty_transferred`** (ตกมาตั้งแต่ 0038) ⇒ `effectiveQty()` บนโหมด LIVE คืนยอดเต็มทั้งที่โอนคืนคลังไปแล้ว ต้นทุนที่ตัดเข้า Job และยอด "ของค้างที่ Job" เกินจริง (demo ถูกอยู่แล้ว จึงไม่มีใครเห็น) |
+
+> DB ใหม่บนโปรเจกต์เปล่า: รัน **0001→0059** เรียงกันได้เลย (0004/0005 ผสานเข้า 0001/0002 ต้นทางแล้ว แต่ยังเก็บไฟล์แยกไว้เป็นประวัติ · 0012/0013 ถูก 0014 ยกเลิกแต่ต้องรันเรียงเพราะ 0014 อ้างถึงของที่มันสร้าง — ทุกไฟล์ idempotent รันซ้ำได้)
 > ⚠️ **production: รันเฉพาะ migration "ไฟล์ใหม่ที่ยังไม่เคยรัน" ก่อน push frontend** — ไม่ต้องรันไฟล์เก่าซ้ำทุกรอบ (ไฟล์ migration idempotent รันซ้ำได้ก็จริง แต่ไม่จำเป็น) และ **ห้ามรัน `cleanup_e2e.sql` ซ้ำเด็ดขาด** — มันลบ transaction ทั้งหมด (Jobs/LBS/audit) ใช้ครั้งเดียวตอนล้างระบบก่อนเปิดใช้จริงเท่านั้น มีสลักนิรภัยกันรันติดมือแล้ว (2026-07-19)
 
 ## 6. Environment variables (ตั้งใน Cloudflare Pages → Settings → Environment variables · Production)
@@ -479,7 +481,7 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 - [ ] 🟠 **ปิด 4 บัญชี e2e ที่ค้าง** — ตอนนี้ปิดผ่านหน้า "ผู้ใช้งาน" ได้เลย ระบบจะ ban ที่ auth ให้เองแล้ว (ชั้น 1)
       ไม่ต้องรัน `cleanup_e2e_accounts.sql` แล้วก็ได้ · `e2e-runner@example.org` เคยเป็น admin และรหัสผ่านเคยเปิดเผย = เร่งสุด
 
-### 🟠 Migrations — ✅ **0001–0058 รันครบ** (0057 + 0058 รัน 2026-08-22)
+### 🟠 Migrations — ✅ **0001–0059 รันครบ** (0059 รัน 2026-08-23 ก่อน push)
 
 **กติกา: หลัง push ไม่ต้องรัน SQL ใดๆ เว้นแต่มี migration ไฟล์ใหม่ (ผมจะบอกชื่อไฟล์และลำดับ)**
 ทุกไฟล์ idempotent — แถวไหนตรวจได้ `false` รันไฟล์นั้นซ้ำได้เลย
@@ -490,6 +492,15 @@ Job status (auto ทั้งหมด): `Draft → Allocated → Procuring Acce
 - [x] ~~0054~~ Standard Price list (`std_prices` + RPC 3 ตัว) — ยืนยัน 2026-08-08
 - [x] ~~0055~~ Lot No. คลังคงเหลือ — รัน 2026-08-20 (ค้างจาก push `048b35f` · **บทเรียน: commit ที่มี migration
       เปลี่ยน signature ต้องรัน SQL ก่อน push เสมอ** — รอบนั้น push ไปก่อน ปุ่ม 3 จุดเลย 404 `PGRST202` อยู่ 6 วัน)
+- [x] ~~**0059**~~ เบิกให้ Service แบบแยกส่วน (LBS / Accessory ตาม PO) — **รันแล้ว 2026-08-23 ก่อน push**
+      · เพิ่มคอลัมน์ `jobs.lbs_issued_at` + `job_accessory_requests.issued_to_service_at/by`
+      · แก้ view `v_job_status` (สถานะใหม่ `partially_issued`)
+      · RPC ใหม่ 2 ตัว `rpc_issue_job_lbs` / `rpc_issue_job_accessory` → **เปลี่ยน API surface**
+        ⇒ ตาม §9 บทเรียน 0055 **รัน SQL ก่อน push frontend** ไม่งั้นปุ่มเบิกจะ 404 `PGRST202`
+      · ตรวจว่าลงแล้ว: `SELECT to_regprocedure('public.rpc_issue_job_lbs(uuid,uuid[],date,date,text,text)') IS NOT NULL;`
+      · ตรวจ view: `SELECT DISTINCT status FROM v_job_status;` (ต้องมี `partially_issued` ได้เมื่อมีงานที่เบิกบางส่วน)
+      · ⚠️ ไฟล์มี **pre-check** ที่จะ RAISE ถ้า `rpc_request_approval` บน LIVE ขาด patch ของ 0031/0037/0041/0052
+        — ถ้าเจอ error นี้ **อย่าข้าม** ให้ dump `pg_get_functiondef` มาดูก่อนว่าใครแก้ฟังก์ชันนอก migration
 - [x] ~~0056~~ สลับ LBS พา `unit_cost` / `fob_date` / `eta_lead_days` / `plan_po_receipt_date` ไปกับคู่ Serial — รัน 2026-08-20
       (เดิม 0028/0032 สลับแค่ serial → `jobLbsCost()` คิดเงินของเครื่องที่ยังอยู่ในคลัง และ Status/ETA ผิดสลับกัน)
       ตรวจว่าลงแล้ว: `SELECT position('unit_cost = a.unit_cost' IN pg_get_functiondef('app_exec_swap_lbs(profiles,uuid,uuid,uuid,text)'::regprocedure)) > 0;`
@@ -688,6 +699,15 @@ select * from (values
 - **ปิด PO เท่าที่รับ (short-close)** — ตอนนี้ยกเลิก PO ได้เฉพาะยังไม่รับของเลย · ถ้าซัพส่ง 3/5 แล้วส่งที่เหลือไม่ได้ PO จะค้าง `issued` ตลอด
 - **Job Detail: ยังไม่มี UI ดูข้อมูลบางส่วน** — ประวัติ ledger ของวัสดุ (ดูได้ที่ Material Database) · ตอนนี้เห็นทีม/คืบหน้า/หลักฐานรายเครื่อง/ประวัติออกหน้างานแล้ว (2026-07-29)
 
+> ✅ เสร็จแล้ว (2026-08-23 — 0059): **เบิกให้ Service แบบแยกส่วน + Map Tracking + ย้าย Notifications/Audit ไปมุมขวาบน**
+> · **Project ID (Jobs) — เบิกแยก LBS / Accessory ตาม PO** ปุ่มเดียวเปิด **popup ถามก่อน** ว่ารอบนี้จะส่งอะไรให้ Service · LBS ติ๊กรายเครื่อง (Ready = ETA ผ่านแล้ว) · Accessory จัดกลุ่ม**ตาม PO** ติ๊กทั้งใบหรือรายบรรทัด · **PO ที่ "รอรับของ" ติ๊กไม่ได้ + บอกเหตุผลข้างรายการ** · สถานะใหม่ **Partially Issued** · ครบทั้งใบระบบปิดเป็น Issued เอง · ตาราง LBS และตารางวัสดุมีคอลัมน์ **"เบิกให้ Service"** บอก Ready/Not Ready/เบิกแล้ว รายบรรทัด · แผงสรุปด้านบนบอกว่าอะไรออกไปแล้ว อะไรค้าง
+> · **สิทธิ์**: LBS ผ่าน Division ตามเดิม (คำขอเปลี่ยนความหมายเป็น "เบิก LBS") · **Accessory ที่รับของแล้ว Project กดเบิกเองได้** ไม่ต้องรออนุมัติ (ลง audit ทุกครั้ง)
+> · **ล็อกเฉพาะของที่ออกไปแล้ว** — เครื่องที่เบิกไปคืน/สลับไม่ได้ · ที่เหลือยังจัดการได้ · **ยกเลิก Job ไม่ได้เมื่อของอยู่ในมือ Service** · **Service ยืนยันติดตั้งได้เมื่อเบิกครบทั้งใบ** (กันทีมออกไซต์แล้วขาดของ — เขียนบอกไว้บนแผงสรุป)
+> · **เมนู Map Tracking — ประเทศไทย** (Leaflet + OpenStreetMap ไม่ต้องมี API key) หมุดมาจาก **Check-in ราย Serial** ตอนยืนยันติดตั้ง · **ชี้ที่หมุดเห็น Job No.** คลิกเห็น Serial/ช่าง/รูป · หมุดพิกัดเดียวกันรวมเป็นหมุดเดียวพร้อมตัวเลข · ชั้น "เช็คอินระดับงาน" เปิด/ปิดได้ (งานเก่าก่อน 0035 มีแต่พิกัดระดับงาน) · กรองด้วย Job No./Serial/ลูกค้า + เฉพาะที่ติดตั้งไม่ได้ · มีตารางคู่แผนที่ · seed demo เพิ่ม 1 เช็คอินให้แผนที่ไม่ว่างเปล่า
+> · **Job List รีเช็คแล้ว** — `jobAllocatedQty` นับ allocated+issued (เลิก workaround ที่หน้า Jobs/Dashboard ที่แยกเคสตามสถานะเอง) · ตัวกรองสถานะมี Partially Issued · การ์ด Jobs In Progress โชว์จำนวนงานที่เบิกบางส่วน
+> · **Material Database — ตอบคำถามจังหวะตัดยอด**: ยอดคลังตัดตอน **"ดึง"** ทันที (`addAccessoryRequest` source=central_stock → `applyStockMovement` type `issue_to_job` ในคำสั่งเดียว) · ขั้น "เบิกให้ Service" **ไม่แตะยอดคลังเลย** · คงพฤติกรรมเดิม (ตรงกับของจริงและ ledger) **แก้แต่ถ้อยคำ** — เขียนบอกที่หัวแผงคลังคงเหลือ + ในโมดัลเพิ่มวัสดุ
+> · **แก้บั๊กที่เจอระหว่างทาง**: `remote.ts` ไม่ map `qty_transferred` (ตกมาตั้งแต่ 0038) ⇒ โหมด LIVE คิด `effectiveQty` เกินจริงทุกที่ที่มีการโอนวัสดุคืนคลัง
+>
 > ✅ เสร็จแล้ว (2026-08-08): **Project Stock — FOB date / ETA to WH (FOB+60 อัตโนมัติ) / Status Pending–On Hand รายเครื่อง (0049)** + ปุ่ม **🚢 ตั้ง FOB ทั้งคลัง** + **ตีเส้นตารางบางๆ** (`table.grid`) + **รวมปุ่ม "แก้ Serial" เข้าไปในปุ่ม "แก้ข้อมูล"** (ฟอร์มเดียว บันทึกทีเดียว) + **ย้ายต้นทุน/เครื่องออกจากตาราง → กดป้าย "มูลค่าคลัง" ดูรายเครื่องแทน** + Export/Import Excel round-trip คอลัมน์ FOB/ETA/Status
 > ✅ เสร็จแล้ว (2026-08-08): **Dashboard — LBS Stock Balance แยก On Hand / Pending + แถวรวมทุกคลัง + ป้ายปิดคลัง** · **Job List เรียงตามกำหนดส่ง (ใกล้สุดก่อน) ตัดงานที่ปิด/ยกเลิกออก + 🔴 เลยกำหนด / ⚠️ เหลือ ≤30 วัน + คอลัมน์วันคงเหลือ** (กำหนดส่ง = วันที่ใกล้สุดจาก `requiredDate` + `installSites` ทุกจุด)
 > ✅ เสร็จแล้ว (2026-08-08): **แผนก VIP (ผู้บริหารสูงสุด) + ความเห็นบนคำขออนุมัติ (0050)** — VIP อ่านได้ทุกหน้า เขียนได้แค่ความเห็น · ความเห็นแสดงใต้คำขอที่หน้า Awaiting Approval (ทั้งตอนรอตัดสินและในประวัติ) · Division ตอบกลับได้ · badge เมนู `<คำขอ> · 💬<ความเห็น>` · Dev Settings มีคำอธิบายสิทธิ์ต่อแผนกใต้ dropdown
@@ -737,14 +757,18 @@ npm run test:watch
 
 ### 11.1 เทสต์ (`src/data/logic.test.ts` — ชุดแรกของโปรเจกต์ 2026-08-22)
 
-**`npm test` ต้องเขียวก่อน commit ทุกครั้ง** — 46 เคส รัน ~1.5 วินาที ไม่ต้องต่อ DB ไม่ต้อง mock
+**`npm test` ต้องเขียวก่อน commit ทุกครั้ง** — 63 เคส รัน ~1.5 วินาที ไม่ต้องต่อ DB ไม่ต้อง mock
 
 เลือกเทสต์เฉพาะ **"กฎที่เคยพังจริง"** ไม่ใช่ไล่ให้ครบทุกฟังก์ชัน · ทุก `describe` อ้างถึงบั๊กที่เป็นต้นเรื่อง:
 
 | เทสต์ | ล็อกกฎอะไร | ที่มา |
 |---|---|---|
 | `poCostSummary` | `ordered` ใช้ `qtyRequested` · `charged` ใช้ `effectiveQty` และ **ต้องต่างกัน** เมื่อมีการโอนคืนคลัง (ไม่ยุบให้เท่ากัน) | §9 ข้อ 13 — เคยต่าง 240,000 ฿ ใต้ป้ายเดียวกัน |
-| `deriveJobStatus` | `issued` ไม่นับเป็น `allocated` · งานที่เบิกแล้วต้องมี `terminalStatus` พาไป | §9 ข้อ 7 — บอทรายงาน `LBS: 0/N` |
+| `deriveJobStatus` | เครื่อง `issued` **ยังนับว่าอยู่บน Job** · เบิกออกไปบางส่วน = `partially_issued` ไม่ใช่ `draft` | §9 ข้อ 7 (บอทรายงาน `LBS: 0/N`) → แก้ทิศใน 0059 |
+| `accIssueBlockReason` | **PO ที่ยัง "รอรับของ" เบิกไม่ได้ทั้งใบ** แม้บรรทัดนั้นรับของครบแล้ว · โอนคืนคลังหมด = ไม่ค้างขวางการปิดใบ | 0059 ข้อ 3 ของโจทย์ |
+| `unitIssueBlockReason` | ETA ยังไม่ถึง = เบิกไม่ได้ · **ไม่ระบุ ETA ('?') ไม่บล็อก** · เบิกแล้วเบิกซ้ำไม่ได้ | 0052 + 0059 |
+| `jobIssuePlan` | จัดกลุ่มวัสดุตาม PO ถูกใบ · แยก Ready/Not Ready ครบ · `lbsShort` บอกจำนวนที่ยังดึงไม่ครบ Scope | 0059 |
+| `issueJobLbs` / `issueJobAccessory` | เดินสถานะจนครบแล้ว **ปิดใบเป็น `issued` เอง** · ยกเลิก Job ไม่ได้เมื่อของออกไปแล้ว · ไม่มีนัดติดตั้งต้องเตือน | 0059 |
 | `unitEta` | ไม่มีทั้ง FOB และ planPoReceipt = **`undefined`** ไม่ใช่ "ของถึงแล้ว" | 0049 → มติ 2026-08-08 |
 | `normalizeLeadDays` | กรอก 60 ต้องคืน 60 **ไม่ใช่** `undefined` (ยุบตรงนี้ = import รีเซ็ตค่ามาตรฐานไม่ได้) | 0052 |
 | `jobLbsCost` / `jobBudgetSummary` | raw_mat actual = ค่าวัสดุ + ต้นทุน LBS · `materialValue` **ไม่รวม** LBS | 0021/0024 |
@@ -792,12 +816,20 @@ npm run test:watch
 
 | Module | คุณสมบัติร่วม | เมนู |
 |---|---|---|
-| **Overview** | อ่านอย่างเดียว รวมทุกแผนก | Dashboard |
+| **Overview** | อ่านอย่างเดียว รวมทุกแผนก | Dashboard · Map Tracking — ประเทศไทย |
 | **Operations** | ทุกหน้าทำให้ Serial/Job **ขยับสถานะ** · ใช้ทุกวัน · เรียงตามที่ของจริงเดิน | LBS Inventory → Jobs → Purchasing (PR/PO) → Site Installation |
 | **Workforce & Scheduling** | จัด **คน + เวลา** ให้งาน · ไม่ทำให้ Job ขยับสถานะเอง | Assignment & Schedule *(รอเฟส 2 เพิ่ม Service Teams)* |
-| **Approvals & Audit** | **ขวางสายงาน + เป็นหลักฐาน** · cross-cutting ไม่ใช่ของแผนกใด | Approval Queue · Notifications · Audit Log |
+| **Approvals** | **ขวางสายงาน** · cross-cutting ไม่ใช่ของแผนกใด | Approval Queue |
 | **Master Data** | ข้อมูลอ้างอิง ตั้งครั้งเดียวใช้ยาว | Material Master · Standards Library |
 | **Administration** *(Manage)* | ตั้งค่าตัวระบบ ไม่ใช่ข้อมูลธุรกิจ | Users & System Settings |
+
+**ปรับ 2026-08-23** — `Notifications` + `Audit Log` **ย้ายออกจากเมนูซ้ายไปมุมขวาบน**
+เกณฑ์: 2 หน้านั้นเป็น *"เปิดดูตอนสงสัย"* ไม่ใช่ *"ขั้นที่ต้องเดิน"* — อยู่ในเมนูสายงานทำให้เมนูยาวขึ้น
+โดยไม่ช่วยให้เดินงานเร็วขึ้น และ Notifications ยัง**ซ้ำกับกระดิ่งมุมขวาบน**ที่มีของเดิมอยู่แล้ว
+ตอนนี้มุมขวาบนมี 3 ปุ่มเป็นชุดเดียวกัน = "เครื่องมือประจำหน้าจอ": `↻ Refresh` · `📜 Audit Log` · `🔔 กระดิ่ง`
+(ปุ่ม Audit Log ที่กล่องผู้ใช้ท้าย sidebar ถูกถอดออกด้วย — ที่เดียวไม่ซ้ำ)
+⚠️ **route ยังอยู่ครบ** (`/notifications` · `/audit`) — bookmark เก่า ลิงก์ "ดูทั้งหมด →" และลิงก์ใน LINE ใช้ได้ปกติ
+พร้อมกันนี้เพิ่ม **Map Tracking — ประเทศไทย** (`/map`) ใน Overview เพราะเป็นมุมมองสรุป ไม่ทำให้อะไรขยับสถานะ
 
 **มติที่ตกลงไว้ (อ่านก่อนแก้เมนู)**
 - หัวข้อ Module = **หัวข้อคั่นแบบกางตลอด ไม่ใช่ accordion** → ไม่ต้องเก็บสถานะพับ/กาง และไม่ต้องมี badge รวมขึ้นหัว

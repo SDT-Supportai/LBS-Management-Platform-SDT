@@ -1,5 +1,5 @@
 import type {
-  DB, Job, JobStatus, User, AccessoryRequest, Department, LbsUnit,
+  DB, Job, JobStatus, User, AccessoryRequest, AccReqStatus, PurchaseOrder, Department, LbsUnit,
   ApprovalType, ApprovalPayload, BudgetCosts, CostCategoryKey,
   SiteVisit, SiteVisitOutcome, UnitInstallOutcome, TeamMember, JobAssignment,
   StockMovementType, PaymentType,
@@ -181,15 +181,24 @@ function notify(db: DB, p: { type: string; message: string; dept: Department | '
 
 export function deriveJobStatus(db: DB, job: Job): JobStatus {
   if (job.terminalStatus) return job.terminalStatus
-  const allocated = db.lbsUnits.filter(u => u.jobId === job.id && u.status === 'allocated').length
+  // ⚠️ 0059: นับ "เครื่องที่อยู่บน Job" = allocated + issued
+  //    เดิมนับแค่ allocated ซึ่งใช้ได้ตอนที่การเบิกเป็น all-or-nothing (เบิกแล้ว = terminalStatus)
+  //    พอเบิกแยกได้ เครื่องที่เบิกไปแล้วจะหลุดจากการนับ → Job ตกกลับเป็น Draft ทั้งที่ของออกไปแล้ว
+  const units = db.lbsUnits.filter(u => u.jobId === job.id)
+  const onJob = units.filter(u => u.status === 'allocated' || u.status === 'issued').length
+  const lbsIssued = units.filter(u => u.status === 'issued').length
   const activeReqs = db.accessoryRequests.filter(
     r => r.jobId === job.id && r.status !== 'cancelled' && r.status !== 'returned',
   )
   const pendingReqs = activeReqs.filter(r => r.status !== 'issued' && r.status !== 'received')
-  const lbsComplete = job.lbsQtyRequired > 0 && allocated >= job.lbsQtyRequired
+  const accIssued = activeReqs.filter(r => !!r.issuedToServiceAt).length
+  // เบิกออกไปแล้วบางส่วน — ครบทั้งใบเมื่อไหร่ finalizeIssue จะตั้ง terminalStatus = 'issued' ให้เอง
+  // จึงมาถึงบรรทัดนี้ได้เฉพาะกรณี "ออกไปแล้วบางส่วน ยังไม่ครบ"
+  if (lbsIssued > 0 || accIssued > 0) return 'partially_issued'
+  const lbsComplete = job.lbsQtyRequired > 0 && onJob >= job.lbsQtyRequired
   if (lbsComplete && pendingReqs.length === 0) return 'ready_to_issue'
-  if (allocated > 0 && pendingReqs.length > 0) return 'procuring_accessory'
-  if (allocated > 0) return 'allocated'
+  if (onJob > 0 && pendingReqs.length > 0) return 'procuring_accessory'
+  if (onJob > 0) return 'allocated'
   return 'draft'
 }
 
@@ -214,8 +223,13 @@ export function jobDaysLeft(job: Job, today = todayIso()): number | undefined {
 /** เตือนเมื่อเหลือ ≤ 30 วันก่อนกำหนดส่ง (มติ 2026-08-08) */
 export const DUE_WARN_DAYS = 30
 
+/**
+ * จำนวน LBS ที่ "ดึงเข้า Job แล้ว" — รวมเครื่องที่เบิกให้ Service ไปแล้ว (0059)
+ * เดิมนับแค่ allocated ทำให้ Job ที่เบิกแล้วโชว์ 0/N ทุกที่ (หน้า Job List ต้องเขียน workaround เอง)
+ */
 export function jobAllocatedQty(db: DB, jobId: string): number {
-  return db.lbsUnits.filter(u => u.jobId === jobId && u.status === 'allocated').length
+  return db.lbsUnits.filter(u =>
+    u.jobId === jobId && (u.status === 'allocated' || u.status === 'issued')).length
 }
 
 // สิทธิ์ระดับแถว (sync 0042): Project ทำรายการได้เฉพาะ Job ที่อีเมลตัวเองเปิด
@@ -652,7 +666,8 @@ export function updateJob(
     throw new Error(`Job No. "${jobNo}" ซ้ำกับ Job อื่น`)
   if (!p.lbsQtyRequired || p.lbsQtyRequired < 1) throw new Error('จำนวน LBS ตาม Scope ต้องอย่างน้อย 1 เครื่อง')
   // ห้ามลด Scope ต่ำกว่าจำนวนที่ถืออยู่ — ไม่งั้น cap การดึง LBS ถูก bypass ได้
-  const held = db.lbsUnits.filter(u => u.jobId === p.jobId && u.status === 'allocated').length
+  // 0059: รวมเครื่องที่เบิกให้ Service ไปแล้ว (คืนไม่ได้แล้ว ยิ่งลด Scope ต่ำกว่านั้นไม่ได้)
+  const held = jobAllocatedQty(db, p.jobId)
   if (p.lbsQtyRequired < held)
     throw new Error(`ลดจำนวนตาม Scope ต่ำกว่าที่ถืออยู่ (${held} เครื่อง) ไม่ได้ — คืน LBS กลับสต็อกก่อน`)
   const salePrice = normalizeBudget(p.budgetSalePrice)
@@ -811,7 +826,8 @@ export function drawLbs(db: DB, actor: User, p: { jobId: string; stockId: string
   if (stock.status === 'closed') throw new Error(`${stock.stockNo} ถูกปิดคลังแล้ว ดึงเพิ่มไม่ได้`)
   if (p.unitIds.length === 0) throw new Error('กรุณาเลือก Serial No. ที่จะดึง')
   // cap ตาม Scope: ดึงรวมแล้วห้ามเกินจำนวนที่ระบุตอนเปิด Job (คืนแล้วดึงใหม่ได้)
-  const held = db.lbsUnits.filter(u => u.jobId === p.jobId && u.status === 'allocated').length
+  // 0059: รวมเครื่องที่เบิกให้ Service ไปแล้ว (คืนไม่ได้แล้ว ยิ่งลด Scope ต่ำกว่านั้นไม่ได้)
+  const held = jobAllocatedQty(db, p.jobId)
   if (held + p.unitIds.length > job.lbsQtyRequired)
     throw new Error(`ดึงเกินจำนวนตาม Scope ไม่ได้ — Scope ${job.lbsQtyRequired} เครื่อง ถืออยู่ ${held} เครื่อง (ดึงได้อีก ${job.lbsQtyRequired - held})`)
   const units = db.lbsUnits.filter(u => p.unitIds.includes(u.id))
@@ -1417,39 +1433,326 @@ export function receivePOItems(
 
 // ---------------- Issue / Install / Cancel ----------------
 
+// =============================================================================
+// เบิกให้ Service แบบ "แยกส่วน" (0059 · มติ 2026-08-23)
+//
+// เดิมเบิกเป็น all-or-nothing: กดครั้งเดียว LBS ทุกเครื่องเป็น issued + Job เป็น terminal
+// ปัญหาที่เจอจริง: LBS ถึงคลังแล้วแต่ Accessory ยังรอ PO อีก 2 ใบ → ทีม Service เข้าไซต์ไม่ได้เลย
+//   ทั้งที่ตัวเครื่องพร้อมส่ง · และ Accessory ที่รับของแล้วก็ค้างในคลังโดยไม่มีทางส่งต่อ
+//
+// โมเดลใหม่ — "เบิก" เป็นรายชิ้น ไม่ใช่รายใบ:
+//   LBS       : สถานะรายเครื่อง lbsUnits.status  allocated → issued
+//   Accessory : ธง issuedToServiceAt รายบรรทัด (ว่าง = ของยังอยู่กับ Job)
+//   Job       : terminalStatus = 'issued' ต่อเมื่อ **ครบทั้งใบ** (finalizeIssue ตั้งให้เอง)
+//               ระหว่างทาง deriveJobStatus คืน 'partially_issued'
+//
+// เกณฑ์ Ready / Not Ready (ข้อ 2–3 ของโจทย์):
+//   LBS       Ready = allocated + ETA to WH ผ่านแล้ว (Pending = ของยังอยู่บนเรือ → เบิกไม่ได้)
+//   Accessory Ready = คลังคงเหลือ: เบิกจากคลังแล้ว (status issued)
+//                     สั่งซื้อ:    รับของครบทั้งบรรทัด **และ PO ใบนั้นสถานะ received**
+//               → PO ที่ยัง "รอรับของ" ทั้งใบเบิกไม่ได้ แม้บางบรรทัดจะรับของครบแล้ว
+//
+// สิทธิ์: เบิก LBS = ผ่าน Division (approval type 'issue_job') · Manage ทำตรง
+//         เบิก Accessory ตาม PO ที่รับของแล้ว = Project กดได้เอง (ลง audit ทุกครั้ง)
+//         เหตุผล: LBS คือของมูลค่าสูงและเป็นตัวล็อกใบงาน · Accessory ที่รับของแล้วเป็นงานส่งของประจำวัน
+//
+// ล็อกเฉพาะของที่ออกไปแล้ว: returnLbs/swapLbs กรอง status = 'allocated' อยู่แล้ว จึงแตะเครื่องที่
+//   เบิกไปไม่ได้เองโดยไม่ต้องเพิ่ม guard · ส่วน cancelJob ปิดทั้งใบเมื่อมีของออกไปแล้ว
+// =============================================================================
+
+/** เหตุผลที่เครื่องนี้ยังเบิกให้ Service ไม่ได้ — undefined = เบิกได้ (Ready) */
+export function unitIssueBlockReason(u: LbsUnit, today = todayIso()): string | undefined {
+  if (u.status === 'issued') return 'เบิกให้ Service ไปแล้ว'
+  if (u.status !== 'allocated') return 'ไม่ได้ถูกดึงเข้า Job นี้'
+  // ⚠️ '?' (ไม่ระบุ ETA) ไม่บล็อก — ตรงกับ jobPendingEtaUnits: "ไม่รู้" ไม่ใช่ "รู้ว่ายังไม่มา"
+  if (unitStockState(u, today) === 'pending')
+    return `ของยังไม่ถึงคลัง — ETA to WH ${unitEta(u)}`
+  return undefined
+}
+
+const ACC_ISSUE_WAIT: Partial<Record<AccReqStatus, string>> = {
+  pending: 'ยังไม่ออก PR',
+  pr_sent: 'ส่ง PR แล้ว รอ Purchasing ออก PO',
+  po_ordered: 'ออก PO แล้ว รอรับของ',
+}
+
+/** เหตุผลที่รายการวัสดุนี้ยังเบิกให้ Service ไม่ได้ — undefined = เบิกได้ (Ready) */
+export function accIssueBlockReason(db: DB, r: AccessoryRequest): string | undefined {
+  if (r.issuedToServiceAt) return 'เบิกให้ Service ไปแล้ว'
+  if (r.status === 'cancelled' || r.status === 'returned') return 'รายการถูกยกเลิก/คืนคลังไปแล้ว'
+  if (effectiveQty(r) <= 0) return 'โอนคืนคลังหมดแล้ว — ไม่มีของค้างอยู่ที่ Job'
+  if (r.source === 'central_stock')
+    return r.status === 'issued' ? undefined : 'ยังไม่ได้เบิกจากคลังคงเหลือ'
+  if (r.status !== 'received') return ACC_ISSUE_WAIT[r.status] ?? 'ยังไม่ได้รับของ'
+  const po = r.poId ? db.pos.find(x => x.id === r.poId) : undefined
+  if (!po) return undefined                                   // ข้อมูลเก่าที่ไม่ผูก PO — ของรับแล้ว
+  if (po.status === 'cancelled') return `${po.poNo} ถูกยกเลิก`
+  if (po.status !== 'received') return `${po.poNo} ยังรับของไม่ครบ (รอรับของ)`
+  return undefined
+}
+
+/** รายการวัสดุที่ยัง "ต้องเบิก" ให้ Service — ยังไม่เบิก + ยังมีของค้างอยู่ที่ Job */
+export function jobPendingIssueAccessories(db: DB, jobId: string): AccessoryRequest[] {
+  return db.accessoryRequests.filter(r =>
+    r.jobId === jobId && !r.issuedToServiceAt
+    && r.status !== 'cancelled' && r.status !== 'returned'
+    && effectiveQty(r) > 0)
+}
+
+export interface IssueAccRow { req: AccessoryRequest; block?: string }
+
+/** วัสดุ 1 กลุ่มที่เบิกด้วยกัน = 1 PO (หรือกลุ่ม "คลังคงเหลือ" สำหรับของที่เบิกจากคลัง) */
+export interface IssueAccGroup {
+  key: string
+  label: string
+  po?: PurchaseOrder
+  rows: IssueAccRow[]
+  ready: AccessoryRequest[]
+  /** เหตุผลระดับกลุ่ม (เช่น PO รอรับของ) — undefined = กลุ่มนี้มีของเบิกได้ */
+  block?: string
+}
+
+/** ภาพรวม "อะไรเบิกได้ / อะไรยังไม่ได้" ของ Job — แหล่งความจริงเดียวของ popup + แผงบนหน้า Job */
+export interface JobIssuePlan {
+  lbsReady: LbsUnit[]
+  lbsBlocked: { unit: LbsUnit; block: string }[]
+  lbsIssued: LbsUnit[]
+  /** ยังดึง LBS ไม่ครบ Scope อีกกี่เครื่อง (>0 = เบิก LBS ไม่ได้ ต้องดึงให้ครบก่อน) */
+  lbsShort: number
+  groups: IssueAccGroup[]
+  accReady: AccessoryRequest[]
+  accPending: AccessoryRequest[]
+  /** ถ้าเบิกทุกอย่างที่ Ready ในรอบนี้ จะครบทั้งใบเลยไหม */
+  completeIfAllReady: boolean
+}
+
+export function jobIssuePlan(db: DB, jobId: string, today = todayIso()): JobIssuePlan {
+  const job = db.jobs.find(j => j.id === jobId)
+  const units = db.lbsUnits.filter(u => u.jobId === jobId)
+  const lbsIssued = units.filter(u => u.status === 'issued')
+  const onJob = units.filter(u => u.status === 'allocated' || u.status === 'issued')
+  const lbsReady: LbsUnit[] = []
+  const lbsBlocked: { unit: LbsUnit; block: string }[] = []
+  units.filter(u => u.status === 'allocated').forEach(u => {
+    const block = unitIssueBlockReason(u, today)
+    if (block) lbsBlocked.push({ unit: u, block })
+    else lbsReady.push(u)
+  })
+
+  const accPending = jobPendingIssueAccessories(db, jobId)
+  // จัดกลุ่มตาม PO — ของจากคลังคงเหลือรวมเป็นกลุ่มเดียว (ไม่มี PO)
+  const groups: IssueAccGroup[] = []
+  const groupOf = (key: string, label: string, po?: PurchaseOrder) => {
+    let g = groups.find(x => x.key === key)
+    if (!g) { g = { key, label, po, rows: [], ready: [] }; groups.push(g) }
+    return g
+  }
+  accPending.forEach(r => {
+    const po = r.poId ? db.pos.find(x => x.id === r.poId) : undefined
+    const g = r.source === 'central_stock'
+      ? groupOf('central', 'คลังคงเหลือ')
+      : po ? groupOf(po.id, po.poNo, po) : groupOf('no_po', 'ยังไม่ผูก PO')
+    const block = accIssueBlockReason(db, r)
+    g.rows.push({ req: r, block })
+    if (!block) g.ready.push(r)
+  })
+  groups.forEach(g => {
+    if (g.ready.length > 0) return
+    // ทุกบรรทัดในกลุ่มติดเหตุผลเดียวกัน → ยกขึ้นเป็นเหตุผลของกลุ่ม (PO รอรับของ)
+    const reasons = new Set(g.rows.map(r => r.block ?? ''))
+    g.block = reasons.size === 1 ? [...reasons][0] : 'ยังไม่พร้อมเบิก'
+  })
+
+  const accReady = groups.flatMap(g => g.ready)
+  const lbsShort = job ? Math.max(0, job.lbsQtyRequired - onJob.length) : 0
+  return {
+    lbsReady, lbsBlocked, lbsIssued, lbsShort, groups, accReady, accPending,
+    completeIfAllReady:
+      lbsShort === 0 && onJob.length > 0 && lbsBlocked.length === 0
+      && accPending.length === accReady.length,
+  }
+}
+
+/**
+ * กำหนดนัดติดตั้งของรอบนี้ — เว้นว่างได้ถ้า Job มีนัดอยู่แล้ว (เบิกรอบที่ 2 ไม่ต้องกรอกซ้ำ)
+ * เก็บบน Job ชุดเดียว (installStartDate/EndDate/issueLocation) เพราะทีมออกไซต์เที่ยวเดียว
+ */
+function resolveInstallPlan(
+  job: Job, p: { startDate?: string; endDate?: string; location?: string },
+): { startDate: string; endDate: string; location: string; range: string } {
+  const startDate = p.startDate || job.installStartDate || ''
+  const endDate = p.endDate || job.installEndDate || ''
+  const location = (p.location ?? '').trim() || job.issueLocation || ''
+  if (!startDate || !endDate) throw new Error('กรุณาระบุกำหนดวันติดตั้ง (Start–End)')
+  if (endDate < startDate) throw new Error('วันสิ้นสุดต้องไม่ก่อนวันเริ่มติดตั้ง')
+  if (!location) throw new Error('กรุณาระบุสถานที่ติดตั้ง (Location)')
+  return {
+    startDate, endDate, location,
+    range: startDate === endDate ? startDate : `${startDate} – ${endDate}`,
+  }
+}
+
+/**
+ * ปิดใบเมื่อเบิกครบทั้งใบ — เรียกท้ายทุก action ที่เบิกของออกไป
+ * ครบ = LBS ครบ Scope และทุกเครื่องเป็น issued + ไม่มีวัสดุค้างรอเบิก
+ * no-op ถ้าใบปิดไปแล้ว (terminalStatus ไม่ว่าง) → เรียกซ้ำได้ปลอดภัย
+ */
+function finalizeIssue(db: DB, actor: User, jobId: string): DB {
+  const job = db.jobs.find(j => j.id === jobId)
+  if (!job || job.terminalStatus) return db
+  const onJob = db.lbsUnits.filter(u =>
+    u.jobId === jobId && (u.status === 'allocated' || u.status === 'issued'))
+  const lbsDone = onJob.length > 0 && onJob.length >= job.lbsQtyRequired
+    && onJob.every(u => u.status === 'issued')
+  if (!lbsDone) return db
+  if (jobPendingIssueAccessories(db, jobId).length > 0) return db
+
+  const range = job.installStartDate === job.installEndDate
+    ? job.installStartDate ?? '-'
+    : `${job.installStartDate} – ${job.installEndDate}`
+  const where = job.issueLocation || job.installLocation || '-'
+  let next: DB = {
+    ...db,
+    jobs: db.jobs.map(j => j.id === jobId
+      ? { ...j, terminalStatus: 'issued' as const, issuedAt: now() } : j),
+  }
+  next = notify(next, {
+    type: 'job_issued', dept: 'service', jobId,
+    message: `🚚 ${job.jobNo} เบิกของครบทั้งใบแล้ว · ติดตั้ง ${where} · ${range}`,
+  })
+  return audit(next, actor, 'job', jobId, 'issue_to_service',
+    `เบิก ${job.jobNo} ให้ Service ครบทั้งใบ (LBS ${onJob.length} เครื่อง + วัสดุทุกรายการ)` +
+    ` นัดติดตั้ง ${range} ที่ ${where}`)
+}
+
+/**
+ * เบิก LBS ให้ Service — เลือกเครื่องได้ (unitIds ว่าง = ทุกเครื่องที่ Ready)
+ * ต้องดึง LBS ครบ Scope ก่อน (ไม่งั้นทีมออกไซต์ไปติดตั้งไม่ครบจุด)
+ */
+export function issueJobLbs(
+  db: DB, actor: User,
+  p: { jobId: string; unitIds?: string[]; startDate?: string; endDate?: string; location?: string; note?: string },
+): DB {
+  const job = assertJobEditable(db, p.jobId, actor)
+  const plan = jobIssuePlan(db, p.jobId)
+  if (plan.lbsShort > 0)
+    throw new Error(`${job.jobNo} ดึง LBS ยังไม่ครบ Scope — ขาดอีก ${plan.lbsShort} เครื่อง`)
+  const ids = p.unitIds?.length ? p.unitIds : plan.lbsReady.map(u => u.id)
+  if (ids.length === 0)
+    throw new Error(`${job.jobNo} ไม่มี LBS ที่เบิกได้ตอนนี้ — เช็ค ETA to WH รายเครื่องที่หน้า LBS Inventory`)
+  const idSet = new Set(ids)
+  const units = db.lbsUnits.filter(u => idSet.has(u.id))
+  if (units.length !== idSet.size) throw new Error('มีเครื่องที่ไม่พบในระบบ')
+  for (const u of units) {
+    if (u.jobId !== p.jobId) throw new Error(`${u.serialLvb} ไม่ได้ถูกดึงเข้า ${job.jobNo}`)
+    const block = unitIssueBlockReason(u)
+    if (block) throw new Error(`${u.serialLvb}: ${block}`)
+  }
+  const { startDate, endDate, location, range } = resolveInstallPlan(job, p)
+  const remain = plan.lbsReady.length + plan.lbsBlocked.length - idSet.size
+  const note = p.note?.trim()
+
+  let next: DB = {
+    ...db,
+    jobs: db.jobs.map(j => j.id === p.jobId ? {
+      ...j,
+      lbsIssuedAt: j.lbsIssuedAt ?? now(),
+      installStartDate: startDate, installEndDate: endDate, issueLocation: location,
+      issuedNote: note || j.issuedNote,
+    } : j),
+    lbsUnits: db.lbsUnits.map(u => idSet.has(u.id) ? { ...u, status: 'issued' as const } : u),
+  }
+  next = notify(next, {
+    type: 'lbs_issued_to_service', dept: 'service', jobId: p.jobId,
+    message: `🚚 ${job.jobNo} เบิก LBS ${idSet.size} เครื่องให้ Service · ติดตั้ง ${location} · ${range}` +
+      (remain > 0 ? ` (ค้างอีก ${remain} เครื่อง)` : ''),
+  })
+  next = audit(next, actor, 'job', p.jobId, 'issue_lbs_to_service',
+    `เบิก LBS ของ ${job.jobNo} ให้ Service ${idSet.size} เครื่อง (SN: ${units.map(u => u.serialLvb).join(', ')})` +
+    ` นัดติดตั้ง ${range} ที่ ${location}` + (remain > 0 ? ` — ค้างอีก ${remain} เครื่อง` : ''))
+  return finalizeIssue(next, actor, p.jobId)
+}
+
+/**
+ * เบิก Accessory ให้ Service (requestIds ว่าง = ทุกรายการที่ Ready)
+ * ใช้ guard เดียวกับการจัดซื้อ (assertJobProcurable) เพราะของที่ "ซื้อเพิ่มหลังเบิก" (0037)
+ * ก็ต้องส่งต่อให้ Service ได้ ทั้งที่ Job ปิดเป็น issued ไปแล้ว
+ */
+export function issueJobAccessory(
+  db: DB, actor: User,
+  p: { jobId: string; requestIds?: string[]; startDate?: string; endDate?: string; location?: string; note?: string },
+): DB {
+  const job = assertJobProcurable(db, p.jobId, actor)
+  const plan = jobIssuePlan(db, p.jobId)
+  const ids = p.requestIds?.length ? p.requestIds : plan.accReady.map(r => r.id)
+  if (ids.length === 0)
+    throw new Error(`${job.jobNo} ไม่มีวัสดุที่เบิกได้ตอนนี้ — PO ที่ยังรอรับของเบิกไม่ได้`)
+  const idSet = new Set(ids)
+  const reqs = db.accessoryRequests.filter(r => idSet.has(r.id))
+  if (reqs.length !== idSet.size) throw new Error('มีรายการวัสดุที่ไม่พบในระบบ')
+  for (const r of reqs) {
+    if (r.jobId !== p.jobId) throw new Error('มีรายการวัสดุที่ไม่ได้อยู่ใน Job นี้')
+    const block = accIssueBlockReason(db, r)
+    if (block) {
+      const item = db.items.find(i => i.id === r.itemId)
+      throw new Error(`${item?.name ?? 'วัสดุ'}: ${block}`)
+    }
+  }
+  const { startDate, endDate, location, range } = resolveInstallPlan(job, p)
+  const ts = now()
+  // สรุปว่าเบิกของจาก PO ใบไหนออกไป — Service ต้องรู้ว่าของชุดไหนถึงมือแล้ว
+  const poNos = [...new Set(reqs.map(r =>
+    (r.poId ? db.pos.find(x => x.id === r.poId)?.poNo : undefined) ?? 'คลังคงเหลือ'))]
+  const detail = reqs.map(r => {
+    const item = db.items.find(i => i.id === r.itemId)
+    return `${item?.name ?? '-'} ${effectiveQty(r)} ${item?.uom ?? ''}`.trim()
+  }).join(', ')
+
+  let next: DB = {
+    ...db,
+    jobs: db.jobs.map(j => j.id === p.jobId ? {
+      ...j, installStartDate: startDate, installEndDate: endDate, issueLocation: location,
+    } : j),
+    accessoryRequests: db.accessoryRequests.map(r =>
+      idSet.has(r.id) ? { ...r, issuedToServiceAt: ts, issuedToServiceBy: actor.id } : r),
+  }
+  const remain = plan.accPending.length - idSet.size
+  next = notify(next, {
+    type: 'accessory_issued_to_service', dept: 'service', jobId: p.jobId,
+    message: `📦 ${job.jobNo} เบิกวัสดุ ${idSet.size} รายการให้ Service (${poNos.join(', ')})` +
+      ` · ติดตั้ง ${location} · ${range}` + (remain > 0 ? ` (ค้างอีก ${remain} รายการ)` : ''),
+  })
+  next = audit(next, actor, 'job', p.jobId, 'issue_accessory_to_service',
+    `เบิกวัสดุของ ${job.jobNo} ให้ Service ${idSet.size} รายการ จาก ${poNos.join(', ')} — ${detail}` +
+    (remain > 0 ? ` (ค้างอีก ${remain} รายการ)` : ''))
+  return finalizeIssue(next, actor, p.jobId)
+}
+
+/**
+ * เบิกทั้งใบในคำสั่งเดียว (LBS ทุกเครื่อง + วัสดุทุกรายการ) — Manage / seed
+ * ยืนกรานว่าต้องเบิกได้ครบจริง: ถ้ามีอะไร Not Ready อยู่ ให้เบิกแยกส่วนแทน
+ */
 export function issueJob(
   db: DB, actor: User,
   p: { jobId: string; startDate: string; endDate: string; location: string; note?: string },
 ): DB {
-  const job = assertJobEditable(db, p.jobId, actor)
-  const status = deriveJobStatus(db, job)
-  if (status !== 'ready_to_issue')
-    throw new Error(`${job.jobNo} ยังไม่พร้อมเบิก — ต้องมี LBS ครบตาม Scope และ Accessory ครบทุกรายการ`)
-  // sync 0052 — ของยังไม่เข้าคลังจริง ห้ามเบิกให้ Service (กันทีมออกหน้างานแล้วเสียเที่ยว)
-  const etaBlock = jobEtaBlockReason(db, p.jobId)
-  if (etaBlock) throw new Error(`${job.jobNo}: ${etaBlock}`)
-  if (!p.startDate || !p.endDate) throw new Error('กรุณาระบุกำหนดวันติดตั้ง (Start–End)')
-  if (p.endDate < p.startDate) throw new Error('วันสิ้นสุดต้องไม่ก่อนวันเริ่มติดตั้ง')
-  if (!p.location.trim()) throw new Error('กรุณาระบุสถานที่ติดตั้ง (Location)')
-  const units = db.lbsUnits.filter(u => u.jobId === p.jobId && u.status === 'allocated')
-  const range = p.startDate === p.endDate ? p.startDate : `${p.startDate} – ${p.endDate}`
-  let next: DB = {
-    ...db,
-    jobs: db.jobs.map(j => j.id === p.jobId
-      ? {
-          ...j, terminalStatus: 'issued' as const, issuedAt: now(), issuedNote: p.note,
-          installStartDate: p.startDate, installEndDate: p.endDate, issueLocation: p.location.trim(),
-        }
-      : j),
-    lbsUnits: db.lbsUnits.map(u =>
-      u.jobId === p.jobId && u.status === 'allocated' ? { ...u, status: 'issued' as const } : u),
-  }
-  next = notify(next, {
-    type: 'job_issued', dept: 'service', jobId: p.jobId,
-    message: `🚚 ${job.jobNo} เบิกให้ Service · ติดตั้ง ${p.location.trim()} · ${range}`,
-  })
-  return audit(next, actor, 'job', p.jobId, 'issue_to_service',
-    `เบิก ${job.jobNo} ให้ Service ติดตั้ง (LBS ${units.length} เครื่อง) นัดติดตั้ง ${range} ที่ ${p.location.trim()}`)
+  const job = db.jobs.find(j => j.id === p.jobId)
+  if (!job) throw new Error('ไม่พบ Job')
+  const plan = jobIssuePlan(db, p.jobId)
+  if (plan.lbsShort > 0)
+    throw new Error(`${job.jobNo} ดึง LBS ยังไม่ครบ Scope — ขาดอีก ${plan.lbsShort} เครื่อง`)
+  if (plan.lbsBlocked.length > 0)
+    throw new Error(`${job.jobNo}: ${plan.lbsBlocked[0].unit.serialLvb} ${plan.lbsBlocked[0].block}` +
+      ` — เบิกทั้งใบไม่ได้ ให้เบิกแยกเฉพาะของที่พร้อม`)
+  const notReady = plan.accPending.filter(r => !plan.accReady.some(x => x.id === r.id))
+  if (notReady.length > 0)
+    throw new Error(`${job.jobNo} มีวัสดุ ${notReady.length} รายการที่ยังเบิกไม่ได้` +
+      ` (${accIssueBlockReason(db, notReady[0])}) — ให้เบิกแยกเฉพาะของที่พร้อม`)
+
+  let next = db
+  // เบิกวัสดุก่อน แล้วปิดท้ายด้วย LBS → finalizeIssue ปิดใบในก้าวเดียว
+  if (plan.accReady.length > 0) next = issueJobAccessory(next, actor, p)
+  return issueJobLbs(next, actor, p)
 }
 
 // Service ยืนยันติดตั้งเสร็จ พร้อมวันที่จริง → Installed (terminal)
@@ -1925,6 +2228,13 @@ export function cancelJob(
 ): DB {
   const job = assertJobEditable(db, p.jobId, actor)
   if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผลการยกเลิก')
+  // 0059: เบิกออกไปแล้วบางส่วน = ของอยู่ในมือ Service ระบบคืนเข้าคลังเองไม่ได้
+  //   (ใบที่เบิกครบแล้วถูก assertJobEditable กันอยู่แล้ว — ตรงนี้ปิดช่องว่างของสถานะ partially_issued)
+  const issuedOut = db.lbsUnits.filter(u => u.jobId === p.jobId && u.status === 'issued').length
+    + db.accessoryRequests.filter(r => r.jobId === p.jobId && !!r.issuedToServiceAt).length
+  if (issuedOut > 0)
+    throw new Error(`${job.jobNo} เบิกของให้ Service ไปแล้วบางส่วน — ยกเลิกไม่ได้` +
+      ` ให้ Service คืนของเข้าคลังก่อน แล้วให้ Manage จัดการเป็นเคส`)
 
   let next: DB = db
   const ts = now()
@@ -2057,14 +2367,23 @@ export function requestApproval(
       throw new Error('เลือกได้เฉพาะรายการสั่งซื้อที่ยังไม่ออก PR')
     typeLabel = `ออก PR (${ids.length} รายการ)`
   } else if (p.type === 'issue_job') {
-    if (deriveJobStatus(db, job) !== 'ready_to_issue')
-      throw new Error(`${job.jobNo} ยังไม่พร้อมเบิก — ต้องมี LBS ครบตาม Scope และ Accessory ครบทุกรายการ`)
-    // กันตั้งแต่ตอนขอ — ไม่ให้คำขอที่เบิกไม่ได้ไปค้างรอ Division พิจารณา (sync 0052)
-    const etaBlock = jobEtaBlockReason(db, p.jobId)
-    if (etaBlock) throw new Error(`${job.jobNo}: ${etaBlock}`)
-    if (!p.payload.startDate || !p.payload.endDate) throw new Error('กรุณาระบุกำหนดวันติดตั้ง (Start–End)')
-    if (p.payload.endDate < p.payload.startDate) throw new Error('วันสิ้นสุดต้องไม่ก่อนวันเริ่มติดตั้ง')
-    if (!p.payload.location?.trim()) throw new Error('กรุณาระบุสถานที่ติดตั้ง (Location)')
+    // 0059: คำขอนี้คือ "เบิก LBS" (Accessory ที่รับของแล้ว Project เบิกเองได้ ไม่ผ่านที่นี่)
+    // validate แบบเดียวกับ issueJobLbs เพื่อไม่ให้คำขอที่เบิกไม่ได้ไปค้างรอ Division พิจารณา
+    const plan = jobIssuePlan(db, p.jobId)
+    if (plan.lbsShort > 0)
+      throw new Error(`${job.jobNo} ดึง LBS ยังไม่ครบ Scope — ขาดอีก ${plan.lbsShort} เครื่อง`)
+    const ids = p.payload.unitIds?.length ? p.payload.unitIds : plan.lbsReady.map(u => u.id)
+    if (ids.length === 0)
+      throw new Error(`${job.jobNo} ไม่มี LBS ที่เบิกได้ตอนนี้ — เช็ค ETA to WH รายเครื่องที่หน้า LBS Inventory`)
+    for (const id of ids) {
+      const u = db.lbsUnits.find(x => x.id === id)
+      if (!u || u.jobId !== p.jobId) throw new Error('มีเครื่องที่ไม่ได้ถูกดึงเข้า Job นี้')
+      const block = unitIssueBlockReason(u)
+      if (block) throw new Error(`${u.serialLvb}: ${block}`)
+    }
+    // นัดติดตั้ง: เว้นว่างได้ถ้า Job มีนัดอยู่แล้ว (เบิก LBS ล็อตที่ 2) — resolveInstallPlan ตรวจให้
+    resolveInstallPlan(job, p.payload)
+    typeLabel = `เบิก LBS ให้ Service (${ids.length} เครื่อง)`
   } else if (p.type === 'swap_lbs') {
     if (!p.payload.reason?.trim()) throw new Error('กรุณาระบุเหตุผลการสลับ LBS')
     const a = db.lbsUnits.find(u => u.id === p.payload.swapAllocatedUnitId)
@@ -2111,9 +2430,11 @@ export function approveRequest(db: DB, actor: User, p: { requestId: string }): D
   if (req.type === 'create_pr') {
     next = createPR(next, actor, { jobId: req.jobId, requestIds: req.payload.requestIds ?? [] })
   } else if (req.type === 'issue_job') {
-    next = issueJob(next, actor, {
-      jobId: req.jobId, startDate: req.payload.startDate ?? '', endDate: req.payload.endDate ?? '',
-      location: req.payload.location ?? '', note: req.payload.note,
+    // 0059: อนุมัติแล้วเบิกเฉพาะ LBS ตามรายการที่ขอ (unitIds ว่าง = ทุกเครื่องที่พร้อม ณ ตอนอนุมัติ)
+    next = issueJobLbs(next, actor, {
+      jobId: req.jobId, unitIds: req.payload.unitIds,
+      startDate: req.payload.startDate, endDate: req.payload.endDate,
+      location: req.payload.location, note: req.payload.note,
     })
   } else if (req.type === 'swap_lbs') {
     next = swapLbs(next, actor, {

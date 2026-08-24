@@ -110,6 +110,7 @@ function mapJob(r: Row): Job {
     budgetCosts: r.budget_costs ?? undefined,
     openedBy: r.opened_by ?? '', createdAt: r.created_at,
     issuedAt: r.issued_at ?? undefined, issuedNote: r.issued_note ?? undefined,
+    lbsIssuedAt: r.lbs_issued_at ?? undefined,                    // 0059 เบิก LBS ล็อตแรกเมื่อ
     installStartDate: r.install_start_date ?? undefined,
     installEndDate: r.install_end_date ?? undefined,
     issueLocation: r.issue_location ?? undefined,
@@ -137,6 +138,11 @@ function mapAccReq(r: Row): AccessoryRequest {
   return {
     id: r.id, jobId: r.job_id, itemId: r.item_id,
     qtyRequested: Number(r.qty_requested), qtyReceived: Number(r.qty_received),
+    // ⚠️ qty_transferred เคยไม่ถูก map (ตกมาตั้งแต่ 0038) → effectiveQty() บนโหมด Supabase
+    //    คืนยอดเต็มทั้งที่โอนคืนคลังไปแล้ว ทำให้ต้นทุนที่ตัดเข้า Job และยอด "ของค้างที่ Job" เกินจริง
+    qtyTransferred: r.qty_transferred != null ? Number(r.qty_transferred) : undefined,
+    issuedToServiceAt: r.issued_to_service_at ?? undefined,       // 0059
+    issuedToServiceBy: r.issued_to_service_by ?? undefined,
     unitPrice: r.unit_price != null ? Number(r.unit_price) : undefined,
     phaseBudget: r.phase_budget ?? undefined,
     source: r.source, status: r.status, prId: r.pr_id, poId: r.po_id ?? null,
@@ -437,6 +443,19 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_receive_po_items', { p_po_id: p.poId, p_receipts: p.receipts.map(r => ({ request_id: r.requestId, qty: r.qty })) }),
     issueJob: (p: { jobId: string; startDate: string; endDate: string; location: string; note?: string }) =>
       rpc(sb, 'rpc_issue_job', { p_job_id: p.jobId, p_start_date: p.startDate || null, p_end_date: p.endDate || null, p_location: p.location, p_note: p.note ?? null }),
+    // 0059 — เบิกแยกส่วน · p_unit_ids/p_request_ids = null หมายถึง "ทุกอย่างที่ Ready"
+    issueJobLbs: (p: { jobId: string; unitIds?: string[]; startDate?: string; endDate?: string; location?: string; note?: string }) =>
+      rpc(sb, 'rpc_issue_job_lbs', {
+        p_job_id: p.jobId, p_unit_ids: p.unitIds?.length ? p.unitIds : null,
+        p_start_date: p.startDate || null, p_end_date: p.endDate || null,
+        p_location: p.location ?? null, p_note: p.note ?? null,
+      }),
+    issueJobAccessory: (p: { jobId: string; requestIds?: string[]; startDate?: string; endDate?: string; location?: string; note?: string }) =>
+      rpc(sb, 'rpc_issue_job_accessory', {
+        p_job_id: p.jobId, p_request_ids: p.requestIds?.length ? p.requestIds : null,
+        p_start_date: p.startDate || null, p_end_date: p.endDate || null,
+        p_location: p.location ?? null, p_note: p.note ?? null,
+      }),
     confirmInstall: (p: { jobId: string; installedDate: string; note?: string; checkinLat?: number; checkinLng?: number; photoUrl?: string }) =>
       rpc(sb, 'rpc_confirm_install', { p_job_id: p.jobId, p_installed_date: p.installedDate, p_note: p.note ?? null, p_lat: p.checkinLat ?? null, p_lng: p.checkinLng ?? null, p_photo_url: p.photoUrl ?? null }),
     logSiteVisit: (p: { jobId: string; outcome: 'rescheduled' | 'failed'; reason: string; newStartDate?: string; newEndDate?: string }) =>
@@ -472,6 +491,7 @@ export function remoteActions(sb: SupabaseClient) {
         p_type: p.type, p_job_id: p.jobId,
         p_payload: {
           ...(p.payload.requestIds !== undefined ? { request_ids: p.payload.requestIds } : {}),
+          ...(p.payload.unitIds !== undefined ? { unit_ids: p.payload.unitIds } : {}),
           ...(p.payload.startDate !== undefined ? { start_date: p.payload.startDate } : {}),
           ...(p.payload.endDate !== undefined ? { end_date: p.payload.endDate } : {}),
           ...(p.payload.location !== undefined ? { location: p.payload.location } : {}),

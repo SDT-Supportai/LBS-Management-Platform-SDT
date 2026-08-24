@@ -25,6 +25,8 @@ const STATUS_TH = {
   allocated: '📦 Allocated — ดึง LBS แล้ว รอครบตาม Scope',
   procuring_accessory: '🛒 Procuring Accessory — รอวัสดุจาก PO',
   ready_to_issue: '✅ Ready to Issue — ของครบ พร้อมเบิกให้ Service',
+  // 0059: เบิกออกไปแล้วบางส่วน (LBS หรือวัสดุบาง PO) แต่ยังไม่ครบทั้งใบ
+  partially_issued: '📤 Partially Issued — เบิกให้ Service แล้วบางส่วน',
   issued: '🚚 Issued — เบิกแล้ว รอติดตั้ง',
   installed: '🎉 Installed — ติดตั้งเสร็จแล้ว',
   cancelled: '❌ Cancelled — ยกเลิกแล้ว',
@@ -104,11 +106,13 @@ async function jobStatusText(env, jobNoRaw) {
   const { data: st } = await sb.from('v_job_status').select('*').eq('job_id', job.id).maybeSingle()
   const status = st?.status ?? 'draft'
 
-  // ข้อมูลรายเครื่อง + ทีมที่มอบหมาย (0035/0036)
-  const [{ data: units }, { data: states }, { data: assigns }] = await Promise.all([
-    sb.from('lbs_units').select('id').eq('job_id', job.id),
+  // ข้อมูลรายเครื่อง + ทีมที่มอบหมาย (0035/0036) + ความคืบหน้าการเบิก (0059)
+  const [{ data: units }, { data: states }, { data: assigns }, { data: accs }] = await Promise.all([
+    sb.from('lbs_units').select('id, status').eq('job_id', job.id),
     sb.from('v_unit_install_state').select('outcome').eq('job_id', job.id),
     sb.from('job_assignments').select('is_lead, team_members(first_name, last_name)').eq('job_id', job.id),
+    sb.from('job_accessory_requests')
+      .select('status, qty_requested, qty_transferred, issued_to_service_at').eq('job_id', job.id),
   ])
   // นับจาก job_id ตรง ๆ — หลังเบิก unit เปลี่ยนเป็น status 'issued' ทำให้ v_job_status.lbs_allocated เป็น 0
   const attached = units?.length ?? 0
@@ -120,6 +124,20 @@ async function jobStatusText(env, jobNoRaw) {
     `สถานะ: ${STATUS_TH[status] ?? status}`,
     `LBS: ${attached}/${job.lbs_qty_required} เครื่อง`,
   ]
+  // 0059: เบิกแยกส่วนได้ → ต้องบอกว่าอะไรออกไปแล้ว อะไรค้าง ไม่ใช่แค่ "เบิกแล้ว/ยังไม่เบิก"
+  if (status === 'partially_issued') {
+    const lbsOut = (units ?? []).filter(u => u.status === 'issued').length
+    const accWait = (accs ?? []).filter(r =>
+      !r.issued_to_service_at && !['cancelled', 'returned'].includes(r.status)
+      && (Number(r.qty_requested) - Number(r.qty_transferred ?? 0)) > 0).length
+    lines.push(`📤 เบิกแล้ว: LBS ${lbsOut}/${attached} เครื่อง` +
+      (accWait > 0 ? ` · วัสดุค้างรอเบิก ${accWait} รายการ` : ' · วัสดุครบแล้ว'))
+    if (job.install_start_date) {
+      const rng = job.install_start_date === job.install_end_date
+        ? job.install_start_date : `${job.install_start_date} – ${job.install_end_date}`
+      lines.push(`📅 นัดติดตั้ง: ${rng}`, `📍 ${job.issue_location ?? job.install_location ?? '-'}`)
+    }
+  }
   if (status === 'issued' || status === 'installed') {
     lines.push(`🔧 ติดตั้งแล้ว ${installedCnt}/${attached} เครื่อง` +
       (blockedCnt > 0 ? ` · ติดตั้งไม่ได้ ${blockedCnt}` : ''))
