@@ -4,7 +4,8 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { useStore } from '../data/StoreContext'
 import { fmtDate, fmtDateTime } from '../ui/format'
-import { memberFullName } from '../data/logic'
+import { memberFullName, inThailand, deriveJobStatus } from '../data/logic'
+import { JOB_STATUS_LABEL } from '../ui/format'
 
 // =============================================================================
 // Map Tracking — ประเทศไทย (2026-08-23)
@@ -27,24 +28,26 @@ import { memberFullName } from '../data/logic'
 // กรอบประเทศไทยโดยประมาณ — ใช้เป็นมุมมองตั้งต้นเมื่อยังไม่มีหมุด
 const TH_CENTER: [number, number] = [13.5, 100.9]
 const TH_ZOOM = 6
-// พิกัดที่หลุดออกนอกกรอบนี้ = ข้อมูลผิด (เช่นสลับ lat/lng) — กันหมุดหลุดไปอยู่กลางทะเลจีน
-const TH_BOUNDS = { minLat: 5.5, maxLat: 20.6, minLng: 97.3, maxLng: 105.7 }
-const inThailand = (lat: number, lng: number) =>
-  lat >= TH_BOUNDS.minLat && lat <= TH_BOUNDS.maxLat && lng >= TH_BOUNDS.minLng && lng <= TH_BOUNDS.maxLng
+// inThailand ย้ายไปอยู่ logic.ts (0060) — ใช้ร่วมกับฝั่ง validate ตอนกรอกพิกัด แหล่งความจริงเดียว
 
 type Pin = {
   key: string
   lat: number
   lng: number
-  /** ราย Serial (unit_installations) หรือ ระดับงาน (jobs.install_checkin_*) */
-  level: 'unit' | 'job'
-  outcome: 'installed' | 'blocked'
+  /**
+   * unit = Check-in ราย Serial (unit_installations) · job = Check-in ระดับงาน (jobs.install_checkin_*)
+   * plan = จุดติดตั้ง "ตามแผน" (jobs.plan_lat/lng + install_sites[].lat/lng — 0060) ยังไม่ได้ติดตั้ง
+   */
+  level: 'unit' | 'job' | 'plan'
+  outcome: 'installed' | 'blocked' | 'planned'
   jobId: string
   jobNo: string
   customer: string
   location: string
   serial?: string
   serialOm?: string
+  siteNo?: number          // plan: จุดที่เท่าไรของงาน
+  statusLabel?: string     // plan: สถานะงานตอนนี้ (ยังไม่ติดตั้ง)
   date?: string
   by?: string
   photoUrl?: string
@@ -73,6 +76,7 @@ export default function MapTrackingPage() {
   const mapRef = useRef<L.Map | null>(null)
   const layerRef = useRef<L.LayerGroup | null>(null)
   const [showJobLevel, setShowJobLevel] = useState(true)
+  const [showPlan, setShowPlan] = useState(true)            // ชั้น "แผนติดตั้ง" (0060)
   const [expanded, setExpanded] = useState(false)          // ขยายแผนที่เต็มจอ
   const [search, setSearch] = useState('')
   const [onlyBlocked, setOnlyBlocked] = useState(false)
@@ -120,6 +124,22 @@ export default function MapTrackingPage() {
         photoUrl: j.installPhotoUrl, note: j.installNote,
       })
     })
+    // 3) จุดติดตั้ง "ตามแผน" (0060) — งานที่ยังไม่ปิด/ไม่ถูกยกเลิก
+    //    ใช้วางแผนเส้นทางทีมช่างก่อนออกไซต์ · หมุดจะถูกแทนที่ด้วยหมุดจริงเมื่อเช็คอินแล้ว
+    db.jobs.forEach(j => {
+      if (j.terminalStatus === 'installed' || j.terminalStatus === 'cancelled') return
+      const statusLabel = JOB_STATUS_LABEL[deriveJobStatus(db, j)]
+      const push = (lat: number | undefined, lng: number | undefined, siteNo: number, loc: string, due?: string) => {
+        if (lat == null || lng == null || !inThailand(lat, lng)) return
+        out.push({
+          key: `p:${j.id}:${siteNo}`, lat, lng, level: 'plan', outcome: 'planned',
+          jobId: j.id, jobNo: j.jobNo, customer: j.customerName,
+          location: loc || '-', siteNo, date: due, statusLabel,
+        })
+      }
+      push(j.planLat, j.planLng, 1, j.installLocation, j.requiredDate)
+      ;(j.installSites ?? []).forEach((s, i) => push(s.lat, s.lng, i + 2, s.location, s.requiredDate))
+    })
     return out
   }, [db])
 
@@ -148,12 +168,13 @@ export default function MapTrackingPage() {
     const t = search.trim().toLowerCase()
     return allPins.filter(p => {
       if (p.level === 'job' && !showJobLevel) return false
+      if (p.level === 'plan' && !showPlan) return false
       if (onlyBlocked && p.outcome !== 'blocked') return false
       if (!t) return true
       return [p.jobNo, p.customer, p.location, p.serial, p.serialOm]
         .some(v => v?.toLowerCase().includes(t))
     })
-  }, [allPins, search, showJobLevel, onlyBlocked])
+  }, [allPins, search, showJobLevel, showPlan, onlyBlocked])
 
   // ---- สร้างแผนที่ครั้งเดียว ----
   useEffect(() => {
@@ -177,8 +198,10 @@ export default function MapTrackingPage() {
     const groups = groupPins(pins)
     groups.forEach(g => {
       const blocked = g.some(p => p.outcome === 'blocked')
+      const allPlan = g.every(p => p.level === 'plan')
       const n = g.length
-      const cls = blocked ? 'mp-pin blocked' : 'mp-pin'
+      // ลำดับความสำคัญของสี: ติดตั้งไม่ได้ (แดง) > ติดตั้งแล้ว (เขียว) > ตามแผน (โปร่ง)
+      const cls = blocked ? 'mp-pin blocked' : allPlan ? 'mp-pin plan' : 'mp-pin'
       const icon = L.divIcon({
         className: 'mp-pin-wrap',
         html: `<span class="${cls}">${n > 1 ? n : ''}</span>`,
@@ -186,8 +209,11 @@ export default function MapTrackingPage() {
       })
       // hover = Job No. (สิ่งที่ผู้ใช้ขอ) · คลิก = รายละเอียดเต็ม
       const jobNos = [...new Set(g.map(p => p.jobNo))]
+      const tipTail = n > 1 ? ` · ${n} จุด`
+        : g[0].level === 'plan' ? ` · จุดที่ ${g[0].siteNo} (ตามแผน)`
+        : g[0].serial ? ` · ${esc(g[0].serial)}` : ''
       const tip = jobNos.length === 1
-        ? `<b>${esc(jobNos[0])}</b>${n > 1 ? ` · ${n} เครื่อง` : g[0].serial ? ` · ${esc(g[0].serial)}` : ''}`
+        ? `<b>${esc(jobNos[0])}</b>${tipTail}`
         : `<b>${jobNos.map(esc).join(' · ')}</b> (${n} จุด)`
       const body = g.map(p => `
         <div class="mp-row">
@@ -196,9 +222,13 @@ export default function MapTrackingPage() {
           <div class="mp-sub">
             ${p.level === 'unit'
               ? `Serial <span class="mp-mono">${esc(p.serial ?? '-')}</span>${p.serialOm ? ` / <span class="mp-mono">${esc(p.serialOm)}</span>` : ''}`
-              : 'เช็คอินระดับงาน (ก่อนแยกราย Serial)'}
+              : p.level === 'plan'
+                ? `จุดติดตั้งที่ ${p.siteNo} ตามแผน`
+                : 'เช็คอินระดับงาน (ก่อนแยกราย Serial)'}
           </div>
-          <div class="mp-sub">${p.outcome === 'blocked' ? '⚠️ ติดตั้งไม่ได้' : '✅ ติดตั้งแล้ว'} ${p.date ? esc(fmtDate(p.date)) : ''} · ${esc(p.by ?? '-')}</div>
+          <div class="mp-sub">${p.level === 'plan'
+            ? `📌 ยังไม่ติดตั้ง · ${esc(p.statusLabel ?? '-')}${p.date ? ` · กำหนด ${esc(fmtDate(p.date))}` : ''}`
+            : `${p.outcome === 'blocked' ? '⚠️ ติดตั้งไม่ได้' : '✅ ติดตั้งแล้ว'} ${p.date ? esc(fmtDate(p.date)) : ''} · ${esc(p.by ?? '-')}`}</div>
           ${p.note ? `<div class="mp-sub">📝 ${esc(p.note)}</div>` : ''}
           ${p.photoUrl ? `<div class="mp-sub"><a href="${esc(p.photoUrl)}" target="_blank" rel="noreferrer">🖼️ รูปหน้างาน</a></div>` : ''}
           <div class="mp-sub"><a href="#/jobs/${esc(p.jobId)}">เปิดหน้า Job →</a></div>
@@ -220,21 +250,23 @@ export default function MapTrackingPage() {
 
   const unitPins = allPins.filter(p => p.level === 'unit')
   const jobPins = allPins.filter(p => p.level === 'job')
+  const planPins = allPins.filter(p => p.level === 'plan')
   const blockedCount = pins.filter(p => p.outcome === 'blocked').length
 
   return (
     <>
       <div className="page-title">Map Tracking — ประเทศไทย</div>
       <div className="page-sub">
-        ตำแหน่งติดตั้งจริงจากการ <b>Check-in ราย Serial</b> ตอนที่ Service ยืนยันหน้างาน —
-        ชี้ที่หมุดเพื่อดู <b>Job No.</b> · คลิกเพื่อดู Serial / ช่างผู้ติดตั้ง / รูปหน้างาน
+        <b>ติดตั้งแล้ว</b> = ตำแหน่งจริงจากการ Check-in ราย Serial ตอน Service ยืนยันหน้างาน ·
+        <b>ตามแผน</b> = พิกัดจุดติดตั้งที่กรอกไว้ตอนเปิด Job (ยังไม่ได้ติดตั้ง) —
+        ชี้ที่หมุดเพื่อดู <b>Job No.</b> · คลิกเพื่อดูรายละเอียด
       </div>
 
       <div className="cards" style={{ marginBottom: 14 }}>
         <div className="card">
           <div className="label">จุดติดตั้งบนแผนที่</div>
           <div className="value">{pins.length}<span className="muted">/{allPins.length}</span></div>
-          <div className="hint">ราย Serial {unitPins.length} · ระดับงาน {jobPins.length}</div>
+          <div className="hint">ราย Serial {unitPins.length} · ระดับงาน {jobPins.length} · ตามแผน {planPins.length}</div>
         </div>
         <div className="card">
           <div className="label">งานที่มีหมุด</div>
@@ -267,6 +299,11 @@ export default function MapTrackingPage() {
               <input type="checkbox" checked={showJobLevel} onChange={e => setShowJobLevel(e.target.checked)} />
               รวมเช็คอินระดับงาน ({jobPins.length})
             </label>
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}
+              title="พิกัดจุดติดตั้งที่กรอกไว้ตอนเปิด Job — ใช้วางแผนเส้นทางทีมช่างก่อนออกไซต์">
+              <input type="checkbox" checked={showPlan} onChange={e => setShowPlan(e.target.checked)} />
+              รวมจุดตามแผน ({planPins.length})
+            </label>
             <button className="small" onClick={() => setExpanded(true)} title="ขยายแผนที่เต็มจอ (ออกด้วย Esc)">
               ⛶ ขยายเต็มจอ
             </button>
@@ -275,7 +312,8 @@ export default function MapTrackingPage() {
         <div className="panel-body">
           {allPins.length === 0 && (
             <div className="empty" style={{ marginBottom: 10 }}>
-              ยังไม่มีการ Check-in — หมุดจะขึ้นเองเมื่อ Service ยืนยันติดตั้งรายเครื่องพร้อมพิกัด GPS
+              ยังไม่มีหมุด — หมุด <b>ติดตั้งแล้ว</b> ขึ้นเองเมื่อ Service ยืนยันติดตั้งพร้อมพิกัด GPS ·
+              หมุด <b>ตามแผน</b> ขึ้นเมื่อกรอกพิกัดจุดติดตั้งที่หน้า Jobs (ปุ่ม "แก้ไขข้อมูล Job")
             </div>
           )}
           {/* กล่องแผนที่ตัวเดิมย้ายเข้า .map-wrap เพื่อให้โหมดเต็มจอเปลี่ยนแค่ CSS
@@ -292,6 +330,7 @@ export default function MapTrackingPage() {
           <div className="muted" style={{ marginTop: 8, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
             <span><span className="mp-legend" /> ติดตั้งแล้ว</span>
             <span><span className="mp-legend blocked" /> ติดตั้งไม่ได้</span>
+            <span><span className="mp-legend plan" /> ตามแผน (ยังไม่ติดตั้ง)</span>
             <span>ตัวเลขในหมุด = จำนวนจุดที่พิกัดเดียวกัน</span>
             <span>แผนที่จาก OpenStreetMap (ต้องต่ออินเทอร์เน็ต)</span>
           </div>
@@ -314,12 +353,16 @@ export default function MapTrackingPage() {
                       <td className="mono">
                         {p.level === 'unit'
                           ? <>{p.serial ?? '-'}<div className="muted mono">{p.serialOm}</div></>
-                          : <span className="badge neutral">ระดับงาน</span>}
+                          : p.level === 'plan'
+                            ? <span className="badge blue">จุดที่ {p.siteNo}</span>
+                            : <span className="badge neutral">ระดับงาน</span>}
                       </td>
                       <td>{p.location}</td>
-                      <td>{p.outcome === 'blocked'
-                        ? <span className="badge red">⚠️ ติดตั้งไม่ได้</span>
-                        : <span className="badge green">✅ ติดตั้งแล้ว</span>}</td>
+                      <td>{p.level === 'plan'
+                        ? <><span className="badge blue">📌 ตามแผน</span><div className="muted">{p.statusLabel}</div></>
+                        : p.outcome === 'blocked'
+                          ? <span className="badge red">⚠️ ติดตั้งไม่ได้</span>
+                          : <span className="badge green">✅ ติดตั้งแล้ว</span>}</td>
                       <td style={{ whiteSpace: 'nowrap' }}>{p.date ? fmtDate(p.date) : '-'}</td>
                       <td className="muted">{p.by ?? '-'}</td>
                       <td className="muted mono" style={{ whiteSpace: 'nowrap' }}>

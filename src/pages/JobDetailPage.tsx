@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
-import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, PAYMENT_TYPES } from '../data/logic'
-import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
+import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, parseLatLng, fmtLatLng, PAYMENT_TYPES } from '../data/logic'
+import { BudgetFields, CoordInput, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, sitesToApi, sitesFromJob, type CostForm, type InstallSite } from '../ui/components'
 import { ACC_STATUS_LABEL, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType } from '../types'
 
@@ -13,6 +13,16 @@ interface PayForm {
 }
 
 const COST_LABEL: Record<string, string> = Object.fromEntries(COST_CATEGORIES.map(c => [c.key, c.label]))
+
+/** พิกัดจุดติดตั้งตามแผน (0060) — กดเปิด Google Maps ตรวจได้ว่าหมุดลงถูกที่ */
+function PlanCoordCell({ lat, lng }: { lat?: number; lng?: number }) {
+  if (lat == null || lng == null) return <span className="muted">ยังไม่ระบุ</span>
+  return (
+    <a className="mono" href={`https://www.google.com/maps?q=${lat},${lng}`} target="_blank" rel="noreferrer">
+      📍 {lat}, {lng}
+    </a>
+  )
+}
 
 function SerialPicker({ units, selected, toggle, showEta }: {
   units: LbsUnit[]
@@ -71,7 +81,8 @@ export default function JobDetailPage() {
   const [pickedReqs, setPickedReqs] = useState<Set<string>>(new Set())
   const [cancelReason, setCancelReason] = useState('')
   const [receivedToCentral, setReceivedToCentral] = useState(true)
-  const [editForm, setEditForm] = useState({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '' })
+  // planCoord = พิกัดจุดติดตั้งที่ 1 (0060) — ข้อความ "lat, lng" แปลงตอน submit
+  const [editForm, setEditForm] = useState({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', planCoord: '' })
   const [editCosts, setEditCosts] = useState<CostForm>(emptyCostForm())
   const [editSites, setEditSites] = useState<InstallSite[]>([])   // จุดติดตั้งเพิ่มเติม (modal แก้ไขข้อมูล Job)
 
@@ -264,11 +275,11 @@ export default function JobDetailPage() {
           <div className="panel-head"><h3>จุดติดตั้ง <span className="muted" style={{ fontWeight: 400 }}>· {job.installSites.length + 1} จุด</span></h3></div>
           <div className="table-scroll">
             <table>
-              <thead><tr><th>จุดที่</th><th>สถานที่ติดตั้ง</th><th>วันที่ต้องการติดตั้ง</th></tr></thead>
+              <thead><tr><th>จุดที่</th><th>สถานที่ติดตั้ง</th><th>วันที่ต้องการติดตั้ง</th><th>พิกัดตามแผน</th></tr></thead>
               <tbody>
-                <tr><td>1</td><td>{job.installLocation || '-'}</td><td>{fmtDate(job.requiredDate)}</td></tr>
+                <tr><td>1</td><td>{job.installLocation || '-'}</td><td>{fmtDate(job.requiredDate)}</td><td><PlanCoordCell lat={job.planLat} lng={job.planLng} /></td></tr>
                 {job.installSites.map((s, i) => (
-                  <tr key={i}><td>{i + 2}</td><td>{s.location || '-'}</td><td>{fmtDate(s.requiredDate)}</td></tr>
+                  <tr key={i}><td>{i + 2}</td><td>{s.location || '-'}</td><td>{fmtDate(s.requiredDate)}</td><td><PlanCoordCell lat={s.lat} lng={s.lng} /></td></tr>
                 ))}
               </tbody>
             </table>
@@ -515,9 +526,10 @@ export default function JobDetailPage() {
               scope: job.scope, installLocation: job.installLocation,
               requiredDate: job.requiredDate, lbsQtyRequired: job.lbsQtyRequired,
               salePrice: job.budgetSalePrice !== undefined ? String(job.budgetSalePrice) : '',
+              planCoord: fmtLatLng(job.planLat, job.planLng),
             })
             setEditCosts(costFormFromJob(job.budgetCosts))
-            setEditSites(job.installSites ?? [])
+            setEditSites(sitesFromJob(job.installSites))
             openModal('edit')
           }}>แก้ไขข้อมูล Job</button>
           <button className="danger" disabled={pendingApprovalOf('cancel_job')}
@@ -551,6 +563,7 @@ export default function JobDetailPage() {
                   scope: job.scope, installLocation: job.installLocation,
                   requiredDate: job.requiredDate, lbsQtyRequired: job.lbsQtyRequired,
                   salePrice: job.budgetSalePrice !== undefined ? String(job.budgetSalePrice) : '',
+                  planCoord: fmtLatLng(job.planLat, job.planLng),
                 })
                 setEditCosts(costFormFromJob(job.budgetCosts))
                 setModal('budget')
@@ -1380,9 +1393,17 @@ export default function JobDetailPage() {
             <button onClick={close}>ยกเลิก</button>
             <button className="primary"
               onClick={async () => {
-                const { salePrice, ...rest } = editForm
+                const { salePrice, planCoord, ...rest } = editForm
                 const sites = rest.lbsQtyRequired > 1 ? editSites : []
-                if (await tryAction(() => act.updateJob({ jobId: job.id, ...rest, budgetSalePrice: toBudgetNum(salePrice), budgetCosts: costFormToApi(editCosts), installSites: sites }), 'บันทึกแล้ว')) close()
+                // parseLatLng/sitesToApi โยน error ถ้าพิกัดใช้ไม่ได้ → ต้องอยู่ใน tryAction ให้จับได้
+                if (await tryAction(() => {
+                  const c = parseLatLng(planCoord)
+                  return act.updateJob({
+                    jobId: job.id, ...rest,
+                    budgetSalePrice: toBudgetNum(salePrice), budgetCosts: costFormToApi(editCosts),
+                    installSites: sitesToApi(sites), planLat: c?.lat, planLng: c?.lng,
+                  })
+                }, 'บันทึกแล้ว')) close()
               }}>บันทึก</button>
           </>}>
           <label className="field"><span>Job No. * (แก้ได้ก่อนเบิก — ห้ามซ้ำ)</span>
@@ -1402,6 +1423,9 @@ export default function JobDetailPage() {
           <div className="row">
             <label className="field"><span>สถานที่ติดตั้ง{editForm.lbsQtyRequired > 1 ? ' (จุดที่ 1)' : ''}</span>
               <input value={editForm.installLocation} onChange={e => setEditForm({ ...editForm, installLocation: e.target.value })} />
+            </label>
+            <label className="field"><span>พิกัดจุดที่ 1 (ว่างได้ — ใส่แล้วขึ้นหมุดบนหน้า Map Tracking)</span>
+              <CoordInput value={editForm.planCoord} onChange={v => setEditForm({ ...editForm, planCoord: v })} />
             </label>
             <label className="field"><span>วันที่ต้องการติดตั้ง</span>
               <input type="date" value={editForm.requiredDate} onChange={e => setEditForm({ ...editForm, requiredDate: e.target.value })} />

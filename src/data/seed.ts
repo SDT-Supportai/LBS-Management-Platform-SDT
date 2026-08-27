@@ -112,6 +112,8 @@ export function buildSeedDb(): DB {
     jobNo: 'JOB-2026-0001',
     customerName: 'PEA เชียงใหม่', scope: 'ติดตั้ง LBS สถานีย่อยสันทราย 4 จุด',
     installLocation: 'สถานีไฟฟ้าสันทราย จ.เชียงใหม่', requiredDate: '2026-08-20', lbsQtyRequired: 4,
+    // พิกัดตามแผน (0060) — ให้หน้า Map Tracking มีหมุด "ตามแผน" ให้ดูในโหมด demo
+    planLat: 18.8449, planLng: 99.0413,
     installSites: [
       { location: 'สถานีไฟฟ้าแม่ริม จ.เชียงใหม่', requiredDate: '2026-08-22' },
       { location: 'สถานีไฟฟ้าสันกำแพง จ.เชียงใหม่', requiredDate: '2026-08-25' },
@@ -132,6 +134,7 @@ export function buildSeedDb(): DB {
     jobNo: 'JOB-2026-0002',
     customerName: 'PEA ขอนแก่น', scope: 'เปลี่ยน LBS สายส่ง 115kV ช่วงบ้านไผ่ 5 จุด',
     installLocation: 'อ.บ้านไผ่ จ.ขอนแก่น', requiredDate: '2026-09-10', lbsQtyRequired: 5,
+    planLat: 16.0574, planLng: 102.7301,
     budgetSalePrice: 6200000,
     budgetCosts: {
       raw_mat: { budget: 3000000, phase: 'PH1-MAT' }, outsourcing: { budget: 800000, phase: 'PH1-OUT' },

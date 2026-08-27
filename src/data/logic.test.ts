@@ -5,6 +5,7 @@ import {
   deriveJobStatus, jobDueDate, jobDaysLeft, jobAllocatedQty,
   unitIssueBlockReason, accIssueBlockReason, jobPendingIssueAccessories, jobIssuePlan,
   issueJobLbs, issueJobAccessory, cancelJob,
+  parseLatLng, fmtLatLng, inThailand, createJob, updateJob,
   unitEta, unitLeadDays, normalizeLeadDays, leadDaysToStore,
   ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX,
   addDaysIso, daysBetweenIso, nextNo,
@@ -531,5 +532,114 @@ describe('helper วันที่ + เลขที่เอกสาร', () 
 
   it('เลขที่รูปแบบเพี้ยนไม่ทำให้พัง', () => {
     expect(nextNo('PR', ['ของเก่าไม่มีรูปแบบ', `PR-${Y}-0005`])).toBe(`PR-${Y}-0006`)
+  })
+})
+
+// =============================================================================
+// พิกัดจุดติดตั้งตามแผน (0060)
+//
+// กฎที่ต้องล็อก:
+//   1) รับรูปแบบที่คนคัดลอกจาก Google Maps มาจริง ("13.75, 100.50" / ไม่มีเว้นวรรค / เว้นวรรคเดียว)
+//   2) พิกัดสลับ lat/lng ต้องบอกว่า "สลับ" พร้อมค่าที่ถูก — ไม่ใช่แค่ "ค่าไม่ถูก"
+//      (เป็นความผิดพลาดที่เจอบ่อยสุด และเดาเองไม่ได้ว่าผู้ใช้ตั้งใจอะไร)
+//   3) ว่าง = null ไม่ใช่ error (พิกัดเป็นข้อมูลไม่บังคับ)
+//   4) พิกัดครึ่งคู่หรือนอกกรอบ ต้องไม่ถูกเก็บลง Job — ไม่งั้นหน้าแผนที่กรองทิ้งเงียบ ๆ
+// =============================================================================
+describe('พิกัดจุดติดตั้งตามแผน — parseLatLng', () => {
+  it('รับรูปแบบที่คัดลอกจาก Google Maps ได้ทุกแบบ', () => {
+    expect(parseLatLng('13.7563, 100.5018')).toEqual({ lat: 13.7563, lng: 100.5018 })
+    expect(parseLatLng('13.7563,100.5018')).toEqual({ lat: 13.7563, lng: 100.5018 })
+    expect(parseLatLng('13.7563 100.5018')).toEqual({ lat: 13.7563, lng: 100.5018 })
+    expect(parseLatLng('  18.7883 , 98.9853  ')).toEqual({ lat: 18.7883, lng: 98.9853 })
+  })
+
+  it('ว่าง = null ไม่ใช่ error (พิกัดไม่บังคับ)', () => {
+    expect(parseLatLng('')).toBeNull()
+    expect(parseLatLng('   ')).toBeNull()
+    expect(parseLatLng(undefined)).toBeNull()
+  })
+
+  it('สลับ lat/lng ต้องบอกว่าสลับ พร้อมค่าที่ถูก', () => {
+    expect(() => parseLatLng('100.5018, 13.7563')).toThrow(/สลับกัน/)
+    expect(() => parseLatLng('100.5018, 13.7563')).toThrow(/13\.7563/)
+  })
+
+  it('นอกประเทศไทยและรูปแบบผิด ต้องเตือนคนละข้อความ', () => {
+    expect(() => parseLatLng('35.6762, 139.6503')).toThrow(/นอกประเทศไทย/)   // โตเกียว
+    expect(() => parseLatLng('13.7563')).toThrow(/รูปแบบพิกัด/)
+    expect(() => parseLatLng('abc, def')).toThrow(/รูปแบบพิกัด/)
+  })
+
+  it('fmtLatLng คืนค่าว่างเมื่อยังไม่ระบุ — ไม่ใช่ "undefined, undefined"', () => {
+    expect(fmtLatLng(13.75, 100.5)).toBe('13.75, 100.5')
+    expect(fmtLatLng(undefined, 100.5)).toBe('')
+    expect(fmtLatLng(13.75, undefined)).toBe('')
+    expect(fmtLatLng()).toBe('')
+  })
+
+  it('inThailand ครอบกรอบไทย ไม่ครอบเพื่อนบ้าน', () => {
+    expect(inThailand(18.7883, 98.9853)).toBe(true)    // เชียงใหม่
+    expect(inThailand(6.5, 101.2)).toBe(true)          // นราธิวาส
+    expect(inThailand(1.29, 103.85)).toBe(false)       // สิงคโปร์
+    expect(inThailand(21.03, 105.85)).toBe(false)      // ฮานอย
+  })
+})
+
+describe('พิกัดตามแผนบน Job — เก็บเฉพาะคู่ที่ใช้ได้', () => {
+  const actor = { id: 'u1', email: 'p@x.co', password: '', fullName: 'วิชัย', department: 'project' as const, isActive: true }
+  const base = { jobNo: 'J-900', customerName: 'กฟภ.', scope: 'ติดตั้ง', installLocation: 'สถานี A', requiredDate: '2026-12-01', lbsQtyRequired: 2 }
+
+  it('พิกัดครบคู่และอยู่ในกรอบ = เก็บ', () => {
+    const d = createJob(db(), actor, { ...base, planLat: 13.7563, planLng: 100.5018 })
+    expect(d.jobs[0].planLat).toBe(13.7563)
+    expect(d.jobs[0].planLng).toBe(100.5018)
+  })
+
+  it('พิกัดครึ่งคู่ = ไม่เก็บทั้งคู่ (หมุดวางไม่ได้อยู่ดี)', () => {
+    const d = createJob(db(), actor, { ...base, planLat: 13.7563 })
+    expect(d.jobs[0].planLat).toBeUndefined()
+    expect(d.jobs[0].planLng).toBeUndefined()
+  })
+
+  it('พิกัดนอกกรอบไทย = ปฏิเสธตอนบันทึก ไม่ใช่ปล่อยผ่านแล้วหายบนแผนที่', () => {
+    expect(() => createJob(db(), actor, { ...base, planLat: 35.6762, planLng: 139.6503 }))
+      .toThrow(/นอกประเทศไทย/)
+  })
+
+  it('จุดติดตั้งเพิ่มเติม: เก็บพิกัดที่ใช้ได้ ตัดพิกัดที่เพี้ยนทิ้ง', () => {
+    const d = createJob(db(), actor, {
+      ...base, lbsQtyRequired: 3,
+      installSites: [
+        { location: 'จุด 2', requiredDate: '2026-12-05', lat: 18.7883, lng: 98.9853 },
+        { location: 'จุด 3', requiredDate: '2026-12-10', lat: 35.6762, lng: 139.6503 },  // โตเกียว
+      ],
+    })
+    const sites = d.jobs[0].installSites!
+    expect(sites).toHaveLength(2)
+    expect(sites[0].lat).toBe(18.7883)
+    expect(sites[1].lat).toBeUndefined()     // จุดยังอยู่ แต่ไม่มีหมุด
+    expect(sites[1].location).toBe('จุด 3')
+  })
+
+  it('แก้ Job แล้วล้างพิกัดได้ (เว้นว่าง = ไม่มีหมุด)', () => {
+    let d = createJob(db(), actor, { ...base, planLat: 13.7563, planLng: 100.5018 })
+    const jobId = d.jobs[0].id
+    d = updateJob(d, actor, { jobId, ...base, planLat: undefined, planLng: undefined })
+    expect(d.jobs[0].planLat).toBeUndefined()
+  })
+
+  it('ลด Scope ต่ำกว่าเครื่องที่เบิกให้ Service ไปแล้วไม่ได้ (บั๊กจาก 0059)', () => {
+    // §0060: guard เดิมนับเฉพาะ allocated — เครื่องที่เบิกออกไปแล้วเป็น issued จึงหลุดการนับ
+    const d = db({
+      jobs: [job({ lbsQtyRequired: 2 })],
+      lbsUnits: [
+        unit({ id: 'a', status: 'issued', jobId: 'j1' }),
+        unit({ id: 'b', serialLvb: 'LVB-002', status: 'issued', jobId: 'j1' }),
+      ],
+    })
+    expect(() => updateJob(d, actor, {
+      jobId: 'j1', jobNo: 'J-001', customerName: 'กฟภ.', scope: 'x',
+      installLocation: 'A', requiredDate: '2026-12-01', lbsQtyRequired: 1,
+    })).toThrow(/ต่ำกว่าที่ถืออยู่ \(2 เครื่อง\)/)
   })
 })

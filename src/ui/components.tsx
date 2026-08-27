@@ -1,6 +1,7 @@
 import { Component, createContext, useCallback, useContext, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react'
 import type { JobStatus, BudgetCosts, CostCategoryKey } from '../types'
 import { JOB_STATUS_LABEL, fmtBaht, COST_CATEGORIES } from './format'
+import { parseLatLng, fmtLatLng } from '../data/logic'
 
 // ---------------- Toast + สถานะกำลังบันทึก ----------------
 // busy เป็น "ทั้งแอป" ไม่ใช่ต่อปุ่ม — ระหว่างมี action ค้างอยู่ ห้ามยิง action ใหม่
@@ -296,8 +297,51 @@ export function JobStatusBadge({ status }: { status: JobStatus }) {
   return <span className={`badge ${status}`}>{JOB_STATUS_LABEL[status]}</span>
 }
 
+// ---------------- จุดติดตั้ง ↔ รูปแบบที่ API รับ (0060) ----------------
+// แปลงที่เดียวจบ ทั้งหน้าเปิด Job และหน้าแก้ Job ใช้ตัวเดียวกัน — โยน error ถ้าพิกัดใช้ไม่ได้
+// (useTryAction ที่หน้าเรียกจะโชว์ข้อความให้เอง ไม่ต้องดักซ้ำ)
+export function sitesToApi(sites: InstallSite[]) {
+  return sites.map(s => ({
+    location: s.location, requiredDate: s.requiredDate,
+    ...(parseLatLng(s.coord) ?? {}),
+  }))
+}
+
+export function sitesFromJob(
+  sites?: { location: string; requiredDate: string; lat?: number; lng?: number }[],
+): InstallSite[] {
+  return (sites ?? []).map(s => ({
+    location: s.location, requiredDate: s.requiredDate, coord: fmtLatLng(s.lat, s.lng),
+  }))
+}
+
+// ---------------- ช่องกรอกพิกัดจุดติดตั้ง (0060) ----------------
+/**
+ * ช่องเดียวรับ "lat, lng" — คนหาพิกัดจาก Google Maps แล้วคลิกขวา → คัดลอก ได้คู่มาก้อนเดียว
+ * บังคับแยก 2 ช่องคือเพิ่มงานและเพิ่มโอกาสสลับค่า (parseLatLng ตรวจเคสสลับให้อยู่แล้ว)
+ * ตรวจสด ๆ ระหว่างพิมพ์แต่ไม่บล็อก — โยน error จริงตอน submit (parseLatLng ที่หน้าเรียกใช้)
+ */
+export function CoordInput({ value, onChange, placeholder }: {
+  value: string; onChange: (v: string) => void; placeholder?: string
+}) {
+  let err: string | undefined
+  try { parseLatLng(value) } catch (e) { err = e instanceof Error ? e.message : String(e) }
+  return (
+    <>
+      <input value={value} onChange={e => onChange(e.target.value)}
+        placeholder={placeholder ?? '13.7563, 100.5018'}
+        style={err ? { borderColor: 'var(--danger)' } : undefined} />
+      <span className="muted" style={{ fontSize: 11, color: err ? 'var(--danger)' : undefined }}>
+        {err ?? <>วาง lat, lng จาก <a href="https://www.google.com/maps" target="_blank" rel="noreferrer">Google Maps</a> (คลิกขวาที่จุด → คัดลอกพิกัด)</>}
+      </span>
+    </>
+  )
+}
+
 // ---------------- จุดติดตั้งเพิ่มเติม (จุดที่ 2+) ----------------
-export interface InstallSite { location: string; requiredDate: string }
+// coord = ข้อความ "lat, lng" ที่ผู้ใช้วางมาจาก Google Maps (แปลงเป็นเลขตอน submit)
+// เก็บเป็น string ในฟอร์มเพื่อให้พิมพ์ค้างกลางทางได้ ไม่ต้องถูกต้องทุกคีย์
+export interface InstallSite { location: string; requiredDate: string; coord?: string }
 
 /** แก้ไขจุดติดตั้งเพิ่มเติม (จุดที่ 2, 3, …) — โผล่เฉพาะ Job ที่ LBS > 1 · จำกัด ≤ max จุด */
 export function InstallSitesEditor({ sites, onChange, max }: {
@@ -305,7 +349,7 @@ export function InstallSitesEditor({ sites, onChange, max }: {
 }) {
   const set = (i: number, field: keyof InstallSite, v: string) =>
     onChange(sites.map((s, idx) => idx === i ? { ...s, [field]: v } : s))
-  const add = () => onChange([...sites, { location: '', requiredDate: '' }])
+  const add = () => onChange([...sites, { location: '', requiredDate: '', coord: '' }])
   const remove = (i: number) => onChange(sites.filter((_, idx) => idx !== i))
   return (
     <div>
@@ -316,6 +360,9 @@ export function InstallSitesEditor({ sites, onChange, max }: {
           </label>
           <label className="field"><span>วันที่ต้องการติดตั้ง</span>
             <input type="date" value={s.requiredDate} onChange={e => set(i, 'requiredDate', e.target.value)} />
+          </label>
+          <label className="field"><span>พิกัด (ว่างได้)</span>
+            <CoordInput value={s.coord ?? ''} onChange={v => set(i, 'coord', v)} />
           </label>
           <button className="small danger" type="button" style={{ marginBottom: 12 }} onClick={() => remove(i)} title="ลบจุดนี้">✕</button>
         </div>

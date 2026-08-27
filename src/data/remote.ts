@@ -105,6 +105,9 @@ function mapJob(r: Row): Job {
     installLocation: r.install_location ?? '', requiredDate: r.required_date ?? '',
     lbsQtyRequired: r.lbs_qty_required, terminalStatus: r.terminal_status,
     installSites: Array.isArray(r.install_sites) ? r.install_sites : undefined,
+    // พิกัดจุดติดตั้งที่ 1 ตามแผน (0060) — คนละตัวกับ install_checkin_* ที่เป็นพิกัดจริง
+    planLat: r.plan_lat != null ? Number(r.plan_lat) : undefined,
+    planLng: r.plan_lng != null ? Number(r.plan_lng) : undefined,
     budgetSalePrice: r.budget_sale_price != null ? Number(r.budget_sale_price) : undefined,
     budgetCost: r.budget_cost != null ? Number(r.budget_cost) : undefined,
     budgetCosts: r.budget_costs ?? undefined,
@@ -390,10 +393,10 @@ export function remoteActions(sb: SupabaseClient) {
         p_stock_id: p.stockId, p_fob_date: p.fobDate,
         p_lead_days: p.leadDays ?? null, p_overwrite: p.overwrite,
       }),
-    createJob: (p: { jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCosts?: BudgetCosts; installSites?: { location: string; requiredDate: string }[] }) =>
-      rpc(sb, 'rpc_create_job', { p_job_no: p.jobNo, p_customer: p.customerName, p_phone: p.contactPhone ?? null, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_costs: p.budgetCosts ?? null, p_install_sites: p.installSites ?? null }),
-    updateJob: (p: { jobId: string; jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCosts?: BudgetCosts; installSites?: { location: string; requiredDate: string }[] }) =>
-      rpc(sb, 'rpc_update_job', { p_job_id: p.jobId, p_job_no: p.jobNo, p_customer: p.customerName, p_phone: p.contactPhone ?? null, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_costs: p.budgetCosts ?? null, p_install_sites: p.installSites ?? null }),
+    createJob: (p: { jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCosts?: BudgetCosts; installSites?: { location: string; requiredDate: string; lat?: number; lng?: number }[]; planLat?: number; planLng?: number }) =>
+      rpc(sb, 'rpc_create_job', { p_job_no: p.jobNo, p_customer: p.customerName, p_phone: p.contactPhone ?? null, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_costs: p.budgetCosts ?? null, p_install_sites: p.installSites ?? null, p_plan_lat: p.planLat ?? null, p_plan_lng: p.planLng ?? null }),
+    updateJob: (p: { jobId: string; jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCosts?: BudgetCosts; installSites?: { location: string; requiredDate: string; lat?: number; lng?: number }[]; planLat?: number; planLng?: number }) =>
+      rpc(sb, 'rpc_update_job', { p_job_id: p.jobId, p_job_no: p.jobNo, p_customer: p.customerName, p_phone: p.contactPhone ?? null, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_costs: p.budgetCosts ?? null, p_install_sites: p.installSites ?? null, p_plan_lat: p.planLat ?? null, p_plan_lng: p.planLng ?? null }),
     updateJobBudget: (p: { jobId: string; budgetSalePrice?: number; budgetCosts?: BudgetCosts }) =>
       rpc(sb, 'rpc_update_job_budget', { p_job_id: p.jobId, p_sale_price: p.budgetSalePrice ?? null, p_costs: p.budgetCosts ?? null }),
     deleteDraftJob: (p: { jobId: string }) => rpc(sb, 'rpc_delete_draft_job', { p_job_id: p.jobId }),

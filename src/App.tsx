@@ -1,11 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { useStore, can } from './data/StoreContext'
 import { ErrorBoundary, ToastProvider, useConfirm, useTryAction } from './ui/components'
 import { DEPT_LABEL, fmtDateTime } from './ui/format'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
-import MapTrackingPage from './pages/MapTrackingPage'
+// Map Tracking โหลดแยก chunk — leaflet + CSS ของมันรวม ~150 kB
+// และคนส่วนใหญ่เปิดแอปมาเพื่อดู Dashboard/Jobs ไม่ใช่แผนที่ (2026-08-23)
+//   xlsx (~430 kB) แยก chunk อยู่แล้วผ่าน dynamic import ตอนกดปุ่ม Export/Import
+const MapTrackingPage = lazy(() => import('./pages/MapTrackingPage'))
 import StocksPage from './pages/StocksPage'
 import JobsPage from './pages/JobsPage'
 import JobDetailPage from './pages/JobDetailPage'
@@ -309,6 +312,8 @@ export default function App() {
             <ConnectionBanner />
             {/* render พังที่หน้าใดหน้าหนึ่ง ต้องไม่ทำให้ทั้งแอปเป็นจอขาว · เปลี่ยนหน้าแล้ว reset ให้ลองใหม่ */}
             <ErrorBoundary resetKey={pathname}>
+            {/* fallback ต้องมีข้อความ ไม่ใช่จอขาว — เน็ตช้าแล้ว chunk มาช้า คนจะคิดว่าแอปค้าง */}
+            <Suspense fallback={<div className="empty">กำลังโหลดหน้า…</div>}>
             <Routes>
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/map" element={<MapTrackingPage />} />
@@ -326,6 +331,7 @@ export default function App() {
               <Route path="/dev" element={isManage ? <DevSettingsPage /> : <Navigate to="/dashboard" replace />} />
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>
+            </Suspense>
             </ErrorBoundary>
           </main>
         </div>

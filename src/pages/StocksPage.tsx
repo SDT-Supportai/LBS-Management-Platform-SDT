@@ -9,6 +9,26 @@ import {
 import { Modal, useConfirm, useToast, useTryAction, toBudgetNum } from '../ui/components'
 import { fmtBaht, fmtDate, fmtDateTime, UNIT_FLOW } from '../ui/format'
 
+// ---------------- Export: วัสดุตาม Job (Ref.PO) ----------------
+// สเปกคอลัมน์รวมศูนย์ — แหล่งความจริงเดียวของทั้งไฟล์ Excel และชีต "คำอธิบาย"
+// (แนวเดียวกับ SHEET_COLS ของ Project Stock และ PR_COLS ของหน้า Purchasing)
+// ⚠️ export อย่างเดียว ไม่มี import กลับ — ไฟล์นี้เป็น "รายงานตรวจสอบ" ไม่ใช่แบบฟอร์มกรอก
+const MAT_COLS: { key: string; width: number; note: string }[] = [
+  { key: 'Job No.', width: 16, note: 'งานที่วัสดุชุดนี้ผูกอยู่' },
+  { key: 'Customer', width: 24, note: 'ลูกค้าของงานนั้น' },
+  { key: 'PO No.', width: 18, note: 'ใบสั่งซื้อที่รับของครบแล้ว (1 PR ออกได้หลาย PO)' },
+  { key: 'ซัพพลายเออร์', width: 24, note: 'ชื่อที่กรอกไว้ตอนออก PO' },
+  { key: 'วันที่รับของครบ', width: 16, note: 'วันที่ PO ใบนั้นปิดรับของ' },
+  { key: 'รหัส Epicor', width: 18, note: 'รหัสอ้างอิงระบบ ERP' },
+  { key: 'ชื่ออุปกรณ์', width: 30, note: 'ชื่อในฐานข้อมูลวัสดุ' },
+  { key: 'จำนวนที่รับ', width: 12, note: 'จำนวนที่รับเข้ามาจริง (ไม่ใช่จำนวนที่สั่ง)' },
+  { key: 'หน่วย', width: 10, note: 'หน่วยนับ' },
+  { key: 'ราคา/หน่วย', width: 14, note: 'ราคาจริงที่บันทึกไว้หลังออก PO · ว่าง = ยังไม่ได้กรอก' },
+  { key: 'มูลค่า', width: 16, note: 'ราคา/หน่วย × จำนวนที่รับ' },
+  { key: 'เบิกให้ Service', width: 18, note: 'ยังอยู่กับ Job / วันที่เบิกออกไปให้ Service (0059)' },
+]
+const MAT_HEADERS = MAT_COLS.map(c => c.key)
+
 // ฟอร์มแก้ข้อมูลรายเครื่อง (0043/0049) — รวม "แก้ Serial" เข้ามาในฟอร์มเดียวแล้ว
 // serialLvb/serialOm แก้ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก (in_stock) — บันทึกผ่าน updateUnitInfo แยก call
 interface PlanForm {
@@ -475,6 +495,57 @@ export default function StocksPage() {
     if (ok) setImportPreview(null)
   }
 
+  // Export ตามที่กรองอยู่บนจอ — คนตรวจมักกรองเฉพาะงานที่สนใจแล้วค่อยส่งไฟล์ต่อ
+  // ถ้า export ทั้งหมดเสมอ เขาต้องไปลบแถวเองใน Excel ซึ่งเป็นจุดที่ตัวเลขเริ่มเพี้ยน
+  const exportMaterial = async () => {
+    const rows = matFiltered.map(({ po, r, item }) => {
+      const job = db.jobs.find(j => j.id === po.jobId)
+      return {
+        'Job No.': job?.jobNo ?? '',
+        'Customer': job?.customerName ?? '',
+        'PO No.': po.poNo,
+        'ซัพพลายเออร์': po.supplierName ?? '',
+        'วันที่รับของครบ': po.receivedAt?.slice(0, 10) ?? '',
+        'รหัส Epicor': item?.epicorCode || '',
+        'ชื่ออุปกรณ์': item?.name ?? '',
+        'จำนวนที่รับ': r.qtyReceived,
+        'หน่วย': item?.uom ?? '',
+        'ราคา/หน่วย': r.unitPrice ?? '',
+        'มูลค่า': r.unitPrice !== undefined ? r.unitPrice * r.qtyReceived : '',
+        'เบิกให้ Service': r.issuedToServiceAt ? `เบิกแล้ว ${r.issuedToServiceAt.slice(0, 10)}` : 'ยังอยู่กับ Job',
+      }
+    })
+    const XLSX = await import('xlsx')
+    // header: บังคับลำดับคอลัมน์ + ไม่มีรายการก็ยังได้หัวตารางครบ (บั๊กคลังเปล่าที่เจอตอน 0049)
+    const ws = XLSX.utils.json_to_sheet(rows, { header: MAT_HEADERS })
+    ws['!cols'] = MAT_COLS.map(c => ({ wch: c.width }))
+    ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(rows.length, 1), c: MAT_COLS.length - 1 } }) }
+
+    const total = rows.reduce((n, x) => n + (typeof x['มูลค่า'] === 'number' ? x['มูลค่า'] : 0), 0)
+    const guide = [
+      ['วัสดุตาม Job (Ref.PO) — รายการที่รับของครบจาก PO แล้ว'],
+      [`ออกจากระบบเมื่อ ${fmtDateTime(new Date().toISOString())}`],
+      [`${rows.length} รายการ · ${new Set(rows.map(r => r['PO No.'])).size} PO · ${new Set(rows.map(r => r['Job No.'])).size} Job · มูลค่ารวม ${total.toLocaleString('th-TH')} บาท`],
+      matSearch.trim() ? [`⚠️ ไฟล์นี้กรองด้วยคำค้น "${matSearch.trim()}" — ไม่ใช่รายการทั้งหมดในระบบ`] : [],
+      [],
+      ['คอลัมน์', 'คำอธิบาย'],
+      ...MAT_COLS.map(c => [c.key, c.note]),
+      [],
+      ['ข้อควรรู้'],
+      ['1', 'นี่ไม่ใช่ยอดคลังคงเหลือ — ของทุกชิ้นในไฟล์นี้ผูกกับ Job ไปแล้ว (คลังคงเหลือดูที่หน้า Material Database)'],
+      ['2', 'นับเฉพาะ PO ที่ปิดรับของครบทั้งใบ · ของที่ยังค้างรับดูที่หน้า Purchasing'],
+      ['3', '"เบิกให้ Service" คือขั้นส่งของออกหน้างาน (0059) — รับของแล้วไม่ได้แปลว่าออกไปหน้างานแล้ว'],
+      ['4', 'ไฟล์นี้ Import กลับเข้าระบบไม่ได้ — เป็นรายงานสำหรับตรวจสอบเท่านั้น'],
+    ]
+    const wsGuide = XLSX.utils.aoa_to_sheet(guide)
+    wsGuide['!cols'] = [{ wch: 22 }, { wch: 95 }]
+
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'วัสดุตาม Job')
+    XLSX.utils.book_append_sheet(wb, wsGuide, 'คำอธิบาย')
+    XLSX.writeFile(wb, `วัสดุตาม-Job-${new Date().toISOString().slice(0, 10)}.xlsx`)
+  }
+
   return (
     <>
       <div className="page-title">Project Stock — คลัง LBS</div>
@@ -663,6 +734,11 @@ export default function StocksPage() {
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                 <input style={{ width: 240 }} value={matSearch} onChange={e => setMatSearch(e.target.value)}
                   placeholder="ค้น Job No. / PO No. / รหัส Epicor / ชื่ออุปกรณ์" />
+                <button className="small" onClick={exportMaterial} disabled={matFiltered.length === 0}
+                  title={matFiltered.length === 0 ? 'ไม่มีรายการให้ export'
+                    : matSearch.trim() ? `export เฉพาะ ${matFiltered.length} รายการที่กรองอยู่` : ''}>
+                  ⬇ Export Excel{matSearch.trim() ? ` (${matFiltered.length})` : ''}
+                </button>
                 {matJobs.length > 0 && (
                   <button className="small" onClick={() => setOpenMatJobs(
                     openMatJobs.size === matJobs.length ? new Set() : new Set(matJobs.map(g => g.key)))}>

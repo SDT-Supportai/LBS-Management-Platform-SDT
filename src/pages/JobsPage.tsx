@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { deriveJobStatus, jobAllocatedQty, jobDueDate, jobDaysLeft, todayIso, DUE_WARN_DAYS } from '../data/logic'
-import { BudgetFields, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormToApi, type CostForm, type InstallSite } from '../ui/components'
+import { deriveJobStatus, jobAllocatedQty, jobDueDate, jobDaysLeft, todayIso, parseLatLng, DUE_WARN_DAYS } from '../data/logic'
+import { BudgetFields, CoordInput, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormToApi, sitesToApi, type CostForm, type InstallSite } from '../ui/components'
 import { fmtDate, JOB_STATUS_LABEL } from '../ui/format'
 import type { JobStatus } from '../types'
 
@@ -15,7 +15,8 @@ export default function JobsPage() {
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>('active')
   const [mineOnly, setMineOnly] = useState(false)   // 0042: กรองเฉพาะงานที่ตัวเองเปิด
   const [showCreate, setShowCreate] = useState(false)
-  const [form, setForm] = useState({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '' })
+  // planCoord = พิกัดจุดติดตั้งที่ 1 (0060) — เก็บเป็นข้อความ "lat, lng" แปลงตอน submit
+  const [form, setForm] = useState({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', planCoord: '' })
   const [costs, setCosts] = useState<CostForm>(emptyCostForm())
   const [installSites, setInstallSites] = useState<InstallSite[]>([])
 
@@ -46,15 +47,22 @@ export default function JobsPage() {
     && x.status !== 'installed' && x.status !== 'cancelled').length
 
   const submit = async () => {
-    const { salePrice, ...rest } = form
+    const { salePrice, planCoord, ...rest } = form
     // จุดติดตั้งเพิ่มเติมมีผลเฉพาะ LBS > 1
     const sites = rest.lbsQtyRequired > 1 ? installSites : []
     if (await tryAction(
-      () => act.createJob({ ...rest, budgetSalePrice: toBudgetNum(salePrice), budgetCosts: costFormToApi(costs), installSites: sites }),
+      // parseLatLng/sitesToApi โยน error ถ้าพิกัดใช้ไม่ได้ → ต้องอยู่ในนี้ให้ tryAction จับ
+      () => {
+        const c = parseLatLng(planCoord)
+        return act.createJob({
+          ...rest, budgetSalePrice: toBudgetNum(salePrice), budgetCosts: costFormToApi(costs),
+          installSites: sitesToApi(sites), planLat: c?.lat, planLng: c?.lng,
+        })
+      },
       'เปิด Job ใหม่เรียบร้อย',
     )) {
       setShowCreate(false)
-      setForm({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '' })
+      setForm({ jobNo: '', customerName: '', contactPhone: '', scope: '', installLocation: '', requiredDate: '', lbsQtyRequired: 1, salePrice: '', planCoord: '' })
       setCosts(emptyCostForm())
       setInstallSites([])
     }
@@ -177,6 +185,9 @@ export default function JobsPage() {
           <div className="row">
             <label className="field"><span>สถานที่ติดตั้ง{form.lbsQtyRequired > 1 ? ' (จุดที่ 1)' : ''}</span>
               <input value={form.installLocation} onChange={e => setForm({ ...form, installLocation: e.target.value })} />
+            </label>
+            <label className="field"><span>พิกัดจุดที่ 1 (ว่างได้ — ใส่แล้วขึ้นหมุดบนหน้า Map Tracking)</span>
+              <CoordInput value={form.planCoord} onChange={v => setForm({ ...form, planCoord: v })} />
             </label>
             <label className="field"><span>วันที่ต้องการติดตั้ง</span>
               <input type="date" value={form.requiredDate} onChange={e => setForm({ ...form, requiredDate: e.target.value })} />

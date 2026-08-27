@@ -33,6 +33,44 @@ export function nextNo(prefix: string, existing: string[]): string {
 // ---------------- วันที่ (ทำงานบน YYYY-MM-DD ล้วน — ไม่แตะ timezone) ----------------
 
 /** วันนี้ตามเวลาเครื่องผู้ใช้ (YYYY-MM-DD) — ใช้เทียบ ETA / กำหนดส่ง */
+// ---------------- พิกัดในประเทศไทย (0060) ----------------
+// กรอบประเทศไทยโดยประมาณ — พิกัดที่หลุดกรอบนี้แปลว่ากรอกผิด (ที่เจอบ่อยสุดคือสลับ lat/lng)
+// ใช้ร่วมกันทั้งฝั่งกรอกข้อมูล (validate) และหน้าแผนที่ (กันหมุดหลุดไปกลางทะเลจีน)
+// mirror ของ app_assert_th_coord() ใน 0060
+export const TH_BOUNDS = { minLat: 5.5, maxLat: 20.6, minLng: 97.3, maxLng: 105.7 }
+
+export function inThailand(lat: number, lng: number): boolean {
+  return lat >= TH_BOUNDS.minLat && lat <= TH_BOUNDS.maxLat
+    && lng >= TH_BOUNDS.minLng && lng <= TH_BOUNDS.maxLng
+}
+
+/**
+ * แปลงข้อความพิกัดที่ผู้ใช้ "คัดลอกจาก Google Maps" มาวาง → { lat, lng }
+ * รับได้ทั้ง "13.7563, 100.5018" · "13.7563,100.5018" · "13.7563 100.5018"
+ * คืน null = ว่าง (ไม่ได้กรอก) · โยน error = กรอกมาแต่ใช้ไม่ได้ (บอกเหตุผลให้ผู้ใช้แก้ได้)
+ *
+ * ทำไมช่องเดียวไม่ใช่ 2 ช่อง: ของจริงคนหาพิกัดจาก Google Maps แล้วคลิกขวา → คัดลอก
+ * ซึ่งได้เป็นคู่ "lat, lng" มาก้อนเดียว · บังคับให้แยกใส่ 2 ช่องคือเพิ่มงานและเพิ่มโอกาสสลับค่า
+ */
+export function parseLatLng(raw?: string): { lat: number; lng: number } | null {
+  const t = (raw ?? '').trim()
+  if (!t) return null
+  const m = t.match(/^(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)$/)
+  if (!m) throw new Error('รูปแบบพิกัดไม่ถูกต้อง — ต้องเป็น "13.7563, 100.5018" (คัดลอกจาก Google Maps ได้เลย)')
+  const lat = Number(m[1]), lng = Number(m[2])
+  if (!inThailand(lat, lng)) {
+    // เคสที่เจอบ่อย: สลับ lat/lng — ตรวจให้แล้วบอกตรง ๆ ว่าสลับ ไม่ใช่แค่ "ค่าไม่ถูก"
+    if (inThailand(lng, lat)) throw new Error(`พิกัดสลับกัน — ลองใส่ "${lng}, ${lat}"`)
+    throw new Error(`พิกัด ${lat}, ${lng} อยู่นอกประเทศไทย — ตรวจอีกครั้ง`)
+  }
+  return { lat, lng }
+}
+
+/** พิกัด → ข้อความสำหรับใส่ในช่องกรอก · undefined ทั้งคู่ = ว่าง */
+export function fmtLatLng(lat?: number, lng?: number): string {
+  return lat != null && lng != null ? `${lat}, ${lng}` : ''
+}
+
 export function todayIso(): string {
   const d = new Date()
   const p = (n: number) => String(n).padStart(2, '0')
@@ -601,14 +639,30 @@ function normalizeBudget(v: number | undefined): number | undefined {
 export interface JobBudgetInput { budgetSalePrice?: number; budgetCosts?: BudgetCosts }
 
 // จุดติดตั้งเพิ่มเติม (จุดที่ 2+) — trim + ตัดแถวว่างทิ้ง · คืน undefined ถ้าไม่เหลือจุด
-function normalizeInstallSites(
-  sites?: { location: string; requiredDate: string }[],
-): { location: string; requiredDate: string }[] | undefined {
+type InstallSiteInput = { location: string; requiredDate: string; lat?: number; lng?: number }
+
+function normalizeInstallSites(sites?: InstallSiteInput[]): InstallSiteInput[] | undefined {
   if (!sites) return undefined
   const out = sites
-    .map(s => ({ location: (s.location ?? '').trim(), requiredDate: s.requiredDate ?? '' }))
+    .map(s => {
+      // 0060: เก็บพิกัดเฉพาะเมื่อมาครบคู่และอยู่ในกรอบไทย — ครึ่งคู่หรือค่าเพี้ยนวางหมุดไม่ได้
+      const hasCoord = s.lat != null && s.lng != null && inThailand(s.lat, s.lng)
+      return {
+        location: (s.location ?? '').trim(),
+        requiredDate: s.requiredDate ?? '',
+        ...(hasCoord ? { lat: s.lat, lng: s.lng } : {}),
+      }
+    })
     .filter(s => s.location || s.requiredDate)
   return out.length ? out : undefined
+}
+
+/** พิกัดแผนที่กรอกมา — เก็บเฉพาะคู่ที่ใช้ได้จริง (mirror app_assert_th_coord ใน 0060) */
+function normalizePlanCoord(lat?: number, lng?: number): { planLat?: number; planLng?: number } {
+  if (lat == null || lng == null) return { planLat: undefined, planLng: undefined }
+  if (!inThailand(lat, lng))
+    throw new Error(`พิกัดจุดติดตั้ง ${lat}, ${lng} อยู่นอกประเทศไทย — ตรวจอีกครั้ง`)
+  return { planLat: lat, planLng: lng }
 }
 
 // ต้นทุนรวม (planned) = Σ งบ 7 หมวด
@@ -628,7 +682,7 @@ function assertBudgetCosts(costs?: BudgetCosts): BudgetCosts | undefined {
 
 export function createJob(
   db: DB, actor: User,
-  p: { jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; installSites?: { location: string; requiredDate: string }[] } & JobBudgetInput,
+  p: { jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; installSites?: InstallSiteInput[]; planLat?: number; planLng?: number } & JobBudgetInput,
 ): DB {
   const jobNo = p.jobNo.trim()
   if (!jobNo) throw new Error('กรุณาระบุ Job No.')
@@ -647,6 +701,7 @@ export function createJob(
       scope: p.scope,
       installLocation: p.installLocation, requiredDate: p.requiredDate,
       lbsQtyRequired: p.lbsQtyRequired, installSites: normalizeInstallSites(p.installSites),
+      ...normalizePlanCoord(p.planLat, p.planLng),
       budgetSalePrice: salePrice, budgetCost: totalBudgetCost(costs), budgetCosts: costs,
       terminalStatus: null, openedBy: actor.id, createdAt: now(),
     }],
@@ -657,7 +712,7 @@ export function createJob(
 
 export function updateJob(
   db: DB, actor: User,
-  p: { jobId: string; jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; installSites?: { location: string; requiredDate: string }[] } & JobBudgetInput,
+  p: { jobId: string; jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; installSites?: InstallSiteInput[]; planLat?: number; planLng?: number } & JobBudgetInput,
 ): DB {
   const job = assertJobEditable(db, p.jobId, actor)   // แก้ Job No. ได้ก่อนเบิกเท่านั้น (issued/installed/cancelled ล็อกอยู่แล้ว)
   const jobNo = p.jobNo.trim()
@@ -679,6 +734,7 @@ export function updateJob(
       scope: p.scope,
       installLocation: p.installLocation, requiredDate: p.requiredDate,
       lbsQtyRequired: p.lbsQtyRequired, installSites: normalizeInstallSites(p.installSites),
+      ...normalizePlanCoord(p.planLat, p.planLng),
       budgetSalePrice: salePrice, budgetCost: totalBudgetCost(costs), budgetCosts: costs,
     } : j),
   }
