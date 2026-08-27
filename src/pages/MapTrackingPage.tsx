@@ -73,6 +73,7 @@ export default function MapTrackingPage() {
   const mapRef = useRef<L.Map | null>(null)
   const layerRef = useRef<L.LayerGroup | null>(null)
   const [showJobLevel, setShowJobLevel] = useState(true)
+  const [expanded, setExpanded] = useState(false)          // ขยายแผนที่เต็มจอ
   const [search, setSearch] = useState('')
   const [onlyBlocked, setOnlyBlocked] = useState(false)
 
@@ -121,6 +122,27 @@ export default function MapTrackingPage() {
     })
     return out
   }, [db])
+
+  // ⚠️ Leaflet คำนวณ tile จากขนาดกล่องตอน init — เปลี่ยนขนาดด้วย CSS แล้วไม่บอกมัน
+  //    จะได้แผนที่เทาครึ่งจอ (บั๊กคลาสสิกของ Leaflet) → ต้องเรียก invalidateSize ทุกครั้งที่ย่อ/ขยาย
+  //    หน่วง 1 เฟรมให้ browser คำนวณ layout ใหม่เสร็จก่อน ไม่งั้นมันอ่านขนาดเก่าไปอีก
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    const t = window.setTimeout(() => map.invalidateSize(), 60)
+    if (!expanded) return () => window.clearTimeout(t)
+    // ล็อก scroll ของหน้า: กันจอเลื่อนตอนลากแผนที่ + ตัด scrollbar ที่กินขอบขวาไป ~15px
+    // (เก็บค่าเดิมไว้คืน เผื่อมีใครตั้ง overflow ไว้จากที่อื่น)
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setExpanded(false) }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.clearTimeout(t)
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prevOverflow
+    }
+  }, [expanded])
 
   const pins = useMemo(() => {
     const t = search.trim().toLowerCase()
@@ -245,6 +267,9 @@ export default function MapTrackingPage() {
               <input type="checkbox" checked={showJobLevel} onChange={e => setShowJobLevel(e.target.checked)} />
               รวมเช็คอินระดับงาน ({jobPins.length})
             </label>
+            <button className="small" onClick={() => setExpanded(true)} title="ขยายแผนที่เต็มจอ (ออกด้วย Esc)">
+              ⛶ ขยายเต็มจอ
+            </button>
           </div>
         </div>
         <div className="panel-body">
@@ -253,7 +278,17 @@ export default function MapTrackingPage() {
               ยังไม่มีการ Check-in — หมุดจะขึ้นเองเมื่อ Service ยืนยันติดตั้งรายเครื่องพร้อมพิกัด GPS
             </div>
           )}
-          <div ref={boxRef} className="map-box" />
+          {/* กล่องแผนที่ตัวเดิมย้ายเข้า .map-wrap เพื่อให้โหมดเต็มจอเปลี่ยนแค่ CSS
+              — ไม่ทำลาย/สร้าง map instance ใหม่ หมุดกับตำแหน่งที่เลื่อนไว้จึงไม่รีเซ็ต */}
+          <div className={`map-wrap${expanded ? ' expanded' : ''}`}>
+            <div ref={boxRef} className="map-box" />
+            {expanded && (
+              <div className="map-exit">
+                <span className="muted">{pins.length} จุด{search.trim() ? ` · กรอง "${search.trim()}"` : ''}</span>
+                <button className="small" onClick={() => setExpanded(false)}>✕ ย่อกลับ (Esc)</button>
+              </div>
+            )}
+          </div>
           <div className="muted" style={{ marginTop: 8, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
             <span><span className="mp-legend" /> ติดตั้งแล้ว</span>
             <span><span className="mp-legend blocked" /> ติดตั้งไม่ได้</span>

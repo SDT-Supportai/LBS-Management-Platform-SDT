@@ -1,18 +1,30 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useStore } from '../data/StoreContext'
+import { useStore, can } from '../data/StoreContext'
 import {
   deriveJobStatus, stockSummary, jobInstallSummary, jobAllocatedQty,
-  jobDueDate, jobDaysLeft, todayIso, DUE_WARN_DAYS,
+  jobDueDate, jobDaysLeft, todayIso, DUE_WARN_DAYS, stockComments,
 } from '../data/logic'
-import { JobStatusBadge } from '../ui/components'
-import { fmtDate, fmtDateTime } from '../ui/format'
+import { JobStatusBadge, useTryAction } from '../ui/components'
+import { fmtDate, fmtDateTime, DEPT_LABEL } from '../ui/format'
 import type { JobStatus } from '../types'
 
 export default function DashboardPage() {
-  const { db } = useStore()
+  const { db, user, act } = useStore()
+  const tryAction = useTryAction()
   const [showAudit, setShowAudit] = useState(false)
+  const [vipComment, setVipComment] = useState('')
   const today = todayIso()
+
+  // ความเห็นผู้บริหาร (0050/0051) — ย้ายมาจากท้ายหน้า Project Stock (มติ 2026-08-23)
+  //   เหตุผล: เป็นข้อสังเกต/ข้อสั่งการ "ภาพรวม" ที่ทุกแผนกควรเห็น แต่เดิมซ่อนอยู่ท้ายหน้าคลัง
+  //   ซึ่งมีแต่ Division เข้าบ่อย · วางใต้ Job List (เห็นสถานะงานก่อน แล้วอ่านความเห็น)
+  //   และเหนือ Audit (ซึ่งเป็นหลักฐานย้อนหลัง ไม่ใช่สิ่งที่ต้องอ่านทุกวัน)
+  //   ⚠️ scope ใน DB ยังเป็น 'stock' ตาม 0051 — ไม่ rename เพราะต้อง migration แลกกับประโยชน์ศูนย์
+  //      (เป็น thread เดียวกัน ความเห็นเก่าทั้งหมดยังอยู่ครบ)
+  const canComment = can(user, 'approval.comment')
+  const isVip = user?.department === 'vip'
+  const vipComments = stockComments(db)
 
   const totals = db.projectStocks.reduce(
     (acc, s) => {
@@ -219,6 +231,53 @@ export default function DashboardPage() {
         {jobList.length > 8 && (
           <div className="panel-body muted">แสดง 8 งานที่ใกล้กำหนดที่สุดจากทั้งหมด {jobList.length} งาน · <Link to="/jobs">ดูทั้งหมด →</Link></div>
         )}
+      </div>
+
+      {/* 💬 ความเห็นผู้บริหาร (VIP) — ใต้ Job List · เหนือ Audit
+          อ่านได้ทุกแผนก · เขียนได้ VIP / Division / Manage (perm approval.comment) */}
+      <div className="panel">
+        <div className="panel-head">
+          <h3>💬 ความเห็นผู้บริหาร (VIP)
+            <span className="muted" style={{ fontWeight: 400 }}> · ข้อสังเกต/ข้อสั่งการภาพรวม — ไม่ผูกกับใบงานใดใบหนึ่ง</span>
+          </h3>
+          {vipComments.length > 0 && <span className="badge amber">{vipComments.length}</span>}
+        </div>
+        <div className="panel-body">
+          {vipComments.length === 0 && (
+            <div className="muted" style={{ marginBottom: canComment ? 12 : 0 }}>
+              ยังไม่มีความเห็น{canComment ? ' — พิมพ์ด้านล่างเพื่อแจ้งให้อีกฝ่ายทราบ' : ''}
+            </div>
+          )}
+          {vipComments.map(c => {
+            const author = db.users.find(u => u.id === c.authorId)
+            return (
+              <div key={c.id} style={{ marginBottom: 10, paddingLeft: 10, borderLeft: '3px solid var(--border)' }}>
+                <div className="muted" style={{ fontSize: 12 }}>
+                  <b style={{ color: 'var(--text)' }}>{author?.fullName ?? '-'}</b>
+                  {author && <span className="badge blue" style={{ marginLeft: 6 }}>{DEPT_LABEL[author.department]}</span>}
+                  {' '}· {fmtDateTime(c.createdAt)}
+                </div>
+                <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
+              </div>
+            )
+          })}
+          {canComment && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 6 }}>
+              <textarea rows={2} style={{ flex: 1 }} value={vipComment}
+                onChange={e => setVipComment(e.target.value)}
+                placeholder={isVip
+                  ? 'เช่น "ล็อต Stock No.3 ETA ต.ค. ช้าไป ให้ตามซัพเรื่องวันลงเรืออีกครั้ง"'
+                  : 'ตอบกลับความเห็นของผู้บริหาร'} />
+              <button className="primary small" disabled={!vipComment.trim()}
+                onClick={async () => {
+                  if (await tryAction(
+                    () => act.addStockComment({ body: vipComment }),
+                    isVip ? 'ส่งความเห็นถึง Division แล้ว' : 'บันทึกความเห็นแล้ว — แจ้ง VIP ให้ทราบ',
+                  )) setVipComment('')
+                }}>ส่งความเห็น</button>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="panel">

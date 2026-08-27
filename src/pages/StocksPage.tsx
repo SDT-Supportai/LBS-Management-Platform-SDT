@@ -2,12 +2,12 @@ import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import {
-  stockSummary, unitInstallDate, stockComments,
+  stockSummary, unitInstallDate,
   unitEta, unitEtaIsAuto, unitFlowState, unitLeadDays, addDaysIso,
   ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX,
 } from '../data/logic'
 import { Modal, useConfirm, useToast, useTryAction, toBudgetNum } from '../ui/components'
-import { fmtBaht, fmtDate, fmtDateTime, DEPT_LABEL, UNIT_FLOW } from '../ui/format'
+import { fmtBaht, fmtDate, fmtDateTime, UNIT_FLOW } from '../ui/format'
 
 // ฟอร์มแก้ข้อมูลรายเครื่อง (0043/0049) — รวม "แก้ Serial" เข้ามาในฟอร์มเดียวแล้ว
 // serialLvb/serialOm แก้ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก (in_stock) — บันทึกผ่าน updateUnitInfo แยก call
@@ -180,7 +180,12 @@ export default function StocksPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [addTo, setAddTo] = useState<string | null>(null)
   const [openStock, setOpenStock] = useState<string | null>(null)         // เริ่มต้นซ่อนรายการทุกคลัง
-  const [showAccessory, setShowAccessory] = useState(false)               // คลังสินค้า (Ref.Job) เริ่มต้นซ่อน
+  // แท็บย่อยของหน้านี้ (2026-08-23) — แยก "คลัง LBS" ออกจาก "วัสดุตาม Job (Ref.PO)"
+  //   เดิมเป็นแผงต่อท้ายกัน: ต้องเลื่อนผ่านทุกคลัง (แต่ละคลังมี 30–40 เครื่อง) กว่าจะถึงตารางวัสดุ
+  //   ⚠️ ไม่ทำเป็น route แยก — ยังเป็นข้อมูล "คลัง" ชุดเดียวกัน และจะเสีย bookmark /stocks เดิม
+  const [tab, setTab] = useState<'stock' | 'material'>('stock')
+  const [openMatJobs, setOpenMatJobs] = useState<Set<string>>(new Set())  // กลุ่ม Job ที่กางอยู่ — เริ่มต้นพับหมด
+  const [matSearch, setMatSearch] = useState('')
   const [editStock, setEditStock] = useState<string | null>(null)
   const [editNotes, setEditNotes] = useState('')
   const [editPoNo, setEditPoNo] = useState('')
@@ -191,7 +196,6 @@ export default function StocksPage() {
   const [fobDate, setFobDate] = useState('')
   const [fobLead, setFobLead] = useState(String(ETA_LEAD_DAYS))
   const [fobOverwrite, setFobOverwrite] = useState(false)
-  const [stockComment, setStockComment] = useState('')                     // ความเห็นผู้บริหารเรื่องคลัง (0051)
   const [importPreview, setImportPreview] = useState<{
     stockId: string; stockNo: string
     newUnits: UnitRow[]
@@ -212,17 +216,59 @@ export default function StocksPage() {
 
   const lbsItem = db.items.find(i => i.itemType === 'main_equipment')!
   const canManage = can(user, 'stock.manage')
-  // ความเห็นผู้บริหารเรื่องคลัง (0051) — VIP เขียน · Division ตอบกลับ · ทุกแผนกอ่านได้
-  const canComment = can(user, 'approval.comment')
-  const isVip = user?.department === 'vip'
-  const vipComments = stockComments(db)
-  // คลังสินค้า (Ref.Job): วัสดุที่รับของครบจาก PO เท่านั้น
+  // ---- วัสดุตาม Job (Ref.PO): วัสดุที่รับของครบจาก PO ที่ปิดรับของแล้ว ----
+  // ⚠️ แก้บั๊กจับคู่ (2026-08-23): เดิมกรอง `r.prId === po.prId` — ตั้งแต่ 0022 ที่ 1 PR ออกได้หลาย PO
+  //    บรรทัดของ PO ใบหนึ่งจะไปโผล่ใต้ PO ใบอื่นที่มาจาก PR เดียวกันด้วย ⇒ รายการซ้ำ/มูลค่าเกินจริง
+  //    ต้องจับด้วย poId · fallback prId ไว้เฉพาะข้อมูลเก่าก่อน 0022 ที่ยังไม่มี poId
   const receivedLines = db.pos
     .filter(p => p.status === 'received')
     .flatMap(po => db.accessoryRequests
-      .filter(r => r.prId === po.prId && r.status === 'received')
-      .map(r => ({ po, r })))
-  const receivedLineCount = receivedLines.length
+      .filter(r => r.status === 'received' && (r.poId ? r.poId === po.id : r.prId === po.prId))
+      .map(r => ({ po, r, item: db.items.find(i => i.id === r.itemId) })))
+
+  const matTerm = matSearch.trim().toLowerCase()
+  const matFiltered = receivedLines.filter(({ po, r, item }) => {
+    if (!matTerm) return true
+    const job = db.jobs.find(j => j.id === po.jobId)
+    return [po.poNo, job?.jobNo, job?.customerName, item?.epicorCode, item?.name, po.supplierName]
+      .some(v => v?.toLowerCase().includes(matTerm))
+  })
+  // กลุ่ม 2 ชั้น: Job No. (ชั้นนอก) → PO (ชั้นใน) · เรียง Job ใหม่→เก่าตามวันรับของล่าสุด
+  const lineValue = (r: typeof receivedLines[number]['r']) =>
+    r.unitPrice !== undefined ? r.unitPrice * r.qtyReceived : 0
+  const matJobs = (() => {
+    const byJob = new Map<string, {
+      key: string; jobId?: string; jobNo: string; customer: string
+      lines: number; value: number; latest: string
+      pos: { po: typeof receivedLines[number]['po']; rows: typeof receivedLines; value: number }[]
+    }>()
+    matFiltered.forEach(row => {
+      const job = db.jobs.find(j => j.id === row.po.jobId)
+      const key = row.po.jobId ?? 'no-job'
+      let g = byJob.get(key)
+      if (!g) {
+        g = {
+          key, jobId: job?.id, jobNo: job?.jobNo ?? '(ไม่พบ Job)',
+          customer: job?.customerName ?? '-', lines: 0, value: 0, latest: '', pos: [],
+        }
+        byJob.set(key, g)
+      }
+      let p = g.pos.find(x => x.po.id === row.po.id)
+      if (!p) { p = { po: row.po, rows: [], value: 0 }; g.pos.push(p) }
+      p.rows.push(row)
+      p.value += lineValue(row.r)
+      g.lines += 1
+      g.value += lineValue(row.r)
+      if ((row.po.receivedAt ?? '') > g.latest) g.latest = row.po.receivedAt ?? ''
+    })
+    const out = [...byJob.values()]
+    out.forEach(g => g.pos.sort((a, b) => (b.po.receivedAt ?? '').localeCompare(a.po.receivedAt ?? '')))
+    return out.sort((a, b) => b.latest.localeCompare(a.latest))
+  })()
+  const matTotal = {
+    lines: matFiltered.length,
+    pos: new Set(matFiltered.map(x => x.po.id)).size,
+  }
   const jobNo = (id: string | null) => db.jobs.find(j => j.id === id)?.jobNo
   const filledRows = (rs: UnitRow[]) => rs.filter(r => r.lvb.trim() && r.om.trim()).length
 
@@ -443,6 +489,17 @@ export default function StocksPage() {
         {!canManage && ' · แผนกของคุณดูได้อย่างเดียว (สร้าง/รับเข้าสต็อกเป็นสิทธิ์ของ Division)'}
       </div>
 
+      {/* แท็บย่อย — ป้ายพร้อมตัวเลขให้เห็นปริมาณงานก่อนกดเข้า */}
+      <div className="subtabs">
+        <button className={tab === 'stock' ? 'active' : ''} onClick={() => setTab('stock')}>
+          📦 คลัง LBS <span className="badge neutral">{db.projectStocks.length}</span>
+        </button>
+        <button className={tab === 'material' ? 'active' : ''} onClick={() => setTab('material')}>
+          🧰 วัสดุตาม Job (Ref.PO) <span className="badge neutral">{receivedLines.length}</span>
+        </button>
+      </div>
+
+      {tab === 'stock' && <>
       {canManage && (
         <div style={{ marginBottom: 16 }}>
           <button className="primary" onClick={() => { setRows([emptyRow()]); setStockNo(`Project Stock No.${db.projectStocks.length + 1}`); setPoNo(''); setNotes(''); setShowCreate(true) }}>+ สร้าง Project Stock ใหม่ (สั่งซื้อ LBS เข้าคลัง)</button>
@@ -582,89 +639,121 @@ export default function StocksPage() {
         )
       })}
 
-      {/* วัสดุตาม Job (Ref.PO) — เป็น "รายงาน" ของ line ที่รับของครบจาก PO ไม่ใช่คลังที่มียอดคงเหลือ
-          เปลี่ยนชื่อจาก "คลังสินค้า (Ref.Job)" เพื่อไม่ให้สับสนกับ "คลังคงเหลือ" ที่เป็นคลังจริง (S2) */}
-      <div className="panel">
-        <div className="panel-head">
-          <h3>วัสดุตาม Job (Ref.PO)
-            <span className="muted" style={{ fontWeight: 400 }}> · วัสดุที่รับครบจาก PO แล้วผูกกับ Job — ไม่ใช่ยอดคลังคงเหลือ</span>
-          </h3>
-          <button className="small" onClick={() => setShowAccessory(!showAccessory)}>
-            {showAccessory ? 'ซ่อนรายการ' : `แสดงรายการ (${receivedLineCount})`}
-          </button>
-        </div>
-        {showAccessory && <>
-          <div className="table-scroll">
-            <table>
-              <thead><tr><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>จำนวน</th><th>Ref. PO No.</th><th>Job No.</th><th>รับครบเมื่อ</th></tr></thead>
-              <tbody>
-                {receivedLines.length === 0 && <tr><td colSpan={6}><div className="empty">ยังไม่มี PO ที่รับของครบ</div></td></tr>}
-                {receivedLines.map(({ po, r }) => {
-                  const item = db.items.find(i => i.id === r.itemId)!
-                  const job = db.jobs.find(j => j.id === po.jobId)
-                  return (
-                    <tr key={`${po.id}-${r.id}`}>
-                      <td className="mono">{item.epicorCode || '-'}</td>
-                      <td>{item.name}</td>
-                      <td>{r.qtyReceived} {item.uom}</td>
-                      <td className="mono"><b>{po.poNo}</b></td>
-                      <td>{job ? <Link to={`/jobs/${job.id}`}>{job.jobNo}</Link> : '-'}</td>
-                      <td className="muted">{fmtDate(po.receivedAt)}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>}
-      </div>
+      {/* ความเห็นผู้บริหาร (VIP) ย้ายไป Dashboard แล้ว (2026-08-23) — บอกทางไว้ให้คนที่เคยหาที่นี่ */}
+      <div className="panel"><div className="panel-body muted">
+        💬 <b>ความเห็นผู้บริหาร (VIP)</b> ย้ายไปอยู่หน้า <Link to="/dashboard">Dashboard</Link> ใต้ Job List แล้ว —
+        เป็นความเห็นภาพรวมทั้งระบบ ไม่ใช่เรื่องคลังอย่างเดียว จึงควรอยู่หน้าแรกที่ทุกแผนกเปิดเจอ
+      </div></div>
+      </>}
 
-      {/* ความเห็นผู้บริหาร (VIP) เรื่องคลัง LBS โดยรวม (0051) — วางท้ายหน้าใต้ "วัสดุตาม Job (Ref.PO)"
-          อ่านได้ทุกแผนก · เขียนได้ VIP / Division / Manage (perm approval.comment) */}
-      <div className="panel">
-        <div className="panel-head">
-          <h3>💬 ความเห็นผู้บริหาร (VIP) — คลัง LBS
-            <span className="muted" style={{ fontWeight: 400 }}> · ข้อสังเกต/ข้อสั่งการเรื่องสต็อกภาพรวม</span>
-          </h3>
-          {vipComments.length > 0 && <span className="badge amber">{vipComments.length}</span>}
-        </div>
-        <div className="panel-body">
-          {vipComments.length === 0 && (
-            <div className="muted" style={{ marginBottom: canComment ? 12 : 0 }}>
-              ยังไม่มีความเห็น{canComment ? ' — พิมพ์ด้านล่างเพื่อแจ้งให้อีกฝ่ายทราบ' : ''}
+      {/* ---------------- แท็บ 2: วัสดุตาม Job (Ref.PO) ----------------
+          เป็น "รายงานตรวจสอบ" ของ line ที่รับของครบจาก PO ไม่ใช่คลังที่มียอดคงเหลือ
+          (ชื่อเดิม "คลังสินค้า (Ref.Job)" เปลี่ยนเพราะสับสนกับ "คลังคงเหลือ" ที่เป็นคลังจริง — S2)
+
+          จัดกลุ่ม 2 ชั้น Job No. → PO (มติ 2026-08-23): ของชิ้นเดียวกันถูกสั่งหลาย PO ได้
+          และคนตรวจถามเป็นราย Job ("งานนี้ได้ของครบยัง") ไม่ใช่ราย PO ⇒ Job เป็นชั้นนอก
+          เริ่มต้นพับทุกกลุ่ม — หน้านี้เคยยาวเป็นร้อยแถวโดยไม่มีทางกวาดตาดูภาพรวมก่อน */}
+      {tab === 'material' && (
+        <>
+          <div className="panel">
+            <div className="panel-head">
+              <h3>สรุปวัสดุที่รับครบจาก PO
+                <span className="muted" style={{ fontWeight: 400 }}> · {matJobs.length} Job · {matTotal.pos} PO · {matTotal.lines} รายการ</span>
+              </h3>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input style={{ width: 240 }} value={matSearch} onChange={e => setMatSearch(e.target.value)}
+                  placeholder="ค้น Job No. / PO No. / รหัส Epicor / ชื่ออุปกรณ์" />
+                {matJobs.length > 0 && (
+                  <button className="small" onClick={() => setOpenMatJobs(
+                    openMatJobs.size === matJobs.length ? new Set() : new Set(matJobs.map(g => g.key)))}>
+                    {openMatJobs.size === matJobs.length ? 'พับทั้งหมด' : 'กางทั้งหมด'}
+                  </button>
+                )}
+              </div>
             </div>
+            <div className="panel-body muted">
+              รายการที่ <b>รับของครบทั้งบรรทัด</b> จาก PO ที่ปิดรับของแล้ว — ตัวเลข "จำนวน" คือของที่รับเข้ามาจริง
+              ({'ยอดที่ยังค้างรับดูที่หน้า Purchasing'}) · มูลค่าคิดจากราคาต่อหน่วยที่บันทึกไว้ ×
+              จำนวนที่รับ · <b>ไม่ใช่ยอดคลังคงเหลือ</b> — ของพวกนี้ผูกกับ Job แล้ว
+            </div>
+          </div>
+
+          {matJobs.length === 0 && (
+            <div className="panel"><div className="panel-body">
+              <div className="empty">
+                {matSearch.trim()
+                  ? `ไม่พบรายการที่ตรงกับ "${matSearch.trim()}"`
+                  : 'ยังไม่มี PO ที่รับของครบ'}
+              </div>
+            </div></div>
           )}
-          {vipComments.map(c => {
-            const author = db.users.find(u => u.id === c.authorId)
+
+          {matJobs.map(g => {
+            const open = openMatJobs.has(g.key)
             return (
-              <div key={c.id} style={{ marginBottom: 10, paddingLeft: 10, borderLeft: '3px solid var(--border)' }}>
-                <div className="muted" style={{ fontSize: 12 }}>
-                  <b style={{ color: 'var(--text)' }}>{author?.fullName ?? '-'}</b>
-                  {author && <span className="badge blue" style={{ marginLeft: 6 }}>{DEPT_LABEL[author.department]}</span>}
-                  {' '}· {fmtDateTime(c.createdAt)}
+              <div className="panel" key={g.key}>
+                <div className="panel-head">
+                  <h3>
+                    {g.jobId
+                      ? <Link to={`/jobs/${g.jobId}`}>{g.jobNo}</Link>
+                      : <span className="muted">ไม่พบ Job</span>}
+                    <span className="muted" style={{ fontWeight: 400 }}> · {g.customer}</span>
+                  </h3>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span className="badge blue" title="จำนวนใบ PO ที่รับของครบแล้วของงานนี้">{g.pos.length} PO</span>
+                    <span className="badge neutral" title="จำนวนบรรทัดวัสดุ">{g.lines} รายการ</span>
+                    <span className="muted">มูลค่า {fmtBaht(g.value)}</span>
+                    <button className="small" onClick={() => setOpenMatJobs(prev => {
+                      const n = new Set(prev)
+                      n.has(g.key) ? n.delete(g.key) : n.add(g.key)
+                      return n
+                    })}>
+                      {open ? 'ซ่อนรายการ' : `แสดงรายการ (${g.lines})`}
+                    </button>
+                  </div>
                 </div>
-                <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
+                {open && g.pos.map(p => (
+                  <div key={p.po.id}>
+                    <div className="panel-body" style={{ paddingBottom: 0, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <b className="mono">{p.po.poNo}</b>
+                      <span className="badge green">รับครบ {fmtDate(p.po.receivedAt)}</span>
+                      <span className="muted">{p.po.supplierName || 'ไม่ระบุซัพพลายเออร์'}</span>
+                      <span className="muted">· {p.rows.length} รายการ · มูลค่า {fmtBaht(p.value)}</span>
+                    </div>
+                    <div className="table-scroll">
+                      <table className="grid">
+                        <thead><tr>
+                          <th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>จำนวนที่รับ</th>
+                          <th style={{ textAlign: 'right' }}>ราคา/หน่วย</th>
+                          <th style={{ textAlign: 'right' }}>มูลค่า</th>
+                          <th>เบิกให้ Service</th>
+                        </tr></thead>
+                        <tbody>
+                          {p.rows.map(({ r, item }) => (
+                            <tr key={r.id}>
+                              <td className="mono">{item?.epicorCode || '-'}</td>
+                              <td>{item?.name ?? '-'}</td>
+                              <td>{r.qtyReceived} {item?.uom ?? ''}</td>
+                              <td style={{ textAlign: 'right' }}>{fmtBaht(r.unitPrice)}</td>
+                              <td style={{ textAlign: 'right' }}>
+                                {fmtBaht(r.unitPrice !== undefined ? r.unitPrice * r.qtyReceived : undefined)}
+                              </td>
+                              {/* 0059: ของที่รับแล้วยังต้องส่งต่อให้ Service อีกขั้น — ตรวจได้จากที่นี่เลย */}
+                              <td>{r.issuedToServiceAt
+                                ? <><span className="badge green">✅ เบิกแล้ว</span><div className="muted">{fmtDate(r.issuedToServiceAt)}</div></>
+                                : <span className="badge amber">ยังอยู่กับ Job</span>}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
               </div>
             )
           })}
-          {canComment && (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 6 }}>
-              <textarea rows={2} style={{ flex: 1 }} value={stockComment}
-                onChange={e => setStockComment(e.target.value)}
-                placeholder={isVip
-                  ? 'เช่น "ล็อต Stock No.3 ETA ต.ค. ช้าไป ให้ตามซัพเรื่องวันลงเรืออีกครั้ง"'
-                  : 'ตอบกลับความเห็นของผู้บริหาร'} />
-              <button className="primary small" disabled={!stockComment.trim()}
-                onClick={async () => {
-                  if (await tryAction(
-                    () => act.addStockComment({ body: stockComment }),
-                    isVip ? 'ส่งความเห็นถึง Division แล้ว' : 'บันทึกความเห็นแล้ว — แจ้ง VIP ให้ทราบ',
-                  )) setStockComment('')
-                }}>ส่งความเห็น</button>
-            </div>
-          )}
-        </div>
-      </div>
+        </>
+      )}
 
       {editStock && (
         <Modal
