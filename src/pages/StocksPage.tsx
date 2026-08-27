@@ -710,11 +710,6 @@ export default function StocksPage() {
         )
       })}
 
-      {/* ความเห็นผู้บริหาร (VIP) ย้ายไป Dashboard แล้ว (2026-08-23) — บอกทางไว้ให้คนที่เคยหาที่นี่ */}
-      <div className="panel"><div className="panel-body muted">
-        💬 <b>ความเห็นผู้บริหาร (VIP)</b> ย้ายไปอยู่หน้า <Link to="/dashboard">Dashboard</Link> ใต้ Job List แล้ว —
-        เป็นความเห็นภาพรวมทั้งระบบ ไม่ใช่เรื่องคลังอย่างเดียว จึงควรอยู่หน้าแรกที่ทุกแผนกเปิดเจอ
-      </div></div>
       </>}
 
       {/* ---------------- แท็บ 2: วัสดุตาม Job (Ref.PO) ----------------

@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
 import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, parseLatLng, fmtLatLng, PAYMENT_TYPES } from '../data/logic'
 import { BudgetFields, CoordInput, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, sitesToApi, sitesFromJob, type CostForm, type InstallSite } from '../ui/components'
-import { ACC_STATUS_LABEL, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
+import { accStatusLabel, accStatusBadge, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType } from '../types'
 
 // ฟอร์มงวดเงิน (0044) — id = null คือเพิ่มงวดใหม่
@@ -232,7 +232,7 @@ export default function JobDetailPage() {
         'Phase Budget': cat,
         'Phase': phase,
         'แหล่ง': r.source === 'central_stock' ? 'คลังคงเหลือ' : 'Purchasing',
-        'สถานะ': ACC_STATUS_LABEL[r.status],
+        'สถานะ': accStatusLabel(r),
         'PR / PO': [pr?.prNo, po?.poNo].filter(Boolean).join(' / '),
       }
     })
@@ -817,7 +817,7 @@ export default function JobDetailPage() {
                       )}
                     </td>
                     <td>{r.source === 'central_stock' ? <span className="badge green">คลังคงเหลือ</span> : <span className="badge amber">Purchasing</span>}</td>
-                    <td><span className={`badge ${r.status === 'issued' || r.status === 'received' ? 'green' : r.status === 'cancelled' || r.status === 'returned' ? 'neutral' : 'amber'}`}>{ACC_STATUS_LABEL[r.status]}</span></td>
+                    <td><span className={`badge ${accStatusBadge(r)}`}>{accStatusLabel(r)}</span></td>
                     {/* 0059: Ready = เบิกให้ Service ได้ตอนนี้ · Not Ready = บอกเหตุผลตรงนั้น ไม่ต้องไปเดาที่อื่น */}
                     <td>{(() => {
                       if (r.issuedToServiceAt) return <><span className="badge green">✅ เบิกแล้ว</span><div className="muted">{fmtDate(r.issuedToServiceAt)}</div></>

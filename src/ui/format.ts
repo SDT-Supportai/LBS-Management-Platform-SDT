@@ -1,4 +1,4 @@
-import type { JobStatus, Department, AccReqStatus, CostCategoryKey } from '../types'
+import type { JobStatus, Department, AccReqStatus, AccessoryRequest, CostCategoryKey } from '../types'
 
 // 7 หมวดต้นทุน Project Budget (0021) — เรียงตามลำดับที่แสดง
 // fromPR = true → actual มาจากมูลค่าวัสดุ PR/PO ที่ตัดเข้าหมวดนี้ (เลือกตอนเพิ่มวัสดุ)
@@ -80,12 +80,39 @@ export const APPROVAL_STATUS_LABEL: Record<string, string> = {
 
 export const ACC_STATUS_LABEL: Record<AccReqStatus, string> = {
   pending: 'รอออก PR',
-  issued: 'เบิกจากคลังสินค้าแล้ว',
+  // ของออกจากคลังคงเหลือมาอยู่ในมือ Job แล้ว แต่ยังไม่ได้ส่งออกหน้างาน
+  // (ขั้นส่งต่อให้ Service ดูคอลัมน์ "เบิกให้ Service" ที่มาจาก issuedToServiceAt — 0059)
+  issued: 'เบิกคลัง รอนำใช้',
   pr_sent: 'ส่ง PR แล้ว',
   po_ordered: 'ออก PO แล้ว',
   received: 'รับของแล้ว',
   returned: 'คืนสต็อกแล้ว',
   cancelled: 'ยกเลิก',
+}
+
+/**
+ * ป้ายในคอลัมน์ "สถานะ" ของตารางวัสดุ — ตอบคำถาม **"ของชิ้นนี้อยู่ที่ไหนตอนนี้"**
+ * ไม่ใช่ "ของมาจากไหน" (มติ 2026-08-27 · แบบ B)
+ *
+ * ⚠️ AccReqStatus **ไม่ขยับ**ตอนเบิกให้ Service — 0059 ใช้ฟิลด์ issuedToServiceAt แยกอีกตัว
+ *    ถ้าอ่าน status ตรง ๆ คอลัมน์นี้จะค้างที่ "เบิกคลัง รอนำใช้" / "รับของแล้ว"
+ *    ทั้งที่ของออกไปหน้างานแล้ว ⇒ ขัดกับคอลัมน์ "เบิกให้ Service" ที่อยู่ถัดไปในตารางเดียวกัน
+ *    คนอ่านตารางเร็ว ๆ ดูคอลัมน์สถานะก่อน จะเข้าใจผิดว่าของยังอยู่ในมือ Project
+ *
+ * ใช้กับทั้งของจากคลังคงเหลือและของที่ซื้อผ่าน PO — ความขัดแย้งเดียวกันเกิดกับทั้งสองทาง
+ * ยกเว้นรายการที่ยกเลิก/คืนคลังไปแล้ว ซึ่ง status เป็นคำตอบสุดท้ายอยู่แล้ว
+ */
+export function accStatusLabel(r: Pick<AccessoryRequest, 'status' | 'issuedToServiceAt'>): string {
+  if (r.issuedToServiceAt && r.status !== 'cancelled' && r.status !== 'returned')
+    return 'ส่งให้ Service แล้ว'
+  return ACC_STATUS_LABEL[r.status]
+}
+
+/** สีป้ายให้ตรงกับความหมาย: เขียว = ของพร้อมใช้อยู่กับ Job · ฟ้า = ออกไปหน้างานแล้ว */
+export function accStatusBadge(r: Pick<AccessoryRequest, 'status' | 'issuedToServiceAt'>): string {
+  if (r.status === 'cancelled' || r.status === 'returned') return 'neutral'
+  if (r.issuedToServiceAt) return 'blue'
+  return r.status === 'issued' || r.status === 'received' ? 'green' : 'amber'
 }
 
 // จำนวนเงิน (บาท) — คืน '-' ถ้าไม่ได้ระบุ

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { DB, Job, AccessoryRequest, LbsUnit } from '../types'
+import { accStatusLabel, accStatusBadge } from '../ui/format'
 import {
   effectiveQty, poCostSummary, jobMaterialValue, jobLbsCost, jobBudgetSummary,
   deriveJobStatus, jobDueDate, jobDaysLeft, jobAllocatedQty,
@@ -641,5 +642,46 @@ describe('พิกัดตามแผนบน Job — เก็บเฉพ�
       jobId: 'j1', jobNo: 'J-001', customerName: 'กฟภ.', scope: 'x',
       installLocation: 'A', requiredDate: '2026-12-01', lbsQtyRequired: 1,
     })).toThrow(/ต่ำกว่าที่ถืออยู่ \(2 เครื่อง\)/)
+  })
+})
+
+// =============================================================================
+// ป้ายสถานะวัสดุในตาราง Purchase Orders (มติ 2026-08-27 · แบบ B)
+//
+// กฎที่ต้องล็อก: คอลัมน์ "สถานะ" ต้อง **ไม่ขัดกับ** คอลัมน์ "เบิกให้ Service" ที่อยู่ถัดไป
+//   AccReqStatus ไม่ขยับตอนเบิกให้ Service (0059 ใช้ issuedToServiceAt แยกอีกฟิลด์)
+//   ⇒ ถ้าอ่าน status ตรง ๆ ป้ายจะค้างที่ "เบิกคลัง รอนำใช้" ทั้งที่ของไปหน้างานแล้ว
+//   เจอตอนทดสอบจริงบนจอ: "เบิกคลัง รอนำใช้" อยู่ข้าง "✅ เบิกแล้ว 27 ส.ค. 2569"
+// =============================================================================
+describe('ป้ายสถานะวัสดุ — เล่าว่าของอยู่ที่ไหนตอนนี้', () => {
+  it('ของจากคลังคงเหลือที่ยังอยู่กับ Job = "เบิกคลัง รอนำใช้"', () => {
+    const r = req({ source: 'central_stock', status: 'issued', poId: null, prId: null })
+    expect(accStatusLabel(r)).toBe('เบิกคลัง รอนำใช้')
+    expect(accStatusBadge(r)).toBe('green')
+  })
+
+  it('เบิกให้ Service ไปแล้ว = "ส่งให้ Service แล้ว" (ไม่ค้างที่ "รอนำใช้")', () => {
+    const r = req({ source: 'central_stock', status: 'issued', poId: null, prId: null, issuedToServiceAt: '2026-08-27T00:00:00.000Z' })
+    expect(accStatusLabel(r)).toBe('ส่งให้ Service แล้ว')
+    expect(accStatusBadge(r)).toBe('blue')
+  })
+
+  it('ของที่ซื้อผ่าน PO ก็ใช้กฎเดียวกัน — "รับของแล้ว" ต้องไม่ค้างเมื่อส่งออกไปแล้ว', () => {
+    expect(accStatusLabel(req({ status: 'received' }))).toBe('รับของแล้ว')
+    expect(accStatusLabel(req({ status: 'received', issuedToServiceAt: '2026-08-27T00:00:00.000Z' })))
+      .toBe('ส่งให้ Service แล้ว')
+  })
+
+  it('รายการที่ยกเลิก/คืนคลัง — status เป็นคำตอบสุดท้าย ธงเบิกไม่ทับ', () => {
+    const cancelled = req({ status: 'cancelled', issuedToServiceAt: '2026-08-27T00:00:00.000Z' })
+    expect(accStatusLabel(cancelled)).toBe('ยกเลิก')
+    expect(accStatusBadge(cancelled)).toBe('neutral')
+    expect(accStatusLabel(req({ status: 'returned' }))).toBe('คืนสต็อกแล้ว')
+  })
+
+  it('ขั้นที่ยังไม่ได้ของ ป้ายยังเป็นขั้นจัดซื้อตามเดิม', () => {
+    expect(accStatusLabel(req({ status: 'pending' }))).toBe('รอออก PR')
+    expect(accStatusLabel(req({ status: 'po_ordered' }))).toBe('ออก PO แล้ว')
+    expect(accStatusBadge(req({ status: 'po_ordered' }))).toBe('amber')
   })
 })
