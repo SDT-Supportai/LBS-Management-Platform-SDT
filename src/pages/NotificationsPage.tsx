@@ -44,8 +44,11 @@ export default function NotificationsPage() {
               {mine.map(n => {
                 const isUnread = !n.readBy.includes(user.id)
                 const line = LINE_BADGE[n.lineStatus]
+                // ยังไม่อ่าน = แถบน้ำเงินซ้ายแถว ไม่ใช่พื้นฟ้า (2026-08-28)
+                // พื้นฟ้าเดิม #f2f7ff ทำให้เวลา (.muted = slate-500) เหลือคอนทราสต์ 4.42:1 ตก AA
+                // และแถบเว้นแถบแถวคู่ก็กลบสีฟ้าจนแทบแยกไม่ออกอยู่แล้ว
                 return (
-                  <tr key={n.id} style={isUnread ? { background: '#f2f7ff' } : undefined}>
+                  <tr key={n.id} className={isUnread ? 'row-unread' : undefined}>
                     <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(n.createdAt)}{isUnread && <span className="badge red" style={{ marginLeft: 6 }}>ใหม่</span>}</td>
                     <td>{n.jobId ? <Link to={`/jobs/${n.jobId}`}>{n.message}</Link> : n.message}</td>
                     <td>{n.dept === 'all' ? 'ทุกแผนก' : DEPT_LABEL[n.dept]}</td>
