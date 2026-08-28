@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
 import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, parseLatLng, fmtLatLng, PAYMENT_TYPES } from '../data/logic'
 import { BudgetFields, CoordInput, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, sitesToApi, sitesFromJob, type CostForm, type InstallSite } from '../ui/components'
-import { accStatusLabel, accStatusBadge, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
+import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType } from '../types'
 
 // ฟอร์มงวดเงิน (0044) — id = null คือเพิ่มงวดใหม่
@@ -781,9 +781,9 @@ export default function JobDetailPage() {
         </div>
         {poOpen && <div className="table-scroll">
           <table>
-            <thead><tr><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>จำนวน</th><th>ราคา/หน่วย</th><th>มูลค่า</th><th>Phase Budget</th><th>แหล่ง</th><th>สถานะ</th><th>เบิกให้ Service</th><th>PR / PO</th><th></th></tr></thead>
+            <thead><tr><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>จำนวน</th><th>ราคา/หน่วย</th><th>มูลค่า</th><th>Phase Budget</th><th>แหล่ง</th><th>สถานะ</th><th>PR / PO</th><th></th></tr></thead>
             <tbody>
-              {accReqs.length === 0 && <tr><td colSpan={11}><div className="empty">ยังไม่มีรายการวัสดุ</div></td></tr>}
+              {accReqs.length === 0 && <tr><td colSpan={10}><div className="empty">ยังไม่มีรายการวัสดุ</div></td></tr>}
               {accReqs.map(r => {
                 const item = itemOf(r.itemId)!
                 const pr = db.prs.find(p => p.id === r.prId)
@@ -817,16 +817,18 @@ export default function JobDetailPage() {
                       )}
                     </td>
                     <td>{r.source === 'central_stock' ? <span className="badge green">คลังคงเหลือ</span> : <span className="badge amber">Purchasing</span>}</td>
-                    <td><span className={`badge ${accStatusBadge(r)}`}>{accStatusLabel(r)}</span></td>
-                    {/* 0059: Ready = เบิกให้ Service ได้ตอนนี้ · Not Ready = บอกเหตุผลตรงนั้น ไม่ต้องไปเดาที่อื่น */}
-                    <td>{(() => {
-                      if (r.issuedToServiceAt) return <><span className="badge green">✅ เบิกแล้ว</span><div className="muted">{fmtDate(r.issuedToServiceAt)}</div></>
-                      if (!active) return <span className="muted">-</span>
-                      const blk = accIssueBlockReason(db, r)
-                      return blk
-                        ? <><span className="badge amber">Not Ready</span><div className="muted">{blk}</div></>
-                        : <span className="badge green">Ready</span>
-                    })()}</td>
+                    {/* คอลัมน์เดียวเล่าทั้งสาย (มติ 2026-08-27) — เดิมแยกเป็น "สถานะ" + "เบิกให้ Service"
+                        แล้วอ่านเหมือนบอกเรื่องเดียวกันซ้ำ 2 ที่
+                        บรรทัดรองใต้ป้าย = ข้อมูลที่ป้ายบอกไม่ได้เท่านั้น (วันที่เบิก · เหตุผลที่ยังเบิกไม่ได้
+                        ซึ่งไม่ตรงกับขั้นของตัวเอง เช่น รับของครบแล้วแต่ PO ทั้งใบยังไม่ครบ) */}
+                    <td>
+                      <span className={`badge ${accStatusBadge(r)}`}>{accStatusLabel(r)}</span>
+                      {r.issuedToServiceAt && <div className="muted">{fmtDate(r.issuedToServiceAt)}</div>}
+                      {!r.issuedToServiceAt && active && accBlockNeedsDetail(r) && (() => {
+                        const blk = accIssueBlockReason(db, r)
+                        return blk ? <div className="muted">⏳ {blk}</div> : null
+                      })()}
+                    </td>
                     <td className="mono">{[pr?.prNo, po?.poNo].filter(Boolean).join(' / ') || '-'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       {canManage && !procureLocked && active && (

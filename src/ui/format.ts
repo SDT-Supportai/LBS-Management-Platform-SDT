@@ -78,14 +78,16 @@ export const APPROVAL_STATUS_LABEL: Record<string, string> = {
   rejected: 'ตีกลับ',
 }
 
+// ⚠️ ป้ายทุกตัวต้อง "อ่านจบในตัวเอง" ว่าของอยู่ขั้นไหนและรออะไรอยู่ (มติ 2026-08-27)
+//    เพราะคอลัมน์ "เบิกให้ Service" ที่เคยมาขยายความถูกยุบรวมเข้ามาที่คอลัมน์นี้แล้ว
+//    2 ขั้นที่เป็น "ของอยู่กับ Job พร้อมส่งออกหน้างาน" ตั้งชื่อคู่ขนานกันตั้งใจ
+//    (เบิกคลัง รอนำใช้ / รับของแล้ว รอนำใช้) — คนกวาดตาเห็น "รอนำใช้" ก็รู้ทันทีว่าเบิกได้
 export const ACC_STATUS_LABEL: Record<AccReqStatus, string> = {
   pending: 'รอออก PR',
-  // ของออกจากคลังคงเหลือมาอยู่ในมือ Job แล้ว แต่ยังไม่ได้ส่งออกหน้างาน
-  // (ขั้นส่งต่อให้ Service ดูคอลัมน์ "เบิกให้ Service" ที่มาจาก issuedToServiceAt — 0059)
-  issued: 'เบิกคลัง รอนำใช้',
-  pr_sent: 'ส่ง PR แล้ว',
-  po_ordered: 'ออก PO แล้ว',
-  received: 'รับของแล้ว',
+  issued: 'เบิกคลัง รอนำใช้',          // มาจากคลังคงเหลือ · ของอยู่กับ Job แล้ว
+  pr_sent: 'ส่ง PR แล้ว รอออก PO',
+  po_ordered: 'ออก PO แล้ว รอรับของ',
+  received: 'รับของแล้ว รอนำใช้',      // มาจากการสั่งซื้อ · ของอยู่กับ Job แล้ว
   returned: 'คืนสต็อกแล้ว',
   cancelled: 'ยกเลิก',
 }
@@ -104,8 +106,19 @@ export const ACC_STATUS_LABEL: Record<AccReqStatus, string> = {
  */
 export function accStatusLabel(r: Pick<AccessoryRequest, 'status' | 'issuedToServiceAt'>): string {
   if (r.issuedToServiceAt && r.status !== 'cancelled' && r.status !== 'returned')
-    return 'ส่งให้ Service แล้ว'
+    return 'เบิกให้ Service แล้ว'
   return ACC_STATUS_LABEL[r.status]
+}
+
+/**
+ * ขั้นเหล่านี้ "ป้ายบอกเหตุผลอยู่ในตัวแล้ว" — ไม่ต้องเอา accIssueBlockReason มาย้ำใต้ป้ายอีก
+ * (เช่น status = po_ordered ป้ายเขียนว่า "ออก PO แล้ว รอรับของ" ซึ่งตรงกับเหตุผลที่เบิกไม่ได้เป๊ะ)
+ * เหลือไว้เฉพาะเหตุผลที่ **อ่านจากป้ายไม่ออก** เช่น บรรทัดนี้รับของครบแล้วแต่ PO ทั้งใบยังไม่ครบ
+ */
+const BLOCK_IMPLIED_BY_STATUS = new Set<AccReqStatus>(['pending', 'pr_sent', 'po_ordered'])
+
+export function accBlockNeedsDetail(r: Pick<AccessoryRequest, 'status'>): boolean {
+  return !BLOCK_IMPLIED_BY_STATUS.has(r.status)
 }
 
 /** สีป้ายให้ตรงกับความหมาย: เขียว = ของพร้อมใช้อยู่กับ Job · ฟ้า = ออกไปหน้างานแล้ว */

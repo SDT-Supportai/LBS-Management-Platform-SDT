@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import type { DB, Job, AccessoryRequest, LbsUnit } from '../types'
-import { accStatusLabel, accStatusBadge } from '../ui/format'
+import type { DB, Job, AccessoryRequest, AccReqStatus, LbsUnit } from '../types'
+import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, ACC_STATUS_LABEL } from '../ui/format'
 import {
   effectiveQty, poCostSummary, jobMaterialValue, jobLbsCost, jobBudgetSummary,
   deriveJobStatus, jobDueDate, jobDaysLeft, jobAllocatedQty,
@@ -646,30 +646,51 @@ describe('พิกัดตามแผนบน Job — เก็บเฉพ�
 })
 
 // =============================================================================
-// ป้ายสถานะวัสดุในตาราง Purchase Orders (มติ 2026-08-27 · แบบ B)
+// คอลัมน์ "สถานะ" ของตาราง Purchase Orders — คอลัมน์เดียวเล่าทั้งสาย (มติ 2026-08-27)
 //
-// กฎที่ต้องล็อก: คอลัมน์ "สถานะ" ต้อง **ไม่ขัดกับ** คอลัมน์ "เบิกให้ Service" ที่อยู่ถัดไป
-//   AccReqStatus ไม่ขยับตอนเบิกให้ Service (0059 ใช้ issuedToServiceAt แยกอีกฟิลด์)
-//   ⇒ ถ้าอ่าน status ตรง ๆ ป้ายจะค้างที่ "เบิกคลัง รอนำใช้" ทั้งที่ของไปหน้างานแล้ว
-//   เจอตอนทดสอบจริงบนจอ: "เบิกคลัง รอนำใช้" อยู่ข้าง "✅ เบิกแล้ว 27 ส.ค. 2569"
+// เดิมแยกเป็น "สถานะ" (ขั้นจัดซื้อ) + "เบิกให้ Service" (ส่งออกหน้างานหรือยัง) → อ่านแล้ว
+// เหมือนบอกเรื่องเดียวกันซ้ำ 2 ที่ · ยุบเหลือคอลัมน์เดียวแล้วต้องไม่ทำข้อมูลหาย
+//
+// กฎที่ต้องล็อก:
+//   1) ทุกค่าของ AccReqStatus ต้องมีป้าย และป้ายต้องไม่ซ้ำกัน (ไม่งั้น 2 ขั้นอ่านเหมือนกัน)
+//   2) ธง issuedToServiceAt ต้องชนะ status เสมอ — ยกเว้นรายการที่ยกเลิก/คืนคลัง
+//   3) ขั้นที่ป้ายบอกเหตุผลอยู่ในตัวแล้ว ห้ามเอา block reason มาย้ำใต้ป้ายซ้ำ
 // =============================================================================
-describe('ป้ายสถานะวัสดุ — เล่าว่าของอยู่ที่ไหนตอนนี้', () => {
-  it('ของจากคลังคงเหลือที่ยังอยู่กับ Job = "เบิกคลัง รอนำใช้"', () => {
-    const r = req({ source: 'central_stock', status: 'issued', poId: null, prId: null })
-    expect(accStatusLabel(r)).toBe('เบิกคลัง รอนำใช้')
-    expect(accStatusBadge(r)).toBe('green')
+describe('สถานะวัสดุ — คอลัมน์เดียวเล่าทั้งสาย', () => {
+  it('ทุกสถานะมีป้าย และไม่มีป้ายซ้ำกัน', () => {
+    const all: AccReqStatus[] = ['pending', 'pr_sent', 'po_ordered', 'received', 'issued', 'returned', 'cancelled']
+    all.forEach(st => expect(ACC_STATUS_LABEL[st], st).toBeTruthy())
+    const labels = all.map(st => ACC_STATUS_LABEL[st])
+    expect(new Set(labels).size).toBe(all.length)
   })
 
-  it('เบิกให้ Service ไปแล้ว = "ส่งให้ Service แล้ว" (ไม่ค้างที่ "รอนำใช้")', () => {
-    const r = req({ source: 'central_stock', status: 'issued', poId: null, prId: null, issuedToServiceAt: '2026-08-27T00:00:00.000Z' })
-    expect(accStatusLabel(r)).toBe('ส่งให้ Service แล้ว')
-    expect(accStatusBadge(r)).toBe('blue')
-  })
-
-  it('ของที่ซื้อผ่าน PO ก็ใช้กฎเดียวกัน — "รับของแล้ว" ต้องไม่ค้างเมื่อส่งออกไปแล้ว', () => {
-    expect(accStatusLabel(req({ status: 'received' }))).toBe('รับของแล้ว')
+  it('สายสั่งซื้อเดินครบจนถึงเบิกให้ Service', () => {
+    expect(accStatusLabel(req({ status: 'pending' }))).toBe('รอออก PR')
+    expect(accStatusLabel(req({ status: 'pr_sent' }))).toBe('ส่ง PR แล้ว รอออก PO')
+    expect(accStatusLabel(req({ status: 'po_ordered' }))).toBe('ออก PO แล้ว รอรับของ')
+    expect(accStatusLabel(req({ status: 'received' }))).toBe('รับของแล้ว รอนำใช้')
     expect(accStatusLabel(req({ status: 'received', issuedToServiceAt: '2026-08-27T00:00:00.000Z' })))
-      .toBe('ส่งให้ Service แล้ว')
+      .toBe('เบิกให้ Service แล้ว')
+  })
+
+  it('สายคลังคงเหลือเดิน 2 ขั้นจบ', () => {
+    const inHand = req({ source: 'central_stock', status: 'issued', poId: null, prId: null })
+    expect(accStatusLabel(inHand)).toBe('เบิกคลัง รอนำใช้')
+    expect(accStatusLabel({ ...inHand, issuedToServiceAt: '2026-08-27T00:00:00.000Z' }))
+      .toBe('เบิกให้ Service แล้ว')
+  })
+
+  it('2 ขั้นที่ "ของอยู่กับ Job พร้อมส่งออก" ต้องอ่านเป็นชุดเดียวกัน (ลงท้าย รอนำใช้)', () => {
+    // ตั้งใจให้คู่ขนานกัน — คนกวาดตาเห็น "รอนำใช้" ต้องรู้ทันทีว่าเบิกให้ Service ได้แล้ว
+    expect(accStatusLabel(req({ status: 'issued' }))).toMatch(/รอนำใช้$/)
+    expect(accStatusLabel(req({ status: 'received' }))).toMatch(/รอนำใช้$/)
+  })
+
+  it('สีป้ายแยก 3 ความหมาย: รอ (amber) · ของอยู่กับ Job (green) · ออกไปแล้ว (blue)', () => {
+    expect(accStatusBadge(req({ status: 'po_ordered' }))).toBe('amber')
+    expect(accStatusBadge(req({ status: 'received' }))).toBe('green')
+    expect(accStatusBadge(req({ status: 'issued' }))).toBe('green')
+    expect(accStatusBadge(req({ status: 'received', issuedToServiceAt: '2026-08-27T00:00:00.000Z' }))).toBe('blue')
   })
 
   it('รายการที่ยกเลิก/คืนคลัง — status เป็นคำตอบสุดท้าย ธงเบิกไม่ทับ', () => {
@@ -679,9 +700,17 @@ describe('ป้ายสถานะวัสดุ — เล่าว่า�
     expect(accStatusLabel(req({ status: 'returned' }))).toBe('คืนสต็อกแล้ว')
   })
 
-  it('ขั้นที่ยังไม่ได้ของ ป้ายยังเป็นขั้นจัดซื้อตามเดิม', () => {
-    expect(accStatusLabel(req({ status: 'pending' }))).toBe('รอออก PR')
-    expect(accStatusLabel(req({ status: 'po_ordered' }))).toBe('ออก PO แล้ว')
-    expect(accStatusBadge(req({ status: 'po_ordered' }))).toBe('amber')
+  it('ขั้นจัดซื้อไม่ต้องมีบรรทัดเหตุผลย้ำใต้ป้าย — ป้ายบอกอยู่แล้ว', () => {
+    expect(accBlockNeedsDetail(req({ status: 'pending' }))).toBe(false)
+    expect(accBlockNeedsDetail(req({ status: 'pr_sent' }))).toBe(false)
+    expect(accBlockNeedsDetail(req({ status: 'po_ordered' }))).toBe(false)
+  })
+
+  it('เคสที่ป้ายบอกไม่ได้ ต้องยังมีบรรทัดเหตุผล — รับของครบแล้วแต่ PO ทั้งใบยังไม่ครบ', () => {
+    // ป้ายจะเขียนว่า "รับของแล้ว รอนำใช้" ซึ่งดูเหมือนเบิกได้ แต่จริง ๆ ติดที่ PO ทั้งใบ
+    expect(accBlockNeedsDetail(req({ status: 'received' }))).toBe(true)
+    const poWaiting = { id: 'po2', poNo: 'PO-002', prId: 'pr1', jobId: 'j1', supplierName: 'ซัพ A', expectedDate: '2026-06-01', status: 'issued' as const, createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' }
+    const d = db({ pos: [poWaiting], accessoryRequests: [req({ status: 'received', poId: 'po2' })] })
+    expect(accIssueBlockReason(d, d.accessoryRequests[0])).toContain('PO-002')
   })
 })
