@@ -11,7 +11,7 @@ const DEPTS: Department[] = ['sales', 'project', 'purchasing', 'service', 'admin
 const DEPT_HINT: Record<Department, string> = {
   sales: 'Division — อนุมัติ/ตีกลับคำขอของ Project · จัดการคลัง LBS (สร้าง/รับเข้า/แก้ข้อมูลรายเครื่อง)',
   project: 'Project — เปิด/แก้ Job ของตัวเอง · ดึง LBS · ขอวัสดุ · ขออนุมัติ (ทำเองไม่ได้ ต้องผ่าน Division)',
-  purchasing: 'Purchasing — ออก PO จาก PR · รับของ · บันทึกราคาจริง',
+  purchasing: 'Purchasing — ออก PO จาก PR · รับของ · บันทึกราคาจริง · ฐานข้อมูลวัสดุ (เพิ่ม/แก้/ลบ Accessory · Import/Export Excel · ปรับยอดคลังคงเหลือ)',
   service: 'Service — ยืนยันติดตั้งรายเครื่อง · ทะเบียนทีมช่าง · มอบหมายงาน',
   admin: 'Manage — ทำได้ทุกอย่าง + ข้ามขั้นอนุมัติ · จัดการผู้ใช้/Dev Settings',
   vip: 'VIP (ผู้บริหารสูงสุด) — ดูได้ทุกหน้าแบบอ่านอย่างเดียว · ให้ความเห็นบนคำขอที่ Awaiting Approval เพื่อแจ้ง Division (ไม่มีสิทธิ์แก้ข้อมูลใดๆ)',

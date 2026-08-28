@@ -62,6 +62,12 @@ export const PERMISSIONS: Record<string, Department[]> = {
   'purchasing.manage': ['purchasing', 'admin'],
   'service.confirm': ['service', 'admin'],
   'master.manage': ['admin'],
+  // Material Database (0061) — Purchasing เป็นเจ้าของฐานข้อมูลวัสดุ: เพิ่ม/แก้/ลบ Accessory + Import Excel
+  // แยกจาก master.manage เพราะ master.manage ยังครอบ "ข้ามขั้นอนุมัติ" (createPR/issueJob/cancelJob) + จัดการผู้ใช้
+  'material.manage': ['purchasing', 'admin'],
+  // ยอดคลังคงเหลือ accessory (ปรับยอด · Lot No. · แถวใน Import Excel ที่แก้ยอด) — Division + Purchasing
+  // แยกจาก stock.manage ที่ครอบ Project Stock / LBS รายเครื่อง ซึ่งยังเป็นของ Division เท่านั้น
+  'accessoryStock.manage': ['sales', 'purchasing', 'admin'],
   'approval.decide': ['sales', 'admin'],   // Division อนุมัติ/ตีกลับคำขอจาก project
   // ความเห็นบนคำขออนุมัติ (0050) — VIP (ผู้บริหาร) ฝากความเห็นให้ Division · Division ตอบกลับได้
   // VIP ไม่มีสิทธิ์อื่นเลย = ดูได้ทุกหน้า แต่แก้ข้อมูลไม่ได้ (ปุ่มทุกปุ่มซ่อนเองผ่าน can())
@@ -411,11 +417,12 @@ function DemoProvider({ children }: { children: ReactNode }) {
         rejectApprovalRequest: run('approval.decide', L.rejectApprovalRequest),
         addApprovalComment: run('approval.comment', L.addApprovalComment),
         addStockComment: run('approval.comment', L.addStockComment),
-        createItem: run('master.manage', L.createItem),
-        updateItem: run('master.manage', L.updateItem),
-        deleteItem: run('master.manage', L.deleteItem),
-        adjustAccessoryStock: run('stock.manage', L.adjustAccessoryStock),
-        setStockLot: run('stock.manage', L.setStockLot),
+        // ฐานข้อมูลวัสดุ = Purchasing + Manage (0061)
+        createItem: run('material.manage', L.createItem),
+        updateItem: run('material.manage', L.updateItem),
+        deleteItem: run('material.manage', L.deleteItem),
+        adjustAccessoryStock: run('accessoryStock.manage', L.adjustAccessoryStock),
+        setStockLot: run('accessoryStock.manage', L.setStockLot),
         // โอนวัสดุเหลือจาก Job เข้าคลังคงเหลือ — Project เป็นเจ้าของวัสดุใน Job
         transferJobMaterialToStock: run('job.manage', L.transferJobMaterialToStock),
         // Payment — Project (เจ้าของงาน ตาม 0042) + Manage

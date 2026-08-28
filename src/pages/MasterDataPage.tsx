@@ -99,8 +99,9 @@ export default function MasterDataPage() {
   const { ask: askPrompt, element: promptEl } = usePrompt()
   const { ask: askConfirm, element: confirmEl } = useConfirm()
   const { show } = useToast()
-  const canMaster = can(user, 'master.manage')
-  const canStock = can(user, 'stock.manage')
+  // 0061 — ฐานข้อมูลวัสดุเป็นของ Purchasing + Manage · ยอดคลังคงเหลือเป็นของ Division + Purchasing + Manage
+  const canMaster = can(user, 'material.manage')
+  const canStock = can(user, 'accessoryStock.manage')
   const fileRef = useRef<HTMLInputElement>(null)
   const [importRows, setImportRows] = useState<ImportRow[] | null>(null)
   const [importing, setImporting] = useState(false)
@@ -293,7 +294,7 @@ export default function MasterDataPage() {
       <div className="page-title">Material Database</div>
       <div className="page-sub">
         แยก 2 ส่วนชัดเจน — <b>ฐานข้อมูลวัสดุ</b> (รายการที่ใช้ตอนออก PR/PO) และ <b>คลังคงเหลือ</b> (ของที่มีอยู่จริง เบิกได้เลย)
-        {!canMaster && ' · การเพิ่ม/แก้/ลบเป็นสิทธิ์ของ Manage'}
+        {!canMaster && ' · การเพิ่ม/แก้/ลบ + นำเข้า Excel เป็นสิทธิ์ของ Purchasing และ Manage'}
       </div>
 
       <div className="panel">
