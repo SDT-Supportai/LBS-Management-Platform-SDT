@@ -1667,18 +1667,27 @@ function finalizeIssue(db: DB, actor: User, jobId: string): DB {
     ? job.installStartDate ?? '-'
     : `${job.installStartDate} – ${job.installEndDate}`
   const where = job.issueLocation || job.installLocation || '-'
-  let next: DB = {
+  const next: DB = {
     ...db,
     jobs: db.jobs.map(j => j.id === jobId
       ? { ...j, terminalStatus: 'issued' as const, issuedAt: now() } : j),
   }
-  next = notify(next, {
-    type: 'job_issued', dept: 'service', jobId,
-    message: `🚚 ${job.jobNo} เบิกของครบทั้งใบแล้ว · ติดตั้ง ${where} · ${range}`,
-  })
+  // ⚠️ ไม่ยิงแจ้งเตือน `job_issued` ที่นี่แล้ว (2026-08-28)
+  //   เดิมทุกครั้งที่ก้าวสุดท้ายทำให้ใบครบ จะได้ 2 ข้อความติดกันในกลุ่มที่พูดเรื่องเดียวกัน
+  //   เช่น "🚚 เบิก LBS 2 เครื่องให้ Service · …" แล้วตามด้วย "🚚 เบิกของครบทั้งใบแล้ว · …"
+  //   ⇒ ย้ายไปเป็นหาง "· ครบทั้งใบแล้ว" ต่อท้ายข้อความของ action ที่ทำให้ครบแทน
+  //      (ดู jobBecameComplete ที่ issueJobLbs / issueJobAccessory เรียกใช้)
+  //   Audit ยังลงแยกเหมือนเดิม — audit เป็นบันทึกเหตุการณ์ ไม่ใช่ข้อความหาคน จึงไม่ต้องยุบ
   return audit(next, actor, 'job', jobId, 'issue_to_service',
     `เบิก ${job.jobNo} ให้ Service ครบทั้งใบ (LBS ${onJob.length} เครื่อง + วัสดุทุกรายการ)` +
     ` นัดติดตั้ง ${range} ที่ ${where}`)
+}
+
+/** ก้าวนี้ทำให้ใบครบพอดีไหม — ใช้เติมหาง "ครบทั้งใบแล้ว" ในข้อความแจ้งเตือนของ action นั้น */
+function jobBecameComplete(before: DB, after: DB, jobId: string): boolean {
+  const b = before.jobs.find(j => j.id === jobId)
+  const a = after.jobs.find(j => j.id === jobId)
+  return !b?.terminalStatus && a?.terminalStatus === 'issued'
 }
 
 /**
@@ -1718,15 +1727,19 @@ export function issueJobLbs(
     } : j),
     lbsUnits: db.lbsUnits.map(u => idSet.has(u.id) ? { ...u, status: 'issued' as const } : u),
   }
-  next = notify(next, {
-    type: 'lbs_issued_to_service', dept: 'service', jobId: p.jobId,
-    message: `🚚 ${job.jobNo} เบิก LBS ${idSet.size} เครื่องให้ Service · ติดตั้ง ${location} · ${range}` +
-      (remain > 0 ? ` (ค้างอีก ${remain} เครื่อง)` : ''),
-  })
   next = audit(next, actor, 'job', p.jobId, 'issue_lbs_to_service',
     `เบิก LBS ของ ${job.jobNo} ให้ Service ${idSet.size} เครื่อง (SN: ${units.map(u => u.serialLvb).join(', ')})` +
     ` นัดติดตั้ง ${range} ที่ ${location}` + (remain > 0 ? ` — ค้างอีก ${remain} เครื่อง` : ''))
-  return finalizeIssue(next, actor, p.jobId)
+  // ปิดใบก่อน แล้วค่อยแจ้ง — ข้อความจะได้บอกได้ในใบเดียวว่าก้าวนี้ทำให้ครบทั้งใบหรือยัง
+  next = finalizeIssue(next, actor, p.jobId)
+  // Location ไม่อยู่ในข้อความแล้ว (มติ 2026-08-28) — ทีมช่างรู้หน้างานจากใบงาน/หน้าเว็บอยู่แล้ว
+  // และสถานที่ยาวจนดันข้อความในกลุ่มตกบรรทัด กลบส่วนที่ต้องอ่านจริง (Job No. + จำนวน + วันที่)
+  return notify(next, {
+    type: 'lbs_issued_to_service', dept: 'service', jobId: p.jobId,
+    message: `🚚 ${job.jobNo} เบิก LBS ${idSet.size} เครื่องให้ Service · ${range}` +
+      (remain > 0 ? ` (ค้างอีก ${remain} เครื่อง)` : '') +
+      (jobBecameComplete(db, next, p.jobId) ? ' · ครบทั้งใบแล้ว' : ''),
+  })
 }
 
 /**
@@ -1773,15 +1786,17 @@ export function issueJobAccessory(
       idSet.has(r.id) ? { ...r, issuedToServiceAt: ts, issuedToServiceBy: actor.id } : r),
   }
   const remain = plan.accPending.length - idSet.size
-  next = notify(next, {
-    type: 'accessory_issued_to_service', dept: 'service', jobId: p.jobId,
-    message: `📦 ${job.jobNo} เบิกวัสดุ ${idSet.size} รายการให้ Service (${poNos.join(', ')})` +
-      ` · ติดตั้ง ${location} · ${range}` + (remain > 0 ? ` (ค้างอีก ${remain} รายการ)` : ''),
-  })
   next = audit(next, actor, 'job', p.jobId, 'issue_accessory_to_service',
     `เบิกวัสดุของ ${job.jobNo} ให้ Service ${idSet.size} รายการ จาก ${poNos.join(', ')} — ${detail}` +
     (remain > 0 ? ` (ค้างอีก ${remain} รายการ)` : ''))
-  return finalizeIssue(next, actor, p.jobId)
+  next = finalizeIssue(next, actor, p.jobId)
+  // ไม่ใส่ Location เหมือนฝั่ง LBS (มติ 2026-08-28)
+  return notify(next, {
+    type: 'accessory_issued_to_service', dept: 'service', jobId: p.jobId,
+    message: `📦 ${job.jobNo} เบิกวัสดุ ${idSet.size} รายการให้ Service (${poNos.join(', ')}) · ${range}` +
+      (remain > 0 ? ` (ค้างอีก ${remain} รายการ)` : '') +
+      (jobBecameComplete(db, next, p.jobId) ? ' · ครบทั้งใบแล้ว' : ''),
+  })
 }
 
 /**
@@ -2389,8 +2404,16 @@ export function cancelJob(
 // project ขออนุมัติ 3 action → division (dept 'sales') / admin อนุมัติ = execute ทันที
 // admin ข้ามขั้นอนุมัติได้โดยเรียก createPR/issueJob/cancelJob ตรง (StoreContext คุมสิทธิ์)
 
+// ⚠️⚠️ ป้ายชุดนี้ถูกก็อปไว้ 4 ที่ — แก้ที่เดียวไม่พอ ข้อความจะเพี้ยนกันระหว่างช่องทาง
+//   1) ที่นี่                              → LINE + Audit ของโหมด demo (approve/reject/comment)
+//   2) src/ui/format.ts APPROVAL_TYPE_LABEL → ป้ายบนหน้าเว็บ
+//   3) functions/line-approval-push.js      → การ์ด Flex ในแชท 1:1 ของผู้อนุมัติ (LIVE)
+//   4) SQL: rpc_request_approval / app_exec_approve / rpc_reject_request / rpc_add_approval_comment
+//   เคยพลาดจริง: 0059 เปลี่ยน issue_job เป็น "เบิก LBS ให้ Service" ที่ (2) และ SQL 3 ตัว
+//   แต่ลืม (1) (3) และ rpc_add_approval_comment ⇒ กลุ่ม LINE ขึ้น "อนุมัติเบิกให้ Service"
+//   ขณะที่หน้าเว็บและตัวคำขอเขียน "เบิก LBS ให้ Service" (เจอตอนไล่ตรวจ 2026-08-28 · แก้ที่ 0062)
 const APPROVAL_TYPE_LABEL: Record<ApprovalType, string> = {
-  create_pr: 'ออก PR', issue_job: 'เบิกให้ Service', cancel_job: 'ยกเลิก Job', swap_lbs: 'สลับ LBS',
+  create_pr: 'ออก PR', issue_job: 'เบิก LBS ให้ Service', cancel_job: 'ยกเลิก Job', swap_lbs: 'สลับ LBS',
   reopen_job: 'เปิดงานใหม่',
 }
 

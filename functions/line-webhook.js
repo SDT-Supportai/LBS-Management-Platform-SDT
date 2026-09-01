@@ -242,12 +242,37 @@ export async function onRequestPost(context) {
       }
 
       // สอบถามสถานะ Job: "สถานะ <Job No.>"
+      //
+      // ⚠️ เคยใช้ไม่ได้เลยทุกที่ (แก้ 2026-08-28) — ด่านเดิมเช็ค `src.groupId !== LINE_GROUP_ID`
+      //   · ในกลุ่ม: ถูก `if (inGroup) continue` ด้านบนตัดทิ้งก่อนตั้งแต่ 2026-08-05 (บอทไม่ตอบในกลุ่ม)
+      //   · ในแชท 1:1: src.groupId เป็น undefined เสมอ ⇒ เงื่อนไขจริงตลอด ⇒ ตอบแต่ประโยคปฏิเสธ
+      //   ⇒ โค้ด jobStatusText ที่เขียนไว้ครบ (รองรับ partially_issued/ทีมช่าง/ความคืบหน้า) ไม่เคยถูกเรียก
+      //
+      // กติกาใหม่: ตอบในแชท 1:1 ให้ "คนที่ผูกบัญชี LINE กับระบบแล้วและยังไม่ถูกปิดบัญชี" เท่านั้น
+      //   ปลอดภัยกว่าเปิดในกลุ่ม เพราะผูกตัวตนได้จริงว่าเป็นพนักงานคนไหน (profiles.line_user_id)
+      //   และเป็นด่านเดียวกับที่ปุ่ม ✅ อนุมัติ ใช้อยู่แล้ว
       const m = text.match(/^สถานะ\s+(.+)$/i)
       if (m) {
-        // กันข้อมูลรั่ว: ถ้าตั้ง LINE_GROUP_ID แล้ว ตอบสถานะเฉพาะในกลุ่มที่ลงทะเบียน
-        if (env.LINE_GROUP_ID && src.groupId !== env.LINE_GROUP_ID) {
-          await reply(accessToken, ev.replyToken, 'ขออภัย บอทตอบสถานะงานได้เฉพาะในกลุ่มที่ลงทะเบียนไว้ครับ 🙏')
-          continue
+        if (inGroup) {
+          // มาถึงตรงนี้ได้เฉพาะตอนเปิด LINE_BOT_REPLY_IN_GROUP=1 — คงกติกาเดิม: เฉพาะกลุ่มที่ลงทะเบียน
+          if (env.LINE_GROUP_ID && src.groupId !== env.LINE_GROUP_ID) {
+            await reply(accessToken, ev.replyToken, 'ขออภัย บอทตอบสถานะงานได้เฉพาะในกลุ่มที่ลงทะเบียนไว้ครับ 🙏')
+            continue
+          }
+        } else {
+          const sb = getSb(env)
+          if (!sb) { await reply(accessToken, ev.replyToken, 'ยังไม่ได้เชื่อมต่อฐานข้อมูล'); continue }
+          const { data: me } = await sb.from('profiles')
+            .select('full_name, is_active').eq('line_user_id', src.userId ?? '').maybeSingle()
+          if (!me) {
+            await reply(accessToken, ev.replyToken,
+              '⚠️ บัญชี LINE นี้ยังไม่ได้เชื่อมกับระบบ — เปิดแอป > ตั้งค่า > เชื่อมบัญชี LINE แล้วพิมพ์โค้ด 6 หลักมาที่นี่')
+            continue
+          }
+          if (!me.is_active) {
+            await reply(accessToken, ev.replyToken, '⚠️ บัญชีของคุณถูกปิดการใช้งาน')
+            continue
+          }
         }
         await reply(accessToken, ev.replyToken, await jobStatusText(env, m[1]))
         continue
@@ -257,7 +282,9 @@ export async function onRequestPost(context) {
       // เดิมบรรทัดนี้ตอบทุกที่รวมกลุ่ม = บอทแทรกทุกบทสนทนา (แก้ 2026-08-05)
       if (!inGroup) {
         await reply(accessToken, ev.replyToken,
-          'สวัสดีครับ 115kV LBS Platform 🙏\nพิมพ์ "โค้ด 6 หลัก" จากแอป (ตั้งค่า > เชื่อมบัญชี LINE) เพื่อผูกบัญชี — จากนั้นคำขออนุมัติจะส่งมาที่นี่ กดปุ่มอนุมัติได้เลย\nดูสถานะงานทั้งหมดได้ในเว็บระบบ')
+          'สวัสดีครับ 115kV LBS Platform 🙏\n' +
+          'พิมพ์ "โค้ด 6 หลัก" จากแอป (ตั้งค่า > เชื่อมบัญชี LINE) เพื่อผูกบัญชี — จากนั้นคำขออนุมัติจะส่งมาที่นี่ กดปุ่มอนุมัติได้เลย\n' +
+          'ผูกบัญชีแล้วพิมพ์ "สถานะ <Job No.>" เพื่อดูสถานะงานได้ เช่น สถานะ JOB-2026-0001')
       }
     }
   }

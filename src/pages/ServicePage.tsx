@@ -59,6 +59,15 @@ export default function ServicePage() {
   const [visitEnd, setVisitEnd] = useState('')
 
   const [showIssues, setShowIssues] = useState(false)   // พาเนลรวมปัญหา — เริ่มต้นซ่อน
+  // รายการวัสดุในคอลัมน์ "ของที่เบิก" — เก็บ jobId ที่กางอยู่ · เริ่มต้นซ่อนทุกงาน
+  // เหตุผล: ช่างเปิดหน้านี้เพื่อดูว่า "งานไหนต้องไปวันไหน ทีมใคร" — รายการวัสดุยาวจนดันแถวสูง
+  // แล้วเห็นงานได้น้อยลงต่อจอ · ของจริงจะเปิดดูตอนจะหยิบของขึ้นรถเท่านั้น
+  const [openMat, setOpenMat] = useState<Set<string>>(new Set())
+  const toggleMat = (jobId: string) => setOpenMat(prev => {
+    const next = new Set(prev)
+    if (next.has(jobId)) next.delete(jobId); else next.add(jobId)
+    return next
+  })
   const issues = serviceIssues(db)
   const openIssues = issues.filter(i => !i.jobClosed).length
 
@@ -331,11 +340,33 @@ export default function ServicePage() {
                               `${t.member.firstName} ${t.member.lastName}${t.assignment.isLead ? ' (หัวหน้า)' : ''}`).join(', ')}</div>
                       })()}</td>
                     <td>
-                      <div>LBS {unitsOf(j.id).length} เครื่อง <span className="muted mono">({unitsOf(j.id).map(u => u.serialLvb).join(', ')})</span></div>
-                      {accOf(j.id).map(r => {
-                        const it = itemOf(r.itemId)!
-                        return <div key={r.id} className="muted">{it.name} × {r.qtyRequested} {it.uom}</div>
-                      })}
+                      {(() => {
+                        const units = unitsOf(j.id)
+                        const acc = accOf(j.id)
+                        const matOpen = openMat.has(j.id)
+                        return <>
+                          <div><b>LBS {units.length} เครื่อง</b></div>
+                          {/* Serial คู่ LVB + OM รายเครื่อง — ช่างต้องเทียบกับป้ายบนตัวเครื่องหน้างาน
+                              ทั้ง 2 เลข เดิมโชว์แค่ LVB ต่อกันเป็นพืดจึงเทียบไม่ได้ (2026-08-28) */}
+                          {units.map(u => (
+                            <div key={u.id} className="mono" style={{ fontSize: 12, lineHeight: 1.5 }}>
+                              {u.serialLvb || '-'}
+                              <span className="muted mono"> / {u.serialOm || '-'}</span>
+                            </div>
+                          ))}
+                          {acc.length > 0 && <>
+                            <button className="small" style={{ marginTop: 6 }}
+                              onClick={() => toggleMat(j.id)}
+                              aria-expanded={matOpen}>
+                              {matOpen ? 'ซ่อนรายการวัสดุ' : `วัสดุ ${acc.length} รายการ`}
+                            </button>
+                            {matOpen && acc.map(r => {
+                              const it = itemOf(r.itemId)!
+                              return <div key={r.id} className="muted">{it.name} × {r.qtyRequested} {it.uom}</div>
+                            })}
+                          </>}
+                        </>
+                      })()}
                     </td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       <span className={`badge ${s.canClose ? 'green' : s.installed > 0 ? 'blue' : 'neutral'}`}>

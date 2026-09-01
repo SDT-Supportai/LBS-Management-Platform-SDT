@@ -7,8 +7,12 @@ import { createClient } from '@supabase/supabase-js'
 
 // ⚠️ ต้องครบทุก type ใน approval_requests_req_type_check — เพิ่ม type ใหม่ที่ 0016/0028/0041
 //    ต้องมาเติมที่นี่ด้วย ไม่งั้นการ์ดในมือถือบอกประเภทผิด
+//    เคยพลาดจริงอีกแบบ: 0059 เปลี่ยน issue_job เป็น "เบิก LBS ให้ Service" (เพราะ Accessory
+//    ที่รับของแล้ว Project เบิกเองได้ ไม่ผ่านคำขอนี้แล้ว) แต่ไฟล์นี้ไม่ได้แก้ตาม ⇒ การ์ดในมือถือ
+//    เขียน "เบิกให้ Service" ขณะที่หน้าเว็บและข้อความในกลุ่มเขียน "เบิก LBS ให้ Service"
+//    ป้ายชุดนี้ถูกก็อปไว้ 4 ที่ — ดูรายการครบที่ src/data/logic.ts เหนือ APPROVAL_TYPE_LABEL
 const TYPE_LABEL = {
-  create_pr: 'ออก PR', issue_job: 'เบิกให้ Service', cancel_job: 'ยกเลิก Job',
+  create_pr: 'ออก PR', issue_job: 'เบิก LBS ให้ Service', cancel_job: 'ยกเลิก Job',
   swap_lbs: 'สลับ LBS', reopen_job: 'เปิดงานใหม่',
 }
 
@@ -20,7 +24,10 @@ function summarize(type, payload) {
   if (type === 'issue_job') {
     const s = payload.start_date, e = payload.end_date
     const range = s === e ? s : `${s} – ${e}`
-    return `ติดตั้ง ${range}${payload.location ? ' · ' + payload.location : ''}`
+    // จำนวนเครื่องบอกได้เฉพาะตอนผู้ขอเลือกเครื่องเอง — unit_ids ว่าง = "ทุกเครื่องที่ Ready
+    // ณ ตอนอนุมัติ" ซึ่งการ์ดคำนวณเองไม่ได้ (ต้องอ่าน ETA รายเครื่อง ณ เวลานั้น) จึงไม่เดาตัวเลข
+    const n = (payload.unit_ids ?? []).length
+    return `${n > 0 ? `LBS ${n} เครื่อง · ` : ''}ติดตั้ง ${range}${payload.location ? ' · ' + payload.location : ''}`
   }
   if (type === 'swap_lbs') return `สลับ LBS · เหตุผล: ${payload.reason ?? '-'}`
   if (type === 'reopen_job') return `เปิดงานใหม่ · เหตุผล: ${payload.reason ?? '-'}`

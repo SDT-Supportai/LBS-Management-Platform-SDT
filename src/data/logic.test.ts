@@ -386,11 +386,39 @@ describe('เบิกแยกส่วน — เดินสถานะจ�
   it('เบิกวัสดุตามด้วย LBS → ปิดใบเป็น Issued เอง', () => {
     let d = issueJobAccessory(base(), actor, { jobId: 'j1', ...plan })
     expect(deriveJobStatus(d, d.jobs[0])).toBe('partially_issued')
+    const beforeLbs = d.notifications.length
     d = issueJobLbs(d, actor, { jobId: 'j1' })            // ไม่ต้องกรอกนัดซ้ำ
     expect(d.jobs[0].terminalStatus).toBe('issued')
     expect(d.jobs[0].issuedAt).toBeTruthy()
     expect(d.accessoryRequests[0].issuedToServiceAt).toBeTruthy()
-    expect(d.notifications.some(n => n.type === 'job_issued')).toBe(true)
+    // 2026-08-28: ก้าวที่ทำให้ใบครบต้องได้ **ข้อความเดียว** ที่มีหาง "ครบทั้งใบแล้ว"
+    // เดิมยิง 2 ใบติดกันในกลุ่ม (lbs_issued_to_service + job_issued) ที่พูดเรื่องเดียวกัน
+    const fromLbs = d.notifications.slice(beforeLbs)
+    expect(fromLbs).toHaveLength(1)
+    expect(fromLbs[0].type).toBe('lbs_issued_to_service')
+    expect(fromLbs[0].message).toContain('ครบทั้งใบแล้ว')
+    expect(d.notifications.some(n => n.type === 'job_issued')).toBe(false)
+  })
+  // Location ยาวจนดันข้อความในกลุ่มตกบรรทัด กลบส่วนที่ต้องอ่านจริง (Job No./จำนวน/วันที่)
+  it('ข้อความเบิกให้ Service ต้องไม่มี Location (มติ 2026-08-28)', () => {
+    let d = issueJobAccessory(base(), actor, { jobId: 'j1', ...plan })
+    d = issueJobLbs(d, actor, { jobId: 'j1' })
+    const msgs = d.notifications
+      .filter(n => n.type === 'accessory_issued_to_service' || n.type === 'lbs_issued_to_service')
+      .map(n => n.message)
+    expect(msgs).toHaveLength(2)
+    for (const m of msgs) expect(m).not.toContain(plan.location)
+    // แต่ยังต้องมีวันนัดติดตั้ง — เป็นข้อมูลที่ทีมช่างใช้วางแผนจริง
+    expect(msgs.every(m => m.includes('2026-07-01'))).toBe(true)
+  })
+  // เบิกแยกกันคนละครั้ง = แจ้งตามการเบิก ครั้งละใบ (ข้อ 2 ของมติ 2026-08-28)
+  it('เบิกวัสดุอย่างเดียว ยังไม่ครบใบ → 1 ข้อความ ไม่มีหาง "ครบทั้งใบแล้ว"', () => {
+    const before = base()
+    const d = issueJobAccessory(before, actor, { jobId: 'j1', ...plan })
+    const fresh = d.notifications.slice(before.notifications.length)
+    expect(fresh).toHaveLength(1)
+    expect(fresh[0].type).toBe('accessory_issued_to_service')
+    expect(fresh[0].message).not.toContain('ครบทั้งใบแล้ว')
   })
 
   it('เบิก LBS ที่ ETA ยังไม่ถึงไม่ได้ — กันทีมออกหน้างานเสียเที่ยว', () => {
