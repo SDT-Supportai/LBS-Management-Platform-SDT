@@ -95,6 +95,7 @@ export default function JobDetailPage() {
   // Manage (admin) ข้ามขั้นอนุมัติได้ — project ต้องส่งคำขอให้ Division ก่อน (0016)
   const isManage = can(user, 'master.manage')
   const canCleanup = can(user, 'accessory.cleanup')   // Project/Division/Manage ลบรายการวัสดุที่ยกเลิก
+  const canEpicor = can(user, 'epicor.issue')         // Purchasing/Manage ติ๊กทำเบิก-Epicor (0064)
   const locked = !job || job.terminalStatus !== null
   // ฝั่งจัดซื้อปลดล็อกตอน issued ได้ (จัดซื้อเพิ่มเติมหลังเบิก 0037) — ปิดเมื่อปิดงาน/ยกเลิก
   const procureLocked = !job || job.terminalStatus === 'installed' || job.terminalStatus === 'cancelled'
@@ -233,11 +234,15 @@ export default function JobDetailPage() {
         'Phase': phase,
         'แหล่ง': r.source === 'central_stock' ? 'คลังคงเหลือ' : 'Purchasing',
         'สถานะ': accStatusLabel(r),
+        // 0064 — ไฟล์นี้คือตัวที่เอาไปกระทบยอดกับ Epicor จึงต้องมี 3 ช่องนี้ติดไปด้วย
+        'ทำเบิก-Epicor': r.epicorIssuedAt ? 'ทำแล้ว' : '',
+        'เลขที่เอกสาร Epicor': r.epicorDocNo ?? '',
+        'วันที่ทำเบิก': r.epicorIssuedAt ? r.epicorIssuedAt.slice(0, 10) : '',
         'PR / PO': [pr?.prNo, po?.poNo].filter(Boolean).join(' / '),
       }
     })
     const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ 'รหัส Epicor': '', 'ชื่ออุปกรณ์': '(ยังไม่มีรายการวัสดุ)' }])
-    ws['!cols'] = [{ wch: 14 }, { wch: 24 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 8 }, { wch: 12 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 18 }]
+    ws['!cols'] = [{ wch: 14 }, { wch: 24 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 8 }, { wch: 12 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 14 }, { wch: 20 }, { wch: 14 }, { wch: 18 }]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'Purchase Orders')
     XLSX.writeFile(wb, `${job.jobNo.replace(/[\\/:*?"<>|]/g, '-')}-PO-${new Date().toISOString().slice(0, 10)}.xlsx`)
@@ -781,9 +786,9 @@ export default function JobDetailPage() {
         </div>
         {poOpen && <div className="table-scroll">
           <table>
-            <thead><tr><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>จำนวน</th><th>ราคา/หน่วย</th><th>มูลค่า</th><th>Phase Budget</th><th>แหล่ง</th><th>สถานะ</th><th>PR / PO</th><th></th></tr></thead>
+            <thead><tr><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>จำนวน</th><th>ราคา/หน่วย</th><th>มูลค่า</th><th>Phase Budget</th><th>แหล่ง</th><th>สถานะ</th><th>ทำเบิก-Epicor</th><th>PR / PO</th><th></th></tr></thead>
             <tbody>
-              {accReqs.length === 0 && <tr><td colSpan={10}><div className="empty">ยังไม่มีรายการวัสดุ</div></td></tr>}
+              {accReqs.length === 0 && <tr><td colSpan={11}><div className="empty">ยังไม่มีรายการวัสดุ</div></td></tr>}
               {accReqs.map(r => {
                 const item = itemOf(r.itemId)!
                 const pr = db.prs.find(p => p.id === r.prId)
@@ -829,7 +834,46 @@ export default function JobDetailPage() {
                         return blk ? <div className="muted">⏳ {blk}</div> : null
                       })()}
                     </td>
-                    <td className="mono">{[pr?.prNo, po?.poNo].filter(Boolean).join(' / ') || '-'}</td>
+                    {/* ทำเบิก-Epicor (0064) — ธงกระทบยอดกับ ERP ไม่ใช่สถานะของ
+                        ขึ้นปุ่มเฉพาะตอนของอยู่กับ Job แล้ว (เบิกคลัง รอนำใช้ / รับของแล้ว รอนำใช้)
+                        และยังกดได้แม้เบิกให้ Service ไปแล้ว เพราะเอกสารมักตามหลังของจริง */}
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {r.epicorIssuedAt ? (
+                        <>
+                          <span className="badge green">✅ ทำเบิกแล้ว</span>
+                          {r.epicorDocNo && <div className="mono" style={{ fontSize: 12 }}>{r.epicorDocNo}</div>}
+                          <div className="muted">{fmtDate(r.epicorIssuedAt)} · {r.epicorIssuedBy ? userOf(r.epicorIssuedBy) : "-"}</div>
+                          {canEpicor && (
+                            <button className="small danger" style={{ marginTop: 4 }} onClick={async () => {
+                              const v = await askPrompt({
+                                title: `ยกเลิกธงทำเบิก-Epicor — ${item.name}`,
+                                description: <>ใช้เมื่อกดผิดบรรทัดหรือเลขเอกสารผิด · <b>ธงนี้ไม่กระทบสถานะของ</b> — ยกเลิกแล้วปุ่ม Done จะกลับมา</>,
+                                fields: [{ key: 'reason', label: 'เหตุผล', type: 'textarea', required: true,
+                                  placeholder: 'เช่น กดผิดบรรทัด / เลขเอกสารผิด' }],
+                                confirmLabel: 'ยกเลิกธง',
+                              })
+                              if (!v) return
+                              tryAction(() => act.undoEpicorIssued({ requestId: r.id, reason: v.reason }), 'ยกเลิกธงทำเบิก-Epicor แล้ว')
+                            }}>ยกเลิก</button>
+                          )}
+                        </>
+                      ) : canEpicor && (r.status === 'issued' || r.status === 'received') ? (
+                        <button className="small primary" onClick={async () => {
+                          const v = await askPrompt({
+                            title: `ทำเบิก-Epicor — ${item.name}`,
+                            description: <>ยืนยันว่าตัดใบเบิกใน Epicor สำหรับ <b>{item.name} {r.qtyRequested} {item.uom}</b> ของ {job.jobNo} เรียบร้อยแล้ว · <b>ธงนี้ไม่กระทบสถานะของและไม่บล็อกการเบิกให้ Service</b></>,
+                            fields: [{ key: 'docNo', label: 'เลขที่เอกสาร Epicor', value: '',
+                              placeholder: 'เช่น ISS-2026-00123',
+                              hint: 'เว้นว่างได้ — แต่ถ้ากรอกไว้จะตามกลับไปหาใบเบิกใน Epicor ได้ทันทีตอนกระทบยอด' }],
+                            confirmLabel: 'Done',
+                          })
+                          if (!v) return
+                          tryAction(() => act.markEpicorIssued({ requestId: r.id, docNo: v.docNo || undefined }), 'บันทึกทำเบิก-Epicor แล้ว')
+                        }}>Done</button>
+                      ) : (
+                        <span className="muted">-</span>
+                      )}
+                    </td>                    <td className="mono">{[pr?.prNo, po?.poNo].filter(Boolean).join(' / ') || '-'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       {canManage && !procureLocked && active && (
                         <button className="small" onClick={async () => {

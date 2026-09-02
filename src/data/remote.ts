@@ -146,6 +146,9 @@ function mapAccReq(r: Row): AccessoryRequest {
     qtyTransferred: r.qty_transferred != null ? Number(r.qty_transferred) : undefined,
     issuedToServiceAt: r.issued_to_service_at ?? undefined,       // 0059
     issuedToServiceBy: r.issued_to_service_by ?? undefined,
+    epicorIssuedAt: r.epicor_issued_at ?? undefined,             // 0064 ทำเบิก-Epicor
+    epicorIssuedBy: r.epicor_issued_by ?? undefined,
+    epicorDocNo: r.epicor_doc_no ?? undefined,
     unitPrice: r.unit_price != null ? Number(r.unit_price) : undefined,
     phaseBudget: r.phase_budget ?? undefined,
     source: r.source, status: r.status, prId: r.pr_id, poId: r.po_id ?? null,
@@ -524,6 +527,11 @@ export function remoteActions(sb: SupabaseClient) {
     // แก้ Lot No. อย่างเดียว ไม่แตะยอด (0055) — เว้นว่าง = ล้าง Lot No.
     setStockLot: (p: { itemId: string; lotNo?: string }) =>
       rpc(sb, 'rpc_set_stock_lot', { p_item_id: p.itemId, p_lot_no: p.lotNo ?? null }),
+    // ทำเบิก-Epicor (0064) — Purchasing + Manage
+    markEpicorIssued: (p: { requestId: string; docNo?: string }) =>
+      rpc(sb, 'rpc_mark_epicor_issued', { p_request_id: p.requestId, p_doc_no: p.docNo ?? null }),
+    undoEpicorIssued: (p: { requestId: string; reason: string }) =>
+      rpc(sb, 'rpc_undo_epicor_issued', { p_request_id: p.requestId, p_reason: p.reason }),
     // Standard Drawing / BOM (0045) — แก้ได้ Project/Division/Manage
     createStdDrawing: (p: { title: string; drawingNo?: string; description?: string; fileUrl?: string; fileName?: string }) =>
       rpc(sb, 'rpc_create_std_drawing', {

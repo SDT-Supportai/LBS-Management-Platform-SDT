@@ -207,6 +207,12 @@ export interface AccessoryRequest {
   // ⚠️ คนละเรื่องกับ status = 'issued' ที่หมายถึง "เบิกจากคลังคงเหลือเข้า Job แล้ว"
   issuedToServiceAt?: string
   issuedToServiceBy?: string
+  // ทำใบเบิกใน Epicor แล้วเมื่อ / โดยใคร / เลขที่เอกสาร (0064)
+  // ⚠️ เป็น "ธงกระทบยอดกับ ERP" ล้วน ๆ — ไม่แตะสถานะของ กระบวนการเบิกให้ Service เดินต่อได้
+  //    โดยไม่ต้องรอ (มติ 2026-09-01) · docNo เว้นว่างได้ แต่ถ้ากรอกจะตามกลับไป Epicor ได้
+  epicorIssuedAt?: string
+  epicorIssuedBy?: string
+  epicorDocNo?: string
   prId: string | null
   poId?: string | null         // PO ที่สั่ง line นี้ (1 PR → หลาย PO, 0022)
   requestedBy: string

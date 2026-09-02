@@ -2755,6 +2755,59 @@ export function setStockLot(
     `แก้ Lot No. คลังคงเหลือ ${item.name}: ${row.lotNo ?? '(ไม่ระบุ)'} → ${lot ?? '(ไม่ระบุ)'}`)
 }
 
+// ---------------- ทำเบิก-Epicor (0064) ----------------
+/**
+ * ธงกระทบยอดกับ Epicor — Purchasing ตัดใบเบิกใน ERP เสร็จแล้วมาติ๊กที่บรรทัดนี้
+ *
+ * ทำไมต้องมี: ของถึงมือ Job แล้ว (เบิกคลัง / รับของจาก PO) แต่ Epicor ยังไม่รู้จนกว่า
+ * จะมีคนไปตัดใบเบิกให้ ⇒ ยอดคงคลังใน ERP ค้างสูงเกินจริง · คอลัมน์นี้ตอบว่า
+ * "บรรทัดไหนกระทบยอดแล้ว / ด้วยเอกสารใบไหน" โดยไม่ต้องไล่ถามคน
+ *
+ * ⚠️ เป็นธงล้วน ๆ — **ไม่แตะ status และไม่บล็อกการเบิกให้ Service** (มติ 2026-09-01)
+ *    งานหน้าไซต์ไม่ควรรองานเอกสาร · และยังกดได้แม้เบิกให้ Service ไปแล้ว
+ *    เพราะเอกสารมักตามหลังของจริง
+ */
+export function markEpicorIssued(
+  db: DB, actor: User, p: { requestId: string; docNo?: string },
+): DB {
+  const r = db.accessoryRequests.find(x => x.id === p.requestId)
+  if (!r) throw new Error('ไม่พบรายการวัสดุ')
+  // ของต้องอยู่กับ Job แล้วเท่านั้น — ยังไม่รับของก็ยังไม่มีอะไรให้ตัดยอดใน Epicor
+  if (r.status !== 'issued' && r.status !== 'received')
+    throw new Error('ทำเบิก-Epicor ได้เฉพาะรายการที่ของอยู่กับ Job แล้ว (เบิกคลัง รอนำใช้ / รับของแล้ว รอนำใช้)')
+  if (r.epicorIssuedAt) throw new Error('รายการนี้ทำเบิก-Epicor ไปแล้ว')
+  const job = db.jobs.find(j => j.id === r.jobId)
+  const item = db.items.find(i => i.id === r.itemId)
+  const docNo = p.docNo?.trim() || undefined
+  const next: DB = {
+    ...db,
+    accessoryRequests: db.accessoryRequests.map(x => x.id === p.requestId
+      ? { ...x, epicorIssuedAt: now(), epicorIssuedBy: actor.id, epicorDocNo: docNo } : x),
+  }
+  return audit(next, actor, 'accessory_request', p.requestId, 'epicor_issued',
+    `ทำเบิก-Epicor ${item?.name ?? '-'} ${r.qtyRequested} ${item?.uom ?? ''} ของ ${job?.jobNo ?? '-'}` +
+    (docNo ? ` · เอกสาร ${docNo}` : ' · ไม่ระบุเลขเอกสาร'))
+}
+
+/** ยกเลิกธง (กดผิดบรรทัด/เลขเอกสารผิด) — ต้องระบุเหตุผลลง audit เสมอ */
+export function undoEpicorIssued(
+  db: DB, actor: User, p: { requestId: string; reason: string },
+): DB {
+  const r = db.accessoryRequests.find(x => x.id === p.requestId)
+  if (!r) throw new Error('ไม่พบรายการวัสดุ')
+  if (!r.epicorIssuedAt) throw new Error('รายการนี้ยังไม่ได้ทำเบิก-Epicor')
+  if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผลที่ยกเลิก (เพื่อ audit)')
+  const job = db.jobs.find(j => j.id === r.jobId)
+  const item = db.items.find(i => i.id === r.itemId)
+  const next: DB = {
+    ...db,
+    accessoryRequests: db.accessoryRequests.map(x => x.id === p.requestId
+      ? { ...x, epicorIssuedAt: undefined, epicorIssuedBy: undefined, epicorDocNo: undefined } : x),
+  }
+  return audit(next, actor, 'accessory_request', p.requestId, 'epicor_issued_undo',
+    `ยกเลิกธงทำเบิก-Epicor ${item?.name ?? '-'} ของ ${job?.jobNo ?? '-'}` +
+    (r.epicorDocNo ? ` (เดิม ${r.epicorDocNo})` : '') + `: ${p.reason.trim()}`)
+}
 // ---------------- Master Data: Users ----------------
 
 export function createUser(

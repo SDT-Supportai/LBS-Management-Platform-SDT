@@ -10,6 +10,7 @@ import {
   unitEta, unitLeadDays, normalizeLeadDays, leadDaysToStore,
   ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX,
   addDaysIso, daysBetweenIso, nextNo,
+  markEpicorIssued, undoEpicorIssued,
 } from './logic'
 
 // =============================================================================
@@ -740,5 +741,65 @@ describe('สถานะวัสดุ — คอลัมน์เดีย�
     const poWaiting = { id: 'po2', poNo: 'PO-002', prId: 'pr1', jobId: 'j1', supplierName: 'ซัพ A', expectedDate: '2026-06-01', status: 'issued' as const, createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' }
     const d = db({ pos: [poWaiting], accessoryRequests: [req({ status: 'received', poId: 'po2' })] })
     expect(accIssueBlockReason(d, d.accessoryRequests[0])).toContain('PO-002')
+  })
+})
+
+// =============================================================================
+// ทำเบิก-Epicor (0064) — ธงกระทบยอดกับ ERP
+//
+// กฎที่ต้องล็อก:
+//   1) กดได้เฉพาะบรรทัดที่ของอยู่กับ Job แล้ว (issued = เบิกคลัง · received = รับของครบ)
+//   2) ธงนี้ **ไม่แตะ status และไม่แตะ issuedToServiceAt** — ถ้าหลุดไปแตะ จะกลายเป็น
+//      ด่านบังคับที่ทำให้ทีมช่างออกหน้างานไม่ได้เพราะรอเอกสาร (มติ 2026-09-01: ไม่บล็อก)
+//   3) ยกเลิกธงต้องมีเหตุผลเสมอ (ไม่งั้น audit ตอบไม่ได้ว่าทำไมธงหาย)
+// =============================================================================
+describe('ทำเบิก-Epicor (0064)', () => {
+  const actor = { id: 'u9', email: 'pur@x.co', password: '', fullName: 'มาลี', department: 'purchasing' as const, isActive: true }
+  const withReq = (over: Partial<AccessoryRequest>) =>
+    db({ jobs: [job({ id: 'j1', jobNo: 'JOB-001' })], accessoryRequests: [req({ id: 'r1', ...over })] })
+
+  it('กดได้เมื่อ "รับของแล้ว รอนำใช้" — เก็บเลขเอกสาร + คนกด', () => {
+    const d = markEpicorIssued(withReq({ status: 'received' }), actor, { requestId: 'r1', docNo: ' ISS-2026-001 ' })
+    expect(d.accessoryRequests[0].epicorIssuedAt).toBeTruthy()
+    expect(d.accessoryRequests[0].epicorDocNo).toBe('ISS-2026-001')   // trim ให้
+    expect(d.accessoryRequests[0].epicorIssuedBy).toBe('u9')
+  })
+
+  it('กดได้เมื่อ "เบิกคลัง รอนำใช้" · เลขเอกสารเว้นว่างได้', () => {
+    const d = markEpicorIssued(withReq({ status: 'issued', source: 'central_stock' }), actor, { requestId: 'r1' })
+    expect(d.accessoryRequests[0].epicorIssuedAt).toBeTruthy()
+    expect(d.accessoryRequests[0].epicorDocNo).toBeUndefined()
+  })
+
+  it('ขั้นที่ของยังไม่ถึง Job กดไม่ได้', () => {
+    for (const s of ['pending', 'pr_sent', 'po_ordered'] as const)
+      expect(() => markEpicorIssued(withReq({ status: s }), actor, { requestId: 'r1' })).toThrow(/ของอยู่กับ Job แล้ว/)
+  })
+
+  it('กดซ้ำไม่ได้', () => {
+    const d = markEpicorIssued(withReq({ status: 'received' }), actor, { requestId: 'r1' })
+    expect(() => markEpicorIssued(d, actor, { requestId: 'r1' })).toThrow(/ไปแล้ว/)
+  })
+
+  // ข้อ 2 ของโจทย์ — ธงต้องไม่กลายเป็นด่านบังคับ
+  it('ไม่แตะ status และไม่แตะ issuedToServiceAt', () => {
+    const before = withReq({ status: 'received', issuedToServiceAt: '2026-07-01T00:00:00.000Z' })
+    const d = markEpicorIssued(before, actor, { requestId: 'r1', docNo: 'X' })
+    expect(d.accessoryRequests[0].status).toBe('received')
+    expect(d.accessoryRequests[0].issuedToServiceAt).toBe('2026-07-01T00:00:00.000Z')
+  })
+
+  it('ยกเลิกธงได้ แต่ต้องมีเหตุผล', () => {
+    const d = markEpicorIssued(withReq({ status: 'received' }), actor, { requestId: 'r1', docNo: 'X' })
+    expect(() => undoEpicorIssued(d, actor, { requestId: 'r1', reason: '  ' })).toThrow(/เหตุผล/)
+    const u = undoEpicorIssued(d, actor, { requestId: 'r1', reason: 'กดผิดบรรทัด' })
+    expect(u.accessoryRequests[0].epicorIssuedAt).toBeUndefined()
+    expect(u.accessoryRequests[0].epicorDocNo).toBeUndefined()
+    expect(u.auditLogs[0].detail).toContain('กดผิดบรรทัด')   // audit ใหม่ถูก prepend
+  })
+
+  it('ยังไม่ได้ทำเบิก จะยกเลิกไม่ได้', () => {
+    expect(() => undoEpicorIssued(withReq({ status: 'received' }), actor, { requestId: 'r1', reason: 'x' }))
+      .toThrow(/ยังไม่ได้ทำเบิก/)
   })
 })

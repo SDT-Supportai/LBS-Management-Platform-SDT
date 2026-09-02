@@ -68,6 +68,8 @@ export const PERMISSIONS: Record<string, Department[]> = {
   // ยอดคลังคงเหลือ accessory (ปรับยอด · Lot No. · แถวใน Import Excel ที่แก้ยอด) — Division + Purchasing
   // แยกจาก stock.manage ที่ครอบ Project Stock / LBS รายเครื่อง ซึ่งยังเป็นของ Division เท่านั้น
   'accessoryStock.manage': ['sales', 'purchasing', 'admin'],
+  // ทำเบิก-Epicor (0064) — ธงกระทบยอดกับ ERP · คนที่ตัดใบเบิกใน Epicor จริงคือ Purchasing
+  'epicor.issue': ['purchasing', 'admin'],
   'approval.decide': ['sales', 'admin'],   // Division อนุมัติ/ตีกลับคำขอจาก project
   // ความเห็นบนคำขออนุมัติ (0050) — VIP (ผู้บริหาร) ฝากความเห็นให้ Division · Division ตอบกลับได้
   // VIP ไม่มีสิทธิ์อื่นเลย = ดูได้ทุกหน้า แต่แก้ข้อมูลไม่ได้ (ปุ่มทุกปุ่มซ่อนเองผ่าน can())
@@ -230,6 +232,8 @@ export interface StoreActions {
   deleteItem: (p: Parameters<typeof L.deleteItem>[2]) => MaybePromise
   adjustAccessoryStock: (p: Parameters<typeof L.adjustAccessoryStock>[2]) => MaybePromise
   setStockLot: (p: Parameters<typeof L.setStockLot>[2]) => MaybePromise
+  markEpicorIssued: (p: Parameters<typeof L.markEpicorIssued>[2]) => MaybePromise
+  undoEpicorIssued: (p: Parameters<typeof L.undoEpicorIssued>[2]) => MaybePromise
   transferJobMaterialToStock: (p: Parameters<typeof L.transferJobMaterialToStock>[2]) => MaybePromise
   addJobPayment: (p: Parameters<typeof L.addJobPayment>[2]) => MaybePromise
   updateJobPayment: (p: Parameters<typeof L.updateJobPayment>[2]) => MaybePromise
@@ -423,6 +427,9 @@ function DemoProvider({ children }: { children: ReactNode }) {
         deleteItem: run('material.manage', L.deleteItem),
         adjustAccessoryStock: run('accessoryStock.manage', L.adjustAccessoryStock),
         setStockLot: run('accessoryStock.manage', L.setStockLot),
+        // ทำเบิก-Epicor (0064) — Purchasing + Manage
+        markEpicorIssued: run('epicor.issue', L.markEpicorIssued),
+        undoEpicorIssued: run('epicor.issue', L.undoEpicorIssued),
         // โอนวัสดุเหลือจาก Job เข้าคลังคงเหลือ — Project เป็นเจ้าของวัสดุใน Job
         transferJobMaterialToStock: run('job.manage', L.transferJobMaterialToStock),
         // Payment — Project (เจ้าของงาน ตาม 0042) + Manage
