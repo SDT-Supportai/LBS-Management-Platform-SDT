@@ -191,6 +191,9 @@ export type AccReqStatus =
   | 'returned'
   | 'cancelled'
 
+/** ประเภท transaction ที่ใช้ตัดยอดใน Epicor (0065) — ป้ายอ่านได้อยู่ที่ EPICOR_TXN_LABEL ใน logic.ts */
+export type EpicorTxnType = 'cust_ship' | 'issue_mis'
+
 export interface AccessoryRequest {
   id: string
   jobId: string
@@ -210,6 +213,11 @@ export interface AccessoryRequest {
   // ทำใบเบิกใน Epicor แล้วเมื่อ / โดยใคร / เลขที่เอกสาร (0064)
   // ⚠️ เป็น "ธงกระทบยอดกับ ERP" ล้วน ๆ — ไม่แตะสถานะของ กระบวนการเบิกให้ Service เดินต่อได้
   //    โดยไม่ต้องรอ (มติ 2026-09-01) · docNo เว้นว่างได้ แต่ถ้ากรอกจะตามกลับไป Epicor ได้
+  // ประเภท transaction ที่ใช้ตัดใน Epicor (0065) — บังคับเลือกตอนกด Done
+  //   cust_ship = Cust-Ship · ของที่ส่งลูกค้าแล้วออก Invoice (ฝั่งรายได้)
+  //   issue_mis = Issue-Mis · ของที่เบิกออกไปใช้ ไม่ได้ออก Invoice (ฝั่งต้นทุน)
+  // ว่าง = แถวที่กด Done ไว้ก่อนมี dropdown (0064) — ปล่อยไว้ตามเดิม ไม่ backfill
+  epicorTxnType?: EpicorTxnType
   epicorIssuedAt?: string
   epicorIssuedBy?: string
   epicorDocNo?: string

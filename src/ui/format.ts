@@ -1,4 +1,5 @@
-import type { JobStatus, Department, AccReqStatus, AccessoryRequest, CostCategoryKey } from '../types'
+import type { JobStatus, Department, AccReqStatus, AccessoryRequest, CostCategoryKey, EpicorTxnType } from '../types'
+import { EPICOR_TXN_LABEL } from '../data/logic'
 
 // 7 หมวดต้นทุน Project Budget (0021) — เรียงตามลำดับที่แสดง
 // fromPR = true → actual มาจากมูลค่าวัสดุ PR/PO ที่ตัดเข้าหมวดนี้ (เลือกตอนเพิ่มวัสดุ)
@@ -82,6 +83,15 @@ export const APPROVAL_STATUS_LABEL: Record<string, string> = {
 //    เพราะคอลัมน์ "เบิกให้ Service" ที่เคยมาขยายความถูกยุบรวมเข้ามาที่คอลัมน์นี้แล้ว
 //    2 ขั้นที่เป็น "ของอยู่กับ Job พร้อมส่งออกหน้างาน" ตั้งชื่อคู่ขนานกันตั้งใจ
 //    (เบิกคลัง รอนำใช้ / รับของแล้ว รอนำใช้) — คนกวาดตาเห็น "รอนำใช้" ก็รู้ทันทีว่าเบิกได้
+/**
+ * ประเภท transaction ที่ใช้ตัดยอดใน Epicor (0065) — เลือกตอนกด Done ที่คอลัมน์ "ทำเบิก-Epicor"
+ * แยก 2 ทางเพราะกระทบยอดคนละฝั่ง: Cust-Ship ไปฝั่งรายได้ (มี Invoice) · Issue-Mis ไปฝั่งต้นทุน
+ * ⚠️ ป้ายต้องตรงกับชื่อ transaction ใน Epicor เป๊ะ ๆ — คนกระทบยอดค้นด้วยคำนี้
+ */
+export const EPICOR_TXN: Record<EpicorTxnType, { label: string; desc: string; cls: string }> = {
+  cust_ship: { label: EPICOR_TXN_LABEL.cust_ship, desc: 'Item ที่ออก Invoice', cls: 'blue' },
+  issue_mis: { label: EPICOR_TXN_LABEL.issue_mis, desc: 'Item ที่เบิกออก', cls: 'amber' },
+}
 export const ACC_STATUS_LABEL: Record<AccReqStatus, string> = {
   pending: 'รอออก PR',
   issued: 'เบิกคลัง รอนำใช้',          // มาจากคลังคงเหลือ · ของอยู่กับ Job แล้ว

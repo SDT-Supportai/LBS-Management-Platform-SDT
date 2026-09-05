@@ -3,8 +3,8 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
 import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, parseLatLng, fmtLatLng, PAYMENT_TYPES } from '../data/logic'
 import { BudgetFields, CoordInput, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, sitesToApi, sitesFromJob, type CostForm, type InstallSite } from '../ui/components'
-import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
-import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType } from '../types'
+import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, EPICOR_TXN, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
+import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType, EpicorTxnType } from '../types'
 
 // ฟอร์มงวดเงิน (0044) — id = null คือเพิ่มงวดใหม่
 interface PayForm {
@@ -236,13 +236,14 @@ export default function JobDetailPage() {
         'สถานะ': accStatusLabel(r),
         // 0064 — ไฟล์นี้คือตัวที่เอาไปกระทบยอดกับ Epicor จึงต้องมี 3 ช่องนี้ติดไปด้วย
         'ทำเบิก-Epicor': r.epicorIssuedAt ? 'ทำแล้ว' : '',
+        'ประเภท Epicor': r.epicorTxnType ? EPICOR_TXN[r.epicorTxnType].label : '',
         'เลขที่เอกสาร Epicor': r.epicorDocNo ?? '',
         'วันที่ทำเบิก': r.epicorIssuedAt ? r.epicorIssuedAt.slice(0, 10) : '',
         'PR / PO': [pr?.prNo, po?.poNo].filter(Boolean).join(' / '),
       }
     })
     const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ 'รหัส Epicor': '', 'ชื่ออุปกรณ์': '(ยังไม่มีรายการวัสดุ)' }])
-    ws['!cols'] = [{ wch: 14 }, { wch: 24 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 8 }, { wch: 12 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 14 }, { wch: 20 }, { wch: 14 }, { wch: 18 }]
+    ws['!cols'] = [{ wch: 14 }, { wch: 24 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 8 }, { wch: 12 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 14 }, { wch: 13 }, { wch: 20 }, { wch: 14 }, { wch: 18 }]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'Purchase Orders')
     XLSX.writeFile(wb, `${job.jobNo.replace(/[\\/:*?"<>|]/g, '-')}-PO-${new Date().toISOString().slice(0, 10)}.xlsx`)
@@ -841,6 +842,9 @@ export default function JobDetailPage() {
                       {r.epicorIssuedAt ? (
                         <>
                           <span className="badge green">✅ ทำเบิกแล้ว</span>
+                          {r.epicorTxnType
+                            ? <div><span className={`badge ${EPICOR_TXN[r.epicorTxnType].cls}`}>{EPICOR_TXN[r.epicorTxnType].label}</span></div>
+                            : <div className="muted">ไม่ระบุประเภท</div>}
                           {r.epicorDocNo && <div className="mono" style={{ fontSize: 12 }}>{r.epicorDocNo}</div>}
                           <div className="muted">{fmtDate(r.epicorIssuedAt)} · {r.epicorIssuedBy ? userOf(r.epicorIssuedBy) : "-"}</div>
                           {canEpicor && (
@@ -862,13 +866,20 @@ export default function JobDetailPage() {
                           const v = await askPrompt({
                             title: `ทำเบิก-Epicor — ${item.name}`,
                             description: <>ยืนยันว่าตัดใบเบิกใน Epicor สำหรับ <b>{item.name} {r.qtyRequested} {item.uom}</b> ของ {job.jobNo} เรียบร้อยแล้ว · <b>ธงนี้ไม่กระทบสถานะของและไม่บล็อกการเบิกให้ Service</b></>,
-                            fields: [{ key: 'docNo', label: 'เลขที่เอกสาร Epicor', value: '',
-                              placeholder: 'เช่น ISS-2026-00123',
-                              hint: 'เว้นว่างได้ — แต่ถ้ากรอกไว้จะตามกลับไปหาใบเบิกใน Epicor ได้ทันทีตอนกระทบยอด' }],
+                            fields: [
+                              // บังคับเลือก — 2 ทางนี้กระทบยอดคนละฝั่ง (รายได้ / ต้นทุน)
+                              { key: 'txnType', label: 'ประเภทการตัดใน Epicor', type: 'select', required: true,
+                                options: (Object.keys(EPICOR_TXN) as (keyof typeof EPICOR_TXN)[])
+                                  .map(k => ({ value: k, label: `${EPICOR_TXN[k].label} — ${EPICOR_TXN[k].desc}` })),
+                                hint: 'Cust-Ship = ของที่ส่งลูกค้าแล้วออก Invoice · Issue-Mis = ของที่เบิกออกไปใช้ ไม่ได้ออก Invoice' },
+                              { key: 'docNo', label: 'เลขที่เอกสาร Epicor', value: '',
+                                placeholder: 'เช่น ISS-2026-00123',
+                                hint: 'เว้นว่างได้ — แต่ถ้ากรอกไว้จะตามกลับไปหาใบเบิกใน Epicor ได้ทันทีตอนกระทบยอด' },
+                            ],
                             confirmLabel: 'Done',
                           })
                           if (!v) return
-                          tryAction(() => act.markEpicorIssued({ requestId: r.id, docNo: v.docNo || undefined }), 'บันทึกทำเบิก-Epicor แล้ว')
+                          tryAction(() => act.markEpicorIssued({ requestId: r.id, txnType: v.txnType as EpicorTxnType, docNo: v.docNo || undefined }), 'บันทึกทำเบิก-Epicor แล้ว')
                         }}>Done</button>
                       ) : (
                         <span className="muted">-</span>

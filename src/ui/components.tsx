@@ -77,7 +77,8 @@ export function useBusy(): boolean {
 export interface PromptField {
   key: string
   label: string
-  type?: 'text' | 'number' | 'textarea' | 'date'
+  type?: 'text' | 'number' | 'textarea' | 'date' | 'select'
+  options?: { value: string; label: string }[]      // ใช้กับ type = 'select' เท่านั้น
   value?: string
   placeholder?: string
   hint?: string
@@ -117,7 +118,7 @@ export function usePrompt() {
     const errs: Record<string, string> = {}
     for (const f of state.cfg.fields) {
       const v = (values[f.key] ?? '').trim()
-      if (f.required && !v) { errs[f.key] = 'กรุณากรอกช่องนี้'; continue }
+      if (f.required && !v) { errs[f.key] = f.type === 'select' ? 'กรุณาเลือกจากรายการ' : 'กรุณากรอกช่องนี้'; continue }
       if (v && f.type === 'number') {
         const n = Number(v)
         if (Number.isNaN(n)) { errs[f.key] = 'ต้องเป็นตัวเลข (ห้ามใส่เครื่องหมาย , )'; continue }
@@ -147,7 +148,16 @@ export function usePrompt() {
       {state.cfg.fields.map(f => (
         <label className="field" key={f.key}>
           <span>{f.label}{f.required ? ' *' : ''}{f.suffix ? ` (${f.suffix})` : ''}</span>
-          {f.type === 'textarea'
+          {f.type === 'select'
+            ? <select value={values[f.key] ?? ''}
+                autoFocus={f.key === state.cfg.fields[0].key}
+                onChange={e => setValues(v => ({ ...v, [f.key]: e.target.value }))}>
+                {/* ตัวเลือกว่างไว้บนสุดโดยตั้งใจ — ไม่ preselect เพื่อบังคับให้คนเลือกเอง
+                    (กันกดรวด ๆ แล้วได้ค่าแรกติดไปทั้งแผงโดยไม่ได้ตั้งใจ) */}
+                <option value="">— เลือก —</option>
+                {(f.options ?? []).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            : f.type === 'textarea'
             ? <textarea rows={2} value={values[f.key] ?? ''} placeholder={f.placeholder}
                 onChange={e => setValues(v => ({ ...v, [f.key]: e.target.value }))} />
             : <input

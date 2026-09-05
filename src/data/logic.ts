@@ -2,7 +2,7 @@ import type {
   DB, Job, JobStatus, User, AccessoryRequest, AccReqStatus, PurchaseOrder, Department, LbsUnit,
   ApprovalType, ApprovalPayload, BudgetCosts, CostCategoryKey,
   SiteVisit, SiteVisitOutcome, UnitInstallOutcome, TeamMember, JobAssignment,
-  StockMovementType, PaymentType,
+  StockMovementType, PaymentType, EpicorTxnType,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -2756,6 +2756,11 @@ export function setStockLot(
 }
 
 // ---------------- ทำเบิก-Epicor (0064) ----------------
+/** ชื่อ transaction ตามที่ใช้ใน Epicor เป๊ะ ๆ — คนกระทบยอดค้นด้วยคำนี้ (แหล่งเดียว · format.ts อ้างต่อ) */
+export const EPICOR_TXN_LABEL: Record<EpicorTxnType, string> = {
+  cust_ship: 'Cust-Ship', issue_mis: 'Issue-Mis',
+}
+
 /**
  * ธงกระทบยอดกับ Epicor — Purchasing ตัดใบเบิกใน ERP เสร็จแล้วมาติ๊กที่บรรทัดนี้
  *
@@ -2768,7 +2773,7 @@ export function setStockLot(
  *    เพราะเอกสารมักตามหลังของจริง
  */
 export function markEpicorIssued(
-  db: DB, actor: User, p: { requestId: string; docNo?: string },
+  db: DB, actor: User, p: { requestId: string; txnType: EpicorTxnType; docNo?: string },
 ): DB {
   const r = db.accessoryRequests.find(x => x.id === p.requestId)
   if (!r) throw new Error('ไม่พบรายการวัสดุ')
@@ -2776,16 +2781,20 @@ export function markEpicorIssued(
   if (r.status !== 'issued' && r.status !== 'received')
     throw new Error('ทำเบิก-Epicor ได้เฉพาะรายการที่ของอยู่กับ Job แล้ว (เบิกคลัง รอนำใช้ / รับของแล้ว รอนำใช้)')
   if (r.epicorIssuedAt) throw new Error('รายการนี้ทำเบิก-Epicor ไปแล้ว')
+  // บังคับเลือกประเภท (มติ 2026-09-02) — ถ้าปล่อยว่างได้ จะมีแถวที่ระบุไม่ครบค้างไว้
+  // แล้วคนกระทบยอดต้องมาไล่ถามทีหลังว่าบรรทัดนี้ตัดฝั่งรายได้หรือฝั่งต้นทุน
+  if (p.txnType !== 'cust_ship' && p.txnType !== 'issue_mis')
+    throw new Error('กรุณาเลือกประเภทการตัดใน Epicor (Cust-Ship / Issue-Mis)')
   const job = db.jobs.find(j => j.id === r.jobId)
   const item = db.items.find(i => i.id === r.itemId)
   const docNo = p.docNo?.trim() || undefined
   const next: DB = {
     ...db,
     accessoryRequests: db.accessoryRequests.map(x => x.id === p.requestId
-      ? { ...x, epicorIssuedAt: now(), epicorIssuedBy: actor.id, epicorDocNo: docNo } : x),
+      ? { ...x, epicorIssuedAt: now(), epicorIssuedBy: actor.id, epicorTxnType: p.txnType, epicorDocNo: docNo } : x),
   }
   return audit(next, actor, 'accessory_request', p.requestId, 'epicor_issued',
-    `ทำเบิก-Epicor ${item?.name ?? '-'} ${r.qtyRequested} ${item?.uom ?? ''} ของ ${job?.jobNo ?? '-'}` +
+    `ทำเบิก-Epicor (${EPICOR_TXN_LABEL[p.txnType]}) ${item?.name ?? '-'} ${r.qtyRequested} ${item?.uom ?? ''} ของ ${job?.jobNo ?? '-'}` +
     (docNo ? ` · เอกสาร ${docNo}` : ' · ไม่ระบุเลขเอกสาร'))
 }
 
@@ -2802,7 +2811,7 @@ export function undoEpicorIssued(
   const next: DB = {
     ...db,
     accessoryRequests: db.accessoryRequests.map(x => x.id === p.requestId
-      ? { ...x, epicorIssuedAt: undefined, epicorIssuedBy: undefined, epicorDocNo: undefined } : x),
+      ? { ...x, epicorIssuedAt: undefined, epicorIssuedBy: undefined, epicorTxnType: undefined, epicorDocNo: undefined } : x),
   }
   return audit(next, actor, 'accessory_request', p.requestId, 'epicor_issued_undo',
     `ยกเลิกธงทำเบิก-Epicor ${item?.name ?? '-'} ของ ${job?.jobNo ?? '-'}` +

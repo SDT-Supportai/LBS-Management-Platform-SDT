@@ -759,38 +759,38 @@ describe('ทำเบิก-Epicor (0064)', () => {
     db({ jobs: [job({ id: 'j1', jobNo: 'JOB-001' })], accessoryRequests: [req({ id: 'r1', ...over })] })
 
   it('กดได้เมื่อ "รับของแล้ว รอนำใช้" — เก็บเลขเอกสาร + คนกด', () => {
-    const d = markEpicorIssued(withReq({ status: 'received' }), actor, { requestId: 'r1', docNo: ' ISS-2026-001 ' })
+    const d = markEpicorIssued(withReq({ status: 'received' }), actor, { requestId: 'r1', txnType: 'issue_mis', docNo: ' ISS-2026-001 ' })
     expect(d.accessoryRequests[0].epicorIssuedAt).toBeTruthy()
     expect(d.accessoryRequests[0].epicorDocNo).toBe('ISS-2026-001')   // trim ให้
     expect(d.accessoryRequests[0].epicorIssuedBy).toBe('u9')
   })
 
   it('กดได้เมื่อ "เบิกคลัง รอนำใช้" · เลขเอกสารเว้นว่างได้', () => {
-    const d = markEpicorIssued(withReq({ status: 'issued', source: 'central_stock' }), actor, { requestId: 'r1' })
+    const d = markEpicorIssued(withReq({ status: 'issued', source: 'central_stock' }), actor, { requestId: 'r1', txnType: 'issue_mis' })
     expect(d.accessoryRequests[0].epicorIssuedAt).toBeTruthy()
     expect(d.accessoryRequests[0].epicorDocNo).toBeUndefined()
   })
 
   it('ขั้นที่ของยังไม่ถึง Job กดไม่ได้', () => {
     for (const s of ['pending', 'pr_sent', 'po_ordered'] as const)
-      expect(() => markEpicorIssued(withReq({ status: s }), actor, { requestId: 'r1' })).toThrow(/ของอยู่กับ Job แล้ว/)
+      expect(() => markEpicorIssued(withReq({ status: s }), actor, { requestId: 'r1', txnType: 'issue_mis' })).toThrow(/ของอยู่กับ Job แล้ว/)
   })
 
   it('กดซ้ำไม่ได้', () => {
-    const d = markEpicorIssued(withReq({ status: 'received' }), actor, { requestId: 'r1' })
-    expect(() => markEpicorIssued(d, actor, { requestId: 'r1' })).toThrow(/ไปแล้ว/)
+    const d = markEpicorIssued(withReq({ status: 'received' }), actor, { requestId: 'r1', txnType: 'cust_ship' })
+    expect(() => markEpicorIssued(d, actor, { requestId: 'r1', txnType: 'cust_ship' })).toThrow(/ไปแล้ว/)
   })
 
   // ข้อ 2 ของโจทย์ — ธงต้องไม่กลายเป็นด่านบังคับ
   it('ไม่แตะ status และไม่แตะ issuedToServiceAt', () => {
     const before = withReq({ status: 'received', issuedToServiceAt: '2026-07-01T00:00:00.000Z' })
-    const d = markEpicorIssued(before, actor, { requestId: 'r1', docNo: 'X' })
+    const d = markEpicorIssued(before, actor, { requestId: 'r1', txnType: 'cust_ship', docNo: 'X' })
     expect(d.accessoryRequests[0].status).toBe('received')
     expect(d.accessoryRequests[0].issuedToServiceAt).toBe('2026-07-01T00:00:00.000Z')
   })
 
   it('ยกเลิกธงได้ แต่ต้องมีเหตุผล', () => {
-    const d = markEpicorIssued(withReq({ status: 'received' }), actor, { requestId: 'r1', docNo: 'X' })
+    const d = markEpicorIssued(withReq({ status: 'received' }), actor, { requestId: 'r1', txnType: 'cust_ship', docNo: 'X' })
     expect(() => undoEpicorIssued(d, actor, { requestId: 'r1', reason: '  ' })).toThrow(/เหตุผล/)
     const u = undoEpicorIssued(d, actor, { requestId: 'r1', reason: 'กดผิดบรรทัด' })
     expect(u.accessoryRequests[0].epicorIssuedAt).toBeUndefined()
@@ -798,6 +798,20 @@ describe('ทำเบิก-Epicor (0064)', () => {
     expect(u.auditLogs[0].detail).toContain('กดผิดบรรทัด')   // audit ใหม่ถูก prepend
   })
 
+  // 0065 — บังคับเลือกประเภท เพราะ 2 ทางนี้กระทบยอดคนละฝั่ง (รายได้ / ต้นทุน)
+  it('ไม่เลือกประเภทกดไม่ได้', () => {
+    // @ts-expect-error จงใจส่งค่าไม่ถูกต้องเพื่อทดสอบ guard ฝั่ง logic (UI บังคับด้วย required อีกชั้น)
+    expect(() => markEpicorIssued(withReq({ status: 'received' }), actor, { requestId: 'r1' }))
+      .toThrow(/เลือกประเภท/)
+  })
+
+  it('เก็บประเภทที่เลือก และยกเลิกแล้วล้างประเภทด้วย', () => {
+    const d = markEpicorIssued(withReq({ status: 'received' }), actor, { requestId: 'r1', txnType: 'cust_ship' })
+    expect(d.accessoryRequests[0].epicorTxnType).toBe('cust_ship')
+    expect(d.auditLogs[0].detail).toContain('Cust-Ship')
+    const u = undoEpicorIssued(d, actor, { requestId: 'r1', reason: 'เลือกประเภทผิด' })
+    expect(u.accessoryRequests[0].epicorTxnType).toBeUndefined()
+  })
   it('ยังไม่ได้ทำเบิก จะยกเลิกไม่ได้', () => {
     expect(() => undoEpicorIssued(withReq({ status: 'received' }), actor, { requestId: 'r1', reason: 'x' }))
       .toThrow(/ยังไม่ได้ทำเบิก/)
