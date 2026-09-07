@@ -10,7 +10,7 @@ import {
   unitEta, unitLeadDays, normalizeLeadDays, leadDaysToStore,
   ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX,
   addDaysIso, daysBetweenIso, nextNo,
-  markEpicorIssued, undoEpicorIssued,
+  markEpicorIssued, undoEpicorIssued, LINE_PUSH_TYPES, drawLbs,
 } from './logic'
 
 // =============================================================================
@@ -815,5 +815,42 @@ describe('ทำเบิก-Epicor (0064)', () => {
   it('ยังไม่ได้ทำเบิก จะยกเลิกไม่ได้', () => {
     expect(() => undoEpicorIssued(withReq({ status: 'received' }), actor, { requestId: 'r1', reason: 'x' }))
       .toThrow(/ยังไม่ได้ทำเบิก/)
+  })
+})
+
+// =============================================================================
+// โควตา LINE (0066) — Messaging API มี 300 ข้อความ/เดือน
+//
+// กฎที่ต้องล็อก:
+//   1) เฉพาะชนิดใน LINE_PUSH_TYPES เท่านั้นที่เข้าคิวส่ง LINE (lineStatus = 'pending')
+//   2) ชนิดที่ตัดออก **ยังต้องถูกบันทึกครบ** — แค่ lineStatus = 'off'
+//      (ถ้าเผลอทำให้หายไปเลย หน้า Notifications กับ Audit จะโหว่โดยไม่มีใครรู้)
+//   3) รับของ "บางส่วน" ต้องไม่กินโควตา — รับครบเท่านั้นที่เข้า LINE
+// =============================================================================
+describe('โควตา LINE — allowlist (0066)', () => {
+  const actor = { id: 'u1', email: 'a@x.co', password: '', fullName: 'สมชาย', department: 'admin' as const, isActive: true }
+
+  it('ตัวที่บล็อกงานคนอื่นอยู่ในลิสต์ครบ', () => {
+    for (const t of ['pr_created', 'approval_requested', 'po_received',
+                     'lbs_issued_to_service', 'accessory_issued_to_service', 'job_cancelled'])
+      expect(LINE_PUSH_TYPES.has(t)).toBe(true)
+  })
+
+  it('ตัวที่กินโควตาแต่ไม่บล็อกใครถูกตัดออก', () => {
+    for (const t of ['accessory_issued', 'lbs_drawn', 'po_created', 'approval_approved',
+                     'job_installed', 'team_assigned', 'unit_install_blocked', 'po_received_partial'])
+      expect(LINE_PUSH_TYPES.has(t)).toBe(false)
+  })
+
+  it('ชนิดที่ตัดออกยังถูกบันทึก แค่ไม่เข้าคิว LINE', () => {
+    const before = db({
+      jobs: [job({ id: 'j1', jobNo: 'JOB-001', lbsQtyRequired: 1 })],
+      projectStocks: [{ id: 's1', stockNo: 'ST-1', itemId: 'i-lbs', status: 'open' as const, createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' }],
+      lbsUnits: [unit({ id: 'a', status: 'in_stock', projectStockId: 's1' })],
+    })
+    const d = drawLbs(before, actor, { jobId: 'j1', stockId: 's1', unitIds: ['a'] })
+    const n = d.notifications.find(x => x.type === 'lbs_drawn')
+    expect(n).toBeTruthy()               // ยังบันทึกอยู่
+    expect(n!.lineStatus).toBe('off')    // แต่ไม่ส่ง LINE
   })
 })

@@ -205,12 +205,36 @@ function audit(db: DB, actor: User, entityType: string, entityId: string, action
 }
 
 // แจ้งเตือนข้ามแผนก (in-app + คิวส่ง LINE — StoreContext เป็นคน resolve lineStatus)
+/**
+ * ชนิดแจ้งเตือนที่ "ยิงเข้า LINE จริง" (0066) — โควตา Messaging API มีแค่ 300 ข้อความ/เดือน
+ *
+ * เกณฑ์เดียวที่ใช้ตัด: **ถ้าไม่รู้ตอนนี้ มีใครทำงานต่อไม่ได้ไหม**
+ * ถ้าไม่มีใครถูกบล็อก ให้ไปดูในเว็บหรือถามบอทเอา (ข้อความตอบกลับของบอทไม่กินโควตา)
+ *
+ * ⚠️ ชนิดที่ไม่อยู่ในลิสต์ **ยังถูกบันทึกครบเหมือนเดิม** — ขึ้นหน้า Notifications และ Audit Log
+ *    แค่ตั้ง lineStatus = 'off' ตั้งแต่ต้นทาง จึงไม่เข้าคิวส่ง LINE
+ * ⚠️ แก้ที่นี่แล้วต้องแก้ app_notify ฝั่ง SQL ให้ตรงกันเสมอ (0066) — คนละ runtime แต่กติกาเดียวกัน
+ *
+ * ก่อนตัด ~20 ข้อความ/Job (15 Job = เต็มโควตาพอดี) · หลังตัด ~10 ข้อความ/Job
+ * ตัวกินโควตาที่ตัดออกแล้วได้ผลมากสุดคือ accessory_issued ซึ่งยิง "ต่อบรรทัดวัสดุ"
+ */
+export const LINE_PUSH_TYPES: ReadonlySet<string> = new Set([
+  'pr_created',                    // Purchasing ต้องออก PO ต่อ
+  'pr_rejected',                   // Project ต้องแก้แล้วส่งใหม่
+  'approval_requested',            // Division ต้องตัดสิน — งานค้างทั้งสายจนกว่าจะกด
+  'approval_rejected',             // Project ต้องแก้แล้วขอใหม่
+  'po_received',                   // เฉพาะ "รับครบ" · รับบางส่วนใช้ type po_received_partial
+  'lbs_issued_to_service',         // ทีมช่างต้องเตรียมออกหน้างาน
+  'accessory_issued_to_service',   // ของชุดไหนถึงมือทีมช่างแล้ว
+  'install_failed',                // Project ต้องเข้าไปแก้ให้ทีมเดินต่อได้
+  'job_cancelled',                 // ทุกแผนกต้องหยุดทำงานกับใบนี้ทันที
+])
 function notify(db: DB, p: { type: string; message: string; dept: Department | 'all'; jobId?: string }): DB {
   return {
     ...db,
     notifications: [
       ...db.notifications,
-      { id: uid(), createdAt: now(), readBy: [], lineStatus: 'pending', ...p },
+      { id: uid(), createdAt: now(), readBy: [], lineStatus: LINE_PUSH_TYPES.has(p.type) ? 'pending' : 'off', ...p },
     ],
   }
 }
@@ -1477,9 +1501,10 @@ export function receivePOItems(
       ? { ...x, status: 'received' as const } : x),
   }
   next = notify(next, {
-    type: 'po_received', dept: 'project', jobId: po.jobId,
+    // แยก type: รับครบ = เข้า LINE · รับบางส่วนยังเบิกไม่ได้อยู่ดี จึงไม่ต้องรบกวนกลุ่ม (0066)
+    type: poComplete ? 'po_received' : 'po_received_partial', dept: 'project', jobId: po.jobId,
     message: poComplete
-      ? `📬 ${po.poNo} (${job.jobNo}) รับของครบแล้ว`
+      ? `📬 ${po.poNo} (${job.jobNo}) ของครบ — เบิกให้ Service ได้แล้ว`
       : `📬 ${po.poNo} (${job.jobNo}) รับบางส่วน: ${parts.join(', ')}`,
   })
   next = notifyIfBecameReady(db, next, po.jobId)
@@ -2387,7 +2412,8 @@ export function cancelJob(
 
   next = notify(next, {
     type: 'job_cancelled', dept: 'all', jobId: p.jobId,
-    message: `❌ ยกเลิก ${job.jobNo}: ${p.reason.trim()} · คืน LBS ${units.length} + Accessory เข้าคลัง`,
+    // ตัดท้าย 'คืน LBS n + Accessory เข้าคลัง' — ระบบทำให้เองอยู่แล้ว ไม่ต้องบอก (0066)
+    message: `❌ ยกเลิก ${job.jobNo}: ${p.reason.trim()}`,
   })
   // นับทั้งรับครบ (received) และรับบางส่วน (po_ordered + qtyReceived > 0) — สถานะ ณ ก่อนยกเลิก
   const receivedCount = reqs.filter(r => r.status === 'received' || (r.status === 'po_ordered' && r.qtyReceived > 0)).length
@@ -2488,7 +2514,8 @@ export function requestApproval(
   }
   next = notify(next, {
     type: 'approval_requested', dept: 'sales', jobId: p.jobId,
-    message: `🔔 ${job.jobNo} ขออนุมัติ${typeLabel} · โดย ${actor.fullName}`,
+    // ตัด ' · โดย {ชื่อ}' ออก — การ์ดอนุมัติในแชท 1:1 มีชื่อผู้ขออยู่แล้ว (0066)
+    message: `🔔 ${job.jobNo} ขออนุมัติ${typeLabel}`,
   })
   return audit(next, actor, 'approval_request', reqId, 'request_approval',
     `${job.jobNo} ขออนุมัติ${typeLabel}`)
