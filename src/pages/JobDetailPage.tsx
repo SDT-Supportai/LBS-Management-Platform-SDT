@@ -3,7 +3,12 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
 import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, parseLatLng, fmtLatLng, PAYMENT_TYPES } from '../data/logic'
 import { BudgetFields, CoordInput, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, sitesToApi, sitesFromJob, type CostForm, type InstallSite } from '../ui/components'
-import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, EPICOR_TXN, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
+import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, EPICOR_TXN, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, DEPT_LABEL, JOB_STATUS_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
+import {
+  type Cell, type NumKind, type ReportCol, type SumTable,
+  SHEET_SUMMARY, SHEET_GUIDE, buildWorkbook, dataSheet, guideSheet,
+  orDash, saveReport, stampMeta, summarySheet,
+} from '../ui/xlsxReport'
 import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType, EpicorTxnType } from '../types'
 
 // ฟอร์มงวดเงิน (0044) — id = null คือเพิ่มงวดใหม่
@@ -13,6 +18,40 @@ interface PayForm {
 }
 
 const COST_LABEL: Record<string, string> = Object.fromEntries(COST_CATEGORIES.map(c => [c.key, c.label]))
+
+// ---------------- Export: รายงานผู้บริหาร — Purchase Orders ของ Job ----------------
+// สเปกคอลัมน์รวมศูนย์ — แหล่งความจริงเดียวของทั้งชีตข้อมูลและชีต "คำอธิบาย"
+// (แนวเดียวกับ SHEET_COLS/MAT_COLS ของหน้า Project Stock และ PR_COLS ของหน้า Purchasing)
+// ⚠️ export อย่างเดียว ไม่มี import กลับ — ใส่แถวรวมท้ายตารางได้
+const PO_COLS: ReportCol[] = [
+  { key: 'รหัส Epicor', width: 14, note: 'รหัสอ้างอิงระบบ ERP' },
+  { key: 'ชื่ออุปกรณ์', width: 30, note: 'ชื่อในฐานข้อมูลวัสดุ' },
+  { key: 'จำนวนที่ขอ', width: 12, note: 'จำนวนที่ Project ขอไว้ตอนเพิ่มวัสดุ', num: 'int', total: true },
+  { key: 'โอนคืนคลัง', width: 12, note: 'จำนวนที่ใช้ไม่หมดแล้วกด "📦 โอนเข้าคลัง" คืนไป — ถูกหักออกจากต้นทุนงานแล้ว', num: 'int', total: true },
+  { key: 'จำนวนที่คิดต้นทุน', width: 18, note: 'จำนวนที่ขอ − โอนคืนคลัง · รายการที่ยกเลิก/คืนสต็อกทั้งบรรทัดนับเป็น 0', num: 'int', total: true },
+  { key: 'หน่วย', width: 9, note: 'หน่วยนับ' },
+  { key: 'ราคา/หน่วย', width: 14, note: 'ของจากคลังคงเหลือ = ต้นทุนถัวเฉลี่ยตอนเบิก · ของที่ซื้อ = ราคาจริงหลังออก PO · ว่าง = ยังไม่กรอก', num: 'money' },
+  { key: 'ต้นทุนที่ตัดเข้างาน', width: 20, note: 'ราคา/หน่วย × จำนวนที่คิดต้นทุน — ตัวเลขนี้คือที่ไปบวก actual ของหมวดงบ', num: 'money', total: true },
+  { key: 'Phase Budget', width: 16, note: 'หมวดต้นทุนที่บรรทัดนี้ตัดเข้า (Raw Material / Outsourcing)' },
+  { key: 'Phase', width: 12, note: 'Phase ที่กรอกไว้ในงบหมวดนั้น' },
+  { key: 'แหล่ง', width: 14, note: 'คลังคงเหลือ (เบิกได้เลย) หรือ Purchasing (ต้องออก PR/PO)' },
+  { key: 'สถานะ', width: 22, note: 'ของชิ้นนี้อยู่ที่ไหนตอนนี้ — ป้ายเดียวกับที่แสดงบนหน้าจอ' },
+  { key: 'PR / PO', width: 20, note: 'เลข PR และ PO ที่บรรทัดนี้ผูกอยู่ (1 PR ออกได้หลาย PO)' },
+  { key: 'ซัพพลายเออร์', width: 22, note: 'ชื่อที่กรอกไว้ตอนออก PO · ว่าง = ยังไม่ออก PO หรือมาจากคลังคงเหลือ' },
+  { key: 'เบิกให้ Service', width: 16, note: 'วันที่ส่งของออกหน้างาน (0059) · ว่าง = ของยังอยู่กับ Job' },
+  // ทำเบิก-Epicor (0064) + ประเภท transaction (0065) — แยก 4 คอลัมน์ ไม่ยุบเป็นช่องเดียว
+  // เพราะไฟล์นี้คือตัวที่เอาไปกระทบยอดกับ ERP: ฝ่ายบัญชีกรองด้วย "ประเภท" (รายได้ vs ต้นทุน) ก่อนอื่นเสมอ
+  { key: 'ทำเบิก-Epicor', width: 14, note: '"ทำแล้ว" = ตัดใบเบิกใน Epicor แล้ว (0064) — ธงกระทบยอดกับ ERP ไม่ขวางสายงาน · ว่าง = ยังไม่ได้ทำ' },
+  { key: 'ประเภท Epicor', width: 16, note: 'Cust-Ship = ส่งลูกค้าแล้วออก Invoice (ฝั่งรายได้) · Issue-Mis = เบิกไปใช้ ไม่ออก Invoice (ฝั่งต้นทุน) · ว่าง = แถวที่กด Done ไว้ก่อนมี dropdown (0065) ไม่ backfill' },
+  { key: 'เลขที่เอกสาร Epicor', width: 20, note: 'เลขเอกสารที่กรอกไว้ตอนกด Done · ว่างได้ แต่ถ้ากรอกจะตามกลับไป Epicor ได้' },
+  { key: 'วันที่ทำเบิก', width: 14, note: 'วันที่กด Done ในระบบนี้ — ไม่ใช่วันที่บนเอกสาร Epicor' },
+  { key: 'ซื้อเพิ่มหลังเบิก', width: 16, note: 'ใช่ = รายการที่เพิ่มหลังเบิกงานไปแล้ว (ต้นทุนบานปลายมักอยู่กลุ่มนี้)' },
+  { key: 'วันที่ขอวัสดุ', width: 14, note: 'วันที่ Project กดเพิ่มวัสดุรายการนี้' },
+]
+
+/** สัดส่วน % แบบปลอดหารศูนย์ */
+const pctOf = (part: number, whole: number): Cell => (whole > 0 ? (part / whole) * 100 : '-')
+const PCT: NumKind = 'pct'
 
 /** พิกัดจุดติดตั้งตามแผน (0060) — กดเปิด Google Maps ตรวจได้ว่าหมุดลงถูกที่ */
 function PlanCoordCell({ lat, lng }: { lat?: number; lng?: number }) {
@@ -95,6 +134,8 @@ export default function JobDetailPage() {
   // Manage (admin) ข้ามขั้นอนุมัติได้ — project ต้องส่งคำขอให้ Division ก่อน (0016)
   const isManage = can(user, 'master.manage')
   const canCleanup = can(user, 'accessory.cleanup')   // Project/Division/Manage ลบรายการวัสดุที่ยกเลิก
+  // สิทธิ์ดาวน์โหลดรายงานผู้บริหาร (ไฟล์พาราคา/ต้นทุน/กำไรออกนอกระบบ) — ไม่มีสิทธิ์ = ไม่เห็นปุ่ม
+  const canReport = can(user, 'report.exec')
   const canEpicor = can(user, 'epicor.issue')         // Purchasing/Manage ติ๊กทำเบิก-Epicor (0064)
   const locked = !job || job.terminalStatus !== null
   // ฝั่งจัดซื้อปลดล็อกตอน issued ได้ (จัดซื้อเพิ่มเติมหลังเบิก 0037) — ปิดเมื่อปิดงาน/ยกเลิก
@@ -207,18 +248,24 @@ export default function JobDetailPage() {
   const selAccItem = itemOf(accForm.itemId)
   const selAccStockQty = db.accessoryStock.find(r => r.itemId === accForm.itemId)?.qtyOnHand ?? 0
 
-  // Export รายการวัสดุ (Purchase Orders) ของ Job → Excel · xlsx โหลด dynamic กัน bundle บวม
+  // Export รายงานผู้บริหาร — Purchase Orders ของ Job → Excel · xlsx โหลด dynamic กัน bundle บวม
+  //   ชีต 1 "สรุปผู้บริหาร" = งบ vs ต้นทุนจริง + งวดเงิน (ตัวเลขที่ผู้บริหารถามในห้องประชุม)
+  //   ชีต 2 "Purchase Orders" = ทุกบรรทัด + แถวรวม · ชีต 3 "คำอธิบาย" = คอลัมน์นี้คืออะไร
   const exportPurchaseOrders = async () => {
     if (!job) return
     const XLSX = await import('xlsx')
-    const rows = accReqs.map(r => {
+    // ⚠️ ต้องใช้ effectiveQty ให้ตรงกับที่แสดงบนจอและที่ตัดงบจริง (§12) — เดิมใช้ qtyRequested
+    //    ทำให้ไฟล์ Excel ไม่ตรงกับหน้าจอเมื่อมีการโอนวัสดุเหลือคืนคลัง
+    const isActive = (r: typeof accReqs[number]) => r.status !== 'cancelled' && r.status !== 'returned'
+    const chargedQty = (r: typeof accReqs[number]) => (isActive(r) ? effectiveQty(r) : 0)
+    const chargedValue = (r: typeof accReqs[number]) =>
+      isActive(r) && r.unitPrice !== undefined ? r.unitPrice * effectiveQty(r) : 0
+
+    const rows: Record<string, Cell>[] = accReqs.map(r => {
       const item = itemOf(r.itemId)!
       const pr = db.prs.find(p => p.id === r.prId)
       const po = r.poId ? db.pos.find(p => p.id === r.poId) : undefined
-      const active = r.status !== 'cancelled' && r.status !== 'returned'
-      // ⚠️ ต้องใช้ effectiveQty ให้ตรงกับที่แสดงบนจอและที่ตัดงบจริง (§12) — เดิมใช้ qtyRequested
-      //    ทำให้ไฟล์ Excel ไม่ตรงกับหน้าจอเมื่อมีการโอนวัสดุเหลือคืนคลัง
-      const lineValue = active && r.unitPrice !== undefined ? r.unitPrice * effectiveQty(r) : undefined
+      const lineValue = isActive(r) && r.unitPrice !== undefined ? r.unitPrice * effectiveQty(r) : undefined
       const cat = r.phaseBudget ? (COST_LABEL[r.phaseBudget] ?? r.phaseBudget) : ''
       const phase = r.phaseBudget ? (job.budgetCosts?.[r.phaseBudget as CostCategoryKey]?.phase ?? '') : ''
       return {
@@ -226,7 +273,7 @@ export default function JobDetailPage() {
         'ชื่ออุปกรณ์': item.name,
         'จำนวนที่ขอ': r.qtyRequested,
         'โอนคืนคลัง': r.qtyTransferred ?? 0,
-        'จำนวนที่คิดต้นทุน': active ? effectiveQty(r) : 0,
+        'จำนวนที่คิดต้นทุน': chargedQty(r),
         'หน่วย': item.uom,
         'ราคา/หน่วย': r.unitPrice ?? '',
         'ต้นทุนที่ตัดเข้างาน': lineValue ?? '',
@@ -240,13 +287,196 @@ export default function JobDetailPage() {
         'เลขที่เอกสาร Epicor': r.epicorDocNo ?? '',
         'วันที่ทำเบิก': r.epicorIssuedAt ? r.epicorIssuedAt.slice(0, 10) : '',
         'PR / PO': [pr?.prNo, po?.poNo].filter(Boolean).join(' / '),
+        'ซัพพลายเออร์': po?.supplierName ?? '',
+        'เบิกให้ Service': r.issuedToServiceAt?.slice(0, 10) ?? '',
+        'ซื้อเพิ่มหลังเบิก': isExtra(r.createdAt) ? 'ใช่' : '',
+        'วันที่ขอวัสดุ': r.createdAt.slice(0, 10),
       }
     })
-    const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ 'รหัส Epicor': '', 'ชื่ออุปกรณ์': '(ยังไม่มีรายการวัสดุ)' }])
-    ws['!cols'] = [{ wch: 14 }, { wch: 24 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 8 }, { wch: 12 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 14 }, { wch: 13 }, { wch: 20 }, { wch: 14 }, { wch: 18 }]
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'Purchase Orders')
-    XLSX.writeFile(wb, `${job.jobNo.replace(/[\\/:*?"<>|]/g, '-')}-PO-${new Date().toISOString().slice(0, 10)}.xlsx`)
+    const ws = dataSheet(XLSX, rows, PO_COLS, { totalRow: true, totalLabel: `รวม ${rows.length} รายการ` })
+
+    // ---------------- ชีต "สรุปผู้บริหาร" ----------------
+    // ตัวเลขงบมาจาก jobBudgetSummary / jobPaymentSummary ชุดเดียวกับที่การ์ดบนหน้าจอใช้
+    const activeReqs = accReqs.filter(isActive)
+    const noPrice = activeReqs.filter(r => r.unitPrice === undefined)
+    const extraReqs = activeReqs.filter(r => isExtra(r.createdAt))
+    const materialTotal = accReqs.reduce((n, r) => n + chargedValue(r), 0)
+    const overBudget = budget.remainingCost !== undefined && budget.remainingCost < 0
+
+    // งบ 7 หมวด — เรียงตาม COST_CATEGORIES เพื่อให้ลำดับตรงกับตารางบนหน้าจอเป๊ะ
+    const catRows = budget.categories.map(c => [
+      COST_LABEL[c.key] ?? c.key,
+      c.phase ?? '',
+      c.fromPR ? 'จาก PR/PO' : 'กรอกเอง',
+      c.budget,
+      c.actual,
+      c.remaining,
+      pctOf(c.actual, c.budget),
+    ] as Cell[])
+
+    // วัสดุแบ่งตามสถานะ — ตอบว่า "เงินก้อนนี้ค้างอยู่ขั้นไหน"
+    const statusMap = new Map<string, { lines: number; qty: number; value: number }>()
+    accReqs.forEach(r => {
+      const key = accStatusLabel(r)
+      const g = statusMap.get(key) ?? { lines: 0, qty: 0, value: 0 }
+      g.lines += 1
+      g.qty += chargedQty(r)
+      g.value += chargedValue(r)
+      statusMap.set(key, g)
+    })
+    const statusRows = [...statusMap.entries()].sort((a, b) => b[1].value - a[1].value)
+
+    // PR / PO ของงานนี้ — ใบไหนยังค้างรับของ ใบไหนปิดแล้ว
+    const poRows = db.pos
+      .filter(p => p.jobId === job.id)
+      .slice()
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map(p => {
+        const lines = accReqs.filter(r => (r.poId ? r.poId === p.id : false))
+        const pr = db.prs.find(x => x.id === p.prId)
+        return [
+          p.poNo,
+          pr?.prNo ?? '-',
+          p.supplierName || '-',
+          fmtDate(p.expectedDate),
+          p.status === 'received' ? `รับของครบ ${p.receivedAt?.slice(0, 10) ?? ''}`
+            : p.status === 'cancelled' ? 'ยกเลิก' : 'ออก PO แล้ว รอรับของ',
+          lines.length,
+          lines.reduce((n, r) => n + chargedValue(r), 0),
+        ] as Cell[]
+      })
+
+    const payRows = pay.rows.map(p => [
+      PAYMENT_TYPE_LABEL[p.payType] ?? p.payType,
+      p.invoiceNo || '-',
+      p.invoiceDate ? fmtDate(p.invoiceDate) : '-',
+      p.percent ?? '-',
+      p.amount,
+      p.paidAt ? fmtDate(p.paidAt) : 'ยังไม่รับเงิน',
+    ] as Cell[])
+
+    const tables: SumTable[] = [
+      {
+        title: 'งบต้นทุน 7 หมวด (Project Budget) — งบ vs เกิดขึ้นจริง',
+        head: ['หมวดต้นทุน', 'Phase', 'ที่มาของ actual', 'งบประมาณ (บาท)', 'เกิดขึ้นจริง (บาท)', 'คงเหลือ (บาท)', 'ใช้ไป'],
+        rows: catRows,
+        num: { 3: 'money0', 4: 'money0', 5: 'money0', 6: PCT },
+        total: [
+          'รวมทุกหมวด', '', '',
+          orDash(budget.cost), budget.totalActual, orDash(budget.remainingCost),
+          budget.cost !== undefined ? pctOf(budget.totalActual, budget.cost) : '-',
+        ],
+      },
+      {
+        title: 'วัสดุแบ่งตามสถานะ — เงินค้างอยู่ขั้นไหน',
+        head: ['สถานะ', 'รายการ', 'จำนวนที่คิดต้นทุน', 'ต้นทุนที่ตัดเข้างาน (บาท)', 'สัดส่วนของค่าวัสดุ'],
+        rows: statusRows.map(([k, g]) => [k, g.lines, g.qty, g.value, pctOf(g.value, materialTotal)]),
+        num: { 1: 'int', 2: 'int', 3: 'money0', 4: PCT },
+        total: [
+          `รวม ${accReqs.length} รายการ`, accReqs.length,
+          accReqs.reduce((n, r) => n + chargedQty(r), 0), materialTotal, materialTotal > 0 ? 100 : '-',
+        ],
+        empty: '(ยังไม่มีรายการวัสดุในงานนี้)',
+      },
+      {
+        title: 'PO ของงานนี้',
+        head: ['PO No.', 'PR No.', 'ซัพพลายเออร์', 'กำหนดส่ง', 'สถานะ', 'รายการ', 'ต้นทุนที่ตัดเข้างาน (บาท)'],
+        rows: poRows,
+        num: { 5: 'int', 6: 'money0' },
+        empty: '(ยังไม่มี PO — วัสดุทั้งหมดมาจากคลังคงเหลือ หรือยังไม่ได้ออก PR)',
+      },
+      {
+        title: 'งวดเงิน (Payment)',
+        head: ['งวด', 'Invoice No.', 'วันที่ Invoice', '%', 'ยอดเงิน (บาท)', 'รับเงินเมื่อ'],
+        rows: payRows,
+        num: { 3: PCT, 4: 'money0' },
+        total: [`รวม ${pay.rows.length} งวด`, '', '', '', pay.billed, `รับแล้ว ${pay.paid.toLocaleString('th-TH')} บาท`],
+        empty: '(ยังไม่ได้ตั้งงวดเงินสำหรับงานนี้)',
+      },
+    ]
+
+    const wsSum = summarySheet(XLSX, {
+      title: 'รายงานผู้บริหาร — Purchase Orders รายโครงการ',
+      scope: `${job.jobNo} · ${job.customerName}`,
+      meta: [
+        ['Job No.', job.jobNo],
+        ['ลูกค้า', job.customerName],
+        ['เบอร์ติดต่อ', job.contactPhone || '-'],
+        ['Scope งาน', job.scope || '-'],
+        ['สถานที่ติดตั้ง', job.installLocation || '-'],
+        ['กำหนดส่ง', fmtDate(job.requiredDate)],
+        ['สถานะงาน', JOB_STATUS_LABEL[status]],
+        ['ผู้รับผิดชอบงาน', job.openedBy ? userOf(job.openedBy) : 'ไม่ระบุ (งานเก่า)'],
+        ['LBS ตาม Scope / ดึงเข้างานแล้ว', `${job.lbsQtyRequired} / ${allocatedUnits.length} เครื่อง`],
+        ...stampMeta(user, user ? DEPT_LABEL[user.department] : undefined),
+      ],
+      warnings: [
+        ...(budget.cost === undefined ? ['งานนี้ยังไม่ได้ตั้งงบต้นทุน 7 หมวด — ตัวเลข "คงเหลือ" และ "กำไร" จึงคำนวณไม่ได้'] : []),
+        ...(overBudget ? [`ต้นทุนเกิดขึ้นจริงเกินงบแล้ว ${Math.abs(budget.remainingCost ?? 0).toLocaleString('th-TH')} บาท`] : []),
+        ...(noPrice.length > 0 ? [`มี ${noPrice.length} รายการที่ยังไม่ได้กรอกราคา — ค่าวัสดุในไฟล์นี้ต่ำกว่าความจริง`] : []),
+        ...(pay.stale ? ['ราคาขายถูกแก้หลังออกใบวางบิล — ยอดงวดที่ freeze ไว้ไม่ตรงกับ % แล้ว'] : []),
+      ],
+      kpis: [
+        { label: 'ราคาขาย (Sale Price)', value: orDash(budget.salePrice), unit: 'บาท', num: 'money0' },
+        { label: 'งบต้นทุนรวม (7 หมวด)', value: orDash(budget.cost), unit: 'บาท', num: 'money0' },
+        { label: 'ต้นทุนเกิดขึ้นจริงรวม', value: budget.totalActual, unit: 'บาท', num: 'money0',
+          note: budget.cost ? `ใช้ไป ${((budget.totalActual / budget.cost) * 100).toFixed(1)}% ของงบ` : '' },
+        { label: 'ต้นทุนคงเหลือตามงบ', value: orDash(budget.remainingCost), unit: 'บาท', num: 'money0',
+          note: overBudget ? '⚠️ ติดลบ = ใช้เกินงบแล้ว' : '' },
+        { label: 'กำไรตามแผน (ราคาขาย − งบต้นทุน)', value: orDash(budget.profit), unit: 'บาท', num: 'money0' },
+        { label: 'Margin ตามแผน', value: budget.margin !== undefined ? budget.margin : '-', unit: '%', num: PCT },
+        { label: 'มูลค่าวัสดุ PR/PO', value: budget.materialValue, unit: 'บาท', num: 'money0',
+          note: 'ค่าวัสดุล้วน ไม่รวมต้นทุนตัว LBS' },
+        { label: 'ต้นทุนตัว LBS ที่ดึงเข้างาน', value: budget.lbsCost, unit: 'บาท', num: 'money0',
+          note: 'บวกเป็น actual หมวด Raw Material ด้วย' },
+        { label: 'รายการวัสดุทั้งหมด', value: accReqs.length, unit: 'รายการ', num: 'int',
+          note: `นับต้นทุนจริง ${activeReqs.length} รายการ · ยกเลิก/คืนสต็อก ${accReqs.length - activeReqs.length} รายการ` },
+        { label: 'รายการที่ยังไม่กรอกราคา', value: noPrice.length, unit: 'รายการ', num: 'int',
+          note: noPrice.length > 0 ? 'ทำให้ต้นทุนวัสดุยังไม่ครบ' : 'ราคาครบทุกรายการ' },
+        { label: 'รายการซื้อเพิ่มหลังเบิกงาน', value: extraReqs.length, unit: 'รายการ', num: 'int',
+          note: extraReqs.length > 0
+            ? `มูลค่า ${extraReqs.reduce((n, r) => n + chargedValue(r), 0).toLocaleString('th-TH')} บาท — จุดที่ต้นทุนมักบานปลาย`
+            : 'ไม่มี' },
+        { label: 'วางบิลแล้ว', value: pay.billed, unit: 'บาท', num: 'money0',
+          note: pay.billedPct !== undefined ? `${pay.billedPct.toFixed(1)}% ของราคาขาย` : '' },
+        { label: 'รับเงินแล้ว', value: pay.paid, unit: 'บาท', num: 'money0' },
+        { label: 'วางบิลแล้วแต่ยังไม่ได้รับเงิน', value: pay.unpaid, unit: 'บาท', num: 'money0' },
+        { label: 'ยังไม่ได้วางบิล', value: orDash(pay.unbilled), unit: 'บาท', num: 'money0',
+          note: 'ราคาขาย − ยอดที่วางบิลไปแล้ว' },
+      ],
+      tables,
+      notes: [
+        '"ต้นทุนที่ตัดเข้างาน" = ราคา/หน่วย × (จำนวนที่ขอ − โอนคืนคลัง) — รายการที่ยกเลิก/คืนสต็อกทั้งบรรทัดนับเป็น 0',
+        'actual ของหมวด Raw Material / Outsourcing มาจากรายการวัสดุในไฟล์นี้ · อีก 5 หมวดกรอกมือที่หน้า Job',
+        'ต้นทุนตัว LBS ที่ดึงเข้างานถูกบวกเข้า actual หมวด Raw Material ด้วย — "มูลค่าวัสดุ PR/PO" จึงน้อยกว่า actual หมวดนั้น',
+        '"กำไรตามแผน" เทียบราคาขายกับ **งบ** ไม่ใช่ต้นทุนจริง — กำไรจริงต้องรออีก 5 หมวดที่กรอกมือครบก่อน',
+        'สถานะวัสดุตอบว่า "ของอยู่ที่ไหนตอนนี้" ไม่ใช่ "มาจากไหน" — ของที่เบิกออกหน้างานแล้วขึ้น "เบิกให้ Service แล้ว"',
+        'ไฟล์นี้ Import กลับเข้าระบบไม่ได้ — เป็นรายงานสำหรับตรวจสอบ/ประชุมเท่านั้น',
+      ],
+    })
+
+    const wsGuide = guideSheet(
+      XLSX,
+      [
+        [`Purchase Orders — ${job.jobNo} · ${job.customerName}`],
+        [`ออกจากระบบเมื่อ ${fmtDateTime(new Date().toISOString())}`],
+        [`${accReqs.length} รายการ · ค่าวัสดุที่ตัดเข้างาน ${materialTotal.toLocaleString('th-TH')} บาท`],
+      ],
+      PO_COLS,
+      [
+        'แถวสุดท้ายของชีตข้อมูลเป็นแถวรวม — autofilter ไม่คลุมแถวนั้น กรองแล้วยอดรวมไม่หาย',
+        'ยอดรวมคอลัมน์ "ต้นทุนที่ตัดเข้างาน" ต้องเท่ากับ actual หมวด Raw Material + Outsourcing หัก ต้นทุนตัว LBS',
+        'ของจากคลังคงเหลือใช้ต้นทุนถัวเฉลี่ยตอนเบิก — เบิกวันละกันคนละราคาได้ ถือเป็นเรื่องปกติ',
+        'ไฟล์นี้ Import กลับเข้าระบบไม่ได้ — เป็นรายงานสำหรับตรวจสอบเท่านั้น',
+      ],
+    )
+
+    const wb = buildWorkbook(XLSX, [
+      { name: SHEET_SUMMARY, ws: wsSum },
+      { name: 'Purchase Orders', ws },
+      { name: SHEET_GUIDE, ws: wsGuide },
+    ])
+    saveReport(XLSX, wb, `รายงานผู้บริหาร-${job.jobNo}-PO`)
   }
 
   return (
@@ -763,7 +993,13 @@ export default function JobDetailPage() {
             <button className="small" onClick={() => setPoOpen(v => !v)}>
               {poOpen ? 'ซ่อนรายการ' : `แสดงรายการ (${accReqs.length})`}
             </button>
-            <button className="small" onClick={exportPurchaseOrders} disabled={accReqs.length === 0}>⬇ Export Excel</button>
+            {/* ไฟล์พาราคา/ต้นทุน/กำไรของงานออกไปนอกระบบ → ปุ่มหายทั้งปุ่มถ้าไม่มีสิทธิ์ (report.exec) */}
+            {canReport && (
+              <button className="small" onClick={exportPurchaseOrders} disabled={accReqs.length === 0}
+                title="รายงานผู้บริหาร (Excel) — ชีตสรุปงบ vs ต้นทุนจริง + งวดเงิน + รายละเอียดทุกบรรทัด">
+                ⬇ Export Excel
+              </button>
+            )}
             {canManage && !procureLocked && (
               <button className="small" onClick={() => { setAccSearch(''); setAccForm({ itemId: accessoryItems[0]?.id ?? '', qty: 1, source: 'central_stock', unitPrice: '', phaseBudget: 'raw_mat' }); openModal('accessory') }}>
                 + เพิ่มวัสดุ{job.terminalStatus === 'issued' ? ' (ซื้อเพิ่มหลังเบิก)' : ''}

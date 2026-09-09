@@ -7,13 +7,19 @@ import {
   ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX,
 } from '../data/logic'
 import { Modal, useConfirm, useToast, useTryAction, toBudgetNum } from '../ui/components'
-import { fmtBaht, fmtDate, fmtDateTime, UNIT_FLOW } from '../ui/format'
+import { fmtBaht, fmtDate, fmtDateTime, DEPT_LABEL, UNIT_FLOW } from '../ui/format'
+import {
+  type Cell, type NumKind, type ReportCol, type SumTable,
+  SHEET_SUMMARY, SHEET_GUIDE, buildWorkbook, dataSheet, dataSheetName,
+  guideSheet, orDash, saveReport, stampMeta, summarySheet,
+} from '../ui/xlsxReport'
 
 // ---------------- Export: วัสดุตาม Job (Ref.PO) ----------------
 // สเปกคอลัมน์รวมศูนย์ — แหล่งความจริงเดียวของทั้งไฟล์ Excel และชีต "คำอธิบาย"
 // (แนวเดียวกับ SHEET_COLS ของ Project Stock และ PR_COLS ของหน้า Purchasing)
 // ⚠️ export อย่างเดียว ไม่มี import กลับ — ไฟล์นี้เป็น "รายงานตรวจสอบ" ไม่ใช่แบบฟอร์มกรอก
-const MAT_COLS: { key: string; width: number; note: string }[] = [
+//    จึงใส่แถวรวมท้ายตารางได้ (ต่างจากชีตข้อมูลของคลัง LBS ที่ import กลับได้)
+const MAT_COLS: ReportCol[] = [
   { key: 'Job No.', width: 16, note: 'งานที่วัสดุชุดนี้ผูกอยู่' },
   { key: 'Customer', width: 24, note: 'ลูกค้าของงานนั้น' },
   { key: 'PO No.', width: 18, note: 'ใบสั่งซื้อที่รับของครบแล้ว (1 PR ออกได้หลาย PO)' },
@@ -21,13 +27,19 @@ const MAT_COLS: { key: string; width: number; note: string }[] = [
   { key: 'วันที่รับของครบ', width: 16, note: 'วันที่ PO ใบนั้นปิดรับของ' },
   { key: 'รหัส Epicor', width: 18, note: 'รหัสอ้างอิงระบบ ERP' },
   { key: 'ชื่ออุปกรณ์', width: 30, note: 'ชื่อในฐานข้อมูลวัสดุ' },
-  { key: 'จำนวนที่รับ', width: 12, note: 'จำนวนที่รับเข้ามาจริง (ไม่ใช่จำนวนที่สั่ง)' },
+  { key: 'จำนวนที่รับ', width: 12, note: 'จำนวนที่รับเข้ามาจริง (ไม่ใช่จำนวนที่สั่ง)', num: 'int', total: true },
   { key: 'หน่วย', width: 10, note: 'หน่วยนับ' },
-  { key: 'ราคา/หน่วย', width: 14, note: 'ราคาจริงที่บันทึกไว้หลังออก PO · ว่าง = ยังไม่ได้กรอก' },
-  { key: 'มูลค่า', width: 16, note: 'ราคา/หน่วย × จำนวนที่รับ' },
+  { key: 'ราคา/หน่วย', width: 14, note: 'ราคาจริงที่บันทึกไว้หลังออก PO · ว่าง = ยังไม่ได้กรอก', num: 'money' },
+  { key: 'มูลค่า', width: 16, note: 'ราคา/หน่วย × จำนวนที่รับ', num: 'money', total: true },
   { key: 'เบิกให้ Service', width: 18, note: 'ยังอยู่กับ Job / วันที่เบิกออกไปให้ Service (0059)' },
 ]
-const MAT_HEADERS = MAT_COLS.map(c => c.key)
+
+// ชื่อชีตข้อมูลของรายงาน "วัสดุตาม Job" — คงชื่อเดิมไว้เพื่อให้ไฟล์เก่า/ใหม่อ่านเหมือนกัน
+const MAT_SHEET = 'วัสดุตาม Job'
+
+/** สัดส่วน % แบบปลอดหารศูนย์ — ใช้ในตารางสรุปทุกตัว */
+const pctOf = (part: number, whole: number): Cell => (whole > 0 ? (part / whole) * 100 : '-')
+const PCT: NumKind = 'pct'
 
 // ฟอร์มแก้ข้อมูลรายเครื่อง (0043/0049) — รวม "แก้ Serial" เข้ามาในฟอร์มเดียวแล้ว
 // serialLvb/serialOm แก้ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก (in_stock) — บันทึกผ่าน updateUnitInfo แยก call
@@ -97,13 +109,15 @@ interface ColSpec {
   key: string; io: 'in' | 'auto'; required?: boolean
   width: number; format: string; note: string
   alias?: string[]
+  /** รูปแบบตัวเลขในไฟล์ (ReportCol) — ใส่เฉพาะคอลัมน์ตัวเลข/เงิน */
+  num?: NumKind
 }
 const SHEET_COLS: ColSpec[] = [
   { key: 'Serial.LVB', io: 'in', required: true, width: 16, format: 'ข้อความ',
     note: 'เลข Serial ของตัว LBS — ห้ามซ้ำกับเครื่องอื่นทั้งระบบ', alias: ['serial.lvb', 'serial_lvb', 'lvb'] },
   { key: 'Serial.OM', io: 'in', required: true, width: 16, format: 'ข้อความ',
     note: 'เลข Serial ของ OM — ห้ามซ้ำ และห้ามเท่ากับ Serial.LVB ของเครื่องเดียวกัน', alias: ['serial.om', 'serial_om', 'om'] },
-  { key: 'Cost/Set', io: 'in', width: 14, format: 'ตัวเลข (บาท)',
+  { key: 'Cost/Set', io: 'in', width: 14, format: 'ตัวเลข (บาท)', num: 'money',
     note: 'ต้นทุนต่อเครื่อง — ตัวเลขไม่ติดลบ · ปล่อยว่าง = คงค่าเดิม',
     alias: ['ต้นทุน/เครื่อง', 'ต้นทุน', 'cost', 'unit_cost', 'cost/set'] },
   { key: 'Customer', io: 'in', width: 24, format: 'ข้อความ',
@@ -120,7 +134,7 @@ const SHEET_COLS: ColSpec[] = [
     alias: ['plan po receipt', 'plan_po', 'plan po'] },
   { key: 'FOB date', io: 'in', width: 13, format: 'YYYY-MM-DD',
     note: 'วันที่ของลงเรือ — กรอกช่องนี้แล้วระบบคำนวณ ETA to WH ให้เอง', alias: ['fob', 'fob_date', 'fob date'] },
-  { key: 'ระยะขนส่ง (วัน)', io: 'in', width: 15, format: `จำนวนเต็ม ${ETA_LEAD_MIN}–${ETA_LEAD_MAX}`,
+  { key: 'ระยะขนส่ง (วัน)', io: 'in', width: 15, format: `จำนวนเต็ม ${ETA_LEAD_MIN}–${ETA_LEAD_MAX}`, num: 'int',
     note: `ระยะเวลา FOB → คลัง · ปล่อยว่าง = ใช้ค่ามาตรฐาน ${ETA_LEAD_DAYS} วัน · ใช้ได้เมื่อกรอก FOB date เท่านั้น`,
     alias: ['ระยะขนส่ง', 'lead', 'lead_days', 'lead days'] },
   // ⚠️ ห้ามใส่ 'Plan PO receipt' เป็น alias ของ ETA อีก — 0053 ใช้ชื่อนั้นเป็นคอลัมน์ใหม่ (วันรับ PO จากลูกค้า)
@@ -138,7 +152,6 @@ const SHEET_COLS: ColSpec[] = [
   { key: 'Actual Delivery', io: 'auto', width: 14, format: 'YYYY-MM-DD',
     note: 'วันที่ติดตั้งจริง — Service เป็นผู้ยืนยันหน้างาน' },
 ]
-const COL_HEADERS = SHEET_COLS.map(c => c.key)
 // รายชื่อหัวตารางที่ import ยอมรับต่อคอลัมน์ (ชื่อหลัก + alias)
 const colKeys = (key: string): string[] => {
   const c = SHEET_COLS.find(x => x.key === key)!
@@ -236,6 +249,8 @@ export default function StocksPage() {
 
   const lbsItem = db.items.find(i => i.itemType === 'main_equipment')!
   const canManage = can(user, 'stock.manage')
+  // สิทธิ์ดาวน์โหลดรายงานผู้บริหาร (ไฟล์พาต้นทุน/มูลค่าคลังออกนอกระบบ) — ไม่มีสิทธิ์ = ไม่เห็นปุ่ม
+  const canReport = can(user, 'report.exec')
   // ---- วัสดุตาม Job (Ref.PO): วัสดุที่รับของครบจาก PO ที่ปิดรับของแล้ว ----
   // ⚠️ แก้บั๊กจับคู่ (2026-08-23): เดิมกรอง `r.prId === po.prId` — ตั้งแต่ 0022 ที่ 1 PR ออกได้หลาย PO
   //    บรรทัดของ PO ใบหนึ่งจะไปโผล่ใต้ PO ใบอื่นที่มาจาก PR เดียวกันด้วย ⇒ รายการซ้ำ/มูลค่าเกินจริง
@@ -316,8 +331,9 @@ export default function StocksPage() {
     const XLSX = await import('xlsx')
     const s = db.projectStocks.find(x => x.id === stockId)!
     const units = db.lbsUnits.filter(u => u.projectStockId === stockId)
+    const sum = stockSummary(db, stockId)
     // ข้อมูลลูกค้า ref จาก Job ที่เครื่องถูกดึงเข้า (single source of truth)
-    const rows = units.map(u => {
+    const rows: Record<string, Cell>[] = units.map(u => {
       const job = u.jobId ? db.jobs.find(j => j.id === u.jobId) : undefined
       return {
         'Serial.LVB': u.serialLvb,
@@ -337,13 +353,137 @@ export default function StocksPage() {
         'Actual Delivery': unitInstallDate(db, u.id) ?? '',
       }
     })
-    // header: บังคับลำดับคอลัมน์ + **คลังเปล่าก็ยังได้หัวตารางครบ** (เดิม json_to_sheet([]) ออกไฟล์ว่างเปล่า
-    // ใช้เป็นแบบฟอร์มกรอกไม่ได้เลย — เจอจริงตอน export Project Stock No.21)
-    const ws = XLSX.utils.json_to_sheet(rows, { header: COL_HEADERS })
-    ws['!cols'] = SHEET_COLS.map(c => ({ wch: c.width }))
-    // autofilter บนหัวตาราง — เปิดไฟล์แล้วกรอง Status / ค้น Serial ได้ทันทีโดยไม่ต้องตั้งเอง
+    // ชีตข้อมูล — หัวตารางแถว 1 + autofilter + ความกว้าง + รูปแบบตัวเลข (คลังเปล่าก็ได้หัวตารางครบ
+    // ตามบั๊กที่เจอตอน export Project Stock No.21) · **ไม่ใส่แถวรวม** เพราะชีตนี้ Import กลับได้
     // (freeze panes ไม่ได้ตั้งไว้ — SheetJS รุ่น community ไม่เขียน `!freeze` ลงไฟล์ ใส่ไปก็ไม่มีผล)
-    ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(rows.length, 1), c: SHEET_COLS.length - 1 } }) }
+    const ws = dataSheet(XLSX, rows, SHEET_COLS)
+
+    // ---------------- ชีต "สรุปผู้บริหาร" ----------------
+    // ตัวเลขทุกตัวมาจาก stockSummary / unitFlowState ชุดเดียวกับที่การ์ดคลังบนหน้าจอใช้
+    // (ไม่คำนวณซ้ำในนี้ — ไฟล์กับหน้าจอต้องตอบเลขเดียวกันเสมอ)
+    const installedCount = units.filter(u => !!unitInstallDate(db, u.id)).length
+    const uncosted = units.length - sum.costedUnits
+    const totalCost = sum.totalCost ?? 0
+
+    const FLOW_ORDER = ['unknown', 'pending', 'on_hand', 'allocated', 'issued', 'installed', 'blocked']
+    const flowRows = FLOW_ORDER
+      .map(k => {
+        const us = units.filter(u => unitFlowState(db, u) === k)
+        return { k, count: us.length, cost: us.reduce((n, u) => n + (u.unitCost ?? 0), 0) }
+      })
+      .filter(x => x.count > 0)
+
+    // Job ที่ดึงเครื่องจากคลังนี้ — เรียงเครื่องมาก→น้อย (งานที่กินของจากคลังนี้มากสุดอยู่บน)
+    const jobIds = [...new Set(units.map(u => u.jobId).filter((v): v is string => !!v))]
+    const jobRows = jobIds
+      .map(jid => {
+        const job = db.jobs.find(j => j.id === jid)
+        const us = units.filter(u => u.jobId === jid)
+        return {
+          jobNo: job?.jobNo ?? '(ไม่พบ Job)',
+          customer: job?.customerName ?? '-',
+          count: us.length,
+          issued: us.filter(u => u.status === 'issued').length,
+          installed: us.filter(u => !!unitInstallDate(db, u.id)).length,
+          cost: us.reduce((n, u) => n + (u.unitCost ?? 0), 0),
+        }
+      })
+      .sort((a, b) => b.count - a.count || a.jobNo.localeCompare(b.jobNo))
+
+    // แผนของเข้าคลังรายเดือน — เฉพาะเครื่องที่ยังไม่ถูกดึงเข้า Job (ของที่ยัง "จะมา")
+    const etaBuckets = new Map<string, { count: number; cost: number }>()
+    units.filter(u => u.status === 'in_stock').forEach(u => {
+      const eta = unitEta(u)
+      const key = eta ? eta.slice(0, 7) : 'ยังไม่ระบุ ETA'
+      const g = etaBuckets.get(key) ?? { count: 0, cost: 0 }
+      g.count += 1
+      g.cost += u.unitCost ?? 0
+      etaBuckets.set(key, g)
+    })
+
+    const tables: SumTable[] = [
+      {
+        title: `สถานะรายเครื่อง (Status) — ${units.length} เครื่อง`,
+        head: ['สถานะ', 'จำนวน (เครื่อง)', 'สัดส่วน', 'ต้นทุนรวม (บาท)'],
+        rows: flowRows.map(f => [UNIT_FLOW[f.k].label, f.count, pctOf(f.count, units.length), f.cost]),
+        num: { 1: 'int', 2: PCT, 3: 'money0' },
+        total: ['รวมทั้งคลัง', units.length, units.length > 0 ? 100 : '-', totalCost],
+        empty: '(คลังนี้ยังไม่มีเครื่องในระบบ)',
+      },
+      {
+        title: 'Job ที่ดึงเครื่องจากคลังนี้',
+        head: ['Job No.', 'ลูกค้า', 'ดึงไป (เครื่อง)', 'เบิกให้ Service', 'ติดตั้งแล้ว', 'ต้นทุน LBS (บาท)'],
+        rows: jobRows.map(j => [j.jobNo, j.customer, j.count, j.issued, j.installed, j.cost]),
+        num: { 2: 'int', 3: 'int', 4: 'int', 5: 'money0' },
+        total: [
+          `รวม ${jobRows.length} Job`, '',
+          jobRows.reduce((n, j) => n + j.count, 0),
+          jobRows.reduce((n, j) => n + j.issued, 0),
+          jobRows.reduce((n, j) => n + j.installed, 0),
+          jobRows.reduce((n, j) => n + j.cost, 0),
+        ],
+        empty: '(ยังไม่มีเครื่องจากคลังนี้ถูกดึงเข้า Job)',
+      },
+      {
+        title: 'แผนของเข้าคลังรายเดือน (เฉพาะเครื่องที่ยังคงเหลือในคลัง)',
+        head: ['เดือนที่ของถึงคลัง (ETA to WH)', 'จำนวนเครื่อง', 'ต้นทุนรวม (บาท)'],
+        rows: [...etaBuckets.entries()]
+          .sort((a, b) => a[0].localeCompare(b[0]))
+          .map(([k, v]) => [k, v.count, v.cost]),
+        num: { 1: 'int', 2: 'money0' },
+        empty: '(ไม่มีเครื่องคงเหลือในคลังนี้)',
+      },
+    ]
+
+    const wsSum = summarySheet(XLSX, {
+      title: `รายงานผู้บริหาร — Project Stock (คลัง LBS)`,
+      scope: `${s.stockNo} · ${LBS_DESCRIPTION}`,
+      meta: [
+        ['คลัง', s.stockNo],
+        ['สถานะคลัง', s.status === 'open' ? 'เปิดรับเข้า (open)' : 'ปิดแล้ว (closed)'],
+        ['PO No. ที่สั่งเข้าคลัง', s.poNo || '-'],
+        ['Remark', s.notes || '-'],
+        ['สร้างคลังเมื่อ', fmtDate(s.createdAt)],
+        ...stampMeta(user, user ? DEPT_LABEL[user.department] : undefined),
+      ],
+      warnings: [
+        ...(sum.unknown > 0
+          ? [`มี ${sum.unknown} เครื่องที่ยังไม่ระบุ ETA to WH — ตัวเลข On Hand / Pending ยังไม่ใช่ภาพจริงทั้งคลัง`]
+          : []),
+        ...(uncosted > 0
+          ? [`มูลค่าคลังนับจากเครื่องที่กรอกต้นทุนแล้วเท่านั้น (${sum.costedUnits}/${units.length} เครื่อง) — ยอดจริงสูงกว่าที่เห็น`]
+          : []),
+        ...(s.status === 'closed' ? ['คลังนี้ปิดแล้ว — ไม่รับเครื่องเข้าเพิ่ม ตัวเลขในไฟล์เป็นยอดปิดคลัง'] : []),
+      ],
+      kpis: [
+        { label: 'LBS ทั้งหมดในคลังนี้', value: units.length, unit: 'เครื่อง', num: 'int' },
+        { label: 'คงเหลือในคลัง (ยังไม่ถูกดึงเข้า Job)', value: sum.available, unit: 'เครื่อง', num: 'int',
+          note: `On Hand ${sum.onHand} · Pending ${sum.pending} · ยังไม่ระบุ ETA ${sum.unknown}` },
+        { label: 'พร้อมดึงเข้า Job (On Hand)', value: sum.onHand, unit: 'เครื่อง', num: 'int',
+          note: 'ยืนยันได้ว่าของถึงคลังแล้ว — ตัวเลขนี้คือกำลังผลิตที่ขายได้จริง' },
+        { label: 'ระหว่างขนส่ง (Pending)', value: sum.pending, unit: 'เครื่อง', num: 'int',
+          note: 'ยังไม่ถึง ETA to WH — จองล่วงหน้าเข้า Job ได้ แต่เบิกให้ Service ไม่ได้' },
+        { label: 'ยังไม่ระบุ ETA to WH (?)', value: sum.unknown, unit: 'เครื่อง', num: 'int',
+          note: 'ต้องกรอก FOB date หรือ ETA ก่อน ระบบจึงบอกได้ว่าของถึงคลังหรือยัง' },
+        { label: 'ถูกดึงเข้า Job แล้ว', value: sum.allocated, unit: 'เครื่อง', num: 'int' },
+        { label: 'เบิกให้ Service แล้ว', value: sum.issued, unit: 'เครื่อง', num: 'int' },
+        { label: 'ติดตั้งเสร็จแล้ว (ยืนยันหน้างาน)', value: installedCount, unit: 'เครื่อง', num: 'int' },
+        { label: 'มูลค่าคลัง (ต้นทุนรวม)', value: orDash(sum.totalCost), unit: 'บาท', num: 'money0',
+          note: `นับจาก ${sum.costedUnits}/${units.length} เครื่องที่กรอกต้นทุนแล้ว` },
+        { label: 'ต้นทุนเฉลี่ยต่อเครื่อง', value: sum.costedUnits > 0 ? totalCost / sum.costedUnits : '-',
+          unit: 'บาท', num: 'money' },
+        { label: 'เครื่องที่ยังไม่กรอกต้นทุน', value: uncosted, unit: 'เครื่อง', num: 'int',
+          note: uncosted > 0 ? 'กรอกที่ปุ่ม "แก้ข้อมูล" รายเครื่อง หรือผ่าน Import Excel' : 'ครบทุกเครื่อง' },
+      ],
+      tables,
+      notes: [
+        'Status ทุกค่าเป็นค่าที่ระบบคำนวณให้จาก ETA to WH + สถานะการดึง/เบิก/ติดตั้ง — ไม่มีใครกรอกมือ (ลำดับทั้งเส้นอยู่ในชีต "วิธีกรอก")',
+        `ETA to WH = FOB date + ระยะขนส่ง (${ETA_LEAD_MIN}–${ETA_LEAD_MAX} วัน · ค่ามาตรฐาน ${ETA_LEAD_DAYS}) · ไม่มีทั้ง FOB และ ETA จะขึ้น "?" ระบบไม่เดาว่าของถึงคลังแล้ว`,
+        'มูลค่าคลัง = ผลรวม "ต้นทุน/เครื่อง" ของเครื่องที่กรอกราคาไว้ — เป็นต้นทุนที่บันทึกในระบบนี้ ไม่ใช่มูลค่าตามบัญชี',
+        'ต้นทุนของเครื่องที่ถูกดึงเข้า Job จะไปบวกเป็น actual หมวด Raw Material ของงานนั้นด้วย — อย่านับซ้ำกับรายงานงบ Job',
+        `ชีต "${s.stockNo}" นำกลับเข้าระบบได้ด้วยปุ่ม ⬆ Import Excel — ห้ามย้าย/ลบแถวหัวตาราง และห้ามเพิ่มแถวรวมในชีตนั้น`,
+      ],
+    })
 
     // ชีต "วิธีกรอก" — บอกว่าคอลัมน์ไหนกรอกได้ / ไหนระบบเติมให้ / รูปแบบ / กติกา
     const guide = [
@@ -365,6 +505,8 @@ export default function StocksPage() {
       ['4', 'เครื่องที่เบิกให้ Service แล้วจะถูกข้ามทั้งแถว — ระบบล็อกการแก้ไขไว้'],
       ['5', 'วันที่กรอกเป็น YYYY-MM-DD (เช่น 2026-09-01) หรือใช้เซลล์ชนิดวันที่ของ Excel ก็ได้'],
       ['6', `ETA to WH = FOB date + ระยะขนส่ง · ถ้าไม่กรอก FOB และไม่กรอก ETA เลย Status จะขึ้น "?" (ระบบไม่เดาว่าของถึงคลังแล้ว)`],
+      ['7', `ชีต "${SHEET_SUMMARY}" กับชีตนี้เป็นชีตอ่านอย่างเดียว — ระบบข้ามให้เองตอน Import ไม่ต้องลบก่อนอัปไฟล์`],
+      ['8', `แก้ไขได้เฉพาะชีต "${s.stockNo}" · ห้ามเปลี่ยนชื่อชีตนั้น ห้ามย้าย/ลบแถวหัวตาราง และห้ามเพิ่มแถวรวมท้ายตาราง`],
       [],
       ['ลำดับ Status (ระบบคำนวณให้ ไม่ต้องกรอก)'],
       ['?', 'ยังไม่ระบุ ETA to WH'],
@@ -377,10 +519,14 @@ export default function StocksPage() {
     const wsGuide = XLSX.utils.aoa_to_sheet(guide)
     wsGuide['!cols'] = [{ wch: 26 }, { wch: 28 }, { wch: 10 }, { wch: 22 }, { wch: 86 }]
 
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, s.stockNo.slice(0, 31))
-    XLSX.utils.book_append_sheet(wb, wsGuide, 'วิธีกรอก')
-    XLSX.writeFile(wb, `${s.stockNo.replace(/[\\/:*?"<>|]/g, '-')}-${new Date().toISOString().slice(0, 10)}.xlsx`)
+    // ลำดับชีต: สรุปผู้บริหารมาก่อน (คนเปิดไฟล์เห็นภาพรวมทันที) แล้วชีตข้อมูล แล้วคู่มือ
+    // ⚠️ ชีตข้อมูลไม่ใช่ชีตแรกแล้ว — ตัวอ่าน Import ต้องใช้ dataSheetName() ห้ามอ่าน SheetNames[0]
+    const wb = buildWorkbook(XLSX, [
+      { name: SHEET_SUMMARY, ws: wsSum },
+      { name: s.stockNo, ws },
+      { name: 'วิธีกรอก', ws: wsGuide },
+    ])
+    saveReport(XLSX, wb, `รายงานผู้บริหาร-${s.stockNo}`)
   }
 
   const onPickImportFile = async (file: File) => {
@@ -390,9 +536,11 @@ export default function StocksPage() {
       const XLSX = await import('xlsx')
       // cellDates: เซลล์วันที่ (Plan PO receipt / Plan Delivery) จะได้เป็น Date ไม่ใช่ serial number
       const wb = XLSX.read(await file.arrayBuffer(), { cellDates: true })
-      // ข้ามชีต "วิธีกรอก" ที่แนบไปกับไฟล์ Export — อ่านชีตข้อมูลชีตแรกที่ไม่ใช่คู่มือ
-      const dataSheet = wb.SheetNames.find(n => n !== 'วิธีกรอก') ?? wb.SheetNames[0]
-      const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[dataSheet], { defval: '' })
+      // หาชีตข้อมูล: ลองชื่อคลังที่กำลัง import เข้าก่อน แล้วค่อย fallback ชีตแรกที่ไม่ใช่คู่มือ/สรุป
+      // ⚠️ ตั้งแต่ 2026-09-09 ไฟล์ Export มีชีต "สรุปผู้บริหาร" เป็นชีตแรก — อ่าน SheetNames[0]
+      //    ตรง ๆ จะได้ชีตสรุปแล้วขึ้น "ไฟล์ไม่มีข้อมูล" ทั้งที่ไฟล์ถูกต้อง
+      const sheetName = dataSheetName(wb, [target.no])
+      const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[sheetName], { defval: '' })
       if (raw.length === 0) return show('ไฟล์ไม่มีข้อมูล — ต้องมีหัวตาราง Serial.LVB และ Serial.OM อย่างน้อย', true)
 
       const newUnits: UnitRow[] = []
@@ -498,7 +646,7 @@ export default function StocksPage() {
   // Export ตามที่กรองอยู่บนจอ — คนตรวจมักกรองเฉพาะงานที่สนใจแล้วค่อยส่งไฟล์ต่อ
   // ถ้า export ทั้งหมดเสมอ เขาต้องไปลบแถวเองใน Excel ซึ่งเป็นจุดที่ตัวเลขเริ่มเพี้ยน
   const exportMaterial = async () => {
-    const rows = matFiltered.map(({ po, r, item }) => {
+    const rows: Record<string, Cell>[] = matFiltered.map(({ po, r, item }) => {
       const job = db.jobs.find(j => j.id === po.jobId)
       return {
         'Job No.': job?.jobNo ?? '',
@@ -516,34 +664,135 @@ export default function StocksPage() {
       }
     })
     const XLSX = await import('xlsx')
-    // header: บังคับลำดับคอลัมน์ + ไม่มีรายการก็ยังได้หัวตารางครบ (บั๊กคลังเปล่าที่เจอตอน 0049)
-    const ws = XLSX.utils.json_to_sheet(rows, { header: MAT_HEADERS })
-    ws['!cols'] = MAT_COLS.map(c => ({ wch: c.width }))
-    ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(rows.length, 1), c: MAT_COLS.length - 1 } }) }
+    // ไฟล์นี้อ่านอย่างเดียว → ใส่แถวรวมท้ายตารางได้ (ต่างจากชีตข้อมูลของคลัง LBS ที่ import กลับได้)
+    const ws = dataSheet(XLSX, rows, MAT_COLS, { totalRow: true, totalLabel: `รวม ${rows.length} รายการ` })
 
-    const total = rows.reduce((n, x) => n + (typeof x['มูลค่า'] === 'number' ? x['มูลค่า'] : 0), 0)
-    const guide = [
-      ['วัสดุตาม Job (Ref.PO) — รายการที่รับของครบจาก PO แล้ว'],
-      [`ออกจากระบบเมื่อ ${fmtDateTime(new Date().toISOString())}`],
-      [`${rows.length} รายการ · ${new Set(rows.map(r => r['PO No.'])).size} PO · ${new Set(rows.map(r => r['Job No.'])).size} Job · มูลค่ารวม ${total.toLocaleString('th-TH')} บาท`],
-      matSearch.trim() ? [`⚠️ ไฟล์นี้กรองด้วยคำค้น "${matSearch.trim()}" — ไม่ใช่รายการทั้งหมดในระบบ`] : [],
-      [],
-      ['คอลัมน์', 'คำอธิบาย'],
-      ...MAT_COLS.map(c => [c.key, c.note]),
-      [],
-      ['ข้อควรรู้'],
-      ['1', 'นี่ไม่ใช่ยอดคลังคงเหลือ — ของทุกชิ้นในไฟล์นี้ผูกกับ Job ไปแล้ว (คลังคงเหลือดูที่หน้า Material Database)'],
-      ['2', 'นับเฉพาะ PO ที่ปิดรับของครบทั้งใบ · ของที่ยังค้างรับดูที่หน้า Purchasing'],
-      ['3', '"เบิกให้ Service" คือขั้นส่งของออกหน้างาน (0059) — รับของแล้วไม่ได้แปลว่าออกไปหน้างานแล้ว'],
-      ['4', 'ไฟล์นี้ Import กลับเข้าระบบไม่ได้ — เป็นรายงานสำหรับตรวจสอบเท่านั้น'],
+    // ---------------- ชีต "สรุปผู้บริหาร" ----------------
+    const total = matFiltered.reduce((n, x) => n + lineValue(x.r), 0)
+    const noPrice = matFiltered.filter(x => x.r.unitPrice === undefined)
+    const atJob = matFiltered.filter(x => !x.r.issuedToServiceAt)
+    const atSite = matFiltered.filter(x => !!x.r.issuedToServiceAt)
+    const atJobValue = atJob.reduce((n, x) => n + lineValue(x.r), 0)
+    const atSiteValue = atSite.reduce((n, x) => n + lineValue(x.r), 0)
+    const suppliers = new Set(matFiltered.map(x => x.po.supplierName || '(ไม่ระบุ)'))
+
+    // Top วัสดุตามมูลค่า — ผู้บริหารถามเสมอว่า "เงินก้อนนี้ไปลงที่ของอะไร"
+    const byItem = new Map<string, { name: string; code: string; uom: string; qty: number; value: number }>()
+    matFiltered.forEach(({ r, item }) => {
+      const key = item?.id ?? 'unknown'
+      const g = byItem.get(key) ?? {
+        name: item?.name ?? '(ไม่พบวัสดุ)', code: item?.epicorCode || '-', uom: item?.uom ?? '', qty: 0, value: 0,
+      }
+      g.qty += r.qtyReceived
+      g.value += lineValue(r)
+      byItem.set(key, g)
+    })
+    const topItems = [...byItem.values()].sort((a, b) => b.value - a.value || b.qty - a.qty).slice(0, 10)
+
+    const bySupplier = new Map<string, { pos: Set<string>; lines: number; value: number }>()
+    matFiltered.forEach(({ po, r }) => {
+      const key = po.supplierName || '(ไม่ระบุ)'
+      const g = bySupplier.get(key) ?? { pos: new Set<string>(), lines: 0, value: 0 }
+      g.pos.add(po.id)
+      g.lines += 1
+      g.value += lineValue(r)
+      bySupplier.set(key, g)
+    })
+    const supplierRows = [...bySupplier.entries()].sort((a, b) => b[1].value - a[1].value)
+
+    const tables: SumTable[] = [
+      {
+        title: 'สรุปตาม Job — เงินที่ลงไปกับวัสดุของแต่ละงาน',
+        head: ['Job No.', 'ลูกค้า', 'PO (ใบ)', 'รายการ', 'มูลค่า (บาท)', 'รับของล่าสุด'],
+        rows: matJobs.map(g => [g.jobNo, g.customer, g.pos.length, g.lines, g.value, g.latest.slice(0, 10) || '-']),
+        num: { 2: 'int', 3: 'int', 4: 'money0' },
+        total: [`รวม ${matJobs.length} Job`, '', matTotal.pos, matTotal.lines, total, ''],
+        empty: '(ไม่มีรายการในขอบเขตนี้)',
+      },
+      {
+        title: 'Top 10 วัสดุตามมูลค่า',
+        head: ['รหัส Epicor', 'ชื่ออุปกรณ์', 'จำนวนรวม', 'หน่วย', 'มูลค่า (บาท)', 'สัดส่วนของมูลค่ารวม'],
+        rows: topItems.map(i => [i.code, i.name, i.qty, i.uom, i.value, pctOf(i.value, total)]),
+        num: { 2: 'int', 4: 'money0', 5: PCT },
+        empty: '(ไม่มีรายการในขอบเขตนี้)',
+      },
+      {
+        title: 'สรุปตามซัพพลายเออร์',
+        head: ['ซัพพลายเออร์', 'PO (ใบ)', 'รายการ', 'มูลค่า (บาท)', 'สัดส่วนของมูลค่ารวม'],
+        rows: supplierRows.map(([name, g]) => [name, g.pos.size, g.lines, g.value, pctOf(g.value, total)]),
+        num: { 1: 'int', 2: 'int', 3: 'money0', 4: PCT },
+        total: [`รวม ${supplierRows.length} ราย`, matTotal.pos, matTotal.lines, total, total > 0 ? 100 : '-'],
+        empty: '(ไม่มีรายการในขอบเขตนี้)',
+      },
     ]
-    const wsGuide = XLSX.utils.aoa_to_sheet(guide)
-    wsGuide['!cols'] = [{ wch: 22 }, { wch: 95 }]
 
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'วัสดุตาม Job')
-    XLSX.utils.book_append_sheet(wb, wsGuide, 'คำอธิบาย')
-    XLSX.writeFile(wb, `วัสดุตาม-Job-${new Date().toISOString().slice(0, 10)}.xlsx`)
+    const wsSum = summarySheet(XLSX, {
+      title: 'รายงานผู้บริหาร — วัสดุตาม Job (Ref.PO)',
+      scope: matSearch.trim()
+        ? `เฉพาะรายการที่ตรงคำค้น "${matSearch.trim()}"`
+        : 'ทุกรายการที่รับของครบจาก PO แล้ว (ทั้งระบบ)',
+      meta: [
+        ['ที่มาของข้อมูล', 'PO ที่ปิดรับของครบทั้งใบ — หน้า Project Stock แท็บ "วัสดุตาม Job (Ref.PO)"'],
+        ...stampMeta(user, user ? DEPT_LABEL[user.department] : undefined),
+      ],
+      warnings: [
+        ...(matSearch.trim()
+          ? [`ไฟล์นี้ถูกกรองด้วยคำค้น "${matSearch.trim()}" — ไม่ใช่รายการทั้งหมดในระบบ ห้ามใช้เป็นยอดรวมองค์กร`]
+          : []),
+        ...(noPrice.length > 0
+          ? [`มี ${noPrice.length} รายการที่ยังไม่ได้กรอกราคาจริง — มูลค่ารวมในไฟล์นี้ต่ำกว่าความจริง (กรอกที่ปุ่ม 💰 ราคาจริง หน้า Purchasing)`]
+          : []),
+      ],
+      kpis: [
+        { label: 'รายการวัสดุที่รับของครบแล้ว', value: matTotal.lines, unit: 'รายการ', num: 'int' },
+        { label: 'จำนวน PO ที่ปิดรับของ', value: matTotal.pos, unit: 'ใบ', num: 'int' },
+        { label: 'จำนวน Job ที่เกี่ยวข้อง', value: matJobs.length, unit: 'Job', num: 'int' },
+        { label: 'จำนวนซัพพลายเออร์', value: suppliers.size, unit: 'ราย', num: 'int' },
+        { label: 'มูลค่าวัสดุรวม', value: total, unit: 'บาท', num: 'money0',
+          note: 'ราคาจริง × จำนวนที่รับ — เฉพาะรายการที่กรอกราคาแล้ว' },
+        { label: 'มูลค่าที่ยังอยู่กับ Job', value: atJobValue, unit: 'บาท', num: 'money0',
+          note: `${atJob.length} รายการ — รับของแล้วแต่ยังไม่ส่งออกหน้างาน` },
+        { label: 'มูลค่าที่เบิกออกหน้างานแล้ว', value: atSiteValue, unit: 'บาท', num: 'money0',
+          note: `${atSite.length} รายการ — เบิกให้ Service แล้ว` },
+        { label: 'รายการที่ยังไม่กรอกราคาจริง', value: noPrice.length, unit: 'รายการ', num: 'int',
+          note: noPrice.length > 0 ? 'ทำให้มูลค่ารวมยังไม่ครบ' : 'ราคาครบทุกรายการ' },
+        { label: 'มูลค่าเฉลี่ยต่อ Job', value: matJobs.length > 0 ? total / matJobs.length : '-',
+          unit: 'บาท', num: 'money0' },
+      ],
+      tables,
+      notes: [
+        'นี่ไม่ใช่ยอดคลังคงเหลือ — ของทุกชิ้นในไฟล์นี้ผูกกับ Job ไปแล้ว (คลังคงเหลือดูที่หน้า Material Database)',
+        'นับเฉพาะ PO ที่ปิดรับของครบทั้งใบ · ของที่ยังค้างรับดูที่หน้า Purchasing (ยังไม่เป็นต้นทุนในไฟล์นี้)',
+        '"เบิกให้ Service" คือขั้นส่งของออกหน้างาน (0059) — รับของแล้วไม่ได้แปลว่าออกไปหน้างานแล้ว',
+        'มูลค่ารวมนับจากราคาจริงที่บันทึกหลังออก PO เท่านั้น — รายการที่ยังไม่กรอกราคาถูกนับเป็น 0',
+        'ไฟล์นี้ Import กลับเข้าระบบไม่ได้ — เป็นรายงานสำหรับตรวจสอบ/ประชุมเท่านั้น',
+      ],
+    })
+
+    const wsGuide = guideSheet(
+      XLSX,
+      [
+        ['วัสดุตาม Job (Ref.PO) — รายการที่รับของครบจาก PO แล้ว'],
+        [`ออกจากระบบเมื่อ ${fmtDateTime(new Date().toISOString())}`],
+        [`${matTotal.lines} รายการ · ${matTotal.pos} PO · ${matJobs.length} Job · มูลค่ารวม ${total.toLocaleString('th-TH')} บาท`],
+        ...(matSearch.trim() ? [[`⚠️ ไฟล์นี้กรองด้วยคำค้น "${matSearch.trim()}" — ไม่ใช่รายการทั้งหมดในระบบ`]] : []),
+      ],
+      MAT_COLS,
+      [
+        'นี่ไม่ใช่ยอดคลังคงเหลือ — ของทุกชิ้นในไฟล์นี้ผูกกับ Job ไปแล้ว (คลังคงเหลือดูที่หน้า Material Database)',
+        'นับเฉพาะ PO ที่ปิดรับของครบทั้งใบ · ของที่ยังค้างรับดูที่หน้า Purchasing',
+        '"เบิกให้ Service" คือขั้นส่งของออกหน้างาน (0059) — รับของแล้วไม่ได้แปลว่าออกไปหน้างานแล้ว',
+        'แถวสุดท้ายของชีตข้อมูลเป็นแถวรวม — autofilter ไม่คลุมแถวนั้น กรองแล้วยอดรวมไม่หาย',
+        'ไฟล์นี้ Import กลับเข้าระบบไม่ได้ — เป็นรายงานสำหรับตรวจสอบเท่านั้น',
+      ],
+    )
+
+    const wb = buildWorkbook(XLSX, [
+      { name: SHEET_SUMMARY, ws: wsSum },
+      { name: MAT_SHEET, ws },
+      { name: SHEET_GUIDE, ws: wsGuide },
+    ])
+    saveReport(XLSX, wb, 'รายงานผู้บริหาร-วัสดุตาม-Job')
   }
 
   return (
@@ -609,7 +858,13 @@ export default function StocksPage() {
               </h3>
               <div style={{ display: 'flex', gap: 8 }}>
                 {s.status === 'closed' && <span className="badge red">ปิดคลัง</span>}
-                <button className="small" onClick={() => exportStock(s.id)}>⬇ Export</button>
+                {/* ไฟล์พาต้นทุน/มูลค่าคลังออกไปนอกระบบ → ปุ่มหายทั้งปุ่มถ้าไม่มีสิทธิ์ (report.exec) */}
+                {canReport && (
+                  <button className="small" onClick={() => exportStock(s.id)}
+                    title="รายงานผู้บริหาร (Excel) — ชีตสรุป + รายเครื่อง (Import กลับได้) + วิธีกรอก">
+                    ⬇ Export
+                  </button>
+                )}
                 {canManage && (
                   <button className="small" onClick={() => { importToRef.current = { id: s.id, no: s.stockNo }; importFileRef.current?.click() }}>⬆ Import</button>
                 )}
@@ -729,11 +984,14 @@ export default function StocksPage() {
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                 <input style={{ width: 240 }} value={matSearch} onChange={e => setMatSearch(e.target.value)}
                   placeholder="ค้น Job No. / PO No. / รหัส Epicor / ชื่ออุปกรณ์" />
-                <button className="small" onClick={exportMaterial} disabled={matFiltered.length === 0}
-                  title={matFiltered.length === 0 ? 'ไม่มีรายการให้ export'
-                    : matSearch.trim() ? `export เฉพาะ ${matFiltered.length} รายการที่กรองอยู่` : ''}>
-                  ⬇ Export Excel{matSearch.trim() ? ` (${matFiltered.length})` : ''}
-                </button>
+                {canReport && (
+                  <button className="small" onClick={exportMaterial} disabled={matFiltered.length === 0}
+                    title={matFiltered.length === 0 ? 'ไม่มีรายการให้ export'
+                      : matSearch.trim() ? `รายงานผู้บริหาร — เฉพาะ ${matFiltered.length} รายการที่กรองอยู่ (ไฟล์เตือนไว้ในชีตสรุป)`
+                      : 'รายงานผู้บริหาร (Excel) — ชีตสรุป + รายละเอียดทุกบรรทัด + คำอธิบาย'}>
+                    ⬇ Export Excel{matSearch.trim() ? ` (${matFiltered.length})` : ''}
+                  </button>
+                )}
                 {matJobs.length > 0 && (
                   <button className="small" onClick={() => setOpenMatJobs(
                     openMatJobs.size === matJobs.length ? new Set() : new Set(matJobs.map(g => g.key)))}>

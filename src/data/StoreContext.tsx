@@ -77,6 +77,16 @@ export const PERMISSIONS: Record<string, Department[]> = {
   'accessory.cleanup': ['project', 'sales', 'admin'],   // ลบรายการวัสดุที่ยกเลิกออกจากการ์ด (Project/Division/Manage)
   // Standard Drawing / BOM (0045) — แก้ได้ Project/Division/Manage · ดู+ดาวน์โหลดได้ทุกแผนก
   'standards.manage': ['project', 'sales', 'admin'],
+  // ดาวน์โหลด "รายงานผู้บริหาร" (Excel) จากหน้า Project Stock / Job / Material Database (2026-09-09)
+  //   ไฟล์พาต้นทุน · ราคาต่อหน่วย · มูลค่าคลัง · กำไร/มาร์จิ้น ออกไปนอกระบบ (ส่งต่อทางเมลได้ ยึดคืนไม่ได้)
+  //   ⇒ ปุ่ม Export **หายทั้งปุ่ม** ถ้าไม่มีสิทธิ์นี้ (มติ 2026-09-09) ไม่ใช่ออกไฟล์แบบตัดคอลัมน์เงินทิ้ง
+  //   ⚠️ แผนกที่เห็นตัวเลขเงิน "บนจอ" อยู่แล้วต้องอยู่ในรายชื่อนี้ ไม่งั้นเป็นการถอยฟีเจอร์เดิม
+  //      (Project เห็นงบ 7 หมวด + ราคา/หน่วยในแผง Purchase Orders ของงานตัวเองอยู่แล้ว)
+  //   **ทุกแผนกที่ login ได้สิทธิ์นี้ (ผู้ใช้ยืนยัน 2026-09-09)** — เดิมตัด `service` ออกด้วยเหตุผลว่า
+  //   หน้างานติดตั้งไม่ใช้ตัวเลขต้นทุน แต่ Service ต้องส่งไฟล์ให้หัวหน้างาน/ลูกค้าเองอยู่แล้ว
+  //   ⇒ perm นี้ตอนนี้ครบทุกแผนก จึงเหลือความหมายเป็น "ต้อง login ก่อน" · **ยังไม่ลบทิ้ง**
+  //     เพราะเป็นจุดเดียวที่ปิดปุ่ม Export ทั้งระบบได้ทีเดียวถ้าภายหลังต้องจำกัดรายแผนกอีก
+  'report.exec': ['sales', 'purchasing', 'project', 'service', 'admin', 'vip'],
 }
 
 export function can(user: User | null, perm: keyof typeof PERMISSIONS): boolean {
