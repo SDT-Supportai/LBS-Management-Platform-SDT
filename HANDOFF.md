@@ -895,6 +895,18 @@ npm run test:watch
 
 ## 12. Gotchas / ข้อควรระวัง
 
+- 🔴 **ก่อน push ต้อง `git fetch` แล้วเช็คว่า local ตามหลัง `origin/main` ไหม — เครื่องนี้เคยค้างงานไม่ commit ทับของที่ใหม่กว่า**
+  เคสจริง 2026-09-09: working tree ถือทั้งงาน "รายงานผู้บริหาร" ที่ยังไม่ commit **และสำเนา 0062–0066 รุ่นเก่า** อยู่ด้วยกัน
+  ขณะที่ `origin/main` ไปถึง 0066 แล้ว (ต่างกัน 4 commit) — `git status` ดูเหมือนปกติเพราะทุกไฟล์เป็นแค่ ` M`
+  ถ้า commit ทั้งก้อนแล้ว push จะ **ย้อน production**: `epicorTxnType` · `markEpicorIssued`/`undoEpicorIssued`
+  ใน `remote.ts` + `StoreActions` และเทสต์ `logic.test.ts` 12 เคส หายทั้งชุด (ปุ่ม Done ของ 0064/0065 พังเงียบ ๆ บน LIVE)
+  **ท่าที่ใช้**: commit สแนปช็อตลง branch ชั่วคราว → `git merge origin/main` ให้ git ทำ 3-way → ไฟล์ที่เครื่องนี้
+  ไม่มีงานใหม่ของตัวเอง (`logic.ts` · `logic.test.ts` · `types.ts` · migration) เอาฝั่ง `origin/main` ทั้งดุ้น ·
+  ไฟล์ที่ทั้ง 2 ฝั่งมีงานจริง (`JobDetailPage`) รวมมือทีละ hunk → ตรวจ `tsc` + เทสต์ + demo แล้วค่อยยกขึ้น main
+  ⚠️ **ตรวจสเปกคอลัมน์ Export หลัง merge ด้วย** — `dataSheet()` ใช้ `header:` จาก `*_COLS` ⇒ คีย์ใน rows ที่ merge
+  เข้ามาแต่ไม่มีใน `*_COLS` จะ **หายจากไฟล์เงียบ ๆ ไม่ error** (เคสนี้ 4 คอลัมน์ Epicor ของ 0064/0065 เกือบหลุด)
+- **เลข 4 หลักในเอกสารนี้ = ชื่อไฟล์ migration เท่านั้น** — งานที่เป็น frontend ล้วน (เช่นรายงานผู้บริหาร 2026-09-09)
+  ให้อ้างด้วย **วันที่** ห้ามตั้งเลขชุดใหม่ เพราะเลขจะชนกับ migration ที่หมายถึงเรื่องอื่นแล้วอ่าน §9 ผิดคน
 - Supabase **secret key (`sb_secret_`) ใช้นอก server ไม่ได้** — Supabase บล็อกเองถ้ายิงจาก browser/PowerShell; ใช้ได้เฉพาะใน Pages Functions
 - ตัวอักษรไทยใน `curl -d` บน Git Bash (Windows) โดน mangle → JSON พัง; ถ้าต้องยิง API ที่มีค่าไทย ใช้ในแอป/PowerShell ที่ตั้ง UTF-8
 - แก้ business rule ต้องอัปเดตทั้ง demo (`logic.ts`) และ LIVE (RPC ตัวล่าสุด — grep หา `CREATE OR REPLACE FUNCTION <ชื่อ>` ในทุก migration แล้วดูไฟล์ที่ใหม่สุด ไม่ใช่แค่ 0002)
