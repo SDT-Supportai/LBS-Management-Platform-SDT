@@ -726,38 +726,48 @@ export default function MasterDataPage() {
 
       {/* ประวัติการเคลื่อนไหวของวัสดุ (ledger จาก S1) */}
       {ledgerItem && (
-        <Modal title={`ประวัติการเคลื่อนไหว — ${ledgerItem.name}`} onClose={() => setLedgerItem(null)}
-          footer={<button onClick={() => setLedgerItem(null)}>ปิด</button>}>
+        /* ขยายเป็น wide (2026-09-11) — คอลัมน์ "อ้างอิง" ยัด Job/หมายเหตุ/คนทำไว้ 3 บรรทัดในกล่อง
+           520px แล้วตัดคำทุกบรรทัด · แยก Job · หมายเหตุ · ผู้ทำรายการ เป็นคอลัมน์ของตัวเอง */
+        <Modal title={`ประวัติการเคลื่อนไหว — ${ledgerItem.name}`} onClose={() => setLedgerItem(null)} size="wide"
+          footer={<>
+            <span className="muted" style={{ marginRight: 'auto', fontSize: 12.5 }}>
+              {movementsOf(ledgerItem.id).length} รายการ · เรียงใหม่ → เก่า
+            </span>
+            <button onClick={() => setLedgerItem(null)}>ปิด</button>
+          </>}>
           <p className="muted" style={{ marginBottom: 10 }}>
+            <span className="mono">{ledgerItem.epicorCode || ledgerItem.code}</span> ·
             คงเหลือปัจจุบัน <b>{stockQty(ledgerItem.id)} {ledgerItem.uom}</b>
             {stockCost(ledgerItem.id) > 0 && <> · ต้นทุนถัวเฉลี่ย {fmtBaht(stockCost(ledgerItem.id))}</>}
             {stockLot(ledgerItem.id) && <> · Lot ปัจจุบัน <b className="mono">{stockLot(ledgerItem.id)}</b></>}
           </p>
-          <div className="table-scroll">
-            <table>
-              <thead><tr><th>เมื่อ</th><th>ประเภท</th><th>เข้า/ออก</th><th>Lot No.</th><th>คงเหลือ</th><th>อ้างอิง</th></tr></thead>
+          <div className="table-scroll" style={{ maxHeight: '56vh', overflowY: 'auto' }}>
+            <table className="ledger-table">
+              <thead><tr>
+                <th>เมื่อ</th><th>ประเภท</th><th style={{ textAlign: 'right' }}>เข้า/ออก</th>
+                <th style={{ textAlign: 'right' }}>คงเหลือ</th><th>Lot No.</th>
+                <th>Job</th><th>หมายเหตุ</th><th>ผู้ทำรายการ</th>
+              </tr></thead>
               <tbody>
                 {movementsOf(ledgerItem.id).length === 0 && (
-                  <tr><td colSpan={6}><div className="empty">ยังไม่มีการเคลื่อนไหว</div></td></tr>
+                  <tr><td colSpan={8}><div className="empty">ยังไม่มีการเคลื่อนไหว</div></td></tr>
                 )}
                 {movementsOf(ledgerItem.id).map(m => (
                   <tr key={m.id}>
-                    <td className="muted">{fmtDateTime(m.performedAt)}</td>
+                    <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(m.performedAt)}</td>
                     <td><span className="badge neutral">{MOVEMENT_LABEL[m.type] ?? m.type}</span></td>
-                    <td style={{ color: m.qty > 0 ? 'var(--green)' : 'var(--danger)', fontWeight: 600 }}>
-                      {m.qty > 0 ? '+' : ''}{m.qty} {ledgerItem.uom}
+                    <td style={{ color: m.qty > 0 ? 'var(--green)' : 'var(--danger)', fontWeight: 600, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      {m.qty > 0 ? '+' : ''}{m.qty} <span className="muted" style={{ fontWeight: 400 }}>{ledgerItem.uom}</span>
                       {m.unitCost !== undefined && m.unitCost > 0 && (
                         <div className="muted" style={{ fontWeight: 400 }}>@ {fmtBaht(m.unitCost)}</div>
                       )}
                     </td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}><b>{m.balanceAfter}</b></td>
                     {/* ขาเข้า = ล็อตที่รับเข้ามา · ขาออก = ล็อตที่อยู่ในคลังตอนนั้น (0055) */}
                     <td className="mono">{m.lotNo || <span className="muted">-</span>}</td>
-                    <td>{m.balanceAfter}</td>
-                    <td className="muted">
-                      {m.refJobId && <div>{jobNoOf(m.refJobId)}</div>}
-                      {m.note && <div>{m.note}</div>}
-                      <div>{userNameOf(m.performedBy)}</div>
-                    </td>
+                    <td className="mono">{m.refJobId ? jobNoOf(m.refJobId) : <span className="muted">-</span>}</td>
+                    <td className="muted">{m.note || '-'}</td>
+                    <td className="muted" style={{ whiteSpace: 'nowrap' }}>{userNameOf(m.performedBy)}</td>
                   </tr>
                 ))}
               </tbody>

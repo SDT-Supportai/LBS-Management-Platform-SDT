@@ -11,6 +11,7 @@ import {
   ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX,
   addDaysIso, daysBetweenIso, nextNo,
   markEpicorIssued, undoEpicorIssued, LINE_PUSH_TYPES, drawLbs,
+  qtyPendingIssue, qtyIssuedToService, accSettled, transferJobMaterialToStock,
 } from './logic'
 
 // =============================================================================
@@ -316,9 +317,27 @@ describe('เบิกแยกส่วน — เกณฑ์ Ready / Not Read
     expect(jobPendingIssueAccessories(db({ accessoryRequests: [r] }), 'j1')).toHaveLength(0)
   })
 
-  it('เบิกไปแล้วไม่ถูกนับเป็นของค้างอีก', () => {
-    const r = req({ status: 'received', issuedToServiceAt: '2026-06-01T00:00:00.000Z' })
-    expect(accIssueBlockReason(db(), r)).toBe('เบิกให้ Service ไปแล้ว')
+  // 0067 — "เบิกไปแล้ว" ต้องวัดด้วยจำนวน ไม่ใช่ธง issuedToServiceAt (ธงขึ้นตั้งแต่เบิกรอบแรก)
+  it('เบิกครบจำนวนแล้วไม่ถูกนับเป็นของค้างอีก', () => {
+    const r = req({ status: 'received', qtyRequested: 3, qtyIssuedToService: 3,
+      issuedToServiceAt: '2026-06-01T00:00:00.000Z' })
+    expect(accIssueBlockReason(db(), r)).toContain('เบิกครบแล้ว')
+    expect(jobPendingIssueAccessories(db({ accessoryRequests: [r] }), 'j1')).toHaveLength(0)
+  })
+
+  it('เบิกบางส่วนยังค้างอยู่ — ขวางการปิดใบจนกว่าทุกชิ้นจะมีที่ไป', () => {
+    const r = req({ status: 'received', qtyRequested: 10, qtyIssuedToService: 4,
+      issuedToServiceAt: '2026-06-01T00:00:00.000Z' })
+    expect(qtyPendingIssue(r)).toBe(6)
+    expect(accSettled(r)).toBe(false)
+    expect(accIssueBlockReason(db({ pos: [poReceived] }), r)).toBeUndefined()   // เบิกต่อได้
+    expect(jobPendingIssueAccessories(db({ accessoryRequests: [r] }), 'j1')).toHaveLength(1)
+  })
+
+  it('เบิกบางส่วน + โอนคืนคลังส่วนที่เหลือ = รายการจบ (มติ 2026-09-11)', () => {
+    const r = req({ status: 'received', qtyRequested: 10, qtyIssuedToService: 4, qtyTransferred: 6 })
+    expect(qtyPendingIssue(r)).toBe(0)
+    expect(accSettled(r)).toBe(true)
     expect(jobPendingIssueAccessories(db({ accessoryRequests: [r] }), 'j1')).toHaveLength(0)
   })
 
@@ -432,9 +451,73 @@ describe('เบิกแยกส่วน — เดินสถานะจ�
     expect(() => issueJobAccessory(d, actor, { jobId: 'j1', requestIds: ['r1'], ...plan })).toThrow(/PO-001/)
   })
 
-  it('เบิกซ้ำรายการเดิมไม่ได้', () => {
+  it('เบิกซ้ำรายการที่เบิกครบแล้วไม่ได้', () => {
     const d = issueJobAccessory(base(), actor, { jobId: 'j1', ...plan })
-    expect(() => issueJobAccessory(d, actor, { jobId: 'j1', requestIds: ['r1'] })).toThrow(/เบิกให้ Service ไปแล้ว/)
+    expect(() => issueJobAccessory(d, actor, { jobId: 'j1', requestIds: ['r1'] })).toThrow(/เบิกครบแล้ว/)
+  })
+
+  // ---- เบิกตามจำนวน (0067 · มติผู้ใช้ 2026-09-11) ----
+  it('เบิกบางส่วนได้ · ของที่เหลือค้างที่ Job · Job ยังไม่ปิดเป็น issued', () => {
+    const d0 = { ...base(), accessoryRequests: [req({ id: 'r1', qtyRequested: 10, status: 'received' })] }
+    const d = issueJobAccessory(d0, actor, { jobId: 'j1', requestIds: ['r1'], qtys: { r1: 4 }, ...plan })
+    const r = d.accessoryRequests[0]
+    expect(r.qtyIssuedToService).toBe(4)
+    expect(qtyPendingIssue(r)).toBe(6)
+    expect(effectiveQty(r)).toBe(10)                     // ต้นทุนไม่เปลี่ยน — ของยังเป็นของงานนี้
+    expect(d.jobs.find(j => j.id === 'j1')!.terminalStatus).toBeNull()
+    // เบิกรอบ 2 ต่อได้จนครบ แล้วรายการจึงจบ
+    const d2 = issueJobAccessory(d, actor, { jobId: 'j1', requestIds: ['r1'], qtys: { r1: 6 } })
+    expect(d2.accessoryRequests[0].qtyIssuedToService).toBe(10)
+    expect(accSettled(d2.accessoryRequests[0])).toBe(true)
+  })
+
+  it('เบิกเกินจำนวนที่ค้างไม่ได้ · เบิก 0 หรือค่าติดลบไม่ได้', () => {
+    const d0 = { ...base(), accessoryRequests: [req({ id: 'r1', qtyRequested: 10, status: 'received' })] }
+    expect(() => issueJobAccessory(d0, actor, { jobId: 'j1', requestIds: ['r1'], qtys: { r1: 11 }, ...plan }))
+      .toThrow(/ไม่เกิน 10/)
+    expect(() => issueJobAccessory(d0, actor, { jobId: 'j1', requestIds: ['r1'], qtys: { r1: 0 }, ...plan }))
+      .toThrow(/มากกว่า 0/)
+    const d1 = issueJobAccessory(d0, actor, { jobId: 'j1', requestIds: ['r1'], qtys: { r1: 7 }, ...plan })
+    expect(() => issueJobAccessory(d1, actor, { jobId: 'j1', requestIds: ['r1'], qtys: { r1: 4 } }))
+      .toThrow(/ไม่เกิน 3/)                              // เพดานคือ "ที่ยังค้าง" ไม่ใช่จำนวนที่ขอ
+  })
+
+  it('ไม่ส่ง qtys = เบิกที่ค้างทั้งหมด (เคสปกติ "เบิกครบ" ไม่ต้องกรอกอะไร)', () => {
+    const d0 = { ...base(), accessoryRequests: [req({ id: 'r1', qtyRequested: 8, status: 'received' })] }
+    const d = issueJobAccessory(d0, actor, { jobId: 'j1', requestIds: ['r1'], ...plan })
+    expect(d.accessoryRequests[0].qtyIssuedToService).toBe(8)
+    expect(accSettled(d.accessoryRequests[0])).toBe(true)
+  })
+
+  // ---- โอนคืนคลังคงเหลือ คู่กับการเบิกบางส่วน (0067) ----
+  it('โอนของที่ค้างที่ Job เข้าคลัง = รายการจบ + ต้นทุนถูกตัดออก', () => {
+    const d0 = { ...base(), accessoryRequests: [req({ id: 'r1', qtyRequested: 10, unitPrice: 100, status: 'received' })] }
+    const d1 = issueJobAccessory(d0, actor, { jobId: 'j1', requestIds: ['r1'], qtys: { r1: 4 }, ...plan })
+    const d2 = transferJobMaterialToStock(d1, actor, { requestId: 'r1', qty: 6 })
+    const r = d2.accessoryRequests[0]
+    expect(r.qtyTransferred).toBe(6)
+    expect(qtyIssuedToService(r)).toBe(4)      // ของที่ออกหน้างานแล้วไม่ถูกแตะ
+    expect(effectiveQty(r)).toBe(4)            // ต้นทุนเหลือ 4 ชิ้น = 400 บาท
+    expect(accSettled(r)).toBe(true)
+    expect(d2.accessoryStock.find(s => s.itemId === 'i1')!.qtyOnHand).toBe(6)
+    expect(d2.stockMovements.some(m => m.type === 'transfer_from_job')).toBe(true)
+  })
+
+  it('โอนเกินของที่ค้าง = ดึงของที่เบิกออกหน้างานแล้วกลับคืน (หัก qtyIssuedToService)', () => {
+    const d0 = { ...base(), accessoryRequests: [req({ id: 'r1', qtyRequested: 10, unitPrice: 100, status: 'received' })] }
+    const d1 = issueJobAccessory(d0, actor, { jobId: 'j1', requestIds: ['r1'], qtys: { r1: 8 }, ...plan })
+    const d2 = transferJobMaterialToStock(d1, actor, { requestId: 'r1', qty: 5 })   // ค้างที่ Job 2 → เกิน 3
+    const r = d2.accessoryRequests[0]
+    expect(r.qtyTransferred).toBe(5)
+    expect(qtyIssuedToService(r)).toBe(5)      // 8 − 3 ที่ช่างส่งคืน
+    expect(qtyPendingIssue(r)).toBe(0)         // บัญชี 3 ช่องยังรวมได้ 10 เสมอ
+    expect(effectiveQty(r)).toBe(5)
+    expect(d2.auditLogs.some(a => /ส่งคืนกลับคลัง/.test(a.detail))).toBe(true)
+  })
+
+  it('โอนคืนเกินจำนวนที่ Job ถือตามบัญชีไม่ได้', () => {
+    const d0 = { ...base(), accessoryRequests: [req({ id: 'r1', qtyRequested: 10, unitPrice: 100, status: 'received' })] }
+    expect(() => transferJobMaterialToStock(d0, actor, { requestId: 'r1', qty: 11 })).toThrow(/ไม่เกิน 10/)
   })
 
   it('เบิกก่อนดึง LBS ครบ Scope ไม่ได้', () => {

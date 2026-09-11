@@ -144,7 +144,8 @@ function mapAccReq(r: Row): AccessoryRequest {
     // ⚠️ qty_transferred เคยไม่ถูก map (ตกมาตั้งแต่ 0038) → effectiveQty() บนโหมด Supabase
     //    คืนยอดเต็มทั้งที่โอนคืนคลังไปแล้ว ทำให้ต้นทุนที่ตัดเข้า Job และยอด "ของค้างที่ Job" เกินจริง
     qtyTransferred: r.qty_transferred != null ? Number(r.qty_transferred) : undefined,
-    issuedToServiceAt: r.issued_to_service_at ?? undefined,       // 0059
+    issuedToServiceAt: r.issued_to_service_at ?? undefined,       // 0059 (= รอบล่าสุดที่เบิก)
+    qtyIssuedToService: r.qty_issued_to_service != null ? Number(r.qty_issued_to_service) : undefined,  // 0067
     issuedToServiceBy: r.issued_to_service_by ?? undefined,
     epicorIssuedAt: r.epicor_issued_at ?? undefined,             // 0064 ทำเบิก-Epicor
     epicorIssuedBy: r.epicor_issued_by ?? undefined,
@@ -457,12 +458,21 @@ export function remoteActions(sb: SupabaseClient) {
         p_start_date: p.startDate || null, p_end_date: p.endDate || null,
         p_location: p.location ?? null, p_note: p.note ?? null,
       }),
-    issueJobAccessory: (p: { jobId: string; requestIds?: string[]; startDate?: string; endDate?: string; location?: string; note?: string }) =>
-      rpc(sb, 'rpc_issue_job_accessory', {
-        p_job_id: p.jobId, p_request_ids: p.requestIds?.length ? p.requestIds : null,
+    // 0067 — เบิกทีละจำนวน: ส่ง p_qtys เรียงตำแหน่งให้ตรงกับ p_request_ids (null = เบิกที่ค้างทั้งหมด)
+    //   ⚠️ RPC เปลี่ยน signature (เพิ่ม p_qtys) ⇒ ต้องรัน migration 0067 ก่อน deploy frontend
+    //      ไม่งั้นได้ PGRST202 (หา signature ใหม่ไม่เจอ)
+    issueJobAccessory: (p: {
+      jobId: string; requestIds?: string[]; qtys?: Record<string, number>
+      startDate?: string; endDate?: string; location?: string; note?: string
+    }) => {
+      const ids = p.requestIds?.length ? p.requestIds : null
+      return rpc(sb, 'rpc_issue_job_accessory', {
+        p_job_id: p.jobId, p_request_ids: ids,
+        p_qtys: ids && p.qtys ? ids.map(id => p.qtys?.[id] ?? null) : null,
         p_start_date: p.startDate || null, p_end_date: p.endDate || null,
         p_location: p.location ?? null, p_note: p.note ?? null,
-      }),
+      })
+    },
     confirmInstall: (p: { jobId: string; installedDate: string; note?: string; checkinLat?: number; checkinLng?: number; photoUrl?: string }) =>
       rpc(sb, 'rpc_confirm_install', { p_job_id: p.jobId, p_installed_date: p.installedDate, p_note: p.note ?? null, p_lat: p.checkinLat ?? null, p_lng: p.checkinLng ?? null, p_photo_url: p.photoUrl ?? null }),
     logSiteVisit: (p: { jobId: string; outcome: 'rescheduled' | 'failed'; reason: string; newStartDate?: string; newEndDate?: string }) =>

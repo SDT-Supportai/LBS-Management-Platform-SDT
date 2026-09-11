@@ -114,10 +114,27 @@ export const ACC_STATUS_LABEL: Record<AccReqStatus, string> = {
  * ใช้กับทั้งของจากคลังคงเหลือและของที่ซื้อผ่าน PO — ความขัดแย้งเดียวกันเกิดกับทั้งสองทาง
  * ยกเว้นรายการที่ยกเลิก/คืนคลังไปแล้ว ซึ่ง status เป็นคำตอบสุดท้ายอยู่แล้ว
  */
-export function accStatusLabel(r: Pick<AccessoryRequest, 'status' | 'issuedToServiceAt'>): string {
-  if (r.issuedToServiceAt && r.status !== 'cancelled' && r.status !== 'returned')
+/**
+ * 0067 — เบิกบางส่วนได้แล้ว ป้ายจึงต้องแยก "เบิกครบ" กับ "เบิกบางส่วน · ค้าง n" ออกจากกัน
+ * ⚠️ ห้ามดูแค่ issuedToServiceAt เพราะธงนั้นขึ้นตั้งแต่เบิกรอบแรก — จะอ่านว่าครบทั้งที่ยังค้างอยู่
+ *    (กติกาจำนวนตัวจริงอยู่ที่ qtyPendingIssue/accSettled ใน logic.ts — ที่นี่แค่ทำป้ายให้ตรง)
+ */
+type AccQtyFields = Pick<AccessoryRequest,
+  'status' | 'issuedToServiceAt' | 'qtyRequested' | 'qtyTransferred' | 'qtyIssuedToService'>
+
+function accOut(r: Partial<AccQtyFields>): { out: number; left: number } {
+  const out = r.qtyIssuedToService ?? 0
+  const left = Math.max(0, (r.qtyRequested ?? 0) - (r.qtyTransferred ?? 0) - out)
+  return { out, left }
+}
+
+export function accStatusLabel(r: Partial<AccQtyFields>): string {
+  if (r.issuedToServiceAt && r.status !== 'cancelled' && r.status !== 'returned') {
+    const { out, left } = accOut(r)
+    if (out > 0 && left > 0) return `เบิกบางส่วน ${out} · ค้าง ${left}`
     return 'เบิกให้ Service แล้ว'
-  return ACC_STATUS_LABEL[r.status]
+  }
+  return ACC_STATUS_LABEL[r.status as AccReqStatus]
 }
 
 /**
@@ -132,9 +149,12 @@ export function accBlockNeedsDetail(r: Pick<AccessoryRequest, 'status'>): boolea
 }
 
 /** สีป้ายให้ตรงกับความหมาย: เขียว = ของพร้อมใช้อยู่กับ Job · ฟ้า = ออกไปหน้างานแล้ว */
-export function accStatusBadge(r: Pick<AccessoryRequest, 'status' | 'issuedToServiceAt'>): string {
+export function accStatusBadge(r: Partial<AccQtyFields>): string {
   if (r.status === 'cancelled' || r.status === 'returned') return 'neutral'
-  if (r.issuedToServiceAt) return 'blue'
+  if (r.issuedToServiceAt) {
+    const { out, left } = accOut(r)
+    return out > 0 && left > 0 ? 'amber' : 'blue'   // เหลือง = ยังมีของค้าง ต้องตามต่อ
+  }
   return r.status === 'issued' || r.status === 'received' ? 'green' : 'amber'
 }
 

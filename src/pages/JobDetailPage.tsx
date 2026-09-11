@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
-import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, parseLatLng, fmtLatLng, PAYMENT_TYPES } from '../data/logic'
+import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, parseLatLng, fmtLatLng, PAYMENT_TYPES } from '../data/logic'
 import { BudgetFields, CoordInput, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, sitesToApi, sitesFromJob, type CostForm, type InstallSite } from '../ui/components'
 import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, EPICOR_TXN, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, DEPT_LABEL, JOB_STATUS_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import {
@@ -9,7 +9,7 @@ import {
   SHEET_SUMMARY, SHEET_GUIDE, buildWorkbook, dataSheet, guideSheet,
   orDash, saveReport, stampMeta, summarySheet,
 } from '../ui/xlsxReport'
-import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType, EpicorTxnType } from '../types'
+import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType, EpicorTxnType, AccessoryRequest } from '../types'
 
 // ฟอร์มงวดเงิน (0044) — id = null คือเพิ่มงวดใหม่
 interface PayForm {
@@ -118,6 +118,12 @@ export default function JobDetailPage() {
   // 0059: popup "จะเบิกอะไร" — เลือก LBS รายเครื่อง + วัสดุรายบรรทัด (จัดกลุ่มตาม PO)
   const [pickedUnits, setPickedUnits] = useState<Set<string>>(new Set())
   const [pickedReqs, setPickedReqs] = useState<Set<string>>(new Set())
+  /**
+   * จำนวนที่จะเบิกรอบนี้ต่อบรรทัด (0067) — เก็บเป็น string เพราะเป็นค่าที่กำลังพิมพ์
+   * (ลบทิ้งหมดต้องได้ช่องว่าง ไม่ใช่เด้งเป็น 0 ทันที) · แปลงเป็นตัวเลขตอนตรวจ/ตอนส่ง
+   * ⚠️ ต้องประกาศรวมกับ useState ตัวอื่นเหนือ `if (!job) return` — วางใต้ early return = hooks พัง
+   */
+  const [issueQty, setIssueQty] = useState<Record<string, string>>({})
   const [cancelReason, setCancelReason] = useState('')
   const [receivedToCentral, setReceivedToCentral] = useState(true)
   // planCoord = พิกัดจุดติดตั้งที่ 1 (0060) — ข้อความ "lat, lng" แปลงตอน submit
@@ -193,10 +199,23 @@ export default function JobDetailPage() {
   const toggleGroup = (ids: string[], on: boolean) => setPickedReqs(prev => {
     const n = new Set(prev); ids.forEach(id => on ? n.add(id) : n.delete(id)); return n
   })
-  // เปิด popup พร้อมติ๊กทุกอย่างที่พร้อมไว้ให้ (เคสปกติ = เบิกทุกอย่างที่ได้)
+  const setQty = (id: string, v: string) => setIssueQty(prev => ({ ...prev, [id]: v }))
+  /** ค่าที่กรอกอยู่ + ผลตรวจของบรรทัดนั้น — ใช้ทั้งตอน render และตอนกดยืนยัน */
+  const qtyState = (r: AccessoryRequest) => {
+    const max = qtyPendingIssue(r)
+    const raw = issueQty[r.id] ?? String(max)
+    const n = Number(raw)
+    const err = raw.trim() === '' ? 'กรอกจำนวน'
+      : !Number.isFinite(n) || n <= 0 ? 'ต้องมากกว่า 0'
+      : n > max ? `เบิกได้ไม่เกิน ${max}`
+      : undefined
+    return { raw, n, max, err, partial: !err && n < max }
+  }
+  // เปิด popup พร้อมติ๊กทุกอย่างที่พร้อมไว้ให้ + จำนวนเต็มที่ค้าง (เคสปกติ = เบิกทุกอย่างที่ได้ทั้งจำนวน)
   const openIssueModal = () => {
     setPickedUnits(new Set(plan.lbsShort === 0 ? plan.lbsReady.map(u => u.id) : []))
     setPickedReqs(new Set(plan.accReady.map(r => r.id)))
+    setIssueQty(Object.fromEntries(plan.accReady.map(r => [r.id, String(qtyPendingIssue(r))])))
     setIssueForm({
       startDate: job.installStartDate || job.requiredDate || '',
       endDate: job.installEndDate || job.requiredDate || '',
@@ -215,9 +234,13 @@ export default function JobDetailPage() {
     const reqIds = [...pickedReqs]
     const unitIds = [...pickedUnits]
     if (reqIds.length > 0) {
+      const picked = accReqs.filter(r => pickedReqs.has(r.id))
+      const qtys = Object.fromEntries(picked.map(r => [r.id, qtyState(r).n]))
+      const nPartial = picked.filter(r => qtyState(r).partial).length
       const ok = await tryAction(
-        () => act.issueJobAccessory({ jobId: job.id, requestIds: reqIds, ...issueForm }),
-        `เบิกวัสดุ ${reqIds.length} รายการของ ${job.jobNo} ให้ Service แล้ว`)
+        () => act.issueJobAccessory({ jobId: job.id, requestIds: reqIds, qtys, ...issueForm }),
+        `เบิกวัสดุ ${reqIds.length} รายการของ ${job.jobNo} ให้ Service แล้ว` +
+        (nPartial > 0 ? ` (เบิกบางส่วน ${nPartial} รายการ — ของที่เหลือยังค้างอยู่ที่ Job)` : ''))
       if (!ok) return
     }
     if (unitIds.length > 0) {
@@ -1049,6 +1072,12 @@ export default function JobDetailPage() {
                           📦 โอนเข้าคลัง {r.qtyTransferred} · คงอยู่ {effectiveQty(r)}
                         </div>
                       )}
+                      {/* บัญชี 3 ช่องของบรรทัด (0067) — โชว์เฉพาะตอนเบิกไม่เต็ม ไม่ให้แถวรกในเคสปกติ */}
+                      {active && qtyIssuedToService(r) > 0 && qtyPendingIssue(r) > 0 && (
+                        <div className="muted" style={{ color: 'var(--amber, #d97706)' }}>
+                          🚚 เบิกออกหน้างาน {qtyIssuedToService(r)} · <b>ค้างที่ Job {qtyPendingIssue(r)}</b>
+                        </div>
+                      )}
                     </td>
                     <td>{fmtBaht(r.unitPrice)}</td>
                     <td>{fmtBaht(lineValue)}</td>
@@ -1120,7 +1149,8 @@ export default function JobDetailPage() {
                       ) : (
                         <span className="muted">-</span>
                       )}
-                    </td>                    <td className="mono">{[pr?.prNo, po?.poNo].filter(Boolean).join(' / ') || '-'}</td>
+                    </td>
+                    <td className="mono">{[pr?.prNo, po?.poNo].filter(Boolean).join(' / ') || '-'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       {canManage && !procureLocked && active && (
                         <button className="small" onClick={async () => {
@@ -1138,17 +1168,29 @@ export default function JobDetailPage() {
                       {canManage && !procureLocked && r.source === 'central_stock' && r.status === 'issued' && (
                         <button className="small" onClick={() => tryAction(() => act.returnAccessory({ requestId: r.id }), 'คืน Accessory กลับคลังคงเหลือแล้ว')}>คืนคลัง</button>
                       )}{' '}
-                      {/* โอนวัสดุเหลือเข้าคลังคงเหลือ ให้ Job อื่นเบิกต่อ — ต้นทุนตัดออกจาก Job นี้ตามของ (S1) */}
-                      {canManage && !procureLocked && (r.status === 'issued' || r.status === 'received') && effectiveQty(r) > 0 && (
+                      {/* โอนวัสดุเหลือเข้าคลังคงเหลือ ให้ Job อื่นเบิกต่อ — ต้นทุนตัดออกจาก Job นี้ตามของ (S1)
+                          ⚠️ 0067: **ไม่ใช้ procureLocked แล้ว** — ของเหลือมักรู้ตอนช่างกลับจากหน้างาน
+                          ซึ่งเป็นตอนที่ Job เป็น installed ไปแล้ว (มติผู้ใช้ 2026-09-11)
+                          ปิดเฉพาะ cancelled ซึ่งคืนของเข้าคลังตอนยกเลิกอยู่แล้ว — ตรงกับ guard ฝั่ง RPC เป๊ะ */}
+                      {canManage && job.terminalStatus !== 'cancelled'
+                        && (r.status === 'issued' || r.status === 'received') && effectiveQty(r) > 0 && (
                         <button className="small" title="โอนของที่เหลือเข้าคลังคงเหลือ — ต้นทุนจะถูกตัดออกจาก Job นี้ตามจำนวนที่โอน"
                           onClick={async () => {
-                            const remain = effectiveQty(r)
+                            const remain = effectiveQty(r)     // เพดาน = ของที่ Job ถือตามบัญชี
+                            const atJob = qtyPendingIssue(r)   // ส่วนที่ยังไม่ออกหน้างาน
+                            const out = qtyIssuedToService(r)
                             const v = await askPrompt({
                               title: `โอนเข้าคลังคงเหลือ — ${item.name}`,
-                              description: <>คงอยู่ที่ Job นี้ <b>{remain} {item.uom}</b> · ของที่โอนจะให้ Job อื่นเบิกต่อได้ และ<b>ต้นทุนถูกตัดออกจาก Job นี้ตามจำนวนที่โอน</b></>,
+                              description: <>
+                                Job นี้ถืออยู่ <b>{remain} {item.uom}</b>
+                                {out > 0 && <> — ค้างที่ Job <b>{atJob}</b> · เบิกออกหน้างานแล้ว <b>{out}</b></>} ·
+                                ของที่โอนจะให้ Job อื่นเบิกต่อได้ และ<b>ต้นทุนถูกตัดออกจาก Job นี้ตามจำนวนที่โอน</b>
+                                {out > 0 && <><br />โอนเกิน {atJob} {item.uom} = นับว่า<b>ช่างส่งของที่เบิกไปแล้วคืนกลับคลัง</b> (บันทึกไว้ใน Audit)</>}
+                              </>,
                               fields: [
                                 { key: 'qty', label: 'จำนวนที่จะโอน', type: 'number', min: 0, required: true,
-                                  suffix: item.uom, value: String(remain),
+                                  suffix: item.uom, value: String(atJob > 0 ? atJob : remain),
+                                  hint: out > 0 ? `ค้างที่ Job ${atJob} · รวมของที่ออกหน้างานแล้วโอนได้ถึง ${remain}` : undefined,
                                   validate: v => Number(v) > remain ? `โอนได้ไม่เกิน ${remain} ${item.uom}` : Number(v) <= 0 ? 'ต้องมากกว่า 0' : undefined },
                                 { key: 'note', label: 'เหตุผล/หมายเหตุ', value: 'วัสดุเหลือจากหน้างาน' },
                               ],
@@ -1456,6 +1498,10 @@ export default function JobDetailPage() {
         const needPlan = !job.installStartDate || !job.installEndDate || !job.issueLocation
         const planFilled = !!issueForm.startDate && !!issueForm.endDate && !!issueForm.location.trim()
         const nothingPicked = nUnits === 0 && nReqs === 0
+        // ตรวจจำนวนที่กรอกของทุกบรรทัดที่ติ๊กไว้ — มีช่องไหนผิด กดยืนยันไม่ได้ (0067)
+        const pickedRows = accReqs.filter(r => pickedReqs.has(r.id))
+        const badQty = pickedRows.filter(r => !!qtyState(r).err)
+        const partialRows = pickedRows.filter(r => qtyState(r).partial)
         // Manage เบิก LBS ตรงได้ · Project ต้องส่งคำขอ → ปุ่มเดียวแต่ผลต่างกัน จึงต้องบอกให้ชัด
         const label = nUnits > 0 && !isManage
           ? (nReqs > 0 ? `เบิกวัสดุ ${nReqs} + ส่งคำขอ LBS` : 'ส่งคำขออนุมัติเบิก LBS')
@@ -1463,18 +1509,29 @@ export default function JobDetailPage() {
         return (
           <Modal title={`เบิกให้ Service — ${job.jobNo}`} onClose={close} size="wide"
             footer={<>
+              {/* สรุปซ้ายล่าง = ทวนก่อนกด ไม่ต้องเลื่อนขึ้นไปนับเอง */}
+              <span className="muted" style={{ marginRight: 'auto', fontSize: 12.5 }}>
+                {nothingPicked ? 'ยังไม่ได้เลือกอะไร' : <>
+                  เลือกไว้: {nUnits > 0 && <>LBS <b>{nUnits}</b> เครื่อง</>}
+                  {nUnits > 0 && nReqs > 0 && ' · '}
+                  {nReqs > 0 && <>วัสดุ <b>{nReqs}</b> รายการ</>}
+                  {partialRows.length > 0 && <> · <b style={{ color: 'var(--amber, #d97706)' }}>เบิกบางส่วน {partialRows.length}</b></>}
+                </>}
+              </span>
               <button onClick={close}>ยกเลิก</button>
               <button className="success"
-                disabled={nothingPicked || (needPlan && !planFilled)}
+                disabled={nothingPicked || badQty.length > 0 || (needPlan && !planFilled)}
                 title={nothingPicked ? 'เลือกของที่จะเบิกอย่างน้อย 1 รายการ'
+                  : badQty.length > 0 ? `แก้จำนวนที่เบิกให้ถูกต้องก่อน (${badQty.length} รายการ)`
                   : needPlan && !planFilled ? 'กรอกวันติดตั้ง Start–End และ Location ให้ครบก่อน' : ''}
                 onClick={submitIssue}>
                 {label}
               </button>
             </>}>
             <p className="muted" style={{ marginBottom: 12 }}>
-              เลือกได้ว่ารอบนี้จะส่งอะไรให้ Service — <b>ไม่ต้องรอให้ครบทั้งใบ</b> ·
-              ของที่เหลือเบิกตามมาได้ภายหลัง เมื่อครบทั้งใบระบบจะปิดงานเป็น <b>Issued</b> ให้เอง
+              เลือกได้ว่ารอบนี้จะส่งอะไรให้ Service — <b>ไม่ต้องรอให้ครบทั้งใบ</b> และ<b>เบิกไม่เต็มจำนวนก็ได้</b> ·
+              ของที่เหลือค้างอยู่ที่ Job เบิกตามมาได้ภายหลัง · ระบบปิดงานเป็น <b>Issued</b> เมื่อ
+              ทุกชิ้นมีที่ไปครบ (ออกหน้างาน หรือโอนคืนคลังคงเหลือ)
             </p>
 
             {/* ---- LBS ---- */}
@@ -1549,10 +1606,11 @@ export default function JobDetailPage() {
                 {plan.groups.map(g => {
                   const allPicked = g.ready.length > 0 && g.ready.every(r => pickedReqs.has(r.id))
                   return (
-                    <div key={g.key} style={{ marginBottom: 10 }}>
-                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div key={g.key} className="issue-group">
+                      {/* หัวกลุ่ม = 1 PO (หรือของจากคลังคงเหลือ) — ติ๊กหัวกลุ่มเลือกทั้งใบ */}
+                      <div className="issue-group-head">
                         {g.ready.length > 0 ? (
-                          <label style={{ display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+                          <label className="issue-group-title">
                             <input type="checkbox" checked={allPicked} onChange={() => toggleGroup(g.ready.map(r => r.id), !allPicked)} />
                             <b className="mono">{g.label}</b>
                           </label>
@@ -1567,17 +1625,44 @@ export default function JobDetailPage() {
                         <span className="muted">{g.rows.length} รายการ</span>
                         {g.block && <span style={{ color: 'var(--danger)' }}>⚠️ {g.block} — เบิกไม่ได้</span>}
                       </div>
-                      <div style={{ paddingLeft: 24, marginTop: 4 }}>
+                      {/* ตารางจริง คอลัมน์ตรงกันทุกแถว — เดิมเป็น flex row ทำให้ชื่อยาว/สั้นดันของข้างๆ ไม่ตรงแนว */}
+                      <div className="issue-rows">
+                        <div className="issue-row issue-row-head">
+                          <span />
+                          <span>วัสดุ</span>
+                          <span className="num">ค้างที่ Job</span>
+                          <span className="num">เบิกรอบนี้</span>
+                          <span>สถานะ</span>
+                        </div>
                         {g.rows.map(({ req: r, block }) => {
                           const it = itemOf(r.itemId)
+                          const on = pickedReqs.has(r.id)
+                          const q = qtyState(r)
+                          const already = qtyIssuedToService(r)
                           return (
-                            <div key={r.id} style={{ display: 'flex', gap: 8, alignItems: 'center', opacity: block ? .55 : 1 }}>
-                              <input type="checkbox" disabled={!!block} checked={pickedReqs.has(r.id)}
-                                onChange={() => toggleReq(r.id)} />
-                              <span>{it?.name ?? '-'} <span className="muted">{effectiveQty(r)} {it?.uom ?? ''}</span></span>
-                              {block
-                                ? <span className="muted">— {block}</span>
-                                : <span className="badge green">Ready</span>}
+                            <div key={r.id} className={`issue-row${block ? ' blocked' : ''}${on ? ' picked' : ''}`}>
+                              <input type="checkbox" disabled={!!block} checked={on} onChange={() => toggleReq(r.id)} />
+                              <label className="issue-name" onClick={() => !block && toggleReq(r.id)}>
+                                {it?.name ?? '-'}
+                                <span className="issue-sub mono">{it?.epicorCode || it?.code || '-'}</span>
+                              </label>
+                              <span className="num">
+                                <b>{q.max}</b> <span className="muted">{it?.uom ?? ''}</span>
+                                {already > 0 && <span className="issue-sub">เบิกแล้ว {already} · ขอ {effectiveQty(r)}</span>}
+                              </span>
+                              <span className="num">
+                                {block ? <span className="muted">-</span> : (
+                                  <input type="number" min={1} max={q.max} value={q.raw} disabled={!on}
+                                    className={q.err && on ? 'bad' : undefined}
+                                    onChange={e => setQty(r.id, e.target.value)} />
+                                )}
+                              </span>
+                              <span className="issue-state">
+                                {block ? <span className="muted">{block}</span>
+                                  : q.err && on ? <span style={{ color: 'var(--danger)' }}>{q.err}</span>
+                                  : q.partial && on ? <span className="badge amber">เบิกบางส่วน · ค้าง {q.max - q.n}</span>
+                                  : <span className="badge green">Ready</span>}
+                              </span>
                             </div>
                           )
                         })}
@@ -1586,8 +1671,10 @@ export default function JobDetailPage() {
                   )
                 })}
                 {plan.accReady.length > 0 && (
-                  <div className="muted" style={{ marginTop: 6 }}>
-                    วัสดุที่รับของแล้ว <b>เบิกได้เลยไม่ต้องรอ Division</b> — บันทึกลง Audit Log ทุกครั้ง
+                  <div className="muted" style={{ marginTop: 8 }}>
+                    วัสดุที่รับของแล้ว <b>เบิกได้เลยไม่ต้องรอ Division</b> — บันทึกลง Audit Log ทุกครั้ง ·
+                    ลดจำนวนใน "เบิกรอบนี้" ได้ ของที่เหลือ<b>ค้างอยู่ที่ Job</b> เบิกตามมาทีหลัง
+                    หรือกด <b>📦 โอนเข้าคลัง</b> ที่แผง Purchase Orders เพื่อคืนเข้าคลังคงเหลือ
                   </div>
                 )}
               </div>

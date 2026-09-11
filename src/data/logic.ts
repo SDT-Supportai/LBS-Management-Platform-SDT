@@ -253,7 +253,7 @@ export function deriveJobStatus(db: DB, job: Job): JobStatus {
     r => r.jobId === job.id && r.status !== 'cancelled' && r.status !== 'returned',
   )
   const pendingReqs = activeReqs.filter(r => r.status !== 'issued' && r.status !== 'received')
-  const accIssued = activeReqs.filter(r => !!r.issuedToServiceAt).length
+  const accIssued = activeReqs.filter(r => qtyIssuedToService(r) > 0).length
   // เบิกออกไปแล้วบางส่วน — ครบทั้งใบเมื่อไหร่ finalizeIssue จะตั้ง terminalStatus = 'issued' ให้เอง
   // จึงมาถึงบรรทัดนี้ได้เฉพาะกรณี "ออกไปแล้วบางส่วน ยังไม่ครบ"
   if (lbsIssued > 0 || accIssued > 0) return 'partially_issued'
@@ -1075,8 +1075,32 @@ function applyStockMovement(
 }
 
 // จำนวนที่ Job ถืออยู่จริงของ line นั้น (หักส่วนที่โอนคืนคลังไปแล้ว)
+// = **จำนวนที่คิดต้นทุนเข้า Job** — การเบิกให้ Service ไม่ลดตัวนี้ (ของยังเป็นของงานนี้ แค่ย้ายไปหน้างาน)
 export function effectiveQty(r: AccessoryRequest): number {
   return r.qtyRequested - (r.qtyTransferred ?? 0)
+}
+
+/**
+ * บัญชี 3 ช่องของวัสดุ 1 บรรทัด (0067) — ผลรวมต้องเท่ากับ qtyRequested เสมอ
+ *   qtyTransferred      โอนคืนคลังคงเหลือแล้ว   (ตัดต้นทุนออกจาก Job)
+ *   qtyIssuedToService  เบิกออกไปหน้างานแล้ว     (ต้นทุนยังอยู่กับ Job)
+ *   qtyPendingIssue     ค้างอยู่ที่ Job          (รอเบิก หรือรอโอนคืน)
+ *
+ * ⚠️ ห้ามใช้ `issuedToServiceAt` เป็นธง "จบแล้ว" อีก — ตั้งแต่เบิกบางส่วนได้ ธงนั้นขึ้นตั้งแต่รอบแรก
+ *    ตัวที่ตอบว่า "บรรทัดนี้จบ" คือ accSettled()
+ */
+export function qtyIssuedToService(r: AccessoryRequest): number {
+  return r.qtyIssuedToService ?? 0
+}
+
+/** ของที่ยังค้างอยู่ที่ Job — เบิกเพิ่มได้ หรือโอนคืนคลังได้ */
+export function qtyPendingIssue(r: AccessoryRequest): number {
+  return Math.max(0, effectiveQty(r) - qtyIssuedToService(r))
+}
+
+/** บรรทัดนี้ "จบ" แล้ว = ทุกชิ้นมีที่ไปครบ (ออกหน้างาน หรือโอนคืนคลัง) — มติผู้ใช้ 2026-09-11 */
+export function accSettled(r: AccessoryRequest): boolean {
+  return qtyPendingIssue(r) <= 0
 }
 
 // โอนวัสดุที่เหลือจาก Job เข้าคลังคงเหลือ เพื่อให้ Job อื่นเบิกใช้ต่อ
@@ -1098,9 +1122,15 @@ export function transferJobMaterialToStock(
   if (req.status !== 'issued' && req.status !== 'received')
     throw new Error('โอนเข้าคลังได้เฉพาะวัสดุที่เบิกจากคลังแล้ว หรือรับของจาก PO ครบแล้ว')
 
+  // เพดานการโอน = ของที่ Job ยังถืออยู่ "ตามบัญชี" (รวมส่วนที่เบิกออกหน้างานไปแล้ว)
+  //   0067 · มติผู้ใช้ 2026-09-11: โอนคืนได้จนถึงหลังติดตั้งเสร็จ ⇒ ต้องรับเคสช่างส่งของเหลือกลับมาด้วย
+  //   ถ้าจำนวนที่โอนเกินของที่ค้างอยู่ที่ Job ส่วนเกินคือ "ของที่เบิกออกไปแล้วแต่เอากลับมา"
+  //   ⇒ ต้องหัก qtyIssuedToService ลงตามนั้น ไม่งั้นบัญชี 3 ช่องรวมเกิน qtyRequested
   const remain = effectiveQty(req)
   if (!p.qty || p.qty <= 0) throw new Error('จำนวนที่โอนต้องมากกว่า 0')
   if (p.qty > remain) throw new Error(`โอนได้ไม่เกิน ${remain} ${item.uom} (คงอยู่ที่ Job)`)
+  const atJob = qtyPendingIssue(req)
+  const fromSite = Math.max(0, p.qty - atJob)   // ส่วนที่ดึงคืนจากของที่ออกหน้างานไปแล้ว
 
   let next: DB = {
     ...db,
@@ -1109,7 +1139,13 @@ export function transferJobMaterialToStock(
       ? db.items
       : db.items.map(i => i.id === item.id ? { ...i, stockableCentrally: true } : i),
     accessoryRequests: db.accessoryRequests.map(r =>
-      r.id === p.requestId ? { ...r, qtyTransferred: (r.qtyTransferred ?? 0) + p.qty } : r),
+      r.id === p.requestId
+        ? {
+          ...r,
+          qtyTransferred: (r.qtyTransferred ?? 0) + p.qty,
+          qtyIssuedToService: qtyIssuedToService(r) - fromSite,
+        }
+        : r),
   }
   next = applyStockMovement(next, actor, {
     itemId: req.itemId, qty: p.qty, unitCost: req.unitPrice,
@@ -1124,6 +1160,8 @@ export function transferJobMaterialToStock(
   return audit(next, actor, 'accessory_stock', req.itemId, 'transfer_to_stock',
     `${job.jobNo} โอน ${item.name} ${p.qty} ${item.uom} เข้าคลังคงเหลือ ` +
     `(ต้นทุนที่ตัดออกจาก Job ${fmtInt(value)} บาท · คงเหลือในคลัง ${stockQtyOf(next, req.itemId)})` +
+    // ของที่เคยออกหน้างานแล้วถูกดึงกลับ ต้องเขียนไว้ให้ชัด — ไม่งั้นยอด "เบิกให้ Service" ลดลงเงียบ ๆ
+    (fromSite > 0 ? ` [รวมของที่เบิกออกหน้างานแล้ว ${fromSite} ${item.uom} — ส่งคืนกลับคลัง]` : '') +
     `${p.note?.trim() ? ` — ${p.note.trim()}` : ''}`)
 }
 
@@ -1523,7 +1561,7 @@ export function receivePOItems(
 //
 // โมเดลใหม่ — "เบิก" เป็นรายชิ้น ไม่ใช่รายใบ:
 //   LBS       : สถานะรายเครื่อง lbsUnits.status  allocated → issued
-//   Accessory : ธง issuedToServiceAt รายบรรทัด (ว่าง = ของยังอยู่กับ Job)
+//   Accessory : จำนวน qtyIssuedToService รายบรรทัด (0067 · เบิกได้ทีละบางส่วน หลายรอบ)
 //   Job       : terminalStatus = 'issued' ต่อเมื่อ **ครบทั้งใบ** (finalizeIssue ตั้งให้เอง)
 //               ระหว่างทาง deriveJobStatus คืน 'partially_issued'
 //
@@ -1559,9 +1597,10 @@ const ACC_ISSUE_WAIT: Partial<Record<AccReqStatus, string>> = {
 
 /** เหตุผลที่รายการวัสดุนี้ยังเบิกให้ Service ไม่ได้ — undefined = เบิกได้ (Ready) */
 export function accIssueBlockReason(db: DB, r: AccessoryRequest): string | undefined {
-  if (r.issuedToServiceAt) return 'เบิกให้ Service ไปแล้ว'
   if (r.status === 'cancelled' || r.status === 'returned') return 'รายการถูกยกเลิก/คืนคลังไปแล้ว'
   if (effectiveQty(r) <= 0) return 'โอนคืนคลังหมดแล้ว — ไม่มีของค้างอยู่ที่ Job'
+  // 0067: เบิกครบทั้งบรรทัดแล้ว (เบิกบางส่วนยังเบิกต่อได้ จึงเช็คจำนวนคงค้าง ไม่ใช่ธง issuedToServiceAt)
+  if (accSettled(r)) return `เบิกครบแล้ว ${qtyIssuedToService(r)} จาก ${effectiveQty(r)}`
   if (r.source === 'central_stock')
     return r.status === 'issued' ? undefined : 'ยังไม่ได้เบิกจากคลังคงเหลือ'
   if (r.status !== 'received') return ACC_ISSUE_WAIT[r.status] ?? 'ยังไม่ได้รับของ'
@@ -1572,12 +1611,16 @@ export function accIssueBlockReason(db: DB, r: AccessoryRequest): string | undef
   return undefined
 }
 
-/** รายการวัสดุที่ยัง "ต้องเบิก" ให้ Service — ยังไม่เบิก + ยังมีของค้างอยู่ที่ Job */
+/**
+ * รายการวัสดุที่ยัง "ต้องเบิก" ให้ Service — ยังมีของค้างอยู่ที่ Job
+ * 0067: เบิกบางส่วนแล้วยังนับว่าค้างอยู่ จนกว่าทุกชิ้นจะมีที่ไป (ออกหน้างาน หรือโอนคืนคลัง)
+ *       ⇒ ตัวนี้คือเงื่อนไขปิด Job เป็น Issued (finalizeIssue รอให้ว่างก่อน)
+ */
 export function jobPendingIssueAccessories(db: DB, jobId: string): AccessoryRequest[] {
   return db.accessoryRequests.filter(r =>
-    r.jobId === jobId && !r.issuedToServiceAt
+    r.jobId === jobId
     && r.status !== 'cancelled' && r.status !== 'returned'
-    && effectiveQty(r) > 0)
+    && qtyPendingIssue(r) > 0)
 }
 
 export interface IssueAccRow { req: AccessoryRequest; block?: string }
@@ -1774,7 +1817,12 @@ export function issueJobLbs(
  */
 export function issueJobAccessory(
   db: DB, actor: User,
-  p: { jobId: string; requestIds?: string[]; startDate?: string; endDate?: string; location?: string; note?: string },
+  p: {
+    jobId: string; requestIds?: string[]
+    /** จำนวนที่จะเบิกรอบนี้ต่อบรรทัด (0067) — ไม่ส่ง/ไม่มีคีย์ = เบิกเท่าที่ยังค้างทั้งหมดของบรรทัดนั้น */
+    qtys?: Record<string, number>
+    startDate?: string; endDate?: string; location?: string; note?: string
+  },
 ): DB {
   const job = assertJobProcurable(db, p.jobId, actor)
   const plan = jobIssuePlan(db, p.jobId)
@@ -1792,15 +1840,32 @@ export function issueJobAccessory(
       throw new Error(`${item?.name ?? 'วัสดุ'}: ${block}`)
     }
   }
+  // จำนวนที่จะเบิกรอบนี้ต่อบรรทัด (0067) — ตรวจก่อนแตะข้อมูล ให้ error ชี้ชื่อวัสดุได้ตรงตัว
+  const take = new Map<string, number>()
+  for (const r of reqs) {
+    const left = qtyPendingIssue(r)
+    const want = p.qtys?.[r.id] ?? left           // ไม่ระบุ = เบิกที่ค้างทั้งหมด (เคสปกติ "เบิกครบ")
+    const item = db.items.find(i => i.id === r.itemId)
+    const nm = item?.name ?? 'วัสดุ'
+    if (!Number.isFinite(want) || want <= 0)
+      throw new Error(`${nm}: จำนวนที่เบิกต้องมากกว่า 0`)
+    if (want > left)
+      throw new Error(`${nm}: เบิกได้ไม่เกิน ${left} ${item?.uom ?? ''} (ค้างอยู่ที่ Job)`.trim())
+    take.set(r.id, want)
+  }
   const { startDate, endDate, location, range } = resolveInstallPlan(job, p)
   const ts = now()
   // สรุปว่าเบิกของจาก PO ใบไหนออกไป — Service ต้องรู้ว่าของชุดไหนถึงมือแล้ว
   const poNos = [...new Set(reqs.map(r =>
     (r.poId ? db.pos.find(x => x.id === r.poId)?.poNo : undefined) ?? 'คลังคงเหลือ'))]
+  // เบิกไม่เต็มบรรทัดต้องเห็นในข้อความว่าเบิกเท่าไรจากเท่าไร ไม่งั้นไล่ย้อนไม่ได้ว่าของขาดไปไหน
   const detail = reqs.map(r => {
     const item = db.items.find(i => i.id === r.itemId)
-    return `${item?.name ?? '-'} ${effectiveQty(r)} ${item?.uom ?? ''}`.trim()
+    const q = take.get(r.id)!
+    const full = effectiveQty(r)
+    return `${item?.name ?? '-'} ${q}${q < full ? `/${full}` : ''} ${item?.uom ?? ''}`.trim()
   }).join(', ')
+  const partialCount = reqs.filter(r => take.get(r.id)! < qtyPendingIssue(r)).length
 
   let next: DB = {
     ...db,
@@ -1808,18 +1873,26 @@ export function issueJobAccessory(
       ...j, installStartDate: startDate, installEndDate: endDate, issueLocation: location,
     } : j),
     accessoryRequests: db.accessoryRequests.map(r =>
-      idSet.has(r.id) ? { ...r, issuedToServiceAt: ts, issuedToServiceBy: actor.id } : r),
+      idSet.has(r.id)
+        ? {
+          ...r,
+          qtyIssuedToService: qtyIssuedToService(r) + take.get(r.id)!,
+          issuedToServiceAt: ts, issuedToServiceBy: actor.id,   // = รอบล่าสุดที่เบิก
+        }
+        : r),
   }
-  const remain = plan.accPending.length - idSet.size
+  // นับ "ค้างอีกกี่รายการ" จากสถานะหลังบันทึก — บรรทัดที่เบิกไม่เต็มยังค้างอยู่ ต้องนับด้วย
+  const remain = jobPendingIssueAccessories(next, p.jobId).length
+  const partialTail = partialCount > 0 ? ` (เบิกบางส่วน ${partialCount} รายการ)` : ''
   next = audit(next, actor, 'job', p.jobId, 'issue_accessory_to_service',
     `เบิกวัสดุของ ${job.jobNo} ให้ Service ${idSet.size} รายการ จาก ${poNos.join(', ')} — ${detail}` +
-    (remain > 0 ? ` (ค้างอีก ${remain} รายการ)` : ''))
+    partialTail + (remain > 0 ? ` (ค้างอีก ${remain} รายการ)` : ''))
   next = finalizeIssue(next, actor, p.jobId)
   // ไม่ใส่ Location เหมือนฝั่ง LBS (มติ 2026-08-28)
   return notify(next, {
     type: 'accessory_issued_to_service', dept: 'service', jobId: p.jobId,
     message: `📦 ${job.jobNo} เบิกวัสดุ ${idSet.size} รายการให้ Service (${poNos.join(', ')}) · ${range}` +
-      (remain > 0 ? ` (ค้างอีก ${remain} รายการ)` : '') +
+      partialTail + (remain > 0 ? ` (ค้างอีก ${remain} รายการ)` : '') +
       (jobBecameComplete(db, next, p.jobId) ? ' · ครบทั้งใบแล้ว' : ''),
   })
 }
@@ -2327,7 +2400,7 @@ export function cancelJob(
   // 0059: เบิกออกไปแล้วบางส่วน = ของอยู่ในมือ Service ระบบคืนเข้าคลังเองไม่ได้
   //   (ใบที่เบิกครบแล้วถูก assertJobEditable กันอยู่แล้ว — ตรงนี้ปิดช่องว่างของสถานะ partially_issued)
   const issuedOut = db.lbsUnits.filter(u => u.jobId === p.jobId && u.status === 'issued').length
-    + db.accessoryRequests.filter(r => r.jobId === p.jobId && !!r.issuedToServiceAt).length
+    + db.accessoryRequests.filter(r => r.jobId === p.jobId && qtyIssuedToService(r) > 0).length
   if (issuedOut > 0)
     throw new Error(`${job.jobNo} เบิกของให้ Service ไปแล้วบางส่วน — ยกเลิกไม่ได้` +
       ` ให้ Service คืนของเข้าคลังก่อน แล้วให้ Manage จัดการเป็นเคส`)
