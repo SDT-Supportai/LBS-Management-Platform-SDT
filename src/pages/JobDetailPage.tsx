@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
-import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, parseLatLng, fmtLatLng, PAYMENT_TYPES } from '../data/logic'
+import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, parseLatLng, fmtLatLng, PAYMENT_TYPES } from '../data/logic'
 import { BudgetFields, CoordInput, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, sitesToApi, sitesFromJob, type CostForm, type InstallSite } from '../ui/components'
 import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, EPICOR_TXN, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, DEPT_LABEL, JOB_STATUS_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import {
@@ -1072,10 +1072,15 @@ export default function JobDetailPage() {
                           📦 โอนเข้าคลัง {r.qtyTransferred} · คงอยู่ {effectiveQty(r)}
                         </div>
                       )}
-                      {/* บัญชี 3 ช่องของบรรทัด (0067) — โชว์เฉพาะตอนเบิกไม่เต็ม ไม่ให้แถวรกในเคสปกติ */}
+                      {/* บัญชี 4 ช่องของบรรทัด (0067/0068) — โชว์เฉพาะตอนไม่ใช่เคสปกติ ไม่ให้แถวรก */}
                       {active && qtyIssuedToService(r) > 0 && qtyPendingIssue(r) > 0 && (
                         <div className="muted" style={{ color: 'var(--amber, #d97706)' }}>
                           🚚 เบิกออกหน้างาน {qtyIssuedToService(r)} · <b>ค้างที่ Job {qtyPendingIssue(r)}</b>
+                        </div>
+                      )}
+                      {active && qtyWrittenOff(r) > 0 && (
+                        <div className="muted" title={r.writeOffReason || undefined}>
+                          ✂️ ตัดจำหน่าย {qtyWrittenOff(r)} <span className="muted">(ต้นทุนยังอยู่กับงาน)</span>
                         </div>
                       )}
                     </td>
@@ -1200,6 +1205,38 @@ export default function JobDetailPage() {
                             tryAction(() => act.transferJobMaterialToStock({ requestId: r.id, qty: Number(v.qty), note: v.note || undefined }),
                               `โอน ${item.name} ${Number(v.qty)} ${item.uom} เข้าคลังคงเหลือแล้ว`)
                           }}>📦 โอนเข้าคลัง</button>
+                      )}{' '}
+                      {/* ✂️ ตัดจำหน่ายของเหลือ (0068) — ปิดบรรทัดโดยไม่เอาของเข้าคลัง
+                          ขึ้นเฉพาะตอนยังมีของค้างอยู่ที่ Job จริง (ของที่ออกหน้างานแล้วถือว่าใช้ไปกับงานแล้ว)
+                          ⚠️ ต้นทุนยังอยู่กับ Job — ต่างจากโอนคืนคลังที่ตัดต้นทุนออก จึงเขียนกำกับในโมดัลให้ชัด */}
+                      {canManage && job.terminalStatus !== 'cancelled'
+                        && (r.status === 'issued' || r.status === 'received') && qtyPendingIssue(r) > 0 && (
+                        <button className="small" title="ตัดของเหลือออกจาก Job โดยไม่เอาเข้าคลัง — ใช้กับเศษที่ไม่คุ้มจะโอนคืน"
+                          onClick={async () => {
+                            const atJob = qtyPendingIssue(r)
+                            const v = await askPrompt({
+                              title: `ตัดจำหน่ายของเหลือ — ${item.name}`,
+                              description: <>
+                                ค้างอยู่ที่ Job <b>{atJob} {item.uom}</b> · ใช้กับ<b>เศษที่ไม่คุ้มจะโอนคืนคลัง</b>
+                                (น็อตไม่กี่ตัว · สายเหลือไม่กี่เมตร) เพื่อให้บรรทัดนี้จบและปิดงานได้
+                                <br />⚠️ <b>ต้นทุนยังอยู่กับ Job นี้</b> — ของถือว่าสูญไปกับงานแล้ว
+                                ไม่ใช่การคืนของ (ต่างจาก <b>📦 โอนเข้าคลัง</b> ที่ตัดต้นทุนออก) ·
+                                ของ<b>ไม่เข้าคลังคงเหลือ</b> และ<b>ไม่ลงบัญชีเดินสะพัด</b> แต่บันทึกใน Audit Log ครบ
+                              </>,
+                              fields: [
+                                { key: 'qty', label: 'จำนวนที่ตัดจำหน่าย', type: 'number', min: 0, required: true,
+                                  suffix: item.uom, value: String(atJob),
+                                  validate: v => Number(v) > atJob ? `ตัดได้ไม่เกิน ${atJob} ${item.uom}` : Number(v) <= 0 ? 'ต้องมากกว่า 0' : undefined },
+                                { key: 'reason', label: 'เหตุผลการตัดจำหน่าย', type: 'textarea', required: true,
+                                  placeholder: 'เช่น เศษไม่คุ้มค่าขนส่งกลับ / ของเสียหายหน้างาน / ใช้ไปกับงานแต่นับไม่ตรง',
+                                  hint: 'บังคับกรอก — ข้อความนี้ลง Audit Log เป็นหลักฐานว่าของหายไปไหน' },
+                              ],
+                              confirmLabel: 'ตัดจำหน่าย',
+                            })
+                            if (!v) return
+                            tryAction(() => act.writeOffJobMaterial({ requestId: r.id, qty: Number(v.qty), reason: v.reason }),
+                              `ตัดจำหน่าย ${item.name} ${Number(v.qty)} ${item.uom} ออกจาก ${job.jobNo} แล้ว`)
+                          }}>✂️ ตัดจำหน่าย</button>
                       )}
                       {canManage && !procureLocked && r.status === 'pending' && (
                         <>

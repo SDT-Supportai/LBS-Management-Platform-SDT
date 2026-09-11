@@ -773,6 +773,53 @@ export default function MasterDataPage() {
               </tbody>
             </table>
           </div>
+          {/* ✂️ ตัดจำหน่ายที่ Job (0068) — **แยกออกจากตาราง ledger โดยตั้งใจ**
+              ของพวกนี้ไม่เคยอยู่ในคลังกลาง (ถูกตัดออกตอนเบิกเข้า Job หรือซื้อตรงผ่าน PO)
+              ถ้าเอาไปปนเป็นแถวใน stockMovements รายงาน "ปริมาณออกจากคลัง" จะนับซ้ำ
+              และ balanceAfter จะอ่านไม่ตรงกับยอดจริง — จึงอ่านจากบรรทัดวัสดุใน Job แทน */}
+          {(() => {
+            const offs = db.accessoryRequests
+              .filter(r => r.itemId === ledgerItem.id && (r.qtyWrittenOff ?? 0) > 0)
+              .slice().sort((a, b) => (b.writtenOffAt ?? '').localeCompare(a.writtenOffAt ?? ''))
+            if (offs.length === 0) return null
+            const total = offs.reduce((s, r) => s + (r.qtyWrittenOff ?? 0), 0)
+            return (
+              <div style={{ marginTop: 14 }}>
+                <h4 style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 4 }}>
+                  ✂️ ตัดจำหน่ายของเหลือที่ Job — รวม {total} {ledgerItem.uom}
+                </h4>
+                <div className="muted" style={{ marginBottom: 6, fontSize: 12 }}>
+                  ของที่ไม่คุ้มจะโอนคืนคลัง ถูกตัดออกจาก Job โดย<b>ไม่เข้าคลังคงเหลือ</b> ·
+                  <b>ไม่กระทบยอดคลังด้านบน</b> (ของไม่เคยอยู่ในคลังกลาง) · ต้นทุนยังอยู่กับ Job นั้น
+                </div>
+                <div className="table-scroll">
+                  <table className="ledger-table">
+                    <thead><tr>
+                      <th>เมื่อ</th><th style={{ textAlign: 'right' }}>จำนวน</th>
+                      <th>Job</th><th>เหตุผล</th><th>ผู้ทำรายการ</th>
+                    </tr></thead>
+                    <tbody>
+                      {offs.map(r => (
+                        <tr key={r.id}>
+                          <td className="muted" style={{ whiteSpace: 'nowrap' }}>
+                            {r.writtenOffAt ? fmtDateTime(r.writtenOffAt) : '-'}
+                          </td>
+                          <td style={{ textAlign: 'right', whiteSpace: 'nowrap', fontWeight: 600 }}>
+                            −{r.qtyWrittenOff} <span className="muted" style={{ fontWeight: 400 }}>{ledgerItem.uom}</span>
+                          </td>
+                          <td className="mono">{jobNoOf(r.jobId)}</td>
+                          <td className="muted">{r.writeOffReason || '-'}</td>
+                          <td className="muted" style={{ whiteSpace: 'nowrap' }}>
+                            {r.writtenOffBy ? userNameOf(r.writtenOffBy) : '-'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )
+          })()}
         </Modal>
       )}
 

@@ -146,6 +146,10 @@ function mapAccReq(r: Row): AccessoryRequest {
     qtyTransferred: r.qty_transferred != null ? Number(r.qty_transferred) : undefined,
     issuedToServiceAt: r.issued_to_service_at ?? undefined,       // 0059 (= รอบล่าสุดที่เบิก)
     qtyIssuedToService: r.qty_issued_to_service != null ? Number(r.qty_issued_to_service) : undefined,  // 0067
+    qtyWrittenOff: r.qty_written_off != null ? Number(r.qty_written_off) : undefined,                    // 0068
+    writeOffReason: r.write_off_reason ?? undefined,
+    writtenOffAt: r.written_off_at ?? undefined,
+    writtenOffBy: r.written_off_by ?? undefined,
     issuedToServiceBy: r.issued_to_service_by ?? undefined,
     epicorIssuedAt: r.epicor_issued_at ?? undefined,             // 0064 ทำเบิก-Epicor
     epicorIssuedBy: r.epicor_issued_by ?? undefined,
@@ -420,6 +424,11 @@ export function remoteActions(sb: SupabaseClient) {
     updatePoLinePrice: (p: { requestId: string; unitPrice?: number }) =>
       rpc(sb, 'rpc_update_po_line_price', { p_request_id: p.requestId, p_unit_price: p.unitPrice ?? null }),
     returnAccessory: (p: { requestId: string }) => rpc(sb, 'rpc_return_accessory', { p_request_id: p.requestId }),
+    // ตัดจำหน่ายของเหลือที่ Job (0068) — ไม่เข้าคลัง ไม่แตะยอด accessory_stock
+    writeOffJobMaterial: (p: { requestId: string; qty: number; reason: string }) =>
+      rpc(sb, 'rpc_write_off_job_material', {
+        p_request_id: p.requestId, p_qty: p.qty, p_reason: p.reason,
+      }),
     transferJobMaterialToStock: (p: { requestId: string; qty: number; note?: string }) =>
       rpc(sb, 'rpc_transfer_job_material_to_stock', { p_request_id: p.requestId, p_qty: p.qty, p_note: p.note ?? null }),
     // Payment ต่อ Job (0044) — Project เจ้าของงาน + Manage

@@ -1081,10 +1081,11 @@ export function effectiveQty(r: AccessoryRequest): number {
 }
 
 /**
- * บัญชี 3 ช่องของวัสดุ 1 บรรทัด (0067) — ผลรวมต้องเท่ากับ qtyRequested เสมอ
- *   qtyTransferred      โอนคืนคลังคงเหลือแล้ว   (ตัดต้นทุนออกจาก Job)
+ * บัญชี 4 ช่องของวัสดุ 1 บรรทัด (0067 + 0068) — ผลรวมต้องเท่ากับ qtyRequested เสมอ
+ *   qtyTransferred      โอนคืนคลังคงเหลือแล้ว   (**ตัดต้นทุนออกจาก Job** — ของกลับไปให้งานอื่นใช้)
  *   qtyIssuedToService  เบิกออกไปหน้างานแล้ว     (ต้นทุนยังอยู่กับ Job)
- *   qtyPendingIssue     ค้างอยู่ที่ Job          (รอเบิก หรือรอโอนคืน)
+ *   qtyWrittenOff       ตัดจำหน่ายของเหลือ       (ต้นทุนยังอยู่กับ Job — ของสูญไปกับงานนี้)
+ *   qtyPendingIssue     ค้างอยู่ที่ Job          (รอเบิก / รอโอนคืน / รอตัดจำหน่าย)
  *
  * ⚠️ ห้ามใช้ `issuedToServiceAt` เป็นธง "จบแล้ว" อีก — ตั้งแต่เบิกบางส่วนได้ ธงนั้นขึ้นตั้งแต่รอบแรก
  *    ตัวที่ตอบว่า "บรรทัดนี้จบ" คือ accSettled()
@@ -1093,9 +1094,14 @@ export function qtyIssuedToService(r: AccessoryRequest): number {
   return r.qtyIssuedToService ?? 0
 }
 
-/** ของที่ยังค้างอยู่ที่ Job — เบิกเพิ่มได้ หรือโอนคืนคลังได้ */
+/** ตัดจำหน่ายของเหลือที่ Job แล้วเท่าไร (0068) — ไม่เข้าคลัง ไม่ลดต้นทุน Job */
+export function qtyWrittenOff(r: AccessoryRequest): number {
+  return r.qtyWrittenOff ?? 0
+}
+
+/** ของที่ยังค้างอยู่ที่ Job — เบิกเพิ่มได้ · โอนคืนคลังได้ · ตัดจำหน่ายได้ */
 export function qtyPendingIssue(r: AccessoryRequest): number {
-  return Math.max(0, effectiveQty(r) - qtyIssuedToService(r))
+  return Math.max(0, effectiveQty(r) - qtyIssuedToService(r) - qtyWrittenOff(r))
 }
 
 /** บรรทัดนี้ "จบ" แล้ว = ทุกชิ้นมีที่ไปครบ (ออกหน้างาน หรือโอนคืนคลัง) — มติผู้ใช้ 2026-09-11 */
@@ -1126,7 +1132,9 @@ export function transferJobMaterialToStock(
   //   0067 · มติผู้ใช้ 2026-09-11: โอนคืนได้จนถึงหลังติดตั้งเสร็จ ⇒ ต้องรับเคสช่างส่งของเหลือกลับมาด้วย
   //   ถ้าจำนวนที่โอนเกินของที่ค้างอยู่ที่ Job ส่วนเกินคือ "ของที่เบิกออกไปแล้วแต่เอากลับมา"
   //   ⇒ ต้องหัก qtyIssuedToService ลงตามนั้น ไม่งั้นบัญชี 3 ช่องรวมเกิน qtyRequested
-  const remain = effectiveQty(req)
+  //   0068: ของที่ถูกตัดจำหน่ายแล้วไม่มีตัวตนให้โอนคืน ⇒ ต้องหักออกจากเพดานด้วย
+  //   ไม่หักแล้วจะโอนเกินของที่มีจริง และดัน qtyIssuedToService ติดลบ
+  const remain = effectiveQty(req) - qtyWrittenOff(req)
   if (!p.qty || p.qty <= 0) throw new Error('จำนวนที่โอนต้องมากกว่า 0')
   if (p.qty > remain) throw new Error(`โอนได้ไม่เกิน ${remain} ${item.uom} (คงอยู่ที่ Job)`)
   const atJob = qtyPendingIssue(req)
@@ -1157,12 +1165,72 @@ export function transferJobMaterialToStock(
     type: 'stock_transfer_in', dept: 'project', jobId: req.jobId,
     message: `📦 ${job.jobNo} โอน ${item.name} ${p.qty} ${item.uom} เข้าคลังคงเหลือ (ตัดต้นทุนออก ${fmtInt(value)} ฿)`,
   })
-  return audit(next, actor, 'accessory_stock', req.itemId, 'transfer_to_stock',
+  next = audit(next, actor, 'accessory_stock', req.itemId, 'transfer_to_stock',
     `${job.jobNo} โอน ${item.name} ${p.qty} ${item.uom} เข้าคลังคงเหลือ ` +
     `(ต้นทุนที่ตัดออกจาก Job ${fmtInt(value)} บาท · คงเหลือในคลัง ${stockQtyOf(next, req.itemId)})` +
     // ของที่เคยออกหน้างานแล้วถูกดึงกลับ ต้องเขียนไว้ให้ชัด — ไม่งั้นยอด "เบิกให้ Service" ลดลงเงียบ ๆ
     (fromSite > 0 ? ` [รวมของที่เบิกออกหน้างานแล้ว ${fromSite} ${item.uom} — ส่งคืนกลับคลัง]` : '') +
     `${p.note?.trim() ? ` — ${p.note.trim()}` : ''}`)
+  // 🔴 บั๊กที่ 0067 ทิ้งไว้: ตั้งแต่ 0067 บรรทัด "จบ" ได้ด้วยการโอนคืนคลัง ไม่ใช่การเบิกเท่านั้น
+  //   แต่ฟังก์ชันนี้ (เขียนไว้ตั้งแต่ S1) ไม่เคยเรียก finalizeIssue ⇒ ถ้าการโอนคืนเป็นชิ้นสุดท้าย
+  //   ที่ทำให้ทุกบรรทัดจบ Job จะค้าง partially_issued จนกว่าจะมี action เบิกอย่างอื่นมากระตุ้น
+  return finalizeIssue(next, actor, req.jobId)
+}
+
+/**
+ * ตัดจำหน่ายของเหลือที่ Job (0068) — ปิดบรรทัดโดย **ไม่เอาของเข้าคลัง**
+ *
+ * ทำไมต้องมี: ตั้งแต่ 0067 บรรทัดจะ "จบ" เมื่อทุกชิ้นมีที่ไปครบ ⇒ ของเหลือเศษ ๆ ที่ไม่คุ้ม
+ *   จะโอนคืนคลัง (น็อต 3 ตัว · สายเหลือ 2 เมตร) จะค้างขวางการปิด Job ไปตลอด
+ *
+ * ⚠️ **ต้นทุนยังอยู่กับ Job** — ไม่แตะ qtyTransferred เด็ดขาด (ของสูญไปกับงานนี้จริง ไม่ใช่คืนของ)
+ *    ถ้าไปบวก qtyTransferred จะได้ผลข้างเคียงว่างบงานลดลงทั้งที่ไม่มีของกลับมา
+ * ⚠️ **ไม่ลงบัญชีเดินสะพัด (stock_movements)** — ของไม่เคยอยู่ในคลังกลาง ลงแถวไปจะทำให้
+ *    รายงาน "ปริมาณออกจากคลัง" นับซ้ำ · หลักฐานคือ Audit Log + ฟิลด์บนบรรทัด
+ *    (กติกาเดียวกับ setStockLot ที่ไม่ลง ledger เพราะของไม่ได้เคลื่อนไหว)
+ */
+export function writeOffJobMaterial(
+  db: DB, actor: User,
+  p: { requestId: string; qty: number; reason: string },
+): DB {
+  const req = db.accessoryRequests.find(r => r.id === p.requestId)
+  if (!req) throw new Error('ไม่พบรายการวัสดุ')
+  const item = db.items.find(i => i.id === req.itemId)
+  if (!item) throw new Error('ไม่พบวัสดุใน Master Data')
+  const job = db.jobs.find(j => j.id === req.jobId)
+  if (!job) throw new Error('ไม่พบ Job')
+  if (job.terminalStatus === 'cancelled')
+    throw new Error(`${job.jobNo} ถูกยกเลิกไปแล้ว — ของถูกคืนเข้าคลังตอนยกเลิกอยู่แล้ว`)
+  assertJobOwner(job, actor)
+  if (req.status !== 'issued' && req.status !== 'received')
+    throw new Error('ตัดจำหน่ายได้เฉพาะวัสดุที่เบิกจากคลังแล้ว หรือรับของจาก PO ครบแล้ว')
+
+  const reason = p.reason?.trim()
+  if (!reason) throw new Error('กรุณาระบุเหตุผลการตัดจำหน่าย')
+  // ตัดได้เฉพาะของที่ยังค้างอยู่ที่ Job — ของที่ออกหน้างานแล้วถือว่าใช้ไปกับงานแล้ว
+  const atJob = qtyPendingIssue(req)
+  if (!p.qty || p.qty <= 0) throw new Error('จำนวนที่ตัดจำหน่ายต้องมากกว่า 0')
+  if (p.qty > atJob)
+    throw new Error(`ตัดจำหน่ายได้ไม่เกิน ${atJob} ${item.uom} (ของที่ยังค้างอยู่ที่ Job)`)
+
+  const ts = now()
+  const next: DB = {
+    ...db,
+    accessoryRequests: db.accessoryRequests.map(r =>
+      r.id === p.requestId
+        ? {
+          ...r,
+          qtyWrittenOff: qtyWrittenOff(r) + p.qty,
+          writeOffReason: reason, writtenOffAt: ts, writtenOffBy: actor.id,
+        }
+        : r),
+  }
+  const value = (req.unitPrice ?? 0) * p.qty
+  const withAudit = audit(next, actor, 'accessory_stock', req.itemId, 'write_off_at_job',
+    `${job.jobNo} ตัดจำหน่าย ${item.name} ${p.qty} ${item.uom} ที่ Job ` +
+    `(ไม่เข้าคลัง · ต้นทุน ${fmtInt(value)} บาท ยังอยู่กับ Job) — ${reason}`)
+  // ตัดจำหน่ายอาจเป็นชิ้นสุดท้ายที่ทำให้ทุกบรรทัดจบ ⇒ ต้องให้โอกาสปิดใบเหมือน action เบิก
+  return finalizeIssue(withAudit, actor, req.jobId)
 }
 
 function fmtInt(n: number): string {
@@ -1599,8 +1667,14 @@ const ACC_ISSUE_WAIT: Partial<Record<AccReqStatus, string>> = {
 export function accIssueBlockReason(db: DB, r: AccessoryRequest): string | undefined {
   if (r.status === 'cancelled' || r.status === 'returned') return 'รายการถูกยกเลิก/คืนคลังไปแล้ว'
   if (effectiveQty(r) <= 0) return 'โอนคืนคลังหมดแล้ว — ไม่มีของค้างอยู่ที่ Job'
-  // 0067: เบิกครบทั้งบรรทัดแล้ว (เบิกบางส่วนยังเบิกต่อได้ จึงเช็คจำนวนคงค้าง ไม่ใช่ธง issuedToServiceAt)
-  if (accSettled(r)) return `เบิกครบแล้ว ${qtyIssuedToService(r)} จาก ${effectiveQty(r)}`
+  // 0067: ไม่มีของค้างที่ Job แล้ว (เบิกบางส่วนยังเบิกต่อได้ จึงเช็คจำนวนคงค้าง ไม่ใช่ธง issuedToServiceAt)
+  //   0068: ต้องแยกให้ชัดว่า "หมดเพราะเบิกครบ" หรือ "หมดเพราะถูกตัดจำหน่าย" ไม่งั้นคนอ่านสับสน
+  if (accSettled(r)) {
+    const off = qtyWrittenOff(r)
+    return off > 0
+      ? `ไม่มีของค้างแล้ว — เบิก ${qtyIssuedToService(r)} · ตัดจำหน่าย ${off} จาก ${effectiveQty(r)}`
+      : `เบิกครบแล้ว ${qtyIssuedToService(r)} จาก ${effectiveQty(r)}`
+  }
   if (r.source === 'central_stock')
     return r.status === 'issued' ? undefined : 'ยังไม่ได้เบิกจากคลังคงเหลือ'
   if (r.status !== 'received') return ACC_ISSUE_WAIT[r.status] ?? 'ยังไม่ได้รับของ'

@@ -120,19 +120,25 @@ export const ACC_STATUS_LABEL: Record<AccReqStatus, string> = {
  *    (กติกาจำนวนตัวจริงอยู่ที่ qtyPendingIssue/accSettled ใน logic.ts — ที่นี่แค่ทำป้ายให้ตรง)
  */
 type AccQtyFields = Pick<AccessoryRequest,
-  'status' | 'issuedToServiceAt' | 'qtyRequested' | 'qtyTransferred' | 'qtyIssuedToService'>
+  'status' | 'issuedToServiceAt' | 'qtyRequested' | 'qtyTransferred' | 'qtyIssuedToService' | 'qtyWrittenOff'>
 
-function accOut(r: Partial<AccQtyFields>): { out: number; left: number } {
+function accOut(r: Partial<AccQtyFields>): { out: number; off: number; left: number } {
   const out = r.qtyIssuedToService ?? 0
-  const left = Math.max(0, (r.qtyRequested ?? 0) - (r.qtyTransferred ?? 0) - out)
-  return { out, left }
+  const off = r.qtyWrittenOff ?? 0          // 0068 — ตัดจำหน่ายแล้ว ไม่ถือว่าค้างอีก
+  const left = Math.max(0, (r.qtyRequested ?? 0) - (r.qtyTransferred ?? 0) - out - off)
+  return { out, off, left }
 }
 
 export function accStatusLabel(r: Partial<AccQtyFields>): string {
-  if (r.issuedToServiceAt && r.status !== 'cancelled' && r.status !== 'returned') {
-    const { out, left } = accOut(r)
-    if (out > 0 && left > 0) return `เบิกบางส่วน ${out} · ค้าง ${left}`
-    return 'เบิกให้ Service แล้ว'
+  const { out, off, left } = accOut(r)
+  if (r.status !== 'cancelled' && r.status !== 'returned') {
+    if (r.issuedToServiceAt) {
+      if (out > 0 && left > 0) return `เบิกบางส่วน ${out} · ค้าง ${left}`
+      if (off > 0) return `เบิก ${out} · ตัดจำหน่าย ${off}`
+      return 'เบิกให้ Service แล้ว'
+    }
+    // ตัดจำหน่ายทั้งบรรทัดโดยไม่เคยเบิกออกไปเลย (ของเสียหายก่อนส่งหน้างาน)
+    if (off > 0 && left <= 0) return `ตัดจำหน่ายของเหลือ ${off}`
   }
   return ACC_STATUS_LABEL[r.status as AccReqStatus]
 }
@@ -151,10 +157,11 @@ export function accBlockNeedsDetail(r: Pick<AccessoryRequest, 'status'>): boolea
 /** สีป้ายให้ตรงกับความหมาย: เขียว = ของพร้อมใช้อยู่กับ Job · ฟ้า = ออกไปหน้างานแล้ว */
 export function accStatusBadge(r: Partial<AccQtyFields>): string {
   if (r.status === 'cancelled' || r.status === 'returned') return 'neutral'
+  const { out, off, left } = accOut(r)
   if (r.issuedToServiceAt) {
-    const { out, left } = accOut(r)
     return out > 0 && left > 0 ? 'amber' : 'blue'   // เหลือง = ยังมีของค้าง ต้องตามต่อ
   }
+  if (off > 0 && left <= 0) return 'neutral'        // ตัดจำหน่ายจบแล้ว ไม่มีอะไรต้องทำต่อ
   return r.status === 'issued' || r.status === 'received' ? 'green' : 'amber'
 }
 

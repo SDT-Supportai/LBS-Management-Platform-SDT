@@ -11,7 +11,7 @@ import {
   ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX,
   addDaysIso, daysBetweenIso, nextNo,
   markEpicorIssued, undoEpicorIssued, LINE_PUSH_TYPES, drawLbs,
-  qtyPendingIssue, qtyIssuedToService, accSettled, transferJobMaterialToStock,
+  qtyPendingIssue, qtyIssuedToService, accSettled, transferJobMaterialToStock, writeOffJobMaterial,
 } from './logic'
 
 // =============================================================================
@@ -518,6 +518,57 @@ describe('เบิกแยกส่วน — เดินสถานะจ�
   it('โอนคืนเกินจำนวนที่ Job ถือตามบัญชีไม่ได้', () => {
     const d0 = { ...base(), accessoryRequests: [req({ id: 'r1', qtyRequested: 10, unitPrice: 100, status: 'received' })] }
     expect(() => transferJobMaterialToStock(d0, actor, { requestId: 'r1', qty: 11 })).toThrow(/ไม่เกิน 10/)
+  })
+
+  // ---- ✂️ ตัดจำหน่ายของเหลือ (0068) ----
+  it('ตัดจำหน่ายของเหลือ = บรรทัดจบ · ต้นทุนยังอยู่กับ Job · ไม่เข้าคลัง ไม่ลง ledger', () => {
+    const d0 = { ...base(), accessoryRequests: [req({ id: 'r1', qtyRequested: 10, unitPrice: 100, status: 'received' })] }
+    const d1 = issueJobAccessory(d0, actor, { jobId: 'j1', requestIds: ['r1'], qtys: { r1: 7 }, ...plan })
+    const d2 = writeOffJobMaterial(d1, actor, { requestId: 'r1', qty: 3, reason: 'เศษไม่คุ้มค่าขนส่งกลับ' })
+    const r = d2.accessoryRequests[0]
+    expect(r.qtyWrittenOff).toBe(3)
+    expect(r.writeOffReason).toBe('เศษไม่คุ้มค่าขนส่งกลับ')
+    expect(qtyPendingIssue(r)).toBe(0)
+    expect(accSettled(r)).toBe(true)
+    // ต้นทุนไม่ลด (ต่างจากโอนคืนคลัง) · ของไม่เข้าคลัง · ไม่มีแถวในบัญชีเดินสะพัด
+    expect(effectiveQty(r)).toBe(10)
+    expect(r.qtyTransferred ?? 0).toBe(0)
+    expect(d2.accessoryStock.find(s => s.itemId === 'i1')?.qtyOnHand ?? 0).toBe(0)
+    expect(d2.stockMovements).toHaveLength(0)
+    expect(d2.auditLogs.some(a => a.action === 'write_off_at_job' && /เศษไม่คุ้ม/.test(a.detail))).toBe(true)
+  })
+
+  it('ตัดจำหน่ายต้องมีเหตุผล · ห้ามเกินของที่ค้างที่ Job', () => {
+    const d0 = { ...base(), accessoryRequests: [req({ id: 'r1', qtyRequested: 10, unitPrice: 100, status: 'received' })] }
+    expect(() => writeOffJobMaterial(d0, actor, { requestId: 'r1', qty: 2, reason: '  ' })).toThrow(/เหตุผล/)
+    expect(() => writeOffJobMaterial(d0, actor, { requestId: 'r1', qty: 11, reason: 'x' })).toThrow(/ไม่เกิน 10/)
+    const d1 = issueJobAccessory(d0, actor, { jobId: 'j1', requestIds: ['r1'], qtys: { r1: 8 }, ...plan })
+    // ของที่ออกหน้างานแล้วตัดจำหน่ายไม่ได้ — เพดานคือ 2 ที่ค้างอยู่ที่ Job
+    expect(() => writeOffJobMaterial(d1, actor, { requestId: 'r1', qty: 3, reason: 'x' })).toThrow(/ไม่เกิน 2/)
+  })
+
+  it('ตัดจำหน่ายแล้วโอนคืนคลังเกินของที่มีจริงไม่ได้ (เพดานหัก qtyWrittenOff)', () => {
+    const d0 = { ...base(), accessoryRequests: [req({ id: 'r1', qtyRequested: 10, unitPrice: 100, status: 'received' })] }
+    const d1 = writeOffJobMaterial(d0, actor, { requestId: 'r1', qty: 4, reason: 'ของเสียหายหน้างาน' })
+    expect(() => transferJobMaterialToStock(d1, actor, { requestId: 'r1', qty: 7 })).toThrow(/ไม่เกิน 6/)
+    const d2 = transferJobMaterialToStock(d1, actor, { requestId: 'r1', qty: 6 })
+    expect(accSettled(d2.accessoryRequests[0])).toBe(true)
+    expect(effectiveQty(d2.accessoryRequests[0])).toBe(4)   // เหลือต้นทุนเฉพาะส่วนที่ตัดจำหน่าย
+  })
+
+  // 🔴 บั๊กที่ 0067 ทิ้งไว้ (เจอตอนเขียน 0068): บรรทัดจบได้ด้วยการโอนคืน/ตัดจำหน่าย ไม่ใช่แค่การเบิก
+  //   ถ้า action เหล่านั้นไม่เรียก finalizeIssue ใบจะค้าง partially_issued ทั้งที่ไม่มีของค้างแล้ว
+  it('โอนคืนคลังเป็นชิ้นสุดท้าย → ปิดใบเป็น Issued เอง', () => {
+    const d0 = issueJobLbs(base(), actor, { jobId: 'j1', ...plan })       // LBS ออกครบแล้ว
+    expect(d0.jobs[0].terminalStatus).toBeNull()                          // ยังมีวัสดุค้าง
+    const d1 = transferJobMaterialToStock(d0, actor, { requestId: 'r1', qty: 1 })
+    expect(d1.jobs[0].terminalStatus).toBe('issued')
+  })
+
+  it('ตัดจำหน่ายเป็นชิ้นสุดท้าย → ปิดใบเป็น Issued เอง', () => {
+    const d0 = issueJobLbs(base(), actor, { jobId: 'j1', ...plan })
+    const d1 = writeOffJobMaterial(d0, actor, { requestId: 'r1', qty: 1, reason: 'เศษ' })
+    expect(d1.jobs[0].terminalStatus).toBe('issued')
   })
 
   it('เบิกก่อนดึง LBS ครบ Scope ไม่ได้', () => {

@@ -245,6 +245,7 @@ export interface StoreActions {
   markEpicorIssued: (p: Parameters<typeof L.markEpicorIssued>[2]) => MaybePromise
   undoEpicorIssued: (p: Parameters<typeof L.undoEpicorIssued>[2]) => MaybePromise
   transferJobMaterialToStock: (p: Parameters<typeof L.transferJobMaterialToStock>[2]) => MaybePromise
+  writeOffJobMaterial: (p: Parameters<typeof L.writeOffJobMaterial>[2]) => MaybePromise
   addJobPayment: (p: Parameters<typeof L.addJobPayment>[2]) => MaybePromise
   updateJobPayment: (p: Parameters<typeof L.updateJobPayment>[2]) => MaybePromise
   deleteJobPayment: (p: Parameters<typeof L.deleteJobPayment>[2]) => MaybePromise
@@ -442,6 +443,7 @@ function DemoProvider({ children }: { children: ReactNode }) {
         undoEpicorIssued: run('epicor.issue', L.undoEpicorIssued),
         // โอนวัสดุเหลือจาก Job เข้าคลังคงเหลือ — Project เป็นเจ้าของวัสดุใน Job
         transferJobMaterialToStock: run('job.manage', L.transferJobMaterialToStock),
+        writeOffJobMaterial: run('job.manage', L.writeOffJobMaterial),
         // Payment — Project (เจ้าของงาน ตาม 0042) + Manage
         addJobPayment: run('job.manage', L.addJobPayment),
         updateJobPayment: run('job.manage', L.updateJobPayment),
