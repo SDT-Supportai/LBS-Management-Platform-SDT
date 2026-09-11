@@ -571,6 +571,30 @@ describe('เบิกแยกส่วน — เดินสถานะจ�
     expect(d1.jobs[0].terminalStatus).toBe('issued')
   })
 
+  // 🔴 บั๊กที่ผู้ใช้แจ้ง 2026-09-11: Job ที่ปิดเป็น Issued แล้วมี "ซื้อเพิ่มหลังเบิก" (0037)
+  //   ปุ่มเบิกหายเพราะ UI ครอบด้วย locked ทั้งก้อน · หลังบ้านอนุญาตอยู่แล้ว — ล็อกกติกานั้นไว้ที่นี่
+  //   ถ้าวันหลังมีใครไปเติม guard ให้ issueJobAccessory ปิดตอน issued เทสต์นี้จะจับได้ทันที
+  it('Job ที่ปิดเป็น Issued แล้ว ยังเบิกวัสดุที่ซื้อเพิ่มหลังเบิกได้ (สถานะใบไม่เปลี่ยน)', () => {
+    const closed = issueJobLbs(issueJobAccessory(base(), actor, { jobId: 'j1', ...plan }), actor, { jobId: 'j1', ...plan })
+    expect(closed.jobs[0].terminalStatus).toBe('issued')
+    // วัสดุที่ซื้อเพิ่มรอบหลัง (รับของครบแล้ว) — ต้องยังอยู่ในรายการที่เบิกได้
+    const withExtra: DB = {
+      ...closed,
+      accessoryRequests: [...closed.accessoryRequests,
+        req({ id: 'r2', status: 'received', poId: 'po1', qtyRequested: 4 })],
+    }
+    expect(jobIssuePlan(withExtra, 'j1', '2026-06-01').accReady.map(r => r.id)).toEqual(['r2'])
+    const after = issueJobAccessory(withExtra, actor, { jobId: 'j1', requestIds: ['r2'], qtys: { r2: 4 } })
+    expect(after.accessoryRequests.find(r => r.id === 'r2')!.qtyIssuedToService).toBe(4)
+    expect(after.jobs[0].terminalStatus).toBe('issued')   // ปิดอยู่แล้ว ไม่เปลี่ยน ไม่ error
+  })
+
+  it('Job ที่ปิดงานติดตั้งแล้ว (installed) เบิกเพิ่มไม่ได้ — เส้นแบ่งอยู่ที่ installed ไม่ใช่ issued', () => {
+    const d0 = { ...base(), jobs: [{ ...base().jobs[0], terminalStatus: 'installed' as const }] }
+    expect(() => issueJobAccessory(d0, actor, { jobId: 'j1', requestIds: ['r1'], ...plan }))
+      .toThrow(/ปิดงานติดตั้งแล้ว/)
+  })
+
   it('เบิกก่อนดึง LBS ครบ Scope ไม่ได้', () => {
     const d = { ...base(), jobs: [job({ lbsQtyRequired: 3 })] }
     expect(() => issueJobLbs(d, actor, { jobId: 'j1', ...plan })).toThrow(/ครบ Scope/)

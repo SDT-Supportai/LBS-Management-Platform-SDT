@@ -190,6 +190,12 @@ export default function JobDetailPage() {
   // 0059: แหล่งความจริงเดียวว่า "อะไรเบิกได้ / อะไรยังไม่ได้" — ใช้ทั้ง popup, ปุ่ม และแผงสรุป
   const plan = jobIssuePlan(db, job.id)
   const canIssueAnything = plan.accReady.length > 0 || (plan.lbsShort === 0 && plan.lbsReady.length > 0)
+  /**
+   * Job ปิดเป็น Issued แล้ว แต่ยังมีวัสดุ "ซื้อเพิ่มหลังเบิก" (0037) ที่รับของครบและรอส่งออกหน้างาน
+   * — ใช้เป็นเงื่อนไขให้แถบปุ่ม + ปุ่มเบิก ยังโผล่อยู่หลังใบปิด (บั๊กที่ผู้ใช้แจ้ง 2026-09-11)
+   * ⚠️ ต้องเป็น `procureLocked` ไม่ใช่ `locked` — ให้ตรงกับ guard ฝั่ง RPC ที่ปิดเฉพาะ installed/cancelled
+   */
+  const canIssueExtra = !procureLocked && plan.accReady.length > 0
   const toggleUnit = (id: string) => setPickedUnits(prev => {
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n
   })
@@ -759,14 +765,22 @@ export default function JobDetailPage() {
         </div>
       )}
 
-      {canManage && !locked && (
+      {/* 🔴 แก้บั๊ก 2026-09-11: เดิมแถบปุ่มทั้งก้อนครอบด้วย `!locked` ⇒ พอ Job เป็น issued
+          ปุ่ม "เบิกให้ Service" หายไปด้วย · แต่ตั้งแต่ 0037 **จัดซื้อเพิ่มหลังเบิกได้ถึง issued**
+          (assertJobProcurable / app_assert_job_procurable ปิดเฉพาะ installed/cancelled)
+          ⇒ ผู้ใช้เพิ่มวัสดุ · ออก PR · รับของได้ครบ แล้วไม่มีทางเบิกออกไปหน้างาน ของค้างที่ Job ถาวร
+          ⇒ แยกกติกา: ปุ่มที่แตะ **LBS / ตัวใบงาน** ใช้ `locked` · ปุ่ม **เบิกให้ Service** ใช้
+             `procureLocked` ให้ตรงกับ guard ฝั่งหลังบ้านเป๊ะ (หลังบ้านอนุญาตอยู่แล้ว ไม่ต้องแก้ RPC) */}
+      {canManage && (!locked || canIssueExtra) && (
         <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
-          <button className="primary" onClick={() => { setDrawStock(db.projectStocks.find(s => s.status === 'open')?.id ?? ''); openModal('draw') }}>+ ดึง LBS เข้า Job</button>
-          <button onClick={() => { setReturnTarget(''); openModal('return') }} disabled={returnableUnits.length === 0}>คืน LBS กลับสต็อก</button>
+          {!locked && <>
+            <button className="primary" onClick={() => { setDrawStock(db.projectStocks.find(s => s.status === 'open')?.id ?? ''); openModal('draw') }}>+ ดึง LBS เข้า Job</button>
+            <button onClick={() => { setReturnTarget(''); openModal('return') }} disabled={returnableUnits.length === 0}>คืน LBS กลับสต็อก</button>
+          </>}
           {/* 0059: ปุ่มเดียวเปิด popup ให้เลือกว่ารอบนี้เบิกอะไร — ไม่ใช่เบิกทั้งใบทีเดียวอีกแล้ว
               เงื่อนไขเปิดใช้ = "มีของอะไรเบิกได้บ้าง" (ไม่ผูกกับสถานะ ready_to_issue ทั้งใบ)
               เพราะทั้งหมดของฟีเจอร์นี้คือเบิก LBS ได้ระหว่างที่ Accessory ยังรอ PO */}
-          <button className="success" onClick={openIssueModal}
+          {!procureLocked && <button className="success" onClick={openIssueModal}
             disabled={!canIssueAnything || (plan.accReady.length === 0 && pendingApprovalOf('issue_job'))}
             title={plan.lbsShort > 0 && plan.accReady.length === 0
               ? `ดึง LBS ยังไม่ครบ Scope — ขาดอีก ${plan.lbsShort} เครื่อง`
@@ -777,8 +791,8 @@ export default function JobDetailPage() {
               plan.lbsShort === 0 && plan.lbsReady.length > 0 ? `LBS ${plan.lbsReady.length}` : null,
               plan.accReady.length > 0 ? `วัสดุ ${plan.accReady.length}` : null,
             ].filter(Boolean).join(' + ')})</>}
-          </button>
-          <button onClick={() => {
+          </button>}
+          {!locked && <><button onClick={() => {
             setEditForm({
               jobNo: job.jobNo,
               customerName: job.customerName, contactPhone: job.contactPhone ?? '',
@@ -805,6 +819,23 @@ export default function JobDetailPage() {
               })) tryAction(async () => { await act.deleteDraftJob({ jobId: job.id }); navigate('/jobs') }, `ลบ ${job.jobNo} แล้ว`)
             }}>ลบ Draft</button>
           )}
+          </>}
+        </div>
+      )}
+
+      {/* Job ปิดเป็น Issued ไปแล้วแต่มีของซื้อเพิ่มรอเบิก — ไม่มีอะไรบนหน้าจอบอก คนจะไม่รู้ว่าต้องกลับมากด
+          (เคสนี้เกิดหลัง 0037 เปิดให้จัดซื้อเพิ่มหลังเบิกได้) */}
+      {canManage && locked && canIssueExtra && (
+        <div className="panel" style={{ borderLeft: '4px solid var(--green, #16a34a)', marginBottom: 18 }}>
+          <div className="panel-body">
+            📦 <b>มีวัสดุที่ซื้อเพิ่มหลังเบิก พร้อมส่งให้ Service แล้ว {plan.accReady.length} รายการ</b>
+            <div className="muted" style={{ marginTop: 4 }}>
+              งานนี้ปิดเป็น <b>Issued</b> ไปแล้ว แต่ของที่ซื้อเพิ่มรอบหลังยังค้างอยู่ที่ Job ·
+              กด <b>เบิกให้ Service</b> ด้านบนเพื่อส่งออกหน้างาน · ของที่ไม่ได้ใช้กด <b>📦 โอนเข้าคลัง</b>
+              หรือ <b>✂️ ตัดจำหน่าย</b> ที่แผง Purchase Orders ·
+              สถานะใบงาน<b>ไม่เปลี่ยน</b> (ปิดไปแล้ว) — การเบิกรอบนี้บันทึกลง Audit Log ตามปกติ
+            </div>
+          </div>
         </div>
       )}
 
@@ -1566,13 +1597,16 @@ export default function JobDetailPage() {
               </button>
             </>}>
             <p className="muted" style={{ marginBottom: 12 }}>
-              เลือกได้ว่ารอบนี้จะส่งอะไรให้ Service — <b>ไม่ต้องรอให้ครบทั้งใบ</b> และ<b>เบิกไม่เต็มจำนวนก็ได้</b> ·
-              ของที่เหลือค้างอยู่ที่ Job เบิกตามมาได้ภายหลัง · ระบบปิดงานเป็น <b>Issued</b> เมื่อ
-              ทุกชิ้นมีที่ไปครบ (ออกหน้างาน หรือโอนคืนคลังคงเหลือ)
+              {locked
+                ? <>งานนี้ปิดเป็น <b>Issued</b> ไปแล้ว — รอบนี้เบิกได้เฉพาะ<b>วัสดุที่ซื้อเพิ่มหลังเบิก</b> ·
+                    เบิกไม่เต็มจำนวนก็ได้ ของที่เหลือค้างอยู่ที่ Job · <b>สถานะใบงานไม่เปลี่ยน</b> (ปิดไปแล้ว)</>
+                : <>เลือกได้ว่ารอบนี้จะส่งอะไรให้ Service — <b>ไม่ต้องรอให้ครบทั้งใบ</b> และ<b>เบิกไม่เต็มจำนวนก็ได้</b> ·
+                    ของที่เหลือค้างอยู่ที่ Job เบิกตามมาได้ภายหลัง · ระบบปิดงานเป็น <b>Issued</b> เมื่อ
+                    ทุกชิ้นมีที่ไปครบ (ออกหน้างาน · โอนคืนคลังคงเหลือ · หรือตัดจำหน่าย)</>}
             </p>
 
-            {/* ---- LBS ---- */}
-            <div className="panel" style={{ marginBottom: 12 }}>
+            {/* ---- LBS ---- (ซ่อนเมื่อใบปิดแล้ว — LBS ออกครบไปตั้งแต่ตอนปิดใบ และดึงเข้าใหม่ไม่ได้) */}
+            {!locked && <div className="panel" style={{ marginBottom: 12 }}>
               <div className="panel-head">
                 <h3>LBS <span className="muted" style={{ fontWeight: 400 }}>
                   · เบิกได้ {plan.lbsReady.length} · เบิกไม่ได้ {plan.lbsBlocked.length} · เบิกไปแล้ว {plan.lbsIssued.length}
@@ -1623,7 +1657,7 @@ export default function JobDetailPage() {
                   </div>
                 )}
               </div>
-            </div>
+            </div>}
 
             {/* ---- Accessory จัดกลุ่มตาม PO ---- */}
             <div className="panel" style={{ marginBottom: 12 }}>
