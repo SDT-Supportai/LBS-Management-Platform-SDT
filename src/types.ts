@@ -485,8 +485,48 @@ export interface SiteVisit {
   performedAt: string
 }
 
+/**
+ * ลิงก์สาธารณะให้ผู้บริหารดูคลัง LBS โดยไม่ต้อง login (0069)
+ *
+ * ⚠️ **ใครถือลิงก์ก็เปิดได้** — ส่งต่อทาง LINE/เมลแล้วคุมไม่ได้ จึงเปิดเฉพาะข้อมูลที่
+ *    "หลุดแล้วไม่เสียหาย" ตามมติผู้ใช้ 2026-09-14: รายเครื่อง **ไม่มีตัวเลขเงินและไม่มีเบอร์โทร**
+ *    (ตัด Cost/Set · มูลค่าคลังรวม · contactPhone ออกตั้งแต่ชั้น RPC ไม่ใช่ซ่อนที่หน้าจอ)
+ * ⚠️ เก็บเฉพาะ **hash ของ token** ฝั่ง LIVE — ตัว token จริงโชว์ครั้งเดียวตอนสร้าง
+ *    ลืมแล้วกด "สร้างลิงก์ใหม่" (เพิกถอนใบเก่า + ออกใบใหม่) · โหมด demo เก็บ token ตรง ๆ
+ *    เพราะอยู่ใน localStorage ของเครื่องตัวเองอยู่แล้ว
+ */
+export interface PublicShareLink {
+  id: string
+  /** เฉพาะโหมด demo — LIVE เก็บแต่ hash ฝั่ง server */
+  token?: string
+  /** 6 ตัวท้ายของ token ไว้ให้คนดูออกว่าแถวไหนคือลิงก์ไหน (ไม่พอให้เดาตัวเต็ม) */
+  tokenHint: string
+  /** ว่าง = ทุกคลัง · มีค่า = เจาะจงคลังเดียว */
+  projectStockId?: string
+  label?: string
+  createdBy: string
+  createdAt: string
+  revokedAt?: string
+  revokedBy?: string
+  viewCount: number
+  lastViewedAt?: string
+}
+
+/** ข้อมูลชุดที่ลิงก์สาธารณะคืนมา — whitelist ล้วน ประกอบเป็น DB ย่อยเพื่อใช้ helper ชุดเดิมได้ */
+export interface PublicStockView {
+  stockNo: string           // ชื่อคลัง หรือ 'ทุกคลัง'
+  generatedAt: string
+  stocks: Pick<ProjectStock, 'id' | 'stockNo' | 'status' | 'notes'>[]
+  units: Pick<LbsUnit,
+    'id' | 'serialLvb' | 'serialOm' | 'projectStockId' | 'status' | 'jobId'
+    | 'fobDate' | 'etaLeadDays' | 'planPoReceiptDate' | 'planDeliveryDate'>[]
+  jobs: Pick<Job, 'id' | 'jobNo' | 'customerName' | 'installLocation'>[]
+  installs: Pick<UnitInstallation, 'unitId' | 'outcome' | 'installedDate' | 'performedAt'>[]
+}
+
 export interface DB {
   users: User[]
+  publicShareLinks: PublicShareLink[]
   items: Item[]
   projectStocks: ProjectStock[]
   lbsUnits: LbsUnit[]

@@ -12,6 +12,7 @@ import {
   addDaysIso, daysBetweenIso, nextNo,
   markEpicorIssued, undoEpicorIssued, LINE_PUSH_TYPES, drawLbs,
   qtyPendingIssue, qtyIssuedToService, accSettled, transferJobMaterialToStock, writeOffJobMaterial,
+  createShareLink, revokeShareLink, publicStockView, touchShareLink, newShareToken,
 } from './logic'
 
 // =============================================================================
@@ -28,9 +29,17 @@ import {
 //    ผ่านทั้ง logic.ts และ RPC จริงแล้ว diff ผลลัพธ์
 // =============================================================================
 
+// =============================================================================
+// ลิงก์สาธารณะดูคลัง LBS โดยไม่ต้อง login (0069)
+//
+// 🔴 เทสต์ชุดนี้คือ "ตัวกันข้อมูลหลุด" — ไม่ใช่เทสต์ความสะดวก
+//    ถ้าวันหลังมีใครเติมคอลัมน์ลง payload แล้วเผลอพาต้นทุน/เบอร์โทรออกไป ต้องแดงที่นี่
+//    (ฝั่ง LIVE มี DO block ใน 0069 ตรวจ body ของ rpc_public_lbs_stock ด้วยกติกาเดียวกัน)
+// =============================================================================
 // ---------- fixture ----------
 const EMPTY: DB = {
-  users: [], items: [], projectStocks: [], lbsUnits: [], jobs: [], allocations: [],
+  users: [], publicShareLinks: [],
+  items: [], projectStocks: [], lbsUnits: [], jobs: [], allocations: [],
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [], approvalComments: [],
   auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
@@ -58,6 +67,84 @@ const unit = (over: Partial<LbsUnit> = {}): LbsUnit => ({
 })
 
 const db = (over: Partial<DB> = {}): DB => ({ ...EMPTY, ...over })
+
+// =============================================================================
+describe('ลิงก์สาธารณะดูคลัง LBS (0069) — กันข้อมูลหลุด', () => {
+  const actor = { id: 'u1', email: 'd@x.co', password: '', fullName: 'สมชาย', department: 'sales' as const, isActive: true }
+  const base = () => db({
+    users: [actor],
+    projectStocks: [
+      { id: 's1', stockNo: 'Project Stock No.1', itemId: 'i1', status: 'open' as const, createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' },
+      { id: 's2', stockNo: 'Project Stock No.2', itemId: 'i1', status: 'open' as const, createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' },
+    ],
+    jobs: [job({ id: 'j1', contactPhone: '081-234-5678', budgetSalePrice: 9_000_000, budgetCost: 7_000_000 })],
+    lbsUnits: [
+      unit({ id: 'a', projectStockId: 's1', status: 'allocated', jobId: 'j1', unitCost: 1_200_000 }),
+      unit({ id: 'b', serialLvb: 'LVB-002', serialOm: 'OM-002', projectStockId: 's2', unitCost: 999_999 }),
+    ],
+  })
+  const tokenOf = (d: DB) => d.publicShareLinks[d.publicShareLinks.length - 1].token!
+
+  it('🔴 payload ต้องไม่มีต้นทุนรายเครื่อง · ไม่มีเบอร์โทร · ไม่มีงบ Job', () => {
+    const d = createShareLink(base(), actor, {})
+    const v = publicStockView(d, tokenOf(d))
+    const json = JSON.stringify(v)
+    expect(json).not.toContain('1200000')         // unitCost
+    expect(json).not.toContain('999999')
+    expect(json).not.toContain('081-234-5678')    // contactPhone (PDPA)
+    expect(json).not.toContain('9000000')         // budgetSalePrice
+    expect(json).not.toContain('7000000')         // budgetCost
+    // ตรวจที่ชื่อคีย์ด้วย — เผื่อวันหลังค่าบังเอิญไม่ตรงรูปแบบข้างบน
+    v.units.forEach(u => expect(Object.keys(u)).not.toContain('unitCost'))
+    v.jobs.forEach(j => expect(Object.keys(j)).not.toContain('contactPhone'))
+  })
+
+  it('ของที่ต้องเห็นยังอยู่ครบ (Serial · สถานะ · ETA · Job · ลูกค้า · สถานที่)', () => {
+    const d = createShareLink(base(), actor, {})
+    const v = publicStockView(d, tokenOf(d))
+    expect(v.units.map(u => u.serialLvb).sort()).toEqual(['LVB-001', 'LVB-002'])
+    expect(v.jobs[0].jobNo).toBe('J-001')
+    expect(v.jobs[0].customerName).toBe('กฟภ.')
+    expect(v.jobs[0].installLocation).toBe('สถานีไฟฟ้า A')
+  })
+
+  it('ลิงก์เจาะจงคลัง เห็นเฉพาะคลังนั้น', () => {
+    const d = createShareLink(base(), actor, { projectStockId: 's2' })
+    const v = publicStockView(d, tokenOf(d))
+    expect(v.stockNo).toBe('Project Stock No.2')
+    expect(v.units.map(u => u.id)).toEqual(['b'])
+    expect(v.jobs).toHaveLength(0)          // เครื่องในคลังนี้ยังไม่เข้า Job
+  })
+
+  it('token มั่ว หรือลิงก์ที่เพิกถอนแล้ว เปิดไม่ได้', () => {
+    const d = createShareLink(base(), actor, {})
+    const tok = tokenOf(d)
+    expect(() => publicStockView(d, 'ไม่ใช่โทเคน')).toThrow(/ไม่ถูกต้อง/)
+    const revoked = revokeShareLink(d, actor, { linkId: d.publicShareLinks[0].id })
+    expect(() => publicStockView(revoked, tok)).toThrow(/เพิกถอน/)
+    expect(() => revokeShareLink(revoked, actor, { linkId: d.publicShareLinks[0].id })).toThrow(/เพิกถอนไปแล้ว/)
+  })
+
+  it('token สุ่มยาวพอและไม่ซ้ำ · เพิกถอนแล้วลบ token ทิ้งจากแถว', () => {
+    const t1 = newShareToken(); const t2 = newShareToken()
+    expect(t1).toHaveLength(64)
+    expect(t1).not.toBe(t2)
+    expect(/^[0-9a-f]{64}$/.test(t1)).toBe(true)
+    const d = createShareLink(base(), actor, {})
+    const revoked = revokeShareLink(d, actor, { linkId: d.publicShareLinks[0].id })
+    expect(revoked.publicShareLinks[0].token).toBeUndefined()
+    expect(revoked.publicShareLinks[0].tokenHint).toHaveLength(6)   // ยังระบุแถวได้
+  })
+
+  it('นับยอดเปิดดูให้ Division เห็นว่าลิงก์ถูกใช้แค่ไหน', () => {
+    let d = createShareLink(base(), actor, {})
+    const tok = tokenOf(d)
+    expect(d.publicShareLinks[0].viewCount).toBe(0)
+    d = touchShareLink(d, tok); d = touchShareLink(d, tok)
+    expect(d.publicShareLinks[0].viewCount).toBe(2)
+    expect(d.publicShareLinks[0].lastViewedAt).toBeTruthy()
+  })
+})
 
 // =============================================================================
 describe('effectiveQty — จำนวนที่ Job ถืออยู่จริง', () => {

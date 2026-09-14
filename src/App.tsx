@@ -4,6 +4,7 @@ import { useStore, can } from './data/StoreContext'
 import { ErrorBoundary, ToastProvider, useConfirm, useTryAction } from './ui/components'
 import { DEPT_LABEL, fmtDateTime } from './ui/format'
 import LoginPage from './pages/LoginPage'
+import PublicStockPage from './pages/PublicStockPage'   // 0069 — หน้าสาธารณะ ไม่ต้อง login
 import DashboardPage from './pages/DashboardPage'
 // Map Tracking โหลดแยก chunk — leaflet + CSS ของมันรวม ~150 kB
 // และคนส่วนใหญ่เปิดแอปมาเพื่อดู Dashboard/Jobs ไม่ใช่แผนที่ (2026-08-23)
@@ -281,6 +282,8 @@ export default function App() {
   const [navOpen, setNavOpen] = useState(false)   // mobile drawer
   const isManage = can(user, 'master.manage')     // Dev Settings เฉพาะ Manage (admin)
   const { pathname } = useLocation()              // reset ErrorBoundary เมื่อเปลี่ยนหน้า
+  // ลิงก์สาธารณะ: #/share/<token> — เช็คจาก pathname ตรง ๆ เพราะอยู่นอก <Routes> ของแอป
+  const shareToken = pathname.startsWith('/share/') ? pathname.slice('/share/'.length) : ''
 
   if (loading) {
     return (
@@ -292,6 +295,10 @@ export default function App() {
       </div>
     )
   }
+
+  // 🔴 ลิงก์สาธารณะ (0069) — **ต้องอยู่เหนือด่าน `!user`** ไม่งั้นคนที่ยังไม่ login เจอหน้า Login
+  //    หน้านี้ไม่มี sidebar / ปุ่มทำรายการ · ข้อมูลถูกกรองตั้งแต่ชั้น RPC แล้ว ไม่ใช่ซ่อนที่หน้าจอ
+  if (shareToken) return <ToastProvider><PublicStockPage token={shareToken} /></ToastProvider>
 
   return (
     <ToastProvider>

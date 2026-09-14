@@ -415,6 +415,28 @@ input:focus, select:focus, textarea:focus {
 .unit-row input { padding: 7px 9px; }
 .unit-row button.small { padding: 5px 8px; }
 
+/* ---------- หน้าสาธารณะ (ลิงก์ VIP ไม่ต้อง login · 0069) ----------
+   ไม่มี sidebar/topbar — จัดกลางจอแบบหน้ารายงาน อ่านง่ายบนมือถือด้วย */
+.public-wrap { max-width: 1200px; margin: 0 auto; padding: 22px 16px 40px; }
+.public-head {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+  flex-wrap: wrap; margin-bottom: 16px;
+}
+.public-title { font-size: 20px; font-weight: 800; color: var(--text); letter-spacing: -.01em; }
+.public-kpis {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px; margin-bottom: 16px;
+}
+.public-kpi {
+  background: #fff; border: 1px solid var(--border-soft); border-radius: 10px;
+  padding: 12px 14px; box-shadow: var(--shadow-sm, 0 1px 2px rgba(15, 25, 50, .06));
+}
+.public-kpi-value { font-size: 22px; font-weight: 800; line-height: 1.2; color: var(--text); }
+.public-kpi-value.green { color: var(--green, #16a34a); }
+.public-kpi-value.amber { color: var(--amber, #d97706); }
+.public-kpi-value.blue { color: var(--primary); }
+.public-foot { margin-top: 18px; font-size: 12px; text-align: center; }
+
 /* ---------- โมดัล "เบิกให้ Service" — ตารางเลือกของ + จำนวน (0067) ----------
    เดิมเป็น flex row ต่อรายการ ⇒ ชื่อวัสดุยาว/สั้นไม่เท่ากันทำให้ทุกคอลัมน์เลื่อนไม่ตรงแนว
    อ่าน 70 รายการรวดไม่ได้เลย · เปลี่ยนเป็น grid คอลัมน์คงที่: ติ๊ก · ชื่อ · ค้างที่ Job · เบิกรอบนี้ · สถานะ */

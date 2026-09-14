@@ -3,6 +3,7 @@ import type {
   ApprovalType, ApprovalPayload, BudgetCosts, CostCategoryKey,
   SiteVisit, SiteVisitOutcome, UnitInstallOutcome, TeamMember, JobAssignment,
   StockMovementType, PaymentType, EpicorTxnType,
+  PublicShareLink, PublicStockView,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -17,6 +18,101 @@ export function uid(): string {
 
 function now(): string {
   return new Date().toISOString()
+}
+
+// =============================================================================
+// ลิงก์สาธารณะดูคลัง LBS โดยไม่ต้อง login (0069)
+// =============================================================================
+
+/**
+ * token 64 ตัวอักษรฐาน 16 = สุ่มจาก UUIDv4 สองใบ (~244 bit) — เดาไม่ได้ในทางปฏิบัติ
+ * ⚠️ ฝั่ง LIVE สร้าง token ใน SQL ไม่ใช่ที่นี่ (client สร้างเองแล้วส่งไปเก็บ = ไว้ใจ client ไม่ได้)
+ */
+export function newShareToken(): string {
+  return (uid() + uid()).replace(/-/g, '')
+}
+
+/** 6 ตัวท้าย ไว้ให้คนดูออกว่าแถวไหนคือลิงก์ไหน — ไม่พอให้เดาตัวเต็ม */
+export function tokenHintOf(token: string): string {
+  return token.slice(-6)
+}
+
+export function createShareLink(
+  db: DB, actor: User,
+  p: { projectStockId?: string; label?: string },
+): DB {
+  if (p.projectStockId && !db.projectStocks.some(s => s.id === p.projectStockId))
+    throw new Error('ไม่พบคลังที่เลือก')
+  const token = newShareToken()
+  const scope = p.projectStockId
+    ? db.projectStocks.find(s => s.id === p.projectStockId)!.stockNo
+    : 'ทุกคลัง'
+  const link: PublicShareLink = {
+    id: uid(), token, tokenHint: tokenHintOf(token),
+    projectStockId: p.projectStockId, label: p.label?.trim() || undefined,
+    createdBy: actor.id, createdAt: now(), viewCount: 0,
+  }
+  const next: DB = { ...db, publicShareLinks: [...db.publicShareLinks, link] }
+  return audit(next, actor, 'share_link', link.id, 'create_share_link',
+    `สร้างลิงก์สาธารณะดูคลัง LBS (${scope}) — ...${link.tokenHint}` +
+    `${link.label ? ` · ${link.label}` : ''} · เปิดได้โดยไม่ต้อง login จนกว่าจะเพิกถอน`)
+}
+
+export function revokeShareLink(db: DB, actor: User, p: { linkId: string }): DB {
+  const link = db.publicShareLinks.find(l => l.id === p.linkId)
+  if (!link) throw new Error('ไม่พบลิงก์')
+  if (link.revokedAt) throw new Error('ลิงก์นี้ถูกเพิกถอนไปแล้ว')
+  const next: DB = {
+    ...db,
+    publicShareLinks: db.publicShareLinks.map(l =>
+      l.id === p.linkId ? { ...l, revokedAt: now(), revokedBy: actor.id, token: undefined } : l),
+  }
+  return audit(next, actor, 'share_link', link.id, 'revoke_share_link',
+    `เพิกถอนลิงก์สาธารณะ ...${link.tokenHint} (เปิดดู ${link.viewCount} ครั้ง) — ลิงก์เดิมใช้ไม่ได้ทันที`)
+}
+
+/**
+ * แปลง token → ข้อมูลที่เปิดให้ดูได้ (mirror ของ rpc_public_lbs_stock ฝั่ง LIVE)
+ * ⚠️ **whitelist ฟิลด์ที่นี่เท่านั้น** — ห้ามคืน unitCost / contactPhone / งบ / ราคาใด ๆ
+ *    การซ่อนที่หน้าจออย่างเดียวไม่พอ เพราะข้อมูลเดินทางไปถึงเบราว์เซอร์ของคนนอกแล้ว
+ */
+export function publicStockView(db: DB, token: string): PublicStockView {
+  const link = db.publicShareLinks.find(l => l.token === token)
+  if (!link) throw new Error('ลิงก์ไม่ถูกต้อง หรือถูกเพิกถอนไปแล้ว')
+  if (link.revokedAt) throw new Error('ลิงก์นี้ถูกเพิกถอนแล้ว — ขอลิงก์ใหม่จากผู้ดูแล')
+  const stocks = db.projectStocks.filter(s => !link.projectStockId || s.id === link.projectStockId)
+  const stockIds = new Set(stocks.map(s => s.id))
+  const units = db.lbsUnits.filter(u => stockIds.has(u.projectStockId))
+  const unitIds = new Set(units.map(u => u.id))
+  const jobIds = new Set(units.map(u => u.jobId).filter((v): v is string => !!v))
+  return {
+    stockNo: link.projectStockId ? (stocks[0]?.stockNo ?? '-') : 'ทุกคลัง',
+    generatedAt: now(),
+    stocks: stocks.map(s => ({ id: s.id, stockNo: s.stockNo, status: s.status, notes: s.notes })),
+    units: units.map(u => ({
+      id: u.id, serialLvb: u.serialLvb, serialOm: u.serialOm, projectStockId: u.projectStockId,
+      status: u.status, jobId: u.jobId,
+      fobDate: u.fobDate, etaLeadDays: u.etaLeadDays,
+      planPoReceiptDate: u.planPoReceiptDate, planDeliveryDate: u.planDeliveryDate,
+      // ⚠️ ไม่มี unitCost — ตัดตั้งแต่ตรงนี้ ไม่ใช่ซ่อนที่หน้าจอ
+    })),
+    jobs: db.jobs.filter(j => jobIds.has(j.id)).map(j => ({
+      id: j.id, jobNo: j.jobNo, customerName: j.customerName, installLocation: j.installLocation,
+      // ⚠️ ไม่มี contactPhone (PDPA) · ไม่มีงบ/ราคาขาย
+    })),
+    installs: db.unitInstallations.filter(r => unitIds.has(r.unitId)).map(r => ({
+      unitId: r.unitId, outcome: r.outcome, installedDate: r.installedDate, performedAt: r.performedAt,
+    })),
+  }
+}
+
+/** นับยอดเปิดดู — แยกจาก publicStockView เพราะฝั่ง LIVE ทำใน RPC เดียวกัน แต่ demo ต้อง set state */
+export function touchShareLink(db: DB, token: string): DB {
+  return {
+    ...db,
+    publicShareLinks: db.publicShareLinks.map(l =>
+      l.token === token ? { ...l, viewCount: l.viewCount + 1, lastViewedAt: now() } : l),
+  }
 }
 
 export function nextNo(prefix: string, existing: string[]): string {

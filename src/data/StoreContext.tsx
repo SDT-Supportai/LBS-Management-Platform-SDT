@@ -3,7 +3,7 @@ import type { DB, User, Department, AppSettings, AppNotification } from '../type
 import { buildSeedDb } from './seed'
 import * as L from './logic'
 import { supabase, isSupabaseMode } from '../lib/supabase'
-import { loadAll, remoteActions, markNotificationsRead as remoteMarkRead, setNotificationLineStatus as remoteSetLine } from './remote'
+import { loadAll, remoteActions, createShareLinkRemote, markNotificationsRead as remoteMarkRead, setNotificationLineStatus as remoteSetLine } from './remote'
 
 const DB_KEY = 'lbs-platform-db-v2'
 const DB_KEY_V1 = 'lbs-platform-db-v1'
@@ -115,7 +115,8 @@ const DEFAULT_SETTINGS: AppSettings = {
 }
 
 const EMPTY_DB: DB = {
-  users: [], items: [], projectStocks: [], lbsUnits: [], jobs: [], allocations: [],
+  users: [], publicShareLinks: [],
+  items: [], projectStocks: [], lbsUnits: [], jobs: [], allocations: [],
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [], approvalComments: [],
   auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
@@ -149,6 +150,7 @@ function migrateDb(raw: unknown): DB {
       qtyReceived: r.qtyReceived ?? (r.status === 'received' ? r.qtyRequested : 0),
     })),
     approvalRequests: d.approvalRequests ?? [],
+    publicShareLinks: d.publicShareLinks ?? [],   // 0069
     // scope เพิ่มใน 0051 — คอมเมนต์ที่บันทึกไว้ก่อนหน้าไม่มีฟิลด์นี้ ถ้าไม่เติมจะถูก filter ทิ้งทั้งหมด
     approvalComments: (d.approvalComments ?? []).map(c => ({ ...c, scope: c.scope ?? 'approval' })),
     notifications: d.notifications ?? [],
@@ -245,6 +247,11 @@ export interface StoreActions {
   markEpicorIssued: (p: Parameters<typeof L.markEpicorIssued>[2]) => MaybePromise
   undoEpicorIssued: (p: Parameters<typeof L.undoEpicorIssued>[2]) => MaybePromise
   transferJobMaterialToStock: (p: Parameters<typeof L.transferJobMaterialToStock>[2]) => MaybePromise
+  /** 0069 — คืน **token ตัวเต็ม** ครั้งเดียวตอนสร้าง (LIVE เก็บแต่ hash · เปิดดูซ้ำภายหลังไม่ได้) */
+  createShareLink: (p: Parameters<typeof L.createShareLink>[2]) => Promise<string> | string
+  revokeShareLink: (p: Parameters<typeof L.revokeShareLink>[2]) => MaybePromise
+  /** นับยอดเปิดดูลิงก์สาธารณะ — demo เท่านั้น (LIVE นับใน RPC ฝั่ง server) · ไม่ต้อง login */
+  touchShareLink: (p: { token: string }) => void
   writeOffJobMaterial: (p: Parameters<typeof L.writeOffJobMaterial>[2]) => MaybePromise
   addJobPayment: (p: Parameters<typeof L.addJobPayment>[2]) => MaybePromise
   updateJobPayment: (p: Parameters<typeof L.updateJobPayment>[2]) => MaybePromise
@@ -443,6 +450,15 @@ function DemoProvider({ children }: { children: ReactNode }) {
         undoEpicorIssued: run('epicor.issue', L.undoEpicorIssued),
         // โอนวัสดุเหลือจาก Job เข้าคลังคงเหลือ — Project เป็นเจ้าของวัสดุใน Job
         transferJobMaterialToStock: run('job.manage', L.transferJobMaterialToStock),
+        // คืน token ให้หน้าจอโชว์ทันที — โหมด demo เก็บ token ตรง ๆ ในแถวอยู่แล้ว
+        createShareLink: (p: Parameters<typeof L.createShareLink>[2]) => {
+          const actor = requirePerm('stock.manage')
+          const next = L.createShareLink(dbRef.current, actor, p)
+          applyDb(next)
+          return next.publicShareLinks[next.publicShareLinks.length - 1].token!
+        },
+        revokeShareLink: run('stock.manage', L.revokeShareLink),
+        touchShareLink: (p: { token: string }) => applyDb(L.touchShareLink(dbRef.current, p.token)),
         writeOffJobMaterial: run('job.manage', L.writeOffJobMaterial),
         // Payment — Project (เจ้าของงาน ตาม 0042) + Manage
         addJobPayment: run('job.manage', L.addJobPayment),
@@ -610,6 +626,14 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
     const act = Object.fromEntries(
       Object.entries(remote).map(([k, fn]) => [k, wrap(fn as (p: unknown) => Promise<void>)]),
     ) as unknown as StoreActions
+
+    // 0069 — createShareLink ต้องคืน token ที่ server สุ่มให้ · rpc() ตัวกลางคืน void
+    //   จึงต่อเองแล้ว reload ต่อท้ายให้เหมือน action อื่น (แถวใหม่ต้องโผล่ในตารางทันที)
+    act.createShareLink = async (p) => {
+      const token = await createShareLinkRemote(sb, p)
+      try { await reload() } catch { setStale(true) }
+      return token
+    }
 
     // หลังขออนุมัติสำเร็จ → ดันการ์ด Flex (ปุ่มอนุมัติ) เข้าแชท 1:1 ผู้อนุมัติ (best-effort, เฉพาะตอนเปิด LINE)
     const baseRequestApproval = act.requestApproval

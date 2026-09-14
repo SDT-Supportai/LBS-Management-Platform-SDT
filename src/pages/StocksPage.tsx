@@ -251,6 +251,28 @@ export default function StocksPage() {
   const canManage = can(user, 'stock.manage')
   // สิทธิ์ดาวน์โหลดรายงานผู้บริหาร (ไฟล์พาต้นทุน/มูลค่าคลังออกนอกระบบ) — ไม่มีสิทธิ์ = ไม่เห็นปุ่ม
   const canReport = can(user, 'report.exec')
+
+  // ---- ลิงก์สาธารณะให้ผู้บริหารดูคลัง LBS โดยไม่ต้อง login (0069) ----
+  const [showShare, setShowShare] = useState(false)
+  const [shareStock, setShareStock] = useState('')     // '' = ทุกคลัง
+  const [shareLabel, setShareLabel] = useState('')
+  const [newLink, setNewLink] = useState<string | null>(null)   // URL เต็ม โชว์ครั้งเดียวตอนสร้าง
+  const activeLinks = db.publicShareLinks.filter(l => !l.revokedAt)
+  const stockNoOfAny = (id: string) => db.projectStocks.find(s => s.id === id)?.stockNo ?? '(คลังถูกลบ)'
+  const createLink = async () => {
+    try {
+      const token = await act.createShareLink({
+        projectStockId: shareStock || undefined,
+        label: shareLabel.trim() || undefined,
+      })
+      // ใช้ origin ของหน้าที่กำลังเปิดอยู่ — ไม่ hardcode โดเมน (custom domain ภายหลังก็ยังถูก)
+      setNewLink(`${location.origin}${location.pathname}#/share/${token}`)
+      setShareLabel('')
+      show('สร้างลิงก์แล้ว — คัดลอกเก็บไว้ก่อนปิดหน้าต่าง')
+    } catch (e) {
+      show(e instanceof Error ? e.message : 'สร้างลิงก์ไม่สำเร็จ', true)
+    }
+  }
   // ---- วัสดุตาม Job (Ref.PO): วัสดุที่รับของครบจาก PO ที่ปิดรับของแล้ว ----
   // ⚠️ แก้บั๊กจับคู่ (2026-08-23): เดิมกรอง `r.prId === po.prId` — ตั้งแต่ 0022 ที่ 1 PR ออกได้หลาย PO
   //    บรรทัดของ PO ใบหนึ่งจะไปโผล่ใต้ PO ใบอื่นที่มาจาก PR เดียวกันด้วย ⇒ รายการซ้ำ/มูลค่าเกินจริง
@@ -821,9 +843,106 @@ export default function StocksPage() {
 
       {tab === 'stock' && <>
       {canManage && (
-        <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button className="primary" onClick={() => { setRows([emptyRow()]); setStockNo(`Project Stock No.${db.projectStocks.length + 1}`); setPoNo(''); setNotes(''); setShowCreate(true) }}>+ สร้าง Project Stock ใหม่ (สั่งซื้อ LBS เข้าคลัง)</button>
+          <button onClick={() => setShowShare(v => !v)}>
+            🔗 ลิงก์ให้ผู้บริหารดู{activeLinks.length > 0 ? ` (${activeLinks.length})` : ''}
+          </button>
         </div>
+      )}
+
+      {/* ลิงก์สาธารณะ (0069) — Division/Manage สร้าง/เพิกถอน · หน้าปลายทางไม่ต้อง login */}
+      {canManage && showShare && (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <div className="panel-head">
+            <h3>🔗 ลิงก์ให้ผู้บริหารดูคลัง LBS <span className="muted" style={{ fontWeight: 400 }}>· ไม่ต้องเข้าสู่ระบบ</span></h3>
+            <button className="small" onClick={() => setShowShare(false)}>ปิด</button>
+          </div>
+          <div className="panel-body">
+            <div className="muted" style={{ marginBottom: 10 }}>
+              ⚠️ <b>ใครถือลิงก์ก็เปิดได้</b> — ส่งต่อทาง LINE/เมลแล้วคุมไม่ได้ · หน้าปลายทางแสดง
+              <b>รายเครื่อง สถานะ ETA ลูกค้า สถานที่ติดตั้ง</b> เท่านั้น
+              <b> ไม่มีต้นทุน ไม่มีมูลค่าคลัง ไม่มีเบอร์โทร</b> (ตัดตั้งแต่ชั้นข้อมูล ไม่ใช่ซ่อนที่หน้าจอ) ·
+              ลิงก์<b>ไม่มีวันหมดอายุ</b> ใช้ได้จนกว่าจะกดเพิกถอน
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12 }}>
+              <label className="field" style={{ marginBottom: 0 }}>
+                <span>ขอบเขตข้อมูล</span>
+                <select value={shareStock} onChange={e => setShareStock(e.target.value)} style={{ minWidth: 220 }}>
+                  <option value="">ทุกคลัง</option>
+                  {db.projectStocks.map(s => <option key={s.id} value={s.id}>{s.stockNo}</option>)}
+                </select>
+              </label>
+              <label className="field" style={{ marginBottom: 0, flex: 1, minWidth: 200 }}>
+                <span>ชื่อกำกับ (ไว้จำว่าส่งให้ใคร)</span>
+                <input value={shareLabel} onChange={e => setShareLabel(e.target.value)} placeholder="เช่น คุณสมชาย (กรรมการ)" />
+              </label>
+              <button className="primary" onClick={createLink}>+ สร้างลิงก์</button>
+            </div>
+            <div className="table-scroll">
+              <table>
+                <thead><tr>
+                  <th>ขอบเขต</th><th>ชื่อกำกับ</th><th>รหัสลิงก์</th><th>สร้างเมื่อ</th>
+                  <th>เปิดดู</th><th>สถานะ</th><th></th>
+                </tr></thead>
+                <tbody>
+                  {db.publicShareLinks.length === 0 && (
+                    <tr><td colSpan={7}><div className="empty">ยังไม่มีลิงก์ — กด "+ สร้างลิงก์" เพื่อออกลิงก์ใบแรก</div></td></tr>
+                  )}
+                  {db.publicShareLinks.map(l => (
+                    <tr key={l.id}>
+                      <td className="mono">{l.projectStockId ? stockNoOfAny(l.projectStockId) : "ทุกคลัง"}</td>
+                      <td>{l.label || <span className="muted">-</span>}</td>
+                      <td className="mono">…{l.tokenHint}</td>
+                      <td className="muted">{fmtDate(l.createdAt)}</td>
+                      <td>
+                        {l.viewCount > 0
+                          ? <>{l.viewCount} ครั้ง<div className="muted">{l.lastViewedAt ? fmtDateTime(l.lastViewedAt) : ''}</div></>
+                          : <span className="muted">ยังไม่เคยเปิด</span>}
+                      </td>
+                      <td>{l.revokedAt
+                        ? <><span className="badge neutral">เพิกถอนแล้ว</span><div className="muted">{fmtDate(l.revokedAt)}</div></>
+                        : <span className="badge green">ใช้งานได้</span>}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        {!l.revokedAt && (
+                          <button className="small danger" onClick={async () => {
+                            if (await askConfirm({
+                              title: 'เพิกถอนลิงก์',
+                              description: <>ลิงก์ …{l.tokenHint} จะ<b>เปิดไม่ได้ทันที</b> ทุกคนที่ถืออยู่ ·
+                                ถ้ายังต้องให้ดูอยู่ ให้สร้างลิงก์ใหม่แล้วส่งให้ใหม่</>,
+                              confirmLabel: 'เพิกถอน',
+                            })) tryAction(() => act.revokeShareLink({ linkId: l.id }), 'เพิกถอนลิงก์แล้ว')
+                          }}>เพิกถอน</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* โชว์ลิงก์เต็มครั้งเดียวตอนสร้าง — ฝั่ง LIVE เก็บแต่ hash เปิดดูซ้ำไม่ได้ */}
+      {newLink && (
+        <Modal title="ลิงก์พร้อมส่งแล้ว" onClose={() => setNewLink(null)}
+          footer={<button className="primary" onClick={() => setNewLink(null)}>เสร็จสิ้น</button>}>
+          <p className="muted" style={{ marginBottom: 10 }}>
+            🔴 <b>คัดลอกเก็บไว้ตอนนี้เลย</b> — ระบบเก็บเฉพาะลายนิ้วมือของลิงก์ไว้ตรวจสอบ
+            <b>เปิดดูลิงก์เต็มซ้ำไม่ได้อีก</b> · ลืมแล้วให้เพิกถอนใบเก่าแล้วสร้างใหม่
+          </p>
+          <textarea readOnly rows={3} value={newLink} onFocus={e => e.currentTarget.select()}
+            style={{ fontFamily: 'var(--mono, monospace)', fontSize: 12.5 }} />
+          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            <button className="primary" onClick={() => {
+              navigator.clipboard?.writeText(newLink).then(
+                () => show('คัดลอกลิงก์แล้ว'),
+                () => show('คัดลอกอัตโนมัติไม่ได้ — กดเลือกข้อความแล้ว Ctrl+C', true))
+            }}>📋 คัดลอกลิงก์</button>
+            <a className="button" href={newLink} target="_blank" rel="noreferrer">เปิดดูตัวอย่าง ↗</a>
+          </div>
+        </Modal>
       )}
 
       {db.projectStocks.map(s => {

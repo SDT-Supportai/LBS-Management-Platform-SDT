@@ -5,6 +5,7 @@ import type {
   Department, ApprovalRequest, ApprovalComment, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit, UnitInstallation,
   TeamMember, JobAssignment, StockMovement, JobPayment, PaymentType,
   StdDrawing, StdPrice, StdBom, StdBomLine,
+  PublicShareLink, PublicStockView,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -128,6 +129,19 @@ function mapJob(r: Row): Job {
     installPhotoUrl: r.install_photo_url ?? undefined,
     cancelledAt: r.cancelled_at ?? undefined, cancelledBy: r.cancelled_by ?? undefined,
     cancelReason: r.cancel_reason ?? undefined,
+  }
+}
+function mapShareLink(r: Row): PublicShareLink {
+  return {
+    id: r.id,
+    // ⚠️ ไม่มี token — ฝั่ง server เก็บแต่ token_hash · ตัวเต็มคืนครั้งเดียวตอนสร้างเท่านั้น
+    tokenHint: r.token_hint ?? '',
+    projectStockId: r.project_stock_id ?? undefined,
+    label: r.label ?? undefined,
+    createdBy: r.created_by ?? '', createdAt: r.created_at,
+    revokedAt: r.revoked_at ?? undefined, revokedBy: r.revoked_by ?? undefined,
+    viewCount: r.view_count != null ? Number(r.view_count) : 0,
+    lastViewedAt: r.last_viewed_at ?? undefined,
   }
 }
 function mapAlloc(r: Row): AllocationTxn {
@@ -265,7 +279,7 @@ async function q(sb: SupabaseClient, table: string, order?: { col: string; asc?:
 }
 
 export async function loadAll(sb: SupabaseClient): Promise<DB> {
-  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, approvalComments, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, prices, boms, bomLines] =
+  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, approvalComments, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, prices, boms, bomLines, shareLinks] =
     await Promise.all([
       q(sb, 'profiles'),
       q(sb, 'items', { col: 'code', limit: 10000 }),
@@ -295,6 +309,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       q(sb, 'std_prices', { col: 'title' }),
       q(sb, 'std_boms', { col: 'title' }),
       q(sb, 'std_bom_lines', { col: 'created_at' }),
+      q(sb, 'public_share_links', { col: 'created_at', asc: false }),   // 0069 (ตารางเล็ก)
     ])
 
   const readsByNotif = new Map<string, string[]>()
@@ -313,6 +328,8 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
 
   return {
     users: profiles.map(mapUser),
+    // 0069 — ไม่มี token จริงในนี้ ฝั่ง server เก็บแต่ hash (ตัวเต็มโชว์ครั้งเดียวตอนสร้าง)
+    publicShareLinks: shareLinks.map(mapShareLink),
     items: items.map(mapItem),
     projectStocks: stocks.map(mapStock),
     lbsUnits: units.map(mapUnit),
@@ -364,6 +381,35 @@ const toUnitJson = (u: UnitPayload) => ({
 async function rpc(sb: SupabaseClient, fn: string, params: Record<string, unknown>): Promise<void> {
   const { error } = await sb.rpc(fn, params)
   if (error) throw new Error(error.message)
+}
+
+/**
+ * สร้างลิงก์สาธารณะ — **server เป็นคนสุ่ม token** แล้วคืนตัวเต็มกลับมาครั้งเดียว (0069)
+ * ⚠️ ไม่ให้ client สุ่มเองแล้วส่งไปเก็บ: client ที่เขียนพลาด/ถูกแก้ อาจตั้ง token ที่เดาง่าย
+ *    แล้วข้อมูลหลุดถึงคนนอกโดยไม่มีใครรู้ · ฝั่ง DB เก็บแต่ sha256 ของ token
+ */
+export async function createShareLinkRemote(
+  sb: SupabaseClient, p: { projectStockId?: string; label?: string },
+): Promise<string> {
+  const { data, error } = await sb.rpc('rpc_create_share_link', {
+    p_project_stock_id: p.projectStockId ?? null, p_label: p.label ?? null,
+  })
+  if (error) throw new Error(error.message)
+  if (!data) throw new Error('สร้างลิงก์ไม่สำเร็จ — server ไม่ได้คืน token')
+  return String(data)
+}
+
+/**
+ * อ่านข้อมูลคลังผ่าน token — **เรียกได้โดยไม่ต้อง login** (RPC เปิดให้ role anon)
+ * ⚠️ ใช้ anon key ที่อยู่ใน bundle อยู่แล้ว · การกรองฟิลด์ทำฝั่ง SQL ไม่ใช่ที่นี่
+ */
+export async function fetchPublicStockView(
+  sb: SupabaseClient, token: string,
+): Promise<PublicStockView> {
+  const { data, error } = await sb.rpc('rpc_public_lbs_stock', { p_token: token })
+  if (error) throw new Error(error.message)
+  if (!data) throw new Error('ลิงก์ไม่ถูกต้อง หรือถูกเพิกถอนไปแล้ว')
+  return data as PublicStockView
 }
 
 // map action ชื่อเดียวกับ demo mode → RPC ฝั่ง server
@@ -424,6 +470,10 @@ export function remoteActions(sb: SupabaseClient) {
     updatePoLinePrice: (p: { requestId: string; unitPrice?: number }) =>
       rpc(sb, 'rpc_update_po_line_price', { p_request_id: p.requestId, p_unit_price: p.unitPrice ?? null }),
     returnAccessory: (p: { requestId: string }) => rpc(sb, 'rpc_return_accessory', { p_request_id: p.requestId }),
+    // ลิงก์สาธารณะดูคลัง LBS (0069) — createShareLink ถูก override ใน StoreContext
+    // เพราะต้อง **คืนค่า token** ที่ server สุ่มให้ (rpc() ตัวกลางทิ้ง data ทุกครั้ง)
+    revokeShareLink: (p: { linkId: string }) =>
+      rpc(sb, 'rpc_revoke_share_link', { p_link_id: p.linkId }),
     // ตัดจำหน่ายของเหลือที่ Job (0068) — ไม่เข้าคลัง ไม่แตะยอด accessory_stock
     writeOffJobMaterial: (p: { requestId: string; qty: number; reason: string }) =>
       rpc(sb, 'rpc_write_off_job_material', {

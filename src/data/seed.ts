@@ -30,6 +30,7 @@ function units(prefix: string, from: number, count: number, cost?: number): { lv
 export function buildSeedDb(): DB {
   let db: DB = {
     users: USERS,
+    publicShareLinks: [],
     items: ITEMS,
     projectStocks: [], lbsUnits: [], jobs: [], allocations: [],
     // Lot No. (0055) — ตัวอย่างมีทั้งแบบระบุล็อตและไม่ระบุ ให้เห็นทั้ง 2 สถานะในตาราง
