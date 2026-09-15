@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import { Modal, usePrompt, useTryAction } from '../ui/components'
@@ -52,6 +52,12 @@ export default function PurchasingPage() {
   const [rejectReason, setRejectReason] = useState('')
   const [receiveQty, setReceiveQty] = useState<Record<string, number>>({})
   const [poLineIds, setPoLineIds] = useState<Record<string, boolean>>({})   // เลือก line เข้า PO (0022)
+
+  // ปิดโมดัลรับของเองเมื่อ PO ปิดใบไปแล้ว — เกิดได้จาก ✏️ แก้จำนวน (0070) ที่ทำให้บรรทัด
+  // สุดท้ายจบทั้งที่ยังเปิดโมดัลค้างอยู่ · ไม่ปิดจะเหลือหน้าจอเปล่าที่กดอะไรต่อไม่ได้
+  useEffect(() => {
+    if (receiveFor && db.pos.find(p => p.id === receiveFor)?.status !== 'issued') setReceiveFor(null)
+  }, [db.pos, receiveFor])
 
   const itemOf = (id: string) => db.items.find(i => i.id === id)
   const prLines = (prId: string) => db.accessoryRequests.filter(r => r.prId === prId)
@@ -210,6 +216,44 @@ export default function PurchasingPage() {
     setReceiveQty(filled)
   }
 
+  // แก้จำนวนสั่งใน PO / ตัด item ที่เกินมาออก (0070)
+  // กติกาเดียวกับฝั่ง logic/RPC: ลดได้อย่างเดียว · ต่ำสุด = จำนวนที่รับมาแล้ว · 0 = ตัดทั้งบรรทัด
+  const adjustLine = async (requestId: string) => {
+    const r = db.accessoryRequests.find(x => x.id === requestId)
+    if (!r) return
+    const it = itemOf(r.itemId)!
+    const v = await askPrompt({
+      title: `แก้จำนวนสั่ง — ${it.name}`,
+      description: <>
+        ตอนนี้สั่ง <b>{r.qtyRequested} {it.uom}</b> · รับเข้ามาแล้ว <b>{r.qtyReceived}</b> ·
+        ลดได้อย่างเดียว ต่ำสุด <b>{r.qtyReceived}</b> ({r.qtyReceived === 0 ? 'ใส่ 0 = ตัดรายการนี้ออกจาก PO' : `ใส่ ${r.qtyReceived} = ปิดรับเท่าที่ได้`})<br />
+        ต้องการ<b>เพิ่ม</b>จำนวนให้ออก PR/PO ใบใหม่แทน · ยอดตัดเข้างบงานจะปรับตามจำนวนใหม่ทันที
+      </>,
+      fields: [
+        {
+          key: 'qty', label: 'จำนวนสั่งใหม่', type: 'number', min: 0, required: true,
+          suffix: it.uom, value: String(r.qtyReceived),
+          validate: v => {
+            const n = Number(v)
+            if (!Number.isInteger(n)) return 'ต้องเป็นจำนวนเต็ม'
+            if (n >= r.qtyRequested) return `ลดได้อย่างเดียว (ตอนนี้สั่ง ${r.qtyRequested})`
+            if (n < r.qtyReceived) return `รับของมาแล้ว ${r.qtyReceived} ลดต่ำกว่านี้ไม่ได้`
+            return undefined
+          },
+        },
+        {
+          key: 'reason', label: 'เหตุผล', type: 'textarea', required: true,
+          placeholder: 'เช่น กรอกจำนวนเกินตอนออก PR / รายการนี้ไม่ได้สั่งจริง / Supplier ส่งได้เท่านี้',
+        },
+      ],
+      confirmLabel: 'บันทึกจำนวนใหม่',
+    })
+    if (!v) return
+    const qty = Number(v.qty)
+    await tryAction(() => act.adjustPoLine({ requestId, qtyRequested: qty, reason: v.reason }),
+      qty === 0 ? `ตัด ${it.name} ออกจาก PO แล้ว` : `แก้จำนวน ${it.name} เป็น ${qty} ${it.uom} แล้ว`)
+  }
+
   return (
     <>
       <div className="page-title">Purchasing — PR / PO</div>
@@ -358,8 +402,12 @@ export default function PurchasingPage() {
                               && job.terminalStatus !== 'cancelled'
                               && (r.status === 'po_ordered' || r.status === 'received')
                             return (
-                              <div key={r.id} style={{ marginBottom: 3 }}>
-                                {it.name} × {r.qtyRequested} {it.uom} · <span className="mono">{fmtBaht(r.unitPrice)}</span>{value !== undefined ? ` = ${fmtBaht(value)}` : ''}
+                              <div key={r.id} style={{ marginBottom: 3 }} className={r.status === 'cancelled' ? 'muted' : undefined}>
+                                <span style={r.status === 'cancelled' ? { textDecoration: 'line-through' } : undefined}>
+                                  {it.name} × {r.qtyRequested} {it.uom}
+                                </span> · <span className="mono">{fmtBaht(r.unitPrice)}</span>{value !== undefined ? ` = ${fmtBaht(value)}` : ''}
+                                {/* บรรทัดที่ถูกตัดออกด้วย ✏️ แก้จำนวน (0070) — เก็บไว้เป็นประวัติเอกสาร ไม่ลบทิ้ง */}
+                                {r.status === 'cancelled' && <span className="badge red" style={{ marginLeft: 6 }}>ตัดออกจาก PO</span>}
                                 {canEditPrice && (
                                   <button className="small" style={{ marginLeft: 6 }} title="บันทึก/แก้ราคาจริงจาก Supplier"
                                     onClick={async () => {
@@ -559,31 +607,79 @@ export default function PurchasingPage() {
         </Modal>
       )}
 
-      {receivePo && (
-        <Modal title={`รับของตาม ${receivePo.poNo}`} onClose={() => setReceiveFor(null)}
+      {/* รับของ — โมดัลกว้างพิเศษ + ตาราง: PO จริงมี 10–30 บรรทัด ถ้าเรียงเป็น field ซ้อนกัน
+          ต้องเลื่อนหาช่องกรอกทีละอัน · ตารางทำให้เทียบ "สั่ง / รับแล้ว / ค้างรับ" ได้ในบรรทัดเดียว */}
+      {receivePo && (() => {
+        const filledCount = receiveLines.filter(r => (receiveQty[r.id] ?? 0) > 0).length
+        const totalRemaining = receiveLines.reduce((s, r) => s + (r.qtyRequested - r.qtyReceived), 0)
+        return (
+        <Modal title={`รับของตาม ${receivePo.poNo}`} size="xl" onClose={() => setReceiveFor(null)}
           footer={<>
             <button onClick={() => setReceiveFor(null)}>ยกเลิก</button>
-            <button onClick={fillAll}>รับครบทุกรายการ</button>
-            <button className="success" onClick={submitReceive}>บันทึกรับของ</button>
+            <button onClick={() => setReceiveQty({})} disabled={filledCount === 0}>ล้างที่กรอก</button>
+            <button onClick={fillAll} disabled={receiveLines.length === 0}>รับครบทุกรายการ</button>
+            <button className="success" onClick={submitReceive} disabled={filledCount === 0}>
+              บันทึกรับของ ({filledCount} รายการ)
+            </button>
           </>}>
           <div className="muted" style={{ marginBottom: 10 }}>
-            รับของทีละรายการ/ทีละจำนวนได้ — Job จะขยับเป็น Ready to Issue เมื่อครบทุกรายการ
+            {receivePo.supplierName} · กำหนดส่ง {fmtDate(receivePo.expectedDate)} ·
+            ค้างรับรวม <b>{totalRemaining}</b> หน่วย จาก {receiveLines.length} รายการ<br />
+            รับของทีละรายการ/ทีละจำนวนได้ — Job จะขยับเป็น Ready to Issue เมื่อครบทุกรายการ<br />
+            ของมาไม่ครบเพราะ<b>สั่งเกิน/ใส่ item เกิน</b> ให้กด <b>✏️ แก้จำนวน</b> ท้ายแถว ลดจำนวนสั่งให้ตรงของจริง
+            (ใส่ 0 = ตัดรายการออกจาก PO) — ไม่งั้น PO จะค้าง "รอรับของ" และ Job เบิกให้ Service ไม่ได้
           </div>
-          {receiveLines.map(r => {
-            const it = itemOf(r.itemId)!
-            const remaining = r.qtyRequested - r.qtyReceived
-            return (
-              <label className="field" key={r.id}>
-                <span>{it.name} — รับแล้ว {r.qtyReceived}/{r.qtyRequested} {it.uom} (ค้างรับ {remaining})</span>
-                <input type="number" min={0} max={remaining}
-                  value={receiveQty[r.id] ?? ''}
-                  placeholder={`จำนวนที่รับรอบนี้ (สูงสุด ${remaining})`}
-                  onChange={e => setReceiveQty({ ...receiveQty, [r.id]: Number(e.target.value) })} />
-              </label>
-            )
-          })}
+          {receiveLines.length === 0 ? (
+            <div className="empty">ไม่มีรายการค้างรับใน PO ใบนี้</div>
+          ) : (
+            <div className="table-scroll">
+              <table>
+                <thead><tr>
+                  <th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th>
+                  <th style={{ textAlign: 'right' }}>สั่ง</th>
+                  <th style={{ textAlign: 'right' }}>รับแล้ว</th>
+                  <th style={{ textAlign: 'right' }}>ค้างรับ</th>
+                  <th style={{ width: 190 }}>จำนวนที่รับรอบนี้</th>
+                  <th style={{ width: 120 }}>สั่งผิด?</th>
+                </tr></thead>
+                <tbody>
+                  {receiveLines.map(r => {
+                    const it = itemOf(r.itemId)!
+                    const remaining = r.qtyRequested - r.qtyReceived
+                    const val = receiveQty[r.id] ?? ''
+                    const over = Number(val) > remaining
+                    return (
+                      <tr key={r.id}>
+                        <td className="mono">{it.epicorCode || '-'}</td>
+                        <td>{it.name}</td>
+                        <td style={{ textAlign: 'right' }}>{r.qtyRequested} {it.uom}</td>
+                        <td style={{ textAlign: 'right' }}>{r.qtyReceived}</td>
+                        <td style={{ textAlign: 'right' }}><b>{remaining}</b></td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          <input type="number" min={0} max={remaining} value={val}
+                            style={{ width: 110, borderColor: over ? 'var(--danger)' : undefined }}
+                            placeholder={`สูงสุด ${remaining}`}
+                            onChange={e => setReceiveQty({ ...receiveQty, [r.id]: Number(e.target.value) })} />
+                          <button className="small" style={{ marginLeft: 6 }} title="เติมจำนวนที่ค้างรับทั้งหมด"
+                            onClick={() => setReceiveQty({ ...receiveQty, [r.id]: remaining })}>ครบ</button>
+                          {over && <div style={{ fontSize: 11, color: 'var(--danger)' }}>เกินจำนวนที่ค้างรับ</div>}
+                        </td>
+                        {/* ทางออกกรณีกรอกจำนวนเกิน / ใส่ item เกินมา (0070) — ไม่มีปุ่มนี้ line จะค้าง
+                            po_ordered ตลอดไป ทำให้ PO ไม่ปิดและ Job เบิกให้ Service ไม่ได้ทั้งใบ */}
+                        <td>
+                          <button className="small" title="ของมาไม่ครบเพราะสั่งเกิน/ใส่ item เกิน — ลดจำนวนสั่งให้ตรงของจริง"
+                            onClick={() => adjustLine(r.id)}>✏️ แก้จำนวน</button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </Modal>
-      )}
+        )
+      })()}
       {promptEl}
     </>
   )

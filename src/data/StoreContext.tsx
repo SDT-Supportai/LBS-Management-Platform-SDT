@@ -220,6 +220,7 @@ export interface StoreActions {
   createPO: (p: Parameters<typeof L.createPO>[2]) => MaybePromise
   cancelPO: (p: Parameters<typeof L.cancelPO>[2]) => MaybePromise
   receivePOItems: (p: Parameters<typeof L.receivePOItems>[2]) => MaybePromise
+  adjustPoLine: (p: Parameters<typeof L.adjustPoLine>[2]) => MaybePromise
   issueJob: (p: Parameters<typeof L.issueJob>[2]) => MaybePromise
   issueJobLbs: (p: Parameters<typeof L.issueJobLbs>[2]) => MaybePromise
   issueJobAccessory: (p: Parameters<typeof L.issueJobAccessory>[2]) => MaybePromise
@@ -416,6 +417,8 @@ function DemoProvider({ children }: { children: ReactNode }) {
         createPO: run('purchasing.manage', L.createPO),
         cancelPO: run('purchasing.manage', L.cancelPO),
         receivePOItems: run('purchasing.manage', L.receivePOItems),
+        // 0070 — แก้จำนวน/ตัด item เกินใน PO: Purchasing กดเองได้ (มติ 2026-09-15) · ลง audit + แจ้ง Project
+        adjustPoLine: run('purchasing.manage', L.adjustPoLine),
         issueJob: run('master.manage', L.issueJob),
         // 0059 — เบิก LBS ตรง = Manage เท่านั้น (Project ผ่าน requestApproval type issue_job)
         issueJobLbs: run('master.manage', L.issueJobLbs),

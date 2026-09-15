@@ -508,6 +508,9 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_cancel_po', { p_po_id: p.poId, p_reason: p.reason }),
     receivePOItems: (p: { poId: string; receipts: { requestId: string; qty: number }[] }) =>
       rpc(sb, 'rpc_receive_po_items', { p_po_id: p.poId, p_receipts: p.receipts.map(r => ({ request_id: r.requestId, qty: r.qty })) }),
+    // 0070 — แก้จำนวนสั่งใน PO / ตัดรายการที่สั่งเกินออก (qty 0 = ตัดทิ้งทั้งบรรทัด)
+    adjustPoLine: (p: { requestId: string; qtyRequested: number; reason: string }) =>
+      rpc(sb, 'rpc_adjust_po_line', { p_request_id: p.requestId, p_qty: p.qtyRequested, p_reason: p.reason }),
     issueJob: (p: { jobId: string; startDate: string; endDate: string; location: string; note?: string }) =>
       rpc(sb, 'rpc_issue_job', { p_job_id: p.jobId, p_start_date: p.startDate || null, p_end_date: p.endDate || null, p_location: p.location, p_note: p.note ?? null }),
     // 0059 — เบิกแยกส่วน · p_unit_ids/p_request_ids = null หมายถึง "ทุกอย่างที่ Ready"

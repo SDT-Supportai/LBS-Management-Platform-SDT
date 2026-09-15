@@ -1714,6 +1714,87 @@ export function receivePOItems(
     `${po.poNo} (${job.jobNo}) รับของ${poComplete ? 'ครบ' : 'บางส่วน'}: ${parts.join(', ')}`)
 }
 
+// =============================================================================
+// แก้จำนวนสั่งใน PO / ตัดรายการที่สั่งเกินออก (0070 · มติ 2026-09-15)
+//
+// ปัญหาที่เจอจริง: กรอกจำนวนตอนออก PR/PO ผิด (สั่ง 10 ทั้งที่ต้องใช้ 8) หรือใส่ item เกินมาทั้งบรรทัด
+//   → ของจริงมาไม่มีวันครบตาม qtyRequested → line ค้าง po_ordered → PO ค้าง issued ตลอดไป
+//   → Job เบิกให้ Service ไม่ได้ทั้งใบ (accIssueBlockReason บังคับ PO ต้องเป็น received)
+//   → งบ actual ค้างที่จำนวนผิดด้วย เพราะต้นทุนคิดจาก qtyRequested × unitPrice
+// ของเดิมมีแค่ cancelPO ซึ่งใช้ได้เฉพาะใบที่ยังไม่รับของเลย (got = 0) → รับไปแล้วบางส่วน = ตัน
+//
+// กติกา — "ลดได้อย่างเดียว ลดต่ำกว่าของที่รับมาแล้วไม่ได้":
+//   qtyNew < qtyRequested เสมอ (เพิ่มจำนวน = ซื้อเพิ่ม ให้ออก PR/PO ใบใหม่ตาม 0037)
+//   qtyNew >= qtyReceived  (ของอยู่ในมือจริงแล้ว ลบทิ้งไม่ได้ ไม่งั้นบัญชีกับของไม่ตรง)
+//   qtyNew = 0            → บรรทัดนั้นเป็น cancelled = กรณี "กรอก item เกินมา"
+//   qtyNew = qtyReceived  → บรรทัดนั้นเป็น received ทันที = "ปิดรับเท่าที่ได้"
+// ปิดบรรทัดสุดท้ายของใบแล้ว PO/PR ปิดตามเองเหมือนตอนรับของครบ → Job เดินต่อได้
+// PO ที่ทุกบรรทัดถูกตัดทิ้งโดยไม่เคยรับของเลย ปิดเป็น cancelled ไม่ใช่ received (ไม่มีของเข้าจริง)
+//
+// ต้นทุน: poCostSummary / jobMaterialValue คิดจาก qtyRequested อยู่แล้ว → ยอดตัดเข้างานถูกเอง
+// สิทธิ์: purchasing.manage กดเองได้ (มติ 2026-09-15) · บังคับกรอกเหตุผล → audit + แจ้ง Project
+// =============================================================================
+export function adjustPoLine(
+  db: DB, actor: User,
+  p: { requestId: string; qtyRequested: number; reason: string },
+): DB {
+  const req = db.accessoryRequests.find(r => r.id === p.requestId)
+  if (!req) throw new Error('ไม่พบรายการวัสดุ')
+  if (!req.poId || req.status !== 'po_ordered')
+    throw new Error('แก้จำนวนได้เฉพาะรายการที่ออก PO แล้วและยังรับของไม่ครบ')
+  const po = db.pos.find(x => x.id === req.poId)
+  if (!po) throw new Error('ไม่พบ PO')
+  if (po.status !== 'issued') throw new Error(`${po.poNo} ปิดใบไปแล้ว แก้จำนวนไม่ได้`)
+  const reason = p.reason.trim()
+  if (!reason) throw new Error('กรุณาระบุเหตุผลที่แก้จำนวน')
+
+  const item = db.items.find(i => i.id === req.itemId)!
+  const qtyNew = Number(p.qtyRequested)
+  if (!Number.isInteger(qtyNew) || qtyNew < 0)
+    throw new Error('จำนวนใหม่ต้องเป็นจำนวนเต็มไม่ติดลบ')
+  if (qtyNew >= req.qtyRequested)
+    throw new Error(`${item.name} ลดจำนวนได้อย่างเดียว (ตอนนี้สั่ง ${req.qtyRequested} ${item.uom}) — ต้องการเพิ่มให้ออก PR/PO ใบใหม่`)
+  if (qtyNew < req.qtyReceived)
+    throw new Error(`${item.name} รับของเข้ามาแล้ว ${req.qtyReceived} ${item.uom} — ลดต่ำกว่านี้ไม่ได้`)
+
+  const job = assertJobCostEditable(db, req.jobId, actor)
+  const newStatus: AccReqStatus = qtyNew === 0
+    ? 'cancelled'
+    : qtyNew === req.qtyReceived ? 'received' : 'po_ordered'
+
+  const updatedReqs = db.accessoryRequests.map(r =>
+    r.id === p.requestId ? { ...r, qtyRequested: qtyNew, status: newStatus } : r)
+
+  const done = (r: AccessoryRequest) => r.status === 'received' || r.status === 'cancelled' || r.status === 'returned'
+  const poRows = updatedReqs.filter(r => r.poId === po.id)
+  const poComplete = poRows.every(done)
+  // ทุกบรรทัดถูกตัดทิ้งและไม่เคยมีของเข้าเลย = ใบนี้ไม่ได้ของอะไรจริง ๆ → ปิดเป็น "ยกเลิก"
+  const poEndStatus = poComplete && poRows.every(r => r.qtyReceived === 0) ? 'cancelled' as const : 'received' as const
+  const prComplete = updatedReqs.filter(r => r.prId === po.prId).every(done)
+
+  const what = qtyNew === 0
+    ? `ตัด ${item.name} ออกจาก ${po.poNo} (เดิมสั่ง ${req.qtyRequested} ${item.uom})`
+    : `แก้จำนวน ${item.name} ใน ${po.poNo}: ${req.qtyRequested} → ${qtyNew} ${item.uom}${qtyNew === req.qtyReceived ? ' (ปิดรับเท่าที่ได้)' : ''}`
+
+  let next: DB = {
+    ...db,
+    accessoryRequests: updatedReqs,
+    pos: db.pos.map(x => x.id === po.id && poComplete
+      ? { ...x, status: poEndStatus, receivedAt: poEndStatus === 'received' ? now() : x.receivedAt }
+      : x),
+    prs: db.prs.map(x => x.id === po.prId && prComplete ? { ...x, status: 'received' as const } : x),
+  }
+  next = notify(next, {
+    type: 'po_line_adjusted', dept: 'project', jobId: po.jobId,
+    message: `✏️ ${po.poNo} (${job.jobNo}) ${what} · เหตุผล: ${reason}`,
+  })
+  next = notifyIfBecameReady(db, next, po.jobId)
+  next = audit(next, actor, 'purchase_order', po.id, 'adjust_po_line',
+    `${job.jobNo} ${what} · เหตุผล: ${reason}${poComplete ? ` · ${po.poNo} ปิดใบ (${poEndStatus === 'received' ? 'รับของครบ' : 'ยกเลิก'})` : ''}`)
+  // ตัดบรรทัดสุดท้ายที่ค้างอยู่ทิ้ง = ใบงานอาจครบพอดี (เหมือน 0068) — no-op ถ้ายังมีของค้างหรือปิดใบแล้ว
+  return finalizeIssue(next, actor, po.jobId)
+}
+
 // ---------------- Issue / Install / Cancel ----------------
 
 // =============================================================================

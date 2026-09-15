@@ -402,6 +402,14 @@ input:focus, select:focus, textarea:focus {
   max-height: 84vh; overflow-y: auto; box-shadow: var(--shadow-lg);
 }
 .modal.modal-wide { max-width: 880px; }
+/* xl = โมดัลที่เนื้อในเป็นตาราง (รับของตาม PO) — กว้างพอให้เห็น สั่ง/รับแล้ว/ค้างรับ ครบในบรรทัดเดียว
+   overlay กิน 6vh บน-ล่าง → พื้นที่จริงคือ 88vh · จัดเป็น flex column ให้หัว/ปุ่มค้างอยู่ ส่วนตารางเลื่อนเอง */
+.modal.modal-xl {
+  max-width: 1180px; max-height: 88vh; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.modal.modal-xl .modal-body { flex: 1; overflow-y: auto; }
+.modal.modal-xl .modal-head, .modal.modal-xl .modal-foot { flex: none; }
 .modal-head { padding: 16px 20px; border-bottom: 1px solid var(--border-soft); display: flex; justify-content: space-between; align-items: center; }
 .modal-head h3 { font-size: 15.5px; font-weight: 700; color: var(--text); }
 .modal-body { padding: 20px; }

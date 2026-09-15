@@ -285,11 +285,12 @@ export function Modal({ title, onClose, children, footer, size = 'default' }: {
   onClose: () => void
   children: ReactNode
   footer?: ReactNode
-  size?: 'default' | 'wide'
+  /** default 520px · wide 880px · xl 1180px + สูงเกือบเต็มจอ (ใช้กับโมดัลที่เนื้อในเป็นตารางหลายสิบบรรทัด) */
+  size?: 'default' | 'wide' | 'xl'
 }) {
   return (
     <div className="modal-overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div className={`modal${size === 'wide' ? ' modal-wide' : ''}`}>
+      <div className={`modal${size === 'default' ? '' : ` modal-${size}`}`}>
         <div className="modal-head">
           <h3>{title}</h3>
           <button className="small" onClick={onClose}>✕</button>

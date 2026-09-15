@@ -13,6 +13,7 @@ import {
   markEpicorIssued, undoEpicorIssued, LINE_PUSH_TYPES, drawLbs,
   qtyPendingIssue, qtyIssuedToService, accSettled, transferJobMaterialToStock, writeOffJobMaterial,
   createShareLink, revokeShareLink, publicStockView, touchShareLink, newShareToken,
+  adjustPoLine,
 } from './logic'
 
 // =============================================================================
@@ -1097,5 +1098,121 @@ describe('โควตา LINE — allowlist (0066)', () => {
     const n = d.notifications.find(x => x.type === 'lbs_drawn')
     expect(n).toBeTruthy()               // ยังบันทึกอยู่
     expect(n!.lineStatus).toBe('off')    // แต่ไม่ส่ง LINE
+  })
+})
+// =============================================================================
+// แก้จำนวนสั่งใน PO / ตัด item ที่สั่งเกิน (0070)
+//
+// ต้นเรื่อง: PO ที่จำนวนสั่งผิด รับของไม่มีวันครบ → line ค้าง po_ordered → PO ค้าง issued
+//   → Job เบิกให้ Service ไม่ได้ทั้งใบ · ของเดิมมีแค่ cancelPO ที่ใช้ได้เฉพาะใบที่ยังไม่รับของเลย
+//
+// กฎที่ต้องไม่หลุด (ถ้าแดงที่นี่ = บัญชีกับของจริงเริ่มไม่ตรงกัน):
+//   1) ลดได้อย่างเดียว — เพิ่มจำนวนต้องไปออก PR/PO ใบใหม่ ไม่งั้นเลขต่างจากใบที่ส่งซัพไปแล้ว
+//   2) ลดต่ำกว่าของที่รับมาแล้วไม่ได้ — ของอยู่ในมือจริง
+//   3) ปิดบรรทัดสุดท้ายแล้ว PO/PR ต้องปิดตามเอง ไม่งั้นแก้แล้ว Job ยังตันเหมือนเดิม
+//   4) ใบที่ไม่เคยรับของเลยต้องปิดเป็น 'cancelled' ไม่ใช่ 'received' (ไม่มีของเข้าจริงสักชิ้น)
+// =============================================================================
+describe('แก้จำนวนสั่งใน PO (0070)', () => {
+  const actor = { id: 'u9', email: 'pur@x.co', password: '', fullName: 'มาลี', department: 'purchasing' as const, isActive: true }
+  const poIssued = {
+    id: 'po1', poNo: 'PO-001', prId: 'pr1', jobId: 'j1', supplierName: 'ซัพ A',
+    expectedDate: '2026-06-01', status: 'issued' as const, createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z',
+  }
+  const base = (lines: Partial<AccessoryRequest>[]) => db({
+    users: [actor],
+    items: [{ id: 'i1', code: 'ACC-1', name: 'ลูกถ้วย', itemType: 'accessory' as const, uom: 'ea', stockableCentrally: false }],
+    jobs: [job({ lbsQtyRequired: 1 })],
+    pos: [poIssued],
+    accessoryRequests: lines.map(l => req({ status: 'po_ordered', poId: 'po1', prId: 'pr1', ...l })),
+  })
+
+  it('สั่งเกิน รับมาเท่าที่มีจริง → ลดจำนวนเท่าที่รับ = บรรทัดจบ + PO ปิดเป็น "รับของครบ"', () => {
+    const d0 = base([{ id: 'r1', qtyRequested: 10, qtyReceived: 8 }])
+    const d = adjustPoLine(d0, actor, { requestId: 'r1', qtyRequested: 8, reason: 'กรอกจำนวนเกินตอนออก PR' })
+    expect(d.accessoryRequests[0].qtyRequested).toBe(8)
+    expect(d.accessoryRequests[0].qtyReceived).toBe(8)      // ของที่รับจริงห้ามเปลี่ยน
+    expect(d.accessoryRequests[0].status).toBe('received')
+    expect(d.pos[0].status).toBe('received')
+    expect(d.pos[0].receivedAt).toBeTruthy()
+  })
+
+  it('ใส่ item เกินมาทั้งบรรทัด (ยังไม่เคยรับ) → ตั้ง 0 = ตัดออก · ใบที่ไม่มีของเข้าเลยปิดเป็น "ยกเลิก"', () => {
+    const d0 = base([{ id: 'r1', qtyRequested: 5, qtyReceived: 0 }])
+    const d = adjustPoLine(d0, actor, { requestId: 'r1', qtyRequested: 0, reason: 'รายการนี้ไม่ได้สั่งจริง' })
+    expect(d.accessoryRequests[0].qtyRequested).toBe(0)
+    expect(d.accessoryRequests[0].status).toBe('cancelled')
+    expect(d.pos[0].status).toBe('cancelled')               // ไม่ใช่ received — ไม่มีของเข้าสักชิ้น
+    expect(d.prs.length).toBe(0)
+  })
+
+  it('ตัดบรรทัดเกินทิ้ง แต่บรรทัดอื่นรับของมาแล้ว → PO ปิดเป็น "รับของครบ"', () => {
+    const d0 = base([
+      { id: 'r1', qtyRequested: 3, qtyReceived: 3, status: 'received' },
+      { id: 'r2', qtyRequested: 2, qtyReceived: 0 },
+    ])
+    const d = adjustPoLine(d0, actor, { requestId: 'r2', qtyRequested: 0, reason: 'ใส่เกินมา' })
+    expect(d.pos[0].status).toBe('received')
+  })
+
+  it('ลดบางส่วนแต่ยังไม่ถึงของที่รับ → บรรทัดยังค้างรับ · PO ยังไม่ปิด', () => {
+    const d0 = base([{ id: 'r1', qtyRequested: 10, qtyReceived: 4 }])
+    const d = adjustPoLine(d0, actor, { requestId: 'r1', qtyRequested: 6, reason: 'ซัพส่งได้แค่ 6' })
+    expect(d.accessoryRequests[0].status).toBe('po_ordered')
+    expect(d.pos[0].status).toBe('issued')
+  })
+
+  it('เพิ่มจำนวนไม่ได้ (ต้องออก PR/PO ใบใหม่)', () => {
+    const d0 = base([{ id: 'r1', qtyRequested: 5, qtyReceived: 0 }])
+    expect(() => adjustPoLine(d0, actor, { requestId: 'r1', qtyRequested: 8, reason: 'ขอเพิ่ม' }))
+      .toThrow(/ลดจำนวนได้อย่างเดียว/)
+    expect(() => adjustPoLine(d0, actor, { requestId: 'r1', qtyRequested: 5, reason: 'เท่าเดิม' }))
+      .toThrow(/ลดจำนวนได้อย่างเดียว/)
+  })
+
+  it('ลดต่ำกว่าของที่รับมาแล้วไม่ได้', () => {
+    const d0 = base([{ id: 'r1', qtyRequested: 10, qtyReceived: 8 }])
+    expect(() => adjustPoLine(d0, actor, { requestId: 'r1', qtyRequested: 5, reason: 'อยากลด' }))
+      .toThrow(/รับของเข้ามาแล้ว 8/)
+  })
+
+  it('บังคับกรอกเหตุผล · จำนวนต้องเป็นจำนวนเต็มไม่ติดลบ', () => {
+    const d0 = base([{ id: 'r1', qtyRequested: 10, qtyReceived: 0 }])
+    expect(() => adjustPoLine(d0, actor, { requestId: 'r1', qtyRequested: 5, reason: '  ' }))
+      .toThrow(/เหตุผล/)
+    expect(() => adjustPoLine(d0, actor, { requestId: 'r1', qtyRequested: 2.5, reason: 'x' }))
+      .toThrow(/จำนวนเต็ม/)
+  })
+
+  it('แตะได้เฉพาะบรรทัดที่ออก PO แล้วและยังรับไม่ครบ', () => {
+    for (const s of ['pending', 'pr_sent', 'received', 'cancelled'] as const) {
+      const d0 = base([{ id: 'r1', qtyRequested: 10, qtyReceived: 0, status: s }])
+      expect(() => adjustPoLine(d0, actor, { requestId: 'r1', qtyRequested: 5, reason: 'x' }))
+        .toThrow(/ออก PO แล้วและยังรับของไม่ครบ/)
+    }
+  })
+
+  it('ลดจำนวนแล้วต้นทุนที่ตัดเข้างานลดตาม (นี่คือเหตุผลที่ต้องแก้ที่ qtyRequested)', () => {
+    const d0 = base([{ id: 'r1', qtyRequested: 10, qtyReceived: 8, unitPrice: 100 }])
+    expect(poCostSummary(d0, 'po1').ordered).toBe(1000)
+    const d = adjustPoLine(d0, actor, { requestId: 'r1', qtyRequested: 8, reason: 'สั่งเกิน' })
+    expect(poCostSummary(d, 'po1').ordered).toBe(800)
+    expect(jobMaterialValue(d, 'j1')).toBe(800)
+  })
+
+  it('ลง audit + แจ้ง Project ทุกครั้ง (ไม่เข้าคิว LINE)', () => {
+    const d0 = base([{ id: 'r1', qtyRequested: 10, qtyReceived: 8 }])
+    const d = adjustPoLine(d0, actor, { requestId: 'r1', qtyRequested: 8, reason: 'กรอกเกิน' })
+    expect(d.auditLogs.some(a => a.action === 'adjust_po_line')).toBe(true)
+    const n = d.notifications.find(x => x.type === 'po_line_adjusted')
+    expect(n?.dept).toBe('project')
+    expect(n?.message).toContain('กรอกเกิน')
+    expect(n?.lineStatus).toBe('off')
+  })
+
+  it('ตัดบรรทัดสุดท้ายที่ค้าง แล้ว LBS เบิกครบแล้ว → Job ปิดเป็น Issued เอง', () => {
+    let d0 = base([{ id: 'r1', qtyRequested: 2, qtyReceived: 0 }])
+    d0 = { ...d0, lbsUnits: [unit({ id: 'a', status: 'issued', jobId: 'j1' })] }
+    const d = adjustPoLine(d0, actor, { requestId: 'r1', qtyRequested: 0, reason: 'ไม่ได้สั่งจริง' })
+    expect(d.jobs[0].terminalStatus).toBe('issued')
   })
 })
