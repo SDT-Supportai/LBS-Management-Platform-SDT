@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
-import { deriveJobStatus, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, parseLatLng, fmtLatLng, PAYMENT_TYPES } from '../data/logic'
+import { deriveJobStatus, jobIsFieldActive, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, parseLatLng, fmtLatLng, PAYMENT_TYPES } from '../data/logic'
 import { BudgetFields, CoordInput, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, sitesToApi, sitesFromJob, type CostForm, type InstallSite } from '../ui/components'
 import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, EPICOR_TXN, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, DEPT_LABEL, JOB_STATUS_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import {
@@ -571,23 +571,36 @@ export default function JobDetailPage() {
           <div className="muted" style={{ marginTop: 4 }}>
             เครื่องที่เบิกออกไปแล้ว<b>ล็อก คืน/สลับไม่ได้</b> · ที่เหลือยังจัดการได้ตามปกติ ·
             ยกเลิก Job ไม่ได้แล้วเพราะของอยู่ในมือ Service · ครบทั้งใบเมื่อไหร่ระบบปิดเป็น Issued ให้เอง
-            <br /><b>Service ยืนยันติดตั้งได้เมื่อเบิกครบทั้งใบ</b> — กันทีมออกไซต์แล้วขาดของหน้างาน
+            {/* 0071 เปลี่ยนกติกาข้อนี้ — เดิมเขียนว่า "ยืนยันติดตั้งได้เมื่อเบิกครบทั้งใบ" ซึ่งกลายเป็นคำอธิบาย
+                ที่โกหกทันทีที่ด่านย้ายไปเป็นรายเครื่อง · ต้องแก้คู่กันเสมอ ไม่งั้นหน้าเว็บสอนผิด */}
+            <br /><b>Service ยืนยันติดตั้งเครื่องที่เบิกออกไปแล้วได้เลย</b> — ไม่ต้องรอใบครบ ·
+            ส่วน<b>การปิดงาน</b>ยังต้องเบิกครบทั้งใบและได้ข้อสรุปครบทุกเครื่องก่อน
           </div>
         </div></div>
       )}
 
-      {job.terminalStatus === 'issued' && (() => {
+      {/* 0071: แผงนี้เคยขึ้นเฉพาะ terminalStatus === 'issued' ⇒ ระหว่าง "เบิกบางส่วน" หน้า Job
+          ไม่บอกอะไรเลยว่าของล็อตแรกอยู่กับช่างแล้ว ติดตั้งไปกี่เครื่อง ทีมใครรับผิดชอบ
+          — Project ตามงานต่อไม่ได้ทั้งที่เป็นคนส่งของออกไปเอง */}
+      {jobIsFieldActive(db, job) && (() => {
         const s = jobInstallSummary(db, job.id)
         const team = jobTeam(db, job.id)
+        const partial = job.terminalStatus !== 'issued'
         return (
           <div className="panel"><div className="panel-body">
-            <b>เบิกให้ Service แล้ว — รอติดตั้ง</b> เบิกเมื่อ {fmtDateTime(job.issuedAt)} — {job.issuedNote || 'ไม่มีบันทึกเพิ่มเติม'}
-            {job.installStartDate && (
-              <div>📅 นัดติดตั้ง <b>{fmtDate(job.installStartDate)} – {fmtDate(job.installEndDate)}</b> ที่ <b>{job.issueLocation || job.installLocation || '-'}</b></div>
-            )}
+            {/* เคส partial: แผง "เบิกให้ Service แล้วบางส่วน" (0059) ด้านบนเล่าเรื่องเบิก/นัดหมายไปแล้ว
+                แผงนี้จึงเหลือเฉพาะส่วนที่แผงนั้นไม่มี = ความคืบหน้าติดตั้ง + ทีมช่าง (ไม่พูดซ้ำ) */}
+            <b>{partial ? 'งานหน้าไซต์รอบนี้' : 'เบิกให้ Service แล้ว — รอติดตั้ง'}</b>
+            {!partial && <>
+              {' '}เบิกเมื่อ {fmtDateTime(job.issuedAt)} — {job.issuedNote || 'ไม่มีบันทึกเพิ่มเติม'}
+              {job.installStartDate && (
+                <div>📅 นัดติดตั้ง <b>{fmtDate(job.installStartDate)} – {fmtDate(job.installEndDate)}</b> ที่ <b>{job.issueLocation || job.installLocation || '-'}</b></div>
+              )}
+            </>}
             <div style={{ marginTop: 6 }}>
               🔧 ติดตั้งแล้ว{' '}
-              <span className={`badge ${s.canClose ? 'green' : s.installed > 0 ? 'blue' : 'neutral'}`}>{s.installed}/{s.total} เครื่อง</span>
+              <span className={`badge ${s.canClose ? 'green' : s.outInstalled > 0 ? 'blue' : 'neutral'}`}>{s.outInstalled}/{s.outTotal} เครื่อง</span>
+              {partial && <span className="muted"> (ทั้งใบ {s.installed}/{s.total})</span>}
               {s.blocked > 0 && <> <span className="badge red">ติดตั้งไม่ได้ {s.blocked}</span></>}
             </div>
             <div style={{ marginTop: 4 }}>
@@ -595,7 +608,14 @@ export default function JobDetailPage() {
                 ? <span style={{ color: 'var(--danger)' }}>ยังไม่มอบหมายทีม</span>
                 : team.map(t => `${t.member.firstName} ${t.member.lastName}${t.assignment.isLead ? ' (หัวหน้า)' : ''} · ${t.member.phone}`).join(' | ')}
             </div>
-            <div className="muted">Job ถูกล็อก แก้ไข allocation หรือคืนของไม่ได้อีก · Service ยืนยันรายเครื่องแล้วกดปิดงาน — <Link to="/service">ไปหน้า Service →</Link></div>
+            <div className="muted">
+              {/* ล็อก allocation เกิดตอนใบปิดเท่านั้น (assertJobEditable) — ระหว่างเบิกบางส่วนยังแก้ได้
+                  เขียนตามจริง ไม่งั้นบอกผู้ใช้ผิดว่าแตะอะไรไม่ได้แล้ว */}
+              {partial
+                ? 'ช่างยืนยันติดตั้งเครื่องที่ออกไปแล้วได้เลย · ปิดงานได้เมื่อของออกครบทั้งใบ'
+                : 'Job ถูกล็อก แก้ไข allocation หรือคืนของไม่ได้อีก · Service ยืนยันรายเครื่องแล้วกดปิดงาน'}
+              {' — '}<Link to="/service">ไปหน้า Service →</Link>
+            </div>
           </div></div>
         )
       })()}
@@ -660,8 +680,10 @@ export default function JobDetailPage() {
         )
       })()}
 
-      {/* ติดตั้งรายเครื่อง (เฟส B/C) — เห็นได้จากหน้า Job ไม่ต้องข้ามไปหน้า Service */}
-      {(job.terminalStatus === 'issued' || job.terminalStatus === 'installed') && allocatedUnits.length > 0 && (
+      {/* ติดตั้งรายเครื่อง (เฟส B/C) — เห็นได้จากหน้า Job ไม่ต้องข้ามไปหน้า Service
+          0071: รวมช่วง "เบิกบางส่วน" ด้วย — เครื่องที่ออกไปแล้วมีผลติดตั้งได้ตั้งแต่ตอนนั้น
+          เครื่องที่ยังอยู่คลังจะขึ้นสถานะ "รอติดตั้ง" ตามเดิม (unitInstallState = pending) */}
+      {(jobIsFieldActive(db, job) || job.terminalStatus === 'installed') && allocatedUnits.length > 0 && (
         <div className="panel">
           <div className="panel-head"><h3>การติดตั้งรายเครื่อง</h3></div>
           <div className="table-scroll">
@@ -678,7 +700,11 @@ export default function JobDetailPage() {
                       <td>
                         {st === 'installed' && <span className="badge green">✅ ติดตั้งแล้ว {fmtDate(r?.installedDate)}</span>}
                         {st === 'blocked' && <><span className="badge red">⚠️ ติดตั้งไม่ได้</span><div className="muted">{r?.reason}</div></>}
-                        {st === 'pending' && <span className="badge neutral">รอติดตั้ง</span>}
+                        {/* 0071: แยก "ยังอยู่คลัง" ออกจาก "อยู่กับช่างแล้วรอติดตั้ง" — สองอันนี้คนละคนต้องไปทำ
+                            ป้าย "รอติดตั้ง" เฉย ๆ จะโยนงานไปที่ Service ทั้งที่ของยังไม่ได้ออกจากคลัง */}
+                        {st === 'pending' && (u.status === 'issued'
+                          ? <span className="badge neutral">รอติดตั้ง</span>
+                          : <span className="badge amber">ยังไม่เบิก — อยู่คลัง</span>)}
                       </td>
                       <td className="muted">{r?.installedByMemberId ? memberFullName(db, r.installedByMemberId) : '-'}</td>
                       <td className="muted">

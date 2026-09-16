@@ -13,7 +13,8 @@ import {
   markEpicorIssued, undoEpicorIssued, LINE_PUSH_TYPES, drawLbs,
   qtyPendingIssue, qtyIssuedToService, accSettled, transferJobMaterialToStock, writeOffJobMaterial,
   createShareLink, revokeShareLink, publicStockView, touchShareLink, newShareToken,
-  adjustPoLine,
+  adjustPoLine, confirmUnitInstall, blockUnitInstall, assignJobTeam, logSiteVisit, closeJobInstall,
+  jobInstallSummary, jobHasIssuedUnits, jobIsFieldActive, unitInstallState, jobTeam, qtyOutToField,
 } from './logic'
 
 // =============================================================================
@@ -1214,5 +1215,158 @@ describe('แก้จำนวนสั่งใน PO (0070)', () => {
     d0 = { ...d0, lbsUnits: [unit({ id: 'a', status: 'issued', jobId: 'j1' })] }
     const d = adjustPoLine(d0, actor, { requestId: 'r1', qtyRequested: 0, reason: 'ไม่ได้สั่งจริง' })
     expect(d.jobs[0].terminalStatus).toBe('issued')
+  })
+})
+
+// =============================================================================
+// ด่านงานหน้าไซต์เป็น "รายเครื่อง" (0071)
+//
+// ต้นเรื่อง: 0059 แยกการเบิกเป็นรายชิ้นแล้ว แต่ด่านปลายน้ำยังล็อกที่ terminalStatus = 'issued'
+//   ⇒ ส่ง LBS 2 จาก 5 เครื่องให้ช่างได้ แต่ช่างยืนยันติดตั้งไม่ได้ · มอบหมายทีมไม่ได้ ·
+//     บันทึกออกหน้างานไม่ได้ · และงานหายไปจากหน้า Service ทั้งใบ
+//
+// กฎที่ต้องไม่หลุด:
+//   1) เครื่องที่ออกจากคลังแล้ว ยืนยันติดตั้งได้ แม้ใบยังไม่ครบ
+//   2) เครื่องที่ยังอยู่คลัง ยืนยันไม่ได้ (เดิมด่าน "ทั้งใบ" กันให้โดยอ้อม ตอนนี้ต้องกันเอง)
+//   3) งานที่ปิด/ยกเลิกแล้ว แตะผลติดตั้งไม่ได้ (เดิมด่าน '= issued' กันให้ฟรี)
+//   4) 🔴 ปิดงานยังต้องเบิกครบทั้งใบ — ข้อนี้คือสิ่งที่ 0071 สัญญาว่าจะไม่ปลด
+// =============================================================================
+describe('งานหน้าไซต์รายเครื่อง (0071)', () => {
+  const actor = { id: 'u1', email: 'p@x.co', password: '', fullName: 'สมชาย', department: 'admin' as const, isActive: true }
+  const svc = { ...actor, id: 'u2', department: 'service' as const }
+  const member = {
+    id: 'm1', firstName: 'ช่าง', lastName: 'เอ', phone: '0800000000',
+    position: 'หัวหน้าช่าง', isActive: true, createdAt: '2026-01-01T00:00:00.000Z',
+  }
+  // งาน 3 เครื่อง: a เบิกออกไปแล้ว · b, c ยังอยู่คลัง (allocated) = เบิกบางส่วนของจริง
+  const partial = () => db({
+    users: [actor, svc],
+    teamMembers: [member],
+    jobs: [job({ lbsQtyRequired: 3 })],
+    lbsUnits: [
+      unit({ id: 'a', serialLvb: 'LVB-A', status: 'issued', jobId: 'j1' }),
+      unit({ id: 'b', serialLvb: 'LVB-B', status: 'allocated', jobId: 'j1' }),
+      unit({ id: 'c', serialLvb: 'LVB-C', status: 'allocated', jobId: 'j1' }),
+    ],
+  })
+  const proof = { installedDate: '2026-07-01', checkinLat: 13.75, checkinLng: 100.5, photoUrl: 'x.jpg' }
+
+  it('ใบยังไม่ครบ แต่เครื่องที่เบิกออกไปแล้ว ยืนยันติดตั้งได้', () => {
+    const d0 = partial()
+    expect(d0.jobs[0].terminalStatus).toBeNull()            // ใบยังไม่ปิด
+    expect(deriveJobStatus(d0, d0.jobs[0])).toBe('partially_issued')
+    const d = confirmUnitInstall(d0, svc, { unitId: 'a', ...proof })
+    expect(unitInstallState(d, 'a')).toBe('installed')
+  })
+
+  it('เครื่องที่ยังอยู่คลัง ยืนยัน/บล็อกไม่ได้', () => {
+    const d0 = partial()
+    expect(() => confirmUnitInstall(d0, svc, { unitId: 'b', ...proof }))
+      .toThrow(/ยังไม่ถูกเบิกให้ Service/)
+    expect(() => blockUnitInstall(d0, svc, { unitId: 'b', reason: 'จุดติดตั้งไม่พร้อม' }))
+      .toThrow(/ยังไม่ถูกเบิกให้ Service/)
+  })
+
+  it('งานที่ปิด/ยกเลิกแล้ว แตะผลติดตั้งไม่ได้ (ด่านเดิมเคยกันให้โดยบังเอิญ)', () => {
+    const d0 = partial()
+    const closed = { ...d0, jobs: [{ ...d0.jobs[0], terminalStatus: 'installed' as const }] }
+    expect(() => confirmUnitInstall(closed, svc, { unitId: 'a', ...proof })).toThrow(/ปิดงานติดตั้งแล้ว/)
+    const killed = { ...d0, jobs: [{ ...d0.jobs[0], terminalStatus: 'cancelled' as const }] }
+    expect(() => confirmUnitInstall(killed, svc, { unitId: 'a', ...proof })).toThrow(/ถูกยกเลิก/)
+  })
+
+  it('มอบหมายทีม + บันทึกออกหน้างาน ทำได้ตั้งแต่ของออกล็อตแรก', () => {
+    const d0 = partial()
+    const d1 = assignJobTeam(d0, svc, { jobId: 'j1', memberIds: ['m1'], leadMemberId: 'm1' })
+    expect(jobTeam(d1, 'j1')).toHaveLength(1)
+    const d2 = logSiteVisit(d1, svc, { jobId: 'j1', outcome: 'rescheduled', reason: 'ฝนตก', newStartDate: '2026-07-10' })
+    expect(d2.siteVisits).toHaveLength(1)
+    expect(d2.jobs[0].installStartDate).toBe('2026-07-10')
+  })
+
+  it('ยังไม่มีเครื่องออกจากคลังเลย = ยังทำงานหน้าไซต์ไม่ได้', () => {
+    const d0 = partial()
+    const noneOut = { ...d0, lbsUnits: d0.lbsUnits.map(u => ({ ...u, status: 'allocated' as const })) }
+    expect(jobHasIssuedUnits(noneOut, 'j1')).toBe(false)
+    expect(jobIsFieldActive(noneOut, noneOut.jobs[0])).toBe(false)
+    expect(() => assignJobTeam(noneOut, svc, { jobId: 'j1', memberIds: ['m1'] }))
+      .toThrow(/ยังไม่มี LBS ที่เบิกให้ Service/)
+    expect(() => logSiteVisit(noneOut, svc, { jobId: 'j1', outcome: 'failed', reason: 'ไปไม่ได้' }))
+      .toThrow(/ยังไม่มี LBS ที่เบิกให้ Service/)
+  })
+
+  it('สรุปความคืบหน้าแยก "รอบนี้" กับ "ทั้งใบ"', () => {
+    const d = confirmUnitInstall(partial(), svc, { unitId: 'a', ...proof })
+    const s = jobInstallSummary(d, 'j1')
+    expect([s.outInstalled, s.outTotal]).toEqual([1, 1])   // ของที่อยู่กับช่าง ติดตั้งครบแล้ว
+    expect([s.installed, s.total]).toEqual([1, 3])          // ทั้งใบยังเหลืออีก 2
+    expect(s.waiting).toBe(2)                               // รอ Project เบิกให้
+  })
+
+  it('🔴 ปิดงานยังต้องเบิกครบทั้งใบ — 0071 ไม่ปลดด่านนี้', () => {
+    const d = confirmUnitInstall(partial(), svc, { unitId: 'a', ...proof })
+    expect(jobInstallSummary(d, 'j1').canClose).toBe(false)
+    expect(() => closeJobInstall(d, svc, { jobId: 'j1', hasIssues: false }))
+      .toThrow(/ปิดงานได้เฉพาะงานที่เบิกแล้ว/)
+  })
+
+  it('งานที่ปิด/ยกเลิกแล้วหลุดจากคิวงานหน้าไซต์', () => {
+    const d0 = partial()
+    expect(jobIsFieldActive(d0, d0.jobs[0])).toBe(true)
+    for (const st of ['installed', 'cancelled'] as const) {
+      const closed = { ...d0.jobs[0], terminalStatus: st }
+      expect(jobIsFieldActive({ ...d0, jobs: [closed] }, closed)).toBe(false)
+    }
+  })
+})
+
+// =============================================================================
+// จำนวนวัสดุที่ "ถึงมือช่างหน้างานจริง" (0071)
+//
+// หน้า Service เคยโชว์ qtyRequested เต็มจำนวนเสมอ ⇒ ตั้งแต่ 0067 ที่เบิกทีละบางส่วนได้
+// ช่างจะอ่านว่าได้ของครบทั้งที่จริงได้มาแค่บางส่วน (คลาสเดียวกับ Serial LBS ที่เคยโชว์เกิน)
+//
+// ⚠️ กติกาแถวเก่าต้องตรงกับ backfill ของ 0067 เป๊ะ (`WHERE issued_to_service_at IS NOT NULL`)
+//    ไม่งั้นเดโมกับ LIVE จะนับของหน้างานไม่เท่ากัน
+// =============================================================================
+describe('จำนวนวัสดุที่ถึงมือช่าง (0071)', () => {
+  it('เบิกบางส่วน = นับเฉพาะที่ออกไปจริง', () => {
+    expect(qtyOutToField(req({ qtyRequested: 10, qtyIssuedToService: 3, issuedToServiceAt: '2026-08-01T00:00:00.000Z' }))).toBe(3)
+  })
+
+  it('ยังไม่เคยเบิกออกไปเลย = 0 (ของอยู่กับ Project ไม่ใช่กับช่าง)', () => {
+    expect(qtyOutToField(req({ qtyRequested: 10, status: 'received' }))).toBe(0)
+  })
+
+  it('แถวก่อน 0067 (ไม่มีคอลัมน์จำนวน แต่มีธงวันที่เบิก) = เบิกครบทั้งบรรทัด', () => {
+    expect(qtyOutToField(req({ qtyRequested: 10, issuedToServiceAt: '2026-08-01T00:00:00.000Z' }))).toBe(10)
+    // หักของที่โอนคืนคลังไปแล้ว — ตรงกับสูตร backfill GREATEST(qty_requested - qty_transferred, 0)
+    expect(qtyOutToField(req({ qtyRequested: 10, qtyTransferred: 4, issuedToServiceAt: '2026-08-01T00:00:00.000Z' }))).toBe(6)
+  })
+
+  it('เบิกครบแล้วผ่าน issueJobAccessory = ตรงกับจำนวนที่ขอ', () => {
+    const actor = { id: 'u1', email: 'p@x.co', password: '', fullName: 'สมชาย', department: 'admin' as const, isActive: true }
+    const d0 = db({
+      users: [actor],
+      items: [{ id: 'i1', code: 'ACC-1', name: 'ลูกถ้วย', itemType: 'accessory' as const, uom: 'ea', stockableCentrally: false }],
+      jobs: [job({ lbsQtyRequired: 1 })],
+      pos: [{ id: 'po1', poNo: 'PO-001', prId: 'pr1', jobId: 'j1', supplierName: 'ซัพ A', expectedDate: '2026-06-01', status: 'received' as const, createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' }],
+      lbsUnits: [unit({ id: 'a', status: 'allocated', jobId: 'j1' })],
+      accessoryRequests: [req({ id: 'r1', qtyRequested: 10, status: 'received', poId: 'po1' })],
+    })
+    const plan = { startDate: '2026-07-01', endDate: '2026-07-02', location: 'สถานีไฟฟ้า A' }
+    const d1 = issueJobAccessory(d0, actor, { jobId: 'j1', requestIds: ['r1'], qtys: { r1: 4 }, ...plan })
+    expect(qtyOutToField(d1.accessoryRequests[0])).toBe(4)      // รอบแรก 4
+    const d2 = issueJobAccessory(d1, actor, { jobId: 'j1', requestIds: ['r1'], ...plan })
+    expect(qtyOutToField(d2.accessoryRequests[0])).toBe(10)     // เบิกที่เหลือจนครบ
+  })
+})
+
+// เพิ่มจากรอบตรวจบั๊ก 0071 — ข้อความในฟังก์ชันอ้างว่า "ตรงกับ backfill ของ 0067 เป๊ะ"
+// แต่ backfill มี `AND status NOT IN ('cancelled','returned')` ด้วย ซึ่งตอนแรกลืมใส่
+describe('qtyOutToField ต้องกันแถวที่จบไปแล้ว (parity กับ backfill 0067)', () => {
+  it('ยกเลิก/คืนสต็อกแล้ว = 0 แม้ธงวันที่เบิกยังค้างอยู่บนแถว', () => {
+    for (const st of ['cancelled', 'returned'] as const)
+      expect(qtyOutToField(req({ qtyRequested: 10, status: st, qtyIssuedToService: 6, issuedToServiceAt: '2026-08-01T00:00:00.000Z' }))).toBe(0)
   })
 })

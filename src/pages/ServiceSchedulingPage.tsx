@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { jobInstallSummary, memberSchedule, jobTeam } from '../data/logic'
+import { jobInstallSummary, jobIsFieldActive, memberSchedule, jobTeam } from '../data/logic'
 import { Modal, useConfirm, useTryAction } from '../ui/components'
 import { fmtDate } from '../ui/format'
 import type { TeamMember } from '../types'
@@ -22,7 +22,8 @@ export default function ServiceSchedulingPage() {
   const members = [...db.teamMembers].sort((a, b) =>
     Number(b.isActive) - Number(a.isActive) || a.firstName.localeCompare(b.firstName))
   const activeMembers = members.filter(m => m.isActive)
-  const issuedJobs = db.jobs.filter(j => j.terminalStatus === 'issued')
+  // 0071: รวมงานที่เบิกบางส่วน — ของออกไปแล้วต้องมีทีมรับผิดชอบ ไม่ใช่รอจนใบครบ
+  const issuedJobs = db.jobs.filter(j => jobIsFieldActive(db, j))
   const unassigned = issuedJobs.filter(j => !db.jobAssignments.some(a => a.jobId === j.id))
   // user แผนก service ให้เลือกผูกบัญชี (คนที่ยังไม่ถูกผูก + คนที่ผูกกับ record นี้อยู่)
   const linkableUsers = db.users.filter(u =>

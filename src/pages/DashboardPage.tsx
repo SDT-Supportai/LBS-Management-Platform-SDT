@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import {
-  deriveJobStatus, stockSummary, jobInstallSummary, jobAllocatedQty,
+  deriveJobStatus, stockSummary, jobInstallSummary, jobIsFieldActive, jobAllocatedQty,
   jobDueDate, jobDaysLeft, todayIso, DUE_WARN_DAYS, stockComments,
 } from '../data/logic'
 import { JobStatusBadge, useTryAction } from '../ui/components'
@@ -48,10 +48,13 @@ export default function DashboardPage() {
   const openPo = db.pos.filter(p => p.status === 'issued')
 
   // ฝั่ง Service — คืบหน้าติดตั้งรายเครื่องของงานที่เบิกแล้ว + งานที่ยังไม่มอบหมายทีม
-  const issuedJobs = db.jobs.filter(j => j.terminalStatus === 'issued')
+  // 0071: นับงานที่เบิกบางส่วนด้วย ไม่งั้นการ์ดนี้ขัดกับหน้า Service/Scheduling ที่นับไปแล้ว
+  //   และนับ "เครื่อง" จากของที่ออกไปอยู่กับช่างจริง (outTotal) ไม่ใช่ทุกเครื่องบนใบ
+  //   — งานที่เบิกครบแล้ว outTotal === total จึงไม่เปลี่ยนตัวเลขเดิมของงานปกติ
+  const issuedJobs = db.jobs.filter(j => jobIsFieldActive(db, j))
   const svc = issuedJobs.reduce((acc, j) => {
     const s = jobInstallSummary(db, j.id)
-    acc.units += s.total; acc.installed += s.installed; acc.blocked += s.blocked
+    acc.units += s.outTotal; acc.installed += s.outInstalled; acc.blocked += s.outBlocked
     if (!db.jobAssignments.some(a => a.jobId === j.id)) acc.unassigned++
     return acc
   }, { units: 0, installed: 0, blocked: 0, unassigned: 0 })

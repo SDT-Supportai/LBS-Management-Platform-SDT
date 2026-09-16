@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { deriveJobStatus, jobInstallSummary, unitInstallState, jobTeam, memberFullName, serviceIssues } from '../data/logic'
+import { deriveJobStatus, jobInstallSummary, jobIsFieldActive, qtyOutToField, effectiveQty, unitInstallState, jobTeam, memberFullName, serviceIssues } from '../data/logic'
 import type { ServiceIssueKind } from '../data/logic'
 
 const ISSUE_KIND: Record<ServiceIssueKind, { label: string; cls: string }> = {
@@ -72,17 +72,38 @@ export default function ServicePage() {
   const openIssues = issues.filter(i => !i.jobClosed).length
 
   const ready = db.jobs.filter(j => deriveJobStatus(db, j) === 'ready_to_issue')
-  const issued = db.jobs.filter(j => j.terminalStatus === 'issued')
+  // 0071: งานที่ "เบิกบางส่วน" ก็ต้องอยู่ในตารางนี้ — ของอยู่กับช่างแล้ว แค่ใบยังไม่ครบ
+  //   เดิมกรอง terminalStatus === 'issued' อย่างเดียว ⇒ งาน partially_issued หลุดทั้ง 2 พาเนล
+  //   (ไม่อยู่ใน "รอ Project เบิกให้" เพราะไม่ใช่ ready_to_issue แล้ว) = หายไปจากหน้านี้ทั้งใบ
+  const issued = db.jobs.filter(j => jobIsFieldActive(db, j))
   const installed = db.jobs.filter(j => j.terminalStatus === 'installed')
 
   const unitsOf = (jobId: string) => db.lbsUnits.filter(u => u.jobId === jobId)
+  /** เครื่องที่ออกจากคลังไปอยู่กับช่างแล้ว — ตารางงานหน้าไซต์ต้องดูตัวนี้ ไม่ใช่ทุกเครื่องบนใบ (0071) */
+  const unitsOut = (jobId: string) => db.lbsUnits.filter(u => u.jobId === jobId && u.status === 'issued')
+  // วัสดุของงานนี้ที่ "อยู่ในมือ Job" (เบิกจากคลังแล้ว หรือรับของจาก PO ครบแล้ว)
   const accOf = (jobId: string) => db.accessoryRequests.filter(r =>
     r.jobId === jobId && (r.status === 'issued' || r.status === 'received'))
+  /**
+   * 0071 — แยก "ของที่ส่งถึงช่างแล้ว" ออกจาก "ของที่ยังค้างอยู่กับ Project"
+   * ตั้งแต่ 0067 วัสดุเบิกทีละบางส่วนได้ ⇒ คอลัมน์นี้เคยโชว์ qtyRequested เต็มจำนวนเสมอ
+   * ช่างจึงอ่านว่าได้ของครบทั้งที่จริงได้มาแค่บางส่วน (คลาสเดียวกับที่ Serial LBS เคยโชว์เกิน)
+   */
+  const accSplit = (jobId: string) => {
+    const rows = accOf(jobId)
+    return {
+      sent: rows.map(r => ({ r, out: qtyOutToField(r) })).filter(x => x.out > 0),
+      waitingCount: rows.filter(r => qtyOutToField(r) === 0).length,
+    }
+  }
   const itemOf = (id: string) => db.items.find(i => i.id === id)
   const userOf = (id?: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
   // เหตุผลที่ปิดงานยังไม่ได้ (ใช้เป็น tooltip) — '' = ปิดได้
   const closeBlockedReason = (s: ReturnType<typeof jobInstallSummary>) =>
     s.total === 0 ? 'ไม่มีเครื่องที่เบิกไว้'
+      // 0071: แยกให้ชัดว่า "ค้างเพราะยังไม่ได้เบิก" ต่างจาก "ค้างเพราะช่างยังไม่ได้ยืนยัน"
+      //   สองอย่างนี้คนละคนต้องไปทำ — ข้อความเดิมบอกแค่ตัวเลขรวม ช่างจะไล่หาไม่เจอว่าติดที่ใคร
+      : s.waiting > 0 ? `ยังมี ${s.waiting} เครื่องที่ Project ยังไม่ได้เบิกให้ — ปิดงานได้เมื่อของออกครบ Scope`
       : s.pending > 0 ? `ต้องได้ข้อสรุปทุกเครื่องก่อน (เหลือ ${s.pending} เครื่อง)`
       : s.installed === 0 ? 'ต้องมีเครื่องที่ติดตั้งสำเร็จอย่างน้อย 1 เครื่อง'
       : ''
@@ -320,7 +341,16 @@ export default function ServicePage() {
                 const s = jobInstallSummary(db, j.id)
                 return (
                   <tr key={j.id}>
-                    <td><Link to={`/jobs/${j.id}`}><b>{j.jobNo}</b></Link></td>
+                    <td><Link to={`/jobs/${j.id}`}><b>{j.jobNo}</b></Link>
+                      {/* 0071: งานที่ของยังออกไม่ครบ ต้องบอกให้ชัดตั้งแต่คอลัมน์แรก — ช่างจะได้รู้ว่า
+                          ที่ยกไปหน้างานไม่ใช่ทั้งใบ และปุ่มปิดงานที่กดไม่ได้ไม่ใช่ระบบเสีย */}
+                      {s.waiting > 0 && (
+                        <div style={{ marginTop: 3 }}>
+                          <span className="badge amber">เบิกบางส่วน {s.outTotal}/{s.total}</span>
+                          <div className="muted" style={{ fontSize: 11 }}>ค้างอีก {s.waiting} เครื่อง</div>
+                        </div>
+                      )}
+                    </td>
                     <td>{j.customerName}
                       <div className="muted">
                         📍 {j.issueLocation || j.installLocation || '-'}
@@ -341,11 +371,16 @@ export default function ServicePage() {
                       })()}</td>
                     <td>
                       {(() => {
-                        const units = unitsOf(j.id)
-                        const acc = accOf(j.id)
+                        // 0071: คอลัมน์นี้คือ "ของที่อยู่กับช่างแล้ว" — ต้องนับเฉพาะเครื่องที่ออกจากคลังจริง
+                        //   เดิมใช้ unitsOf (ทุกเครื่องบนใบ) ซึ่งเท่ากันตอนที่เบิกทั้งใบเท่านั้น
+                        //   พอเบิกทีละล็อต จะโชว์ Serial ของเครื่องที่ยังอยู่คลัง = ช่างออกไปหาของที่ไม่มี
+                        const units = unitsOut(j.id)
+                        const { sent: acc, waitingCount } = accSplit(j.id)
                         const matOpen = openMat.has(j.id)
                         return <>
-                          <div><b>LBS {units.length} เครื่อง</b></div>
+                          <div><b>LBS {units.length} เครื่อง</b>
+                            {s.waiting > 0 && <span className="muted"> (ยังไม่เบิกอีก {s.waiting})</span>}
+                          </div>
                           {/* Serial คู่ LVB + OM รายเครื่อง — ช่างต้องเทียบกับป้ายบนตัวเครื่องหน้างาน
                               ทั้ง 2 เลข เดิมโชว์แค่ LVB ต่อกันเป็นพืดจึงเทียบไม่ได้ (2026-08-28) */}
                           {units.map(u => (
@@ -360,20 +395,40 @@ export default function ServicePage() {
                               aria-expanded={matOpen}>
                               {matOpen ? 'ซ่อนรายการวัสดุ' : `วัสดุ ${acc.length} รายการ`}
                             </button>
-                            {matOpen && acc.map(r => {
+                            {matOpen && acc.map(({ r, out }) => {
                               const it = itemOf(r.itemId)!
-                              return <div key={r.id} className="muted">{it.name} × {r.qtyRequested} {it.uom}</div>
+                              const ordered = effectiveQty(r)
+                              return (
+                                <div key={r.id} className="muted">
+                                  {it.name} × <b>{out}</b> {it.uom}
+                                  {/* ส่งมาไม่ครบบรรทัด — ต้องเห็นว่ายังมีของตามมาอีก ไม่งั้นช่างนับของหน้างานแล้วคิดว่าขาด */}
+                                  {out < ordered && (
+                                    <span style={{ color: 'var(--amber, #d97706)' }}> (จาก {ordered} · ตามมาอีก {ordered - out})</span>
+                                  )}
+                                </div>
+                              )
                             })}
                           </>}
+                          {/* วัสดุที่รับของ/เบิกคลังแล้วแต่ยังไม่ได้ส่งต่อให้ช่างเลยสักชิ้น */}
+                          {waitingCount > 0 && (
+                            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                              ยังไม่ได้ส่งอีก {waitingCount} รายการ (อยู่กับ Project)
+                            </div>
+                          )}
                         </>
                       })()}
                     </td>
                     <td style={{ whiteSpace: 'nowrap' }}>
-                      <span className={`badge ${s.canClose ? 'green' : s.installed > 0 ? 'blue' : 'neutral'}`}>
-                        {s.installed}/{s.total} เครื่อง
+                      {/* ตัวเลขที่ช่างต้องใช้คือ "ของที่ยกไปแล้วติดตั้งไปกี่เครื่อง" (รอบนี้)
+                          ส่วน n/ทั้งใบ เป็นภาพรวมที่ใช้ตัดสินว่าปิดงานได้หรือยัง — โชว์แยกบรรทัด (0071) */}
+                      <span className={`badge ${s.canClose ? 'green' : s.outInstalled > 0 ? 'blue' : 'neutral'}`}>
+                        {s.outInstalled}/{s.outTotal} เครื่อง
                       </span>
+                      {s.waiting > 0 && <div className="muted" style={{ fontSize: 11 }}>ทั้งใบ {s.installed}/{s.total}</div>}
                       {s.blocked > 0 && <div className="muted" style={{ color: 'var(--danger)' }}>ติดตั้งไม่ได้ {s.blocked}</div>}
-                      <div className="muted">เบิก {fmtDateTime(j.issuedAt)}</div>
+                      {/* issuedAt ตั้งตอนปิดใบครบเท่านั้น — งานที่เบิกบางส่วนต้องใช้ lbsIssuedAt
+                          (เวลาที่ LBS ออกจากคลังรอบแรก) ไม่งั้นโชว์ "เบิก -" ทั้งที่ของออกไปแล้ว */}
+                      <div className="muted">เบิก {fmtDateTime(j.issuedAt ?? j.lbsIssuedAt)}</div>
                     </td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       {canConfirm && (
@@ -475,12 +530,17 @@ export default function ServicePage() {
             <p className="muted" style={{ marginBottom: 12 }}>
               {unitJob.customerName} · 📍 {unitJob.issueLocation || unitJob.installLocation || '-'} — ยืนยันทีละเครื่อง
               พร้อม Check-in GPS + รูปถ่ายของเครื่องนั้น ๆ
+              {/* 0071: เครื่องที่ยังอยู่คลังไม่ขึ้นในตารางนี้ — ยืนยันไม่ได้อยู่แล้วทั้งฝั่ง demo และ RPC
+                  ถ้าโชว์ไว้ช่างจะกดแล้วเจอ error ทั้งที่ไม่ใช่ความผิดตัวเอง จึงบอกเป็นบรรทัดสรุปแทน */}
+              {s.waiting > 0 && (
+                <><br />แสดงเฉพาะ <b>{s.outTotal} เครื่องที่เบิกออกมาแล้ว</b> · อีก <b>{s.waiting} เครื่อง</b> รอ Project เบิกให้ในรอบถัดไป</>
+              )}
             </p>
             <div className="table-scroll">
               <table>
                 <thead><tr><th>Serial (LVB / OM)</th><th>สถานะ</th><th></th></tr></thead>
                 <tbody>
-                  {unitsOf(unitJob.id).map(u => {
+                  {unitsOut(unitJob.id).map(u => {
                     const st = unitInstallState(db, u.id)
                     const r = lastInstallRow(u.id)
                     return (

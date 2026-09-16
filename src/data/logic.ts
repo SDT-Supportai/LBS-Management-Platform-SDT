@@ -1195,6 +1195,22 @@ export function qtyWrittenOff(r: AccessoryRequest): number {
   return r.qtyWrittenOff ?? 0
 }
 
+/**
+ * จำนวนที่ **ถึงมือช่างหน้างานจริง** — ใช้กับหน้าจอฝั่ง Service (0071)
+ *
+ * ต่างจาก qtyIssuedToService() ตรงที่รองรับแถวก่อน 0067 ซึ่งยังไม่มีคอลัมน์นี้:
+ *   ตอนนั้นการเบิกเป็น all-or-nothing ⇒ มี issuedToServiceAt = เบิกไปทั้งบรรทัด
+ * ⚠️ กติกาตรงกับ backfill ของ 0067 เป๊ะ — ทั้งเงื่อนไขธง (`issued_to_service_at IS NOT NULL`)
+ *    **และการกันแถวที่จบไปแล้ว** (`AND status NOT IN ('cancelled','returned')`)
+ *    ถ้าแก้ที่นี่ต้องเทียบกับไฟล์นั้นเสมอ ไม่งั้นเดโมกับ LIVE จะนับของหน้างานไม่เท่ากัน
+ */
+export function qtyOutToField(r: AccessoryRequest): number {
+  if (r.status === 'cancelled' || r.status === 'returned') return 0
+  const out = qtyIssuedToService(r)
+  if (out > 0) return out
+  return r.issuedToServiceAt ? effectiveQty(r) : 0
+}
+
 /** ของที่ยังค้างอยู่ที่ Job — เบิกเพิ่มได้ · โอนคืนคลังได้ · ตัดจำหน่ายได้ */
 export function qtyPendingIssue(r: AccessoryRequest): number {
   return Math.max(0, effectiveQty(r) - qtyIssuedToService(r) - qtyWrittenOff(r))
@@ -2223,31 +2239,95 @@ export function unitInstallState(db: DB, unitId: string): UnitInstallOutcome | '
   return rows[0]?.outcome ?? 'pending'
 }
 
-// สรุปความคืบหน้าติดตั้งของ Job — ใช้โชว์ "3/5" และคุมเงื่อนไขปิดงาน
+// =============================================================================
+// ด่านงานหน้าไซต์ = "รายเครื่อง" ไม่ใช่ "รายใบ" (0071 · มติ 2026-09-16)
+//
+// 0059 แยกการเบิกออกเป็นรายชิ้นแล้ว แต่ทุกด่านปลายน้ำยังล็อกที่ terminalStatus = 'issued'
+//   ⇒ Project ส่ง LBS 2 จาก 5 เครื่องให้ช่างได้ แต่ช่าง **ยืนยันติดตั้งไม่ได้ · มอบหมายทีมไม่ได้ ·
+//     บันทึกออกหน้างานไม่ได้** และงานไม่โผล่ในหน้า Service เลยสักพาเนล (หลุดทั้ง ready และ issued)
+//   ⇒ ย้อนแย้งกับโจทย์ตั้งต้นของ 0059 เอง ("ของพร้อมแล้วแต่ทีมเข้าไซต์ไม่ได้")
+//
+// รากของปัญหา: terminalStatus = 'issued' ถูกใช้ 2 ความหมายพร้อมกัน
+//   (1) "ใบงานจบการเบิกแล้ว" — เชิงบัญชี/ล็อก   (2) "ของถึงมือ Service แล้ว เริ่มงานได้" — เชิงปฏิบัติการ
+// ไฟล์นี้แยก (2) ออกมาเป็นด่านของตัวเอง โดยวัดจาก **ของที่ออกจากคลังจริง**:
+//   ยืนยัน/บล็อกติดตั้งรายเครื่อง → เครื่องนั้นต้อง status = 'issued'
+//   มอบหมายทีม · บันทึกออกหน้างาน → Job ต้องมี LBS อย่างน้อย 1 เครื่องที่ issued
+//
+// 🔴 สิ่งที่ **ไม่** เปลี่ยน — closeJobInstall ยังบังคับ terminalStatus = 'issued' + ทุกเครื่องบนใบ
+//    ต้องได้ข้อสรุป ⇒ ปิดงานทั้งที่ของยังออกไม่ครบ Scope ยังทำไม่ได้เหมือนเดิม
+//    (ปลดแค่ "ทำงานหน้างานได้" ไม่ได้ปลด "ปิดงานได้")
+// =============================================================================
+
+/** Job นี้มีของอยู่กับ Service แล้วหรือยัง — LBS อย่างน้อย 1 เครื่องที่เบิกออกไปแล้ว (0071) */
+export function jobHasIssuedUnits(db: DB, jobId: string): boolean {
+  return db.lbsUnits.some(u => u.jobId === jobId && u.status === 'issued')
+}
+
+/** งานที่ทีมช่างทำงานกับมันได้ = มีของออกไปแล้ว และยังไม่ปิด/ยกเลิก (0071) */
+export function jobIsFieldActive(db: DB, job: Job): boolean {
+  if (job.terminalStatus === 'installed' || job.terminalStatus === 'cancelled') return false
+  return jobHasIssuedUnits(db, job.id)
+}
+
+/**
+ * สรุปความคืบหน้าติดตั้งของ Job
+ *   total/installed/blocked/pending/canClose = **ทั้งใบ** (นับเครื่องที่ยังอยู่คลังด้วย) — คุมเงื่อนไขปิดงาน
+ *   out*                                     = **เฉพาะของที่ออกไปอยู่กับช่างแล้ว** (0071) — ใช้โชว์ความคืบหน้ารอบนี้
+ * ⚠️ เครื่องที่ยัง allocated ไม่มีวันมีผลยืนยันติดตั้ง จึงถูกนับเป็น pending เสมอ
+ *    ⇒ canClose เป็น false อยู่แล้วโดยอัตโนมัติจนกว่าจะเบิกครบทุกเครื่อง (ตั้งใจ ห้ามแก้)
+ */
 export function jobInstallSummary(db: DB, jobId: string) {
   const units = db.lbsUnits.filter(u => u.jobId === jobId)
   let installed = 0, blocked = 0
+  let outInstalled = 0, outBlocked = 0, outTotal = 0
   units.forEach(u => {
     const s = unitInstallState(db, u.id)
-    if (s === 'installed') installed++
-    else if (s === 'blocked') blocked++
+    const out = u.status === 'issued'
+    if (out) outTotal++
+    if (s === 'installed') { installed++; if (out) outInstalled++ }
+    else if (s === 'blocked') { blocked++; if (out) outBlocked++ }
   })
   const pending = units.length - installed - blocked
   return {
     total: units.length, installed, blocked, pending,
+    // ของที่อยู่กับช่างแล้ว (รอบนี้) — waiting = ยังอยู่คลัง รอ Project เบิกรอบถัดไป
+    outTotal, outInstalled, outBlocked,
+    outPending: outTotal - outInstalled - outBlocked,
+    waiting: units.length - outTotal,
     // ปิดงานได้เมื่อทุกเครื่องได้ข้อสรุปแล้ว และติดตั้งสำเร็จอย่างน้อย 1 เครื่อง
     canClose: units.length > 0 && pending === 0 && installed > 0,
   }
 }
 
-function assertUnitOnIssuedJob(db: DB, unitId: string) {
+/**
+ * ด่านของการกระทำรายเครื่อง (0071) — วัดที่ "เครื่องนี้ออกจากคลังไปแล้วหรือยัง"
+ * ไม่ใช่ "ใบนี้เบิกครบหรือยัง" · ยังกันงานที่ปิด/ยกเลิกไปแล้วเหมือนเดิม
+ */
+function assertUnitIssuedOut(db: DB, unitId: string) {
   const unit = db.lbsUnits.find(u => u.id === unitId)
   if (!unit) throw new Error('ไม่พบเครื่อง LBS')
   const job = db.jobs.find(j => j.id === unit.jobId)
   if (!job) throw new Error('เครื่องนี้ยังไม่ได้ผูกกับ Job')
-  if (job.terminalStatus !== 'issued')
-    throw new Error(`ยืนยันติดตั้งได้เฉพาะงานที่เบิกแล้ว (Issued) — ${job.jobNo} อยู่สถานะอื่น`)
+  if (job.terminalStatus === 'installed')
+    throw new Error(`${job.jobNo} ปิดงานติดตั้งแล้ว — แก้ผลติดตั้งไม่ได้`)
+  if (job.terminalStatus === 'cancelled')
+    throw new Error(`${job.jobNo} ถูกยกเลิกไปแล้ว`)
+  if (unit.status !== 'issued')
+    throw new Error(`${unit.serialLvb} ยังไม่ถูกเบิกให้ Service — ให้ Project เบิกเครื่องนี้ก่อน`)
   return { unit, job }
+}
+
+/** ด่านของการกระทำระดับใบที่ต้องมีของอยู่หน้างานแล้ว (มอบหมายทีม · บันทึกออกหน้างาน) — 0071 */
+function assertJobFieldActive(db: DB, jobId: string, what: string): Job {
+  const job = db.jobs.find(j => j.id === jobId)
+  if (!job) throw new Error('ไม่พบ Job')
+  if (job.terminalStatus === 'installed')
+    throw new Error(`${job.jobNo} ปิดงานติดตั้งแล้ว — ${what}ไม่ได้`)
+  if (job.terminalStatus === 'cancelled')
+    throw new Error(`${job.jobNo} ถูกยกเลิกไปแล้ว`)
+  if (!jobHasIssuedUnits(db, jobId))
+    throw new Error(`${job.jobNo} ยังไม่มี LBS ที่เบิกให้ Service — ${what}ได้เมื่อของออกจากคลังแล้วอย่างน้อย 1 เครื่อง`)
+  return job
 }
 
 // ยืนยันติดตั้งรายเครื่อง — บังคับหลักฐานต่อเครื่อง (วันที่ + GPS + รูป)
@@ -2256,7 +2336,7 @@ export function confirmUnitInstall(
   db: DB, actor: User,
   p: { unitId: string; installedDate: string; checkinLat?: number; checkinLng?: number; photoUrl?: string; installedByMemberId?: string; note?: string },
 ): DB {
-  const { unit, job } = assertUnitOnIssuedJob(db, p.unitId)
+  const { unit, job } = assertUnitIssuedOut(db, p.unitId)
   if (unitInstallState(db, p.unitId) === 'installed')
     throw new Error(`${unit.serialLvb} ยืนยันติดตั้งไปแล้ว`)
   if (!p.installedDate) throw new Error('กรุณาระบุวันที่ติดตั้งจริง')
@@ -2288,7 +2368,7 @@ export function confirmUnitInstall(
 
 // เครื่องติดตั้งไม่ได้ (เครื่องเสีย/จุดติดตั้งไม่พร้อม) — แจ้ง Project ทันทีเพื่อหาทางแก้
 export function blockUnitInstall(db: DB, actor: User, p: { unitId: string; reason: string }): DB {
-  const { unit, job } = assertUnitOnIssuedJob(db, p.unitId)
+  const { unit, job } = assertUnitIssuedOut(db, p.unitId)
   if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผลที่ติดตั้งไม่ได้')
 
   let next: DB = {
@@ -2472,7 +2552,8 @@ export function jobTeam(db: DB, jobId: string): { assignment: JobAssignment; mem
 export function memberSchedule(db: DB, memberId: string) {
   const jobIds = db.jobAssignments.filter(a => a.memberId === memberId).map(a => a.jobId)
   const jobs = db.jobs.filter(j => jobIds.includes(j.id))
-  const active = jobs.filter(j => j.terminalStatus === 'issued')
+  // 0071: งานที่เบิกบางส่วนก็ต้องอยู่ในตารางช่าง — ของออกไปแล้ว ช่างมีนัดต้องไปจริง
+  const active = jobs.filter(j => jobIsFieldActive(db, j))
     .sort((a, b) => (a.installStartDate ?? '9999').localeCompare(b.installStartDate ?? '9999'))
   return {
     active,
@@ -2554,10 +2635,8 @@ export function assignJobTeam(
   db: DB, actor: User,
   p: { jobId: string; memberIds: string[]; leadMemberId?: string },
 ): DB {
-  const job = db.jobs.find(j => j.id === p.jobId)
-  if (!job) throw new Error('ไม่พบ Job')
-  if (job.terminalStatus !== 'issued')
-    throw new Error(`มอบหมายทีมได้เฉพาะงานที่เบิกแล้ว (Issued) — ${job.jobNo} อยู่สถานะอื่น`)
+  // 0071: มอบหมายทีมได้ตั้งแต่ของออกไปล็อตแรก ไม่ต้องรอใบครบ — ทีมต้องรู้ล่วงหน้าว่าใครไป
+  const job = assertJobFieldActive(db, p.jobId, 'มอบหมายทีม')
   const ids = [...new Set(p.memberIds)]
   const members = ids.map(id => {
     const m = db.teamMembers.find(x => x.id === id)
@@ -2600,10 +2679,8 @@ export function logSiteVisit(
   db: DB, actor: User,
   p: { jobId: string; outcome: SiteVisitOutcome; reason: string; newStartDate?: string; newEndDate?: string },
 ): DB {
-  const job = db.jobs.find(j => j.id === p.jobId)
-  if (!job) throw new Error('ไม่พบ Job')
-  if (job.terminalStatus !== 'issued')
-    throw new Error(`บันทึกได้เฉพาะงานที่เบิกแล้ว (Issued) — ${job.jobNo} อยู่สถานะอื่น`)
+  // 0071: ไปหน้างานรอบแรกตั้งแต่ของยังไม่ครบใบก็เกิดขึ้นจริง — ปัญหา/การเลื่อนนัดต้องบันทึกได้ตอนนั้น
+  const job = assertJobFieldActive(db, p.jobId, 'บันทึกออกหน้างาน')
   if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผล/รายละเอียดหน้างาน')
 
   let newStart = p.newStartDate

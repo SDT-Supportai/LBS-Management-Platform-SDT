@@ -22,7 +22,7 @@ import MasterDataPage from './pages/MasterDataPage'
 import StandardsPage from './pages/StandardsPage'
 import DevSettingsPage from './pages/DevSettingsPage'
 import ApprovalsPage from './pages/ApprovalsPage'
-import { deriveJobStatus, unreadNotifications, serviceIssues } from './data/logic'
+import { deriveJobStatus, jobIsFieldActive, unreadNotifications, serviceIssues } from './data/logic'
 
 // Logo จริง (/logo.jpg) + fallback ⚡ ถ้ายังไม่มีไฟล์
 function BrandLogo() {
@@ -38,14 +38,16 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const pendingPrs = db.prs.filter(p => p.status === 'pending').length
   const openPos = db.pos.filter(p => p.status === 'issued').length
   const readyJobs = db.jobs.filter(j => deriveJobStatus(db, j) === 'ready_to_issue').length
-  const awaitingInstall = db.jobs.filter(j => j.terminalStatus === 'issued').length
+  // 0071: badge ต้องนับงานที่เบิกบางส่วนด้วย — ของอยู่กับช่างแล้ว งานรออยู่จริง
+  //   ถ้านับแต่ใบที่ครบ ตัวเลขบนเมนูจะน้อยกว่าจำนวนแถวในหน้า Service ที่เปิดเข้าไปเห็น
+  const awaitingInstall = db.jobs.filter(j => jobIsFieldActive(db, j)).length
   const pendingIds = new Set(db.approvalRequests.filter(r => r.status === 'pending').map(r => r.id))
   const pendingApprovals = pendingIds.size
   // ความเห็นผู้บริหาร (0050) ที่แปะอยู่บนคำขอซึ่งยังไม่ตัดสิน — Division ควรเห็นก่อนกดอนุมัติ
   const pendingComments = db.approvalComments.filter(c => !!c.requestId && pendingIds.has(c.requestId)).length
   // งานที่เบิกแล้วแต่ยังไม่มอบหมายทีม (เฟส C)
   const unassignedJobs = db.jobs.filter(j =>
-    j.terminalStatus === 'issued' && !db.jobAssignments.some(a => a.jobId === j.id)).length
+    jobIsFieldActive(db, j) && !db.jobAssignments.some(a => a.jobId === j.id)).length
   // ปัญหางานบริการที่ยังไม่ปิดงาน — เตือนที่เมนู Service
   const openServiceIssues = serviceIssues(db).filter(i => !i.jobClosed).length
   // จำนวนจุดที่มีพิกัดบนแผนที่ (เช็คอินราย Serial) — นับเครื่องที่มีพิกัด ไม่ใช่จำนวนแถว log
