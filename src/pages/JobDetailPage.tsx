@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
-import { deriveJobStatus, jobIsFieldActive, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, parseLatLng, fmtLatLng, PAYMENT_TYPES } from '../data/logic'
+import { deriveJobStatus, jobIsFieldActive, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, qtyOutToField, parseLatLng, fmtLatLng, PAYMENT_TYPES } from '../data/logic'
 import { BudgetFields, CoordInput, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, sitesToApi, sitesFromJob, type CostForm, type InstallSite } from '../ui/components'
 import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, EPICOR_TXN, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, DEPT_LABEL, JOB_STATUS_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import {
@@ -26,12 +26,17 @@ const COST_LABEL: Record<string, string> = Object.fromEntries(COST_CATEGORIES.ma
 const PO_COLS: ReportCol[] = [
   { key: 'รหัส Epicor', width: 14, note: 'รหัสอ้างอิงระบบ ERP' },
   { key: 'ชื่ออุปกรณ์', width: 30, note: 'ชื่อในฐานข้อมูลวัสดุ' },
-  { key: 'จำนวนที่ขอ', width: 12, note: 'จำนวนที่ Project ขอไว้ตอนเพิ่มวัสดุ', num: 'int', total: true },
-  { key: 'โอนคืนคลัง', width: 12, note: 'จำนวนที่ใช้ไม่หมดแล้วกด "📦 โอนเข้าคลัง" คืนไป — ถูกหักออกจากต้นทุนงานแล้ว', num: 'int', total: true },
-  { key: 'จำนวนที่คิดต้นทุน', width: 18, note: 'จำนวนที่ขอ − โอนคืนคลัง · รายการที่ยกเลิก/คืนสต็อกทั้งบรรทัดนับเป็น 0', num: 'int', total: true },
+  // 4 ช่องของบัญชีรายบรรทัด (0067/0068) — ผลรวม 4 ตัวนี้ = จำนวนที่สั่งซื้อ เสมอ
+  { key: 'จำนวนที่สั่งซื้อ', width: 14, note: 'จำนวนที่ Project ขอไว้ตอนเพิ่มวัสดุ · แถวที่แหล่งเป็น "คลังคงเหลือ" คือจำนวนที่เบิกมาจากคลัง ไม่ได้ซื้อ', num: 'int', total: true },
+  { key: 'เบิกออกหน้างาน', width: 15, note: 'จำนวนที่ส่งถึงมือทีมช่างแล้ว — ไม่ลดต้นทุนของงาน (ของยังเป็นของงานนี้ แค่ย้ายที่)', num: 'int', total: true },
+  { key: 'คงเหลือที่ Job', width: 14, note: 'ยังไม่ออกหน้างาน ยังไม่คืนคลัง ยังไม่ตัดจำหน่าย — ต้องเป็น 0 ทุกบรรทัดถึงปิดงานได้', num: 'int', total: true },
+  { key: 'โอนคืนคลัง', width: 12, note: 'จำนวนที่ใช้ไม่หมดแล้วกด "📦 โอนเข้าคลัง" คืนไป — **ตัวเดียวที่หักต้นทุนออกจากงาน**', num: 'int', total: true },
+  { key: 'ตัดจำหน่าย', width: 12, note: 'ของเหลือที่ไม่คุ้มจะคืนคลัง — **ต้นทุนยังอยู่กับงาน** (ของสูญไปกับงานนี้จริง)', num: 'int', total: true },
+  { key: 'จำนวนที่คิดต้นทุน', width: 18, note: 'จำนวนที่สั่งซื้อ − โอนคืนคลัง · รายการที่ยกเลิก/คืนสต็อกทั้งบรรทัดนับเป็น 0', num: 'int', total: true },
   { key: 'หน่วย', width: 9, note: 'หน่วยนับ' },
   { key: 'ราคา/หน่วย', width: 14, note: 'ของจากคลังคงเหลือ = ต้นทุนถัวเฉลี่ยตอนเบิก · ของที่ซื้อ = ราคาจริงหลังออก PO · ว่าง = ยังไม่กรอก', num: 'money' },
   { key: 'ต้นทุนที่ตัดเข้างาน', width: 20, note: 'ราคา/หน่วย × จำนวนที่คิดต้นทุน — ตัวเลขนี้คือที่ไปบวก actual ของหมวดงบ', num: 'money', total: true },
+  { key: 'ต้นทุนที่ถึงหน้างานแล้ว', width: 22, note: 'ราคา/หน่วย × เบิกออกหน้างาน — **ตัวเลขดูอย่างเดียว ไม่ได้ใช้คิดงบ** ใช้ตอบว่าเงินที่จ่ายไปถึงมือช่างเท่าไร', num: 'money', total: true },
   { key: 'Phase Budget', width: 16, note: 'หมวดต้นทุนที่บรรทัดนี้ตัดเข้า (Raw Material / Outsourcing)' },
   { key: 'Phase', width: 12, note: 'Phase ที่กรอกไว้ในงบหมวดนั้น' },
   { key: 'แหล่ง', width: 14, note: 'คลังคงเหลือ (เบิกได้เลย) หรือ Purchasing (ต้องออก PR/PO)' },
@@ -300,12 +305,16 @@ export default function JobDetailPage() {
       return {
         'รหัส Epicor': item.epicorCode || '',
         'ชื่ออุปกรณ์': item.name,
-        'จำนวนที่ขอ': r.qtyRequested,
+        'จำนวนที่สั่งซื้อ': r.qtyRequested,
+        'เบิกออกหน้างาน': isActive(r) ? qtyIssuedToService(r) : 0,
+        'คงเหลือที่ Job': isActive(r) ? qtyPendingIssue(r) : 0,
         'โอนคืนคลัง': r.qtyTransferred ?? 0,
+        'ตัดจำหน่าย': isActive(r) ? qtyWrittenOff(r) : 0,
         'จำนวนที่คิดต้นทุน': chargedQty(r),
         'หน่วย': item.uom,
         'ราคา/หน่วย': r.unitPrice ?? '',
         'ต้นทุนที่ตัดเข้างาน': lineValue ?? '',
+        'ต้นทุนที่ถึงหน้างานแล้ว': isActive(r) && r.unitPrice !== undefined ? r.unitPrice * qtyOutToField(r) : '',
         'Phase Budget': cat,
         'Phase': phase,
         'แหล่ง': r.source === 'central_stock' ? 'คลังคงเหลือ' : 'Purchasing',
@@ -475,7 +484,9 @@ export default function JobDetailPage() {
       ],
       tables,
       notes: [
-        '"ต้นทุนที่ตัดเข้างาน" = ราคา/หน่วย × (จำนวนที่ขอ − โอนคืนคลัง) — รายการที่ยกเลิก/คืนสต็อกทั้งบรรทัดนับเป็น 0',
+        'จำนวนที่สั่งซื้อ = เบิกออกหน้างาน + คงเหลือที่ Job + โอนคืนคลัง + ตัดจำหน่าย (ครบทุกบรรทัด)',
+        '"ต้นทุนที่ตัดเข้างาน" = ราคา/หน่วย × (จำนวนที่สั่งซื้อ − โอนคืนคลัง) — รายการที่ยกเลิก/คืนสต็อกทั้งบรรทัดนับเป็น 0',
+        '"ต้นทุนที่ถึงหน้างานแล้ว" เป็นตัวเลขดูอย่างเดียว ไม่ได้ใช้คิดงบ — ของที่ตัดจำหน่ายยังนับเป็นต้นทุนของงาน',
         'actual ของหมวด Raw Material / Outsourcing มาจากรายการวัสดุในไฟล์นี้ · อีก 5 หมวดกรอกมือที่หน้า Job',
         'ต้นทุนตัว LBS ที่ดึงเข้างานถูกบวกเข้า actual หมวด Raw Material ด้วย — "มูลค่าวัสดุ PR/PO" จึงน้อยกว่า actual หมวดนั้น',
         '"กำไรตามแผน" เทียบราคาขายกับ **งบ** ไม่ใช่ต้นทุนจริง — กำไรจริงต้องรออีก 5 หมวดที่กรอกมือครบก่อน',
@@ -1103,9 +1114,22 @@ export default function JobDetailPage() {
         </div>
         {poOpen && <div className="table-scroll">
           <table>
-            <thead><tr><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>จำนวน</th><th>ราคา/หน่วย</th><th>มูลค่า</th><th>Phase Budget</th><th>แหล่ง</th><th>สถานะ</th><th>ทำเบิก-Epicor</th><th>PR / PO</th><th></th></tr></thead>
+            {/* 0073: แยกบัญชี 4 ช่องของบรรทัด (0067/0068) ขึ้นมาเป็นคอลัมน์จริง
+                เดิมซ่อนอยู่ในบรรทัดรองใต้จำนวน ซึ่งอ่านเทียบข้ามบรรทัดไม่ได้
+                ⚠️ "เบิก + เหลือ" **ไม่เท่ากับ**จำนวนที่สั่งเสมอไป — ยังมีโอนคืนคลังกับตัดจำหน่ายอีก 2 ช่อง
+                   จึงต้องโชว์ครบทั้ง 4 (ซ่อนตัวที่เป็น 0) + เขียนสมการกำกับท้ายตาราง */}
+            <thead><tr>
+              <th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th>
+              <th style={{ textAlign: 'right' }}>จำนวนที่สั่งซื้อ</th>
+              <th style={{ textAlign: 'right' }}>เบิกออกหน้างาน</th>
+              <th style={{ textAlign: 'right' }}>คงเหลือที่ Job</th>
+              <th style={{ textAlign: 'right' }}>ราคา/หน่วย</th>
+              <th style={{ textAlign: 'right' }}>ตัดเข้างาน</th>
+              <th style={{ textAlign: 'right' }}>ถึงหน้างานแล้ว</th>
+              <th>Phase Budget</th><th>แหล่ง</th><th>สถานะ</th><th>ทำเบิก-Epicor</th><th>PR / PO</th><th></th>
+            </tr></thead>
             <tbody>
-              {accReqs.length === 0 && <tr><td colSpan={11}><div className="empty">ยังไม่มีรายการวัสดุ</div></td></tr>}
+              {accReqs.length === 0 && <tr><td colSpan={14}><div className="empty">ยังไม่มีรายการวัสดุ</div></td></tr>}
               {accReqs.map(r => {
                 const item = itemOf(r.itemId)!
                 const pr = db.prs.find(p => p.id === r.prId)
@@ -1119,30 +1143,36 @@ export default function JobDetailPage() {
                     <td>{item.name}
                       {isExtra(r.createdAt) && <div><span className="badge amber">ซื้อเพิ่มหลังเบิก</span></div>}
                     </td>
-                    <td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                       {r.qtyRequested} {item.uom}
+                      {/* ตารางนี้รวมของที่ซื้อกับของที่เบิกจากคลังกลาง — หัวคอลัมน์เขียนว่า "สั่งซื้อ"
+                          จึงต้องกำกับแถวคลังกลางไว้ ไม่งั้นอ่านว่าไปซื้อของที่จริงเบิกมาจากคลัง */}
+                      {r.source === 'central_stock' && <div className="muted" style={{ fontSize: 11 }}>เบิกจากคลัง</div>}
                       {r.source === 'purchasing' && (r.status === 'po_ordered' || r.status === 'received') && (
                         <div className="muted">รับแล้ว {r.qtyReceived}/{r.qtyRequested}</div>
                       )}
                       {(r.qtyTransferred ?? 0) > 0 && (
-                        <div className="muted" style={{ color: 'var(--primary)' }}>
-                          📦 โอนเข้าคลัง {r.qtyTransferred} · คงอยู่ {effectiveQty(r)}
-                        </div>
-                      )}
-                      {/* บัญชี 4 ช่องของบรรทัด (0067/0068) — โชว์เฉพาะตอนไม่ใช่เคสปกติ ไม่ให้แถวรก */}
-                      {active && qtyIssuedToService(r) > 0 && qtyPendingIssue(r) > 0 && (
-                        <div className="muted" style={{ color: 'var(--amber, #d97706)' }}>
-                          🚚 เบิกออกหน้างาน {qtyIssuedToService(r)} · <b>ค้างที่ Job {qtyPendingIssue(r)}</b>
-                        </div>
+                        <div className="muted" style={{ color: 'var(--primary)' }}>📦 คืนคลัง {r.qtyTransferred}</div>
                       )}
                       {active && qtyWrittenOff(r) > 0 && (
-                        <div className="muted" title={r.writeOffReason || undefined}>
-                          ✂️ ตัดจำหน่าย {qtyWrittenOff(r)} <span className="muted">(ต้นทุนยังอยู่กับงาน)</span>
-                        </div>
+                        <div className="muted" title={r.writeOffReason || undefined}>✂️ ตัดจำหน่าย {qtyWrittenOff(r)}</div>
                       )}
                     </td>
-                    <td>{fmtBaht(r.unitPrice)}</td>
-                    <td>{fmtBaht(lineValue)}</td>
+                    <td style={{ textAlign: 'right' }}>{active ? qtyIssuedToService(r) : '-'}</td>
+                    <td style={{ textAlign: 'right' }}>
+                      {active
+                        ? <b style={{ color: qtyPendingIssue(r) > 0 ? 'var(--amber, #d97706)' : undefined }}>{qtyPendingIssue(r)}</b>
+                        : '-'}
+                    </td>
+                    <td style={{ textAlign: 'right' }}>{fmtBaht(r.unitPrice)}</td>
+                    <td style={{ textAlign: 'right' }}>{fmtBaht(lineValue)}</td>
+                    {/* คอลัมน์แสดงผลล้วน (มติ 2026-09-16) — **ไม่ใช่ฐานการตัดต้นทุน**
+                        ตอบคำถาม "ของที่จ่ายเงินไปแล้วถึงมือช่างเท่าไร" โดยไม่แตะสูตรที่ไปบวก actual
+                        (ฐานยังเป็น qtyRequested − โอนคืนคลัง ตามมติ 0067/0068 — เปลี่ยนแล้วของที่
+                         ตัดจำหน่ายจะกลายเป็นต้นทุน 0 และยอดรวมทุกงานจะไม่เท่ากับยอดที่ซื้อจริง) */}
+                    <td style={{ textAlign: 'right' }} className="muted">
+                      {active && r.unitPrice !== undefined ? fmtBaht(r.unitPrice * qtyOutToField(r)) : '-'}
+                    </td>
                     <td>
                       {r.phaseBudget ? (COST_LABEL[r.phaseBudget] ?? r.phaseBudget) : '-'}
                       {r.phaseBudget && job.budgetCosts?.[r.phaseBudget as CostCategoryKey]?.phase && (
@@ -1330,6 +1360,15 @@ export default function JobDetailPage() {
               })}
             </tbody>
           </table>
+          {/* สมการกำกับ — ไม่งั้นคนอ่านจะคาดว่า "เบิก + คงเหลือ" ต้องเท่ากับจำนวนที่สั่ง
+              แล้วคิดว่าตัวเลขเพี้ยนทุกครั้งที่มีการคืนคลัง/ตัดจำหน่าย */}
+          <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+            <b>จำนวนที่สั่งซื้อ = เบิกออกหน้างาน + คงเหลือที่ Job + คืนคลัง + ตัดจำหน่าย</b>
+            {' '}(2 ตัวหลังโชว์ใต้จำนวนเมื่อไม่เป็นศูนย์) ·
+            <b> ตัดเข้างาน</b> = ราคา/หน่วย × (จำนวนที่สั่งซื้อ − คืนคลัง) = ยอดที่ไปบวก actual ของหมวดงบ ·
+            <b> ถึงหน้างานแล้ว</b> = ราคา/หน่วย × เบิกออกหน้างาน — <b>ตัวเลขดูอย่างเดียว ไม่ได้ใช้คิดงบ</b>
+            <br />ของที่ตัดจำหน่ายยังนับเป็นต้นทุนของงาน (ของสูญไปกับงานนี้จริง) · มีแต่การคืนคลังที่หักต้นทุนออก
+          </div>
         </div>}
         {jobPrs.length > 0 && (
           <div className="panel-body muted">

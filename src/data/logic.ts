@@ -322,6 +322,9 @@ export const LINE_PUSH_TYPES: ReadonlySet<string> = new Set([
   'po_received',                   // เฉพาะ "รับครบ" · รับบางส่วนใช้ type po_received_partial
   'lbs_issued_to_service',         // ทีมช่างต้องเตรียมออกหน้างาน
   'accessory_issued_to_service',   // ของชุดไหนถึงมือทีมช่างแล้ว
+  // 0072 — ใบครบเพราะโอนคืนคลัง/ตัดจำหน่าย/แก้จำนวน PO ไม่ใช่เพราะการเบิก
+  //   เป็นนาทีที่งานเข้าคิวติดตั้งจริง และไม่มี action ไหนพูดแทนให้ · ปีละไม่กี่ใบ ไม่กินโควตา
+  'job_ready_to_install',
   'install_failed',                // Project ต้องเข้าไปแก้ให้ทีมเดินต่อได้
   'job_cancelled',                 // ทุกแผนกต้องหยุดทำงานกับใบนี้ทันที
 ])
@@ -1286,7 +1289,7 @@ export function transferJobMaterialToStock(
   // 🔴 บั๊กที่ 0067 ทิ้งไว้: ตั้งแต่ 0067 บรรทัด "จบ" ได้ด้วยการโอนคืนคลัง ไม่ใช่การเบิกเท่านั้น
   //   แต่ฟังก์ชันนี้ (เขียนไว้ตั้งแต่ S1) ไม่เคยเรียก finalizeIssue ⇒ ถ้าการโอนคืนเป็นชิ้นสุดท้าย
   //   ที่ทำให้ทุกบรรทัดจบ Job จะค้าง partially_issued จนกว่าจะมี action เบิกอย่างอื่นมากระตุ้น
-  return finalizeIssue(next, actor, req.jobId)
+  return finalizeIssue(next, actor, req.jobId, true)   // 0072: ปิดใบด้วยการโอนคืน = ไม่มีข้อความของตัวเองถึง Service
 }
 
 /**
@@ -1342,7 +1345,7 @@ export function writeOffJobMaterial(
     `${job.jobNo} ตัดจำหน่าย ${item.name} ${p.qty} ${item.uom} ที่ Job ` +
     `(ไม่เข้าคลัง · ต้นทุน ${fmtInt(value)} บาท ยังอยู่กับ Job) — ${reason}`)
   // ตัดจำหน่ายอาจเป็นชิ้นสุดท้ายที่ทำให้ทุกบรรทัดจบ ⇒ ต้องให้โอกาสปิดใบเหมือน action เบิก
-  return finalizeIssue(withAudit, actor, req.jobId)
+  return finalizeIssue(withAudit, actor, req.jobId, true)   // 0072: ตัดจำหน่ายไม่ยิงข้อความอะไรเลย
 }
 
 function fmtInt(n: number): string {
@@ -1808,7 +1811,7 @@ export function adjustPoLine(
   next = audit(next, actor, 'purchase_order', po.id, 'adjust_po_line',
     `${job.jobNo} ${what} · เหตุผล: ${reason}${poComplete ? ` · ${po.poNo} ปิดใบ (${poEndStatus === 'received' ? 'รับของครบ' : 'ยกเลิก'})` : ''}`)
   // ตัดบรรทัดสุดท้ายที่ค้างอยู่ทิ้ง = ใบงานอาจครบพอดี (เหมือน 0068) — no-op ถ้ายังมีของค้างหรือปิดใบแล้ว
-  return finalizeIssue(next, actor, po.jobId)
+  return finalizeIssue(next, actor, po.jobId, true)   // 0072: แก้จำนวนใน PO ยิงหา Project เท่านั้น
 }
 
 // ---------------- Issue / Install / Cancel ----------------
@@ -1988,7 +1991,18 @@ function resolveInstallPlan(
  * ครบ = LBS ครบ Scope และทุกเครื่องเป็น issued + ไม่มีวัสดุค้างรอเบิก
  * no-op ถ้าใบปิดไปแล้ว (terminalStatus ไม่ว่าง) → เรียกซ้ำได้ปลอดภัย
  */
-function finalizeIssue(db: DB, actor: User, jobId: string): DB {
+/**
+ * ปิดใบเป็น Issued เมื่อของออกครบทั้งใบ
+ *
+ * @param announce 0072 — ผู้เรียกที่ **ไม่มีข้อความแจ้งเตือนของตัวเอง** ให้ส่ง true
+ *   0063/2026-08-28 ย้ายการประกาศ "ครบทั้งใบแล้ว" ไปเป็นหางต่อท้ายข้อความของ action ที่ทำให้ครบ
+ *   (กันกลุ่ม LINE ได้ 2 ใบติดกันเรื่องเดียวกัน) — ใช้ได้ดีกับ issueJobLbs/issueJobAccessory
+ *   แต่ตั้งแต่ 0067/0068/0070 มี action ที่ปิดใบได้ทั้งที่ไม่ได้ "เบิก" อะไรเลย:
+ *     📦 โอนคืนคลัง · ✂️ ตัดจำหน่าย · ✏️ แก้จำนวนใน PO
+ *   ทั้งสามยิงข้อความหา **Project** เท่านั้น (หรือไม่ยิงเลย) ⇒ ใบพลิกเป็น Issued เงียบ ๆ
+ *   นาทีนั้นคือนาทีที่งานโผล่เข้าคิวหน้า Service ครั้งแรก แต่ไม่มีอะไรบอกทีมช่างเลย
+ */
+function finalizeIssue(db: DB, actor: User, jobId: string, announce = false): DB {
   const job = db.jobs.find(j => j.id === jobId)
   if (!job || job.terminalStatus) return db
   const onJob = db.lbsUnits.filter(u =>
@@ -2002,10 +2016,17 @@ function finalizeIssue(db: DB, actor: User, jobId: string): DB {
     ? job.installStartDate ?? '-'
     : `${job.installStartDate} – ${job.installEndDate}`
   const where = job.issueLocation || job.installLocation || '-'
-  const next: DB = {
+  let next: DB = {
     ...db,
     jobs: db.jobs.map(j => j.id === jobId
       ? { ...j, terminalStatus: 'issued' as const, issuedAt: now() } : j),
+  }
+  // 0072 — เฉพาะผู้เรียกที่ไม่มีข้อความของตัวเอง (ดู @param announce)
+  if (announce) {
+    next = notify(next, {
+      type: 'job_ready_to_install', dept: 'service', jobId,
+      message: `🔧 ${job.jobNo} ของครบทั้งใบแล้ว — เข้าติดตั้งได้ · ${range}`,
+    })
   }
   // ⚠️ ไม่ยิงแจ้งเตือน `job_issued` ที่นี่แล้ว (2026-08-28)
   //   เดิมทุกครั้งที่ก้าวสุดท้ายทำให้ใบครบ จะได้ 2 ข้อความติดกันในกลุ่มที่พูดเรื่องเดียวกัน

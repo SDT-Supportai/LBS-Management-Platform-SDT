@@ -1370,3 +1370,75 @@ describe('qtyOutToField ต้องกันแถวที่จบไปแ�
       expect(qtyOutToField(req({ qtyRequested: 10, status: st, qtyIssuedToService: 6, issuedToServiceAt: '2026-08-01T00:00:00.000Z' }))).toBe(0)
   })
 })
+
+// =============================================================================
+// ปิดใบเงียบ (0072)
+//
+// 0063/2026-08-28 ย้ายการประกาศ "ครบทั้งใบแล้ว" ไปเป็นหางต่อท้ายข้อความของ action ที่ทำให้ครบ
+// เพื่อกันกลุ่ม LINE ได้ 2 ใบติดกันเรื่องเดียวกัน — ใช้ได้ดีกับ issueJobLbs/issueJobAccessory
+//
+// แต่ตั้งแต่ 0067/0068/0070 มี action ที่ปิดใบได้ทั้งที่ไม่ได้ "เบิก" อะไร:
+//   📦 โอนคืนคลัง · ✂️ ตัดจำหน่าย · ✏️ แก้จำนวนใน PO — ทั้งสามพูดกับ Project เท่านั้น
+// ⇒ ใบพลิกเป็น Issued เงียบ ๆ ทั้งที่นาทีนั้นคือนาทีที่งานเข้าคิวหน้า Service ครั้งแรก
+//
+// กฎที่ต้องไม่หลุด:
+//   1) 3 action นั้นปิดใบเมื่อไหร่ ต้องมีข้อความถึง **dept service**
+//   2) ปิดไม่ได้ (ยังมีของค้าง) ต้องไม่ยิงอะไร — ไม่งั้นกลุ่มได้ข้อความปลอม
+//   3) issueJobLbs/issueJobAccessory ต้อง **ไม่** ยิงตัวนี้ — ไม่งั้นกลับไปเป็น 2 ใบซ้ำเหมือนก่อน 0063
+// =============================================================================
+describe('ปิดใบเงียบ — ประกาศให้ Service รู้ (0072)', () => {
+  const actor = { id: 'u1', email: 'p@x.co', password: '', fullName: 'สมชาย', department: 'admin' as const, isActive: true }
+  const poReceived = { id: 'po1', poNo: 'PO-001', prId: 'pr1', jobId: 'j1', supplierName: 'ซัพ A', expectedDate: '2026-06-01', status: 'received' as const, createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' }
+  const base = () => db({
+    users: [actor],
+    items: [{ id: 'i1', code: 'ACC-1', name: 'ลูกถ้วย', itemType: 'accessory' as const, uom: 'ea', stockableCentrally: false }],
+    jobs: [job({ lbsQtyRequired: 1, installStartDate: '2026-07-01', installEndDate: '2026-07-01' })],
+    pos: [poReceived],
+    lbsUnits: [unit({ id: 'a', status: 'allocated', jobId: 'j1' })],
+    accessoryRequests: [req({ id: 'r1', status: 'received', poId: 'po1' })],
+  })
+  // LBS ออกครบแล้ว เหลือวัสดุค้าง 1 บรรทัด = อยู่ในจุดที่ "ก้าวถัดไปทำให้ใบครบพอดี"
+  const ready = () => issueJobLbs(base(), actor,
+    { jobId: 'j1', startDate: '2026-07-01', endDate: '2026-07-01', location: 'สถานีไฟฟ้า A' })
+  const announce = (d: DB) => d.notifications.filter(n => n.type === 'job_ready_to_install')
+
+  it('โอนคืนคลังเป็นชิ้นสุดท้าย → ปิดใบ + แจ้ง Service', () => {
+    const d = transferJobMaterialToStock(ready(), actor, { requestId: 'r1', qty: 1 })
+    expect(d.jobs[0].terminalStatus).toBe('issued')
+    const n = announce(d)
+    expect(n).toHaveLength(1)
+    expect(n[0].dept).toBe('service')
+    expect(n[0].message).toContain('J-001')
+    expect(n[0].lineStatus).toBe('pending')     // เข้าคิว LINE — ทีมช่างต้องรู้ทันที
+  })
+
+  it('ตัดจำหน่ายเป็นชิ้นสุดท้าย → ปิดใบ + แจ้ง Service', () => {
+    const d = writeOffJobMaterial(ready(), actor, { requestId: 'r1', qty: 1, reason: 'เศษ' })
+    expect(d.jobs[0].terminalStatus).toBe('issued')
+    expect(announce(d)).toHaveLength(1)
+  })
+
+  it('แก้จำนวนใน PO ตัดบรรทัดสุดท้ายทิ้ง → ปิดใบ + แจ้ง Service', () => {
+    const d0 = { ...ready(), accessoryRequests: [req({ id: 'r1', status: 'po_ordered', poId: 'po1', qtyRequested: 5, qtyReceived: 0 })],
+      pos: [{ ...poReceived, status: 'issued' as const }] }
+    const d = adjustPoLine(d0, actor, { requestId: 'r1', qtyRequested: 0, reason: 'ไม่ได้สั่งจริง' })
+    expect(d.jobs[0].terminalStatus).toBe('issued')
+    expect(announce(d)).toHaveLength(1)
+  })
+
+  it('ยังปิดใบไม่ได้ = ต้องไม่ยิงข้อความปลอก', () => {
+    // เหลือวัสดุ 2 หน่วย โอนคืนแค่ 1 → บรรทัดยังไม่จบ ใบยังไม่ปิด
+    const d0 = { ...ready(), accessoryRequests: [req({ id: 'r1', status: 'received', poId: 'po1', qtyRequested: 2 })] }
+    const d = transferJobMaterialToStock(d0, actor, { requestId: 'r1', qty: 1 })
+    expect(d.jobs[0].terminalStatus).toBeNull()
+    expect(announce(d)).toHaveLength(0)
+  })
+
+  it('🔴 การเบิกต้องไม่ยิงตัวนี้ — ไม่งั้นกลุ่มได้ 2 ใบซ้ำเหมือนก่อน 0063', () => {
+    const d = issueJobAccessory(ready(), actor, { jobId: 'j1', requestIds: ['r1'] })
+    expect(d.jobs[0].terminalStatus).toBe('issued')       // ปิดใบจริง
+    expect(announce(d)).toHaveLength(0)                    // แต่ไม่ยิง job_ready_to_install
+    // หาง "ครบทั้งใบแล้ว" ยังอยู่ในข้อความของ action ตัวเองเหมือนเดิม
+    expect(d.notifications.some(n => n.type === 'accessory_issued_to_service' && n.message.includes('ครบทั้งใบแล้ว'))).toBe(true)
+  })
+})
