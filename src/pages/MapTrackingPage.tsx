@@ -227,7 +227,9 @@ export default function MapTrackingPage() {
                 : 'เช็คอินระดับงาน (ก่อนแยกราย Serial)'}
           </div>
           <div class="mp-sub">${p.level === 'plan'
-            ? `📌 ยังไม่ติดตั้ง · ${esc(p.statusLabel ?? '-')}${p.date ? ` · กำหนด ${esc(fmtDate(p.date))}` : ''}`
+            // "กำหนดตามแผน" = วันที่ของ "จุดติดตั้งนี้" ที่กรอกตอนเปิดงาน — ไม่ใช่กำหนดส่งที่มีผลของทั้งใบ
+            // (การขยายกำหนดส่ง 0075 เป็นระดับ Job · เขียนว่า "กำหนด" เฉย ๆ จะขัดกับตัวเลขบนหน้า Job)
+            ? `📌 ยังไม่ติดตั้ง · ${esc(p.statusLabel ?? '-')}${p.date ? ` · กำหนดตามแผน ${esc(fmtDate(p.date))}` : ''}`
             : `${p.outcome === 'blocked' ? '⚠️ ติดตั้งไม่ได้' : '✅ ติดตั้งแล้ว'} ${p.date ? esc(fmtDate(p.date)) : ''} · ${esc(p.by ?? '-')}`}</div>
           ${p.note ? `<div class="mp-sub">📝 ${esc(p.note)}</div>` : ''}
           ${p.photoUrl ? `<div class="mp-sub"><a href="${esc(p.photoUrl)}" target="_blank" rel="noreferrer">🖼️ รูปหน้างาน</a></div>` : ''}

@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { deriveJobStatus, jobAllocatedQty, jobDueDate, jobDaysLeft, todayIso, parseLatLng, DUE_WARN_DAYS } from '../data/logic'
-import { BudgetFields, CoordInput, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormToApi, sitesToApi, type CostForm, type InstallSite } from '../ui/components'
+import { deriveJobStatus, jobAllocatedQty, jobDelivery, todayIso, parseLatLng, DUE_WARN_DAYS } from '../data/logic'
+import { BudgetFields, CoordInput, DeliveryBadge, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormToApi, sitesToApi, type CostForm, type InstallSite } from '../ui/components'
 import { fmtDate, JOB_STATUS_LABEL } from '../ui/format'
 import type { JobStatus } from '../types'
 
-const FILTERS: (JobStatus | 'all' | 'active')[] = ['all', 'active', 'draft', 'allocated', 'procuring_accessory', 'ready_to_issue', 'partially_issued', 'issued', 'installed', 'cancelled']
+const FILTERS: (JobStatus | 'all' | 'active' | 'at_risk')[] = ['all', 'active', 'at_risk', 'draft', 'allocated', 'procuring_accessory', 'ready_to_issue', 'partially_issued', 'issued', 'installed', 'cancelled']
 
 export default function JobsPage() {
   const { db, user, act } = useStore()
@@ -27,11 +27,13 @@ export default function JobsPage() {
   const today = todayIso()
   // เรียงตาม "กำหนดส่ง" ใกล้สุดก่อน (sync Dashboard Job List) — งานที่ยังไม่ระบุกำหนดไปท้ายรายการ
   // งานที่จบแล้ว (installed/cancelled) ไม่มีอะไรต้องเร่ง → เรียงใหม่→เก่าตามเดิม
-  const jobs = db.jobs
-    .map(j => ({ job: j, status: deriveJobStatus(db, j), due: jobDueDate(j), daysLeft: jobDaysLeft(j, today) }))
-    .filter(({ status }) =>
+  // 0075: เรียง/เตือนจาก jobDelivery ตัวเดียวกับ Dashboard — ห้ามคำนวณ daysLeft < 0 เองอีก
+  const allJobs = db.jobs.map(j => ({ job: j, status: deriveJobStatus(db, j), d: jobDelivery(db, j, today) }))
+  const jobs = allJobs
+    .filter(({ status, d }) =>
       filter === 'all' ? true
       : filter === 'active' ? status !== 'installed' && status !== 'cancelled'
+      : filter === 'at_risk' ? d.atRisk          // ไม่ใช่สถานะงาน แต่เป็น "ใบที่ต้องลงมือวันนี้"
       : status === filter)
     .filter(({ job }) => !mineOnly || job.openedBy === user?.id)
     .reverse()
@@ -39,12 +41,13 @@ export default function JobsPage() {
       const done = (s: typeof a.status) => s === 'installed' || s === 'cancelled'
       if (done(a.status) !== done(b.status)) return done(a.status) ? 1 : -1   // งานที่จบแล้วลงล่างสุด
       if (done(a.status)) return 0                                            // คงลำดับใหม่→เก่าจาก reverse()
-      return (a.due ?? '9999-12-31').localeCompare(b.due ?? '9999-12-31')
+      return (a.d.due ?? '9999-12-31').localeCompare(b.d.due ?? '9999-12-31')
     })
-  const overdue = jobs.filter(x => x.daysLeft !== undefined && x.daysLeft < 0
-    && x.status !== 'installed' && x.status !== 'cancelled').length
-  const dueSoon = jobs.filter(x => x.daysLeft !== undefined && x.daysLeft >= 0 && x.daysLeft <= DUE_WARN_DAYS
-    && x.status !== 'installed' && x.status !== 'cancelled').length
+  // นับจากงานทั้งหมด ไม่ใช่จากรายการที่ถูกกรองอยู่ — ไม่งั้นตัวเลขเตือนเปลี่ยนตามตัวกรองที่เพิ่งเลือก
+  const overdue = allJobs.filter(x => x.d.state === 'overdue').length
+  const blocked = allJobs.filter(x => x.d.state === 'blocked').length
+  const inFieldLate = allJobs.filter(x => x.d.state === 'in_field_late').length
+  const dueSoon = allJobs.filter(x => x.d.state === 'due_soon').length
 
   const submit = async () => {
     const { salePrice, planCoord, ...rest } = form
@@ -73,11 +76,14 @@ export default function JobsPage() {
       <div className="page-title">Project ID (Jobs)</div>
       <div className="page-sub">
         เปิดและติดตามงานโครงการตาม Scope ลูกค้า — สถานะไหลอัตโนมัติ Draft → Allocated → Procuring Accessory → Ready to Issue → Issued → Installed ·
-        <b> เรียงตามกำหนดส่ง (ใกล้สุดก่อน)</b> · 🔴 เลยกำหนด · ⚠️ เหลือ ≤{DUE_WARN_DAYS} วัน
-        {(overdue > 0 || dueSoon > 0) && (
+        <b> เรียงตามกำหนดส่ง (ใกล้สุดก่อน)</b> · 🔴 เลยกำหนดทั้งที่ของยังไม่ออกหน้างาน ·
+        🔧 กำลังติดตั้งอยู่ (เลยแผนก็ยังไม่นับว่าค้าง) · ⚠️ เหลือ ≤{DUE_WARN_DAYS} วัน
+        {(overdue > 0 || blocked > 0 || inFieldLate > 0 || dueSoon > 0) && (
           <>
             {' '}
             {overdue > 0 && <span className="badge red">เลยกำหนด {overdue}</span>}{' '}
+            {blocked > 0 && <span className="badge red">ติดปัญหาหน้างาน {blocked}</span>}{' '}
+            {inFieldLate > 0 && <span className="badge amber">กำลังติดตั้ง เลยแผน {inFieldLate}</span>}{' '}
             {dueSoon > 0 && <span className="badge amber">≤{DUE_WARN_DAYS} วัน {dueSoon}</span>}
           </>
         )}
@@ -88,7 +94,8 @@ export default function JobsPage() {
         <select style={{ width: 'auto' }} value={filter} onChange={e => setFilter(e.target.value as typeof FILTERS[number])}>
           <option value="active">เฉพาะงานที่กำลังดำเนินการ</option>
           <option value="all">ทุกสถานะ</option>
-          {FILTERS.slice(2).map(f => <option key={f} value={f}>{JOB_STATUS_LABEL[f as JobStatus]}</option>)}
+          <option value="at_risk">⚠️ เฉพาะงานที่ต้องเร่ง ({overdue + blocked})</option>
+          {FILTERS.slice(3).map(f => <option key={f} value={f}>{JOB_STATUS_LABEL[f as JobStatus]}</option>)}
         </select>
         {isProject && (
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
@@ -108,20 +115,16 @@ export default function JobsPage() {
           <table>
             <thead>
               <tr>
-                <th>Job No.</th><th>ลูกค้า / Scope</th><th>ผู้รับผิดชอบ</th><th>สถานที่ติดตั้ง</th><th>กำหนดส่ง</th><th>เหลือ</th>
+                <th>Job No.</th><th>ลูกค้า / Scope</th><th>ผู้รับผิดชอบ</th><th>สถานที่ติดตั้ง</th><th>กำหนดส่ง</th><th>สถานะกำหนดส่ง</th>
                 <th>LBS (ดึงแล้ว/Scope)</th><th>สถานะ</th>
               </tr>
             </thead>
             <tbody>
               {jobs.length === 0 && <tr><td colSpan={8}><div className="empty">ไม่มี Job ในสถานะนี้</div></td></tr>}
-              {jobs.map(({ job, status, due, daysLeft }) => {
+              {jobs.map(({ job, status, d }) => {
                 // 0059: jobAllocatedQty นับ allocated + issued แล้ว — ไม่ต้องแยกเคสตามสถานะอีก
                 //   (workaround เดิมมีเพราะฟังก์ชันนับแค่ allocated ทำให้งานที่เบิกแล้วโชว์ 0/N)
                 const allocated = jobAllocatedQty(db, job.id)
-                // งานที่จบแล้วไม่ต้องเตือน — เหลือแต่ข้อมูลกำหนดส่งไว้อ้างอิง
-                const active = status !== 'installed' && status !== 'cancelled'
-                const late = active && daysLeft !== undefined && daysLeft < 0
-                const soon = active && daysLeft !== undefined && daysLeft >= 0 && daysLeft <= DUE_WARN_DAYS
                 return (
                   <tr key={job.id} className="clickable" onClick={() => navigate(`/jobs/${job.id}`)}>
                     <td><b>{job.jobNo}</b></td>
@@ -132,18 +135,20 @@ export default function JobsPage() {
                     </td>
                     <td>{job.installLocation || '-'}{job.installSites?.length ? <span className="badge blue" style={{ marginLeft: 6 }}>+{job.installSites.length} จุด</span> : null}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
-                      {late && <span title="เลยกำหนดส่งแล้ว">🔴 </span>}
-                      {soon && <span title={`เหลือ ≤ ${DUE_WARN_DAYS} วันก่อนกำหนดส่ง`}>⚠️ </span>}
-                      {due ? fmtDate(due) : <span className="muted">ยังไม่ระบุ</span>}
+                      {d.due ? fmtDate(d.due) : <span className="muted">ยังไม่ระบุ</span>}
+                      {/* ขยายกำหนดแล้วต้องเห็นกำหนดตามสัญญาเดิมคู่กันเสมอ */}
+                      {d.extension && d.contractDue && (
+                        <div className="muted" style={{ fontSize: 11 }}
+                          title={`เลื่อน ${d.extensionCount} ครั้ง · ล่าสุด: ${d.extension.reason}`}>
+                          เลื่อนจาก {fmtDate(d.contractDue)} ({d.extensionCount} ครั้ง)
+                        </div>
+                      )}
                       {(job.installSites?.length ?? 0) > 0 && (
                         <div className="muted" style={{ fontSize: 11 }}>ใกล้สุดจาก {(job.installSites?.length ?? 0) + 1} จุด</div>
                       )}
                     </td>
                     <td style={{ whiteSpace: 'nowrap' }}>
-                      {!active || daysLeft === undefined ? <span className="muted">-</span>
-                        : late ? <span className="badge red">เลย {Math.abs(daysLeft)} วัน</span>
-                        : soon ? <span className="badge amber">{daysLeft} วัน</span>
-                        : <span className="muted">{daysLeft} วัน</span>}
+                      {d.state === 'closed' ? <span className="muted">-</span> : <DeliveryBadge d={d} compact />}
                     </td>
                     <td>
                       {allocated}/{job.lbsQtyRequired}

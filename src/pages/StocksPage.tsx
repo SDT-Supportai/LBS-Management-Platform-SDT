@@ -2,24 +2,14 @@ import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import {
-  stockSummary, unitInstallDate, unitCustomerInfo, unitFiles, unitFileCount, isAllowedUnitFile,
-  MAX_UNIT_FILE_MB, DEMO_MAX_UNIT_FILE_MB,
+  stockSummary, unitInstallDate, unitCustomerInfo, unitFiles, unitFileCount, isAllowedDocFile,
+  MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB,
   unitEta, unitEtaIsAuto, unitFlowState, unitLeadDays, addDaysIso,
   ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX,
 } from '../data/logic'
 import { uploadUnitDoc, signedUnitDocUrl, removeUnitDoc } from '../data/remote'
 import { supabase } from '../lib/supabase'
-import { Modal, useConfirm, useToast, useTryAction, toBudgetNum } from '../ui/components'
-
-// อ่านไฟล์เป็น data URL — ใช้เฉพาะโหมด demo ที่ไม่มี Supabase Storage (เก็บเนื้อไฟล์ใน localStorage)
-function readAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader()
-    r.onload = () => resolve(String(r.result))
-    r.onerror = () => reject(new Error(`อ่านไฟล์ ${file.name} ไม่สำเร็จ`))
-    r.readAsDataURL(file)
-  })
-}
+import { Modal, useConfirm, useToast, useTryAction, toBudgetNum, readAsDataUrl } from '../ui/components'
 import { fmtBaht, fmtDate, fmtDateTime, DEPT_LABEL, UNIT_FLOW } from '../ui/format'
 import {
   type Cell, type NumKind, type ReportCol, type SumTable,
@@ -1331,7 +1321,7 @@ export default function StocksPage() {
         const u = db.lbsUnits.find(x => x.id === filesFor)
         if (!u) return null
         const files = unitFiles(db, filesFor)
-        const maxMb = isDemo ? DEMO_MAX_UNIT_FILE_MB : MAX_UNIT_FILE_MB
+        const maxMb = isDemo ? DEMO_MAX_DOC_FILE_MB : MAX_DOC_FILE_MB
         return (
           <Modal title={`เอกสารแนบ — ${u.serialLvb}`} size="wide" onClose={() => setFilesFor(null)}
             footer={<button onClick={() => setFilesFor(null)}>ปิด</button>}>
@@ -1339,7 +1329,7 @@ export default function StocksPage() {
               สัญญา · ใบส่งของ · รูปสภาพเครื่อง — แนบได้หลายไฟล์ · รับ <b>PDF และรูปภาพ</b> ขนาดไม่เกิน <b>{maxMb} MB</b>/ไฟล์
               {/* บอกเหตุผลของเพดานที่ต่างกัน ไม่งั้นคนเทสต์บนเดโมจะคิดว่าระบบจริงก็จำกัดแค่นี้ */}
               {isDemo
-                ? <><br />⚠️ โหมด Demo เก็บไฟล์ไว้ในเบราว์เซอร์ (localStorage) จึงจำกัดที่ {DEMO_MAX_UNIT_FILE_MB} MB — ระบบจริงได้ถึง {MAX_UNIT_FILE_MB} MB</>
+                ? <><br />⚠️ โหมด Demo เก็บไฟล์ไว้ในเบราว์เซอร์ (localStorage) จึงจำกัดที่ {DEMO_MAX_DOC_FILE_MB} MB — ระบบจริงได้ถึง {MAX_DOC_FILE_MB} MB</>
                 : <><br />ไฟล์เก็บใน storage แบบปิด — เปิดได้เฉพาะคนที่ล็อกอิน และลิงก์หมดอายุใน 5 นาที</>}
             </div>
 
@@ -1355,7 +1345,7 @@ export default function StocksPage() {
                   for (const f of picked) {
                     // เช็คขนาดก่อนอ่านไฟล์ — โหมด demo อ่านเป็น data URL ซึ่งกิน memory ตามขนาดไฟล์
                     if (f.size > maxMb * 1024 * 1024) { show(`${f.name}: ไฟล์ใหญ่เกิน ${maxMb} MB`, true); continue }
-                    if (!isAllowedUnitFile(f.type)) { show(`${f.name}: รับเฉพาะ PDF และรูปภาพ`, true); continue }
+                    if (!isAllowedDocFile(f.type)) { show(`${f.name}: รับเฉพาะ PDF และรูปภาพ`, true); continue }
                     try {
                       const filePath = supabase
                         ? await uploadUnitDoc(supabase, u.id, f)

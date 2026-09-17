@@ -4,7 +4,7 @@ import type {
   AccessoryRequest, PurchaseRequisition, PurchaseOrder, AuditLog, AppNotification,
   Department, ApprovalRequest, ApprovalComment, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit, UnitInstallation,
   TeamMember, JobAssignment, StockMovement, JobPayment, PaymentType,
-  StdDrawing, StdPrice, StdBom, StdBomLine, LbsUnitFile,
+  StdDrawing, StdPrice, StdBom, StdBomLine, LbsUnitFile, JobPaymentFile, JobDueExtension,
   PublicShareLink, PublicStockView,
 } from '../types'
 
@@ -61,6 +61,24 @@ function mapUnitFile(r: Row): LbsUnitFile {
     mimeType: r.mime_type ?? '', sizeBytes: r.size_bytes != null ? Number(r.size_bytes) : 0,
     note: r.note ?? undefined,
     uploadedBy: r.uploaded_by ?? '', uploadedAt: r.uploaded_at,
+  }
+}
+// 0076 — เอกสารแนบรายงวดเงิน · file_path เป็น path ใน private bucket payment-docs ไม่ใช่ URL
+function mapPaymentFile(r: Row): JobPaymentFile {
+  return {
+    id: r.id, paymentId: r.payment_id, fileName: r.file_name, filePath: r.file_path,
+    mimeType: r.mime_type ?? '', sizeBytes: r.size_bytes != null ? Number(r.size_bytes) : 0,
+    note: r.note ?? undefined,
+    uploadedBy: r.uploaded_by ?? '', uploadedAt: r.uploaded_at,
+  }
+}
+// 0075 — ประวัติการเลื่อนกำหนดส่ง · แถวล่าสุดคือกำหนดที่มีผล (jobs.required_date ไม่เคยถูกแก้)
+function mapDueExtension(r: Row): JobDueExtension {
+  return {
+    id: r.id, jobId: r.job_id,
+    prevDueDate: r.prev_due_date ?? undefined, newDueDate: r.new_due_date,
+    reason: r.reason ?? '',
+    createdBy: r.created_by ?? '', createdAt: r.created_at,
   }
 }
 function mapStdDrawing(r: Row): StdDrawing {
@@ -289,27 +307,32 @@ async function q(sb: SupabaseClient, table: string, order?: { col: string; asc?:
 }
 
 // =============================================================================
-// เอกสารแนบรายเครื่อง — Storage (0074)
+// เอกสารแนบ — Storage (0074 รายเครื่อง · 0076 รายงวดเงิน)
 //
-// 🔴 bucket `unit-docs` เป็น **private** ต่างจาก `install-photos` (0019) ที่ public
-//    เอกสารสัญญาเป็นข้อมูลเชิงพาณิชย์ + PDPA — public bucket คือใครมี URL ก็เปิดได้โดยไม่ต้อง login
+// 🔴 ทั้ง 2 bucket เป็น **private** ต่างจาก `install-photos` (0019) ที่ public
+//    สัญญา/ใบแจ้งหนี้เป็นข้อมูลเชิงพาณิชย์ + PDPA — public bucket คือใครมี URL ก็เปิดได้โดยไม่ต้อง login
 //    ⇒ DB เก็บ **path** ไม่ใช่ URL · ตอนจะเปิดต้องขอ signed URL ที่หมดอายุเสมอ
+//
+// 🔴 แยก bucket กัน (ไม่รวมเป็น docs ก้อนเดียว) เพราะเอกสารการเงินกับเอกสารรายเครื่อง
+//    มีคนละกลุ่มผู้อ่านในอนาคต — แยกไว้ตั้งแต่ต้นคือแก้ policy ที่เดียวจบ
+//    รวมแล้วมาแยกทีหลัง = ต้องย้ายไฟล์จริงทั้งหมด
 // =============================================================================
 export const UNIT_DOCS_BUCKET = 'unit-docs'
+export const PAYMENT_DOCS_BUCKET = 'payment-docs'
 const SIGNED_URL_TTL_SEC = 300      // 5 นาที — พอให้กดเปิด/ดาวน์โหลด แต่ส่งต่อลิงก์ไม่ได้นาน
 
 /** อัปโหลดไฟล์เข้า private bucket แล้วคืน path ที่จะเก็บลง DB */
-export async function uploadUnitDoc(sb: SupabaseClient, unitId: string, file: File): Promise<string> {
+async function uploadDoc(sb: SupabaseClient, bucket: string, prefix: string, file: File): Promise<string> {
   const ext = (file.name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '')
-  const path = `unit/${unitId}/${crypto.randomUUID()}.${ext}`
-  const { error } = await sb.storage.from(UNIT_DOCS_BUCKET).upload(path, file, { upsert: false })
+  const path = `${prefix}/${crypto.randomUUID()}.${ext}`
+  const { error } = await sb.storage.from(bucket).upload(path, file, { upsert: false })
   if (error) throw new Error(`อัปโหลด ${file.name} ไม่สำเร็จ: ${error.message}`)
   return path
 }
 
 /** ขอ URL ชั่วคราวสำหรับเปิดไฟล์ — ต้องเรียกใหม่ทุกครั้ง ไม่เก็บลง DB */
-export async function signedUnitDocUrl(sb: SupabaseClient, filePath: string): Promise<string> {
-  const { data, error } = await sb.storage.from(UNIT_DOCS_BUCKET).createSignedUrl(filePath, SIGNED_URL_TTL_SEC)
+async function signedDocUrl(sb: SupabaseClient, bucket: string, filePath: string): Promise<string> {
+  const { data, error } = await sb.storage.from(bucket).createSignedUrl(filePath, SIGNED_URL_TTL_SEC)
   if (error || !data?.signedUrl) throw new Error(`เปิดไฟล์ไม่ได้: ${error?.message ?? 'ไม่พบไฟล์'}`)
   return data.signedUrl
 }
@@ -319,12 +342,27 @@ export async function signedUnitDocUrl(sb: SupabaseClient, filePath: string): Pr
  * ล้มเหลวไม่ throw: แถวหายไปแล้ว ไฟล์ค้างเป็นขยะที่ไม่มีใครอ้างถึง ดีกว่าให้ผู้ใช้เห็น error
  * ทั้งที่การลบสำเร็จไปแล้วครึ่งทาง
  */
-export async function removeUnitDoc(sb: SupabaseClient, filePath: string): Promise<void> {
-  try { await sb.storage.from(UNIT_DOCS_BUCKET).remove([filePath]) } catch { /* ไฟล์ค้างเป็นขยะ ไม่กระทบผู้ใช้ */ }
+async function removeDoc(sb: SupabaseClient, bucket: string, filePaths: string[]): Promise<void> {
+  if (filePaths.length === 0) return
+  try { await sb.storage.from(bucket).remove(filePaths) } catch { /* ไฟล์ค้างเป็นขยะ ไม่กระทบผู้ใช้ */ }
 }
 
+export const uploadUnitDoc = (sb: SupabaseClient, unitId: string, file: File) =>
+  uploadDoc(sb, UNIT_DOCS_BUCKET, `unit/${unitId}`, file)
+export const signedUnitDocUrl = (sb: SupabaseClient, filePath: string) =>
+  signedDocUrl(sb, UNIT_DOCS_BUCKET, filePath)
+export const removeUnitDoc = (sb: SupabaseClient, filePath: string) =>
+  removeDoc(sb, UNIT_DOCS_BUCKET, [filePath])
+
+export const uploadPaymentDoc = (sb: SupabaseClient, paymentId: string, file: File) =>
+  uploadDoc(sb, PAYMENT_DOCS_BUCKET, `payment/${paymentId}`, file)
+export const signedPaymentDocUrl = (sb: SupabaseClient, filePath: string) =>
+  signedDocUrl(sb, PAYMENT_DOCS_BUCKET, filePath)
+export const removePaymentDocs = (sb: SupabaseClient, filePaths: string[]) =>
+  removeDoc(sb, PAYMENT_DOCS_BUCKET, filePaths)
+
 export async function loadAll(sb: SupabaseClient): Promise<DB> {
-  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, approvalComments, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, prices, boms, bomLines, shareLinks, unitFiles] =
+  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, approvalComments, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, prices, boms, bomLines, shareLinks, unitFiles, paymentFiles, dueExts] =
     await Promise.all([
       q(sb, 'profiles'),
       q(sb, 'items', { col: 'code', limit: 10000 }),
@@ -356,6 +394,8 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       q(sb, 'std_bom_lines', { col: 'created_at' }),
       q(sb, 'public_share_links', { col: 'created_at', asc: false }),   // 0069 (ตารางเล็ก)
       q(sb, 'lbs_unit_files', { col: 'uploaded_at', asc: false }),      // 0074 — เอกสารแนบรายเครื่อง
+      q(sb, 'job_payment_files', { col: 'uploaded_at', asc: false }),   // 0076 — เอกสารแนบรายงวดเงิน
+      q(sb, 'job_due_extensions', { col: 'created_at' }),               // 0075 — ประวัติเลื่อนกำหนดส่ง
     ])
 
   const readsByNotif = new Map<string, string[]>()
@@ -402,6 +442,10 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     jobAssignments: assigns.map(mapJobAssignment),
     stockMovements: movements.map(mapStockMovement),
     jobPayments: payments.map(mapJobPayment),
+    jobPaymentFiles: paymentFiles.map(mapPaymentFile),
+    // เรียง เก่า→ใหม่ ให้ตรงกับ demo (logic.ts ต่อท้าย array) — jobDueExtension ใช้ลำดับ append
+    // เป็นตัวตัดสินที่ 2 เมื่อ createdAt เท่ากัน กลับด้านที่นี่แล้ว "ล่าสุด" จะชี้ผิดตัว
+    jobDueExtensions: dueExts.map(mapDueExtension),
     stdDrawings: drawings.map(mapStdDrawing),
     stdPrices: prices.map(mapStdPrice),
     stdBoms: boms.map(mapStdBom),
@@ -429,6 +473,25 @@ const toUnitJson = (u: UnitPayload) => ({
 async function rpc(sb: SupabaseClient, fn: string, params: Record<string, unknown>): Promise<void> {
   const { error } = await sb.rpc(fn, params)
   if (error) throw new Error(error.message)
+}
+
+/**
+ * บันทึกงวดเงินแล้วคืน **id ของงวดที่เพิ่งสร้าง** (0076)
+ * rpc() ตัวกลางคืน void — แต่โมดัล "เพิ่มงวด" ต้องได้ id ทันทีเพื่อแนบไฟล์ที่ผู้ใช้เลือกไว้ต่อ
+ * (ไม่งั้นต้องบันทึก → ปิด → เปิดใหม่เพื่อแนบ) · ต่อ reload เองที่ StoreContext เหมือน createShareLink
+ */
+export async function addJobPaymentRemote(
+  sb: SupabaseClient,
+  p: { jobId: string; payType: PaymentType; invoiceNo?: string; invoiceDate?: string; percent?: number; amount?: number; paidAt?: string; note?: string },
+): Promise<string> {
+  const { data, error } = await sb.rpc('rpc_add_job_payment', {
+    p_job_id: p.jobId, p_type: p.payType, p_invoice_no: p.invoiceNo ?? null,
+    p_invoice_date: p.invoiceDate || null, p_percent: p.percent ?? null, p_amount: p.amount ?? null,
+    p_paid_at: p.paidAt || null, p_note: p.note ?? null,
+  })
+  if (error) throw new Error(error.message)
+  if (!data) throw new Error('บันทึกงวดเงินแล้วแต่ไม่ได้ id กลับมา — ยังไม่ได้รัน migration 0076 หรือเปล่า?')
+  return String(data)
 }
 
 /**
@@ -537,6 +600,8 @@ export function remoteActions(sb: SupabaseClient) {
     transferJobMaterialToStock: (p: { requestId: string; qty: number; note?: string }) =>
       rpc(sb, 'rpc_transfer_job_material_to_stock', { p_request_id: p.requestId, p_qty: p.qty, p_note: p.note ?? null }),
     // Payment ต่อ Job (0044) — Project เจ้าของงาน + Manage
+    // ⚠️ ตัวจริงถูกแทนที่ที่ StoreContext ด้วย addJobPaymentRemote (ต้องคืน id ให้โมดัลผูกไฟล์ต่อ)
+    //    คงไว้ที่นี่เพื่อให้ act มีคีย์ครบตอน Object.fromEntries — อย่าลบ
     addJobPayment: (p: { jobId: string; payType: PaymentType; invoiceNo?: string; invoiceDate?: string; percent?: number; amount?: number; paidAt?: string; note?: string }) =>
       rpc(sb, 'rpc_add_job_payment', {
         p_job_id: p.jobId, p_type: p.payType, p_invoice_no: p.invoiceNo ?? null,
@@ -550,6 +615,18 @@ export function remoteActions(sb: SupabaseClient) {
         p_paid_at: p.paidAt || null, p_note: p.note ?? null,
       }),
     deleteJobPayment: (p: { paymentId: string }) => rpc(sb, 'rpc_delete_job_payment', { p_payment_id: p.paymentId }),
+    // 0076 — เอกสารแนบรายงวด · ไฟล์จริงถูกอัปโหลดเข้า private bucket จาก UI ก่อน แล้วค่อยลงแถว
+    addPaymentFile: (p: { paymentId: string; fileName: string; filePath: string; mimeType: string; sizeBytes: number; note?: string }) =>
+      rpc(sb, 'rpc_add_payment_file', {
+        p_payment_id: p.paymentId, p_file_name: p.fileName, p_file_path: p.filePath,
+        p_mime_type: p.mimeType, p_size_bytes: p.sizeBytes, p_note: p.note || null,
+      }),
+    deletePaymentFile: (p: { fileId: string }) => rpc(sb, 'rpc_delete_payment_file', { p_file_id: p.fileId }),
+    // 0075 — ขยาย/แก้กำหนดส่ง · required_date ไม่ถูกแตะ (เก็บเป็นกำหนดตามสัญญา)
+    extendJobDue: (p: { jobId: string; newDueDate: string; reason: string }) =>
+      rpc(sb, 'rpc_extend_job_due', { p_job_id: p.jobId, p_new_due: p.newDueDate, p_reason: p.reason }),
+    deleteJobDueExtension: (p: { extensionId: string }) =>
+      rpc(sb, 'rpc_delete_job_due_extension', { p_ext_id: p.extensionId }),
     cancelAccessoryRequest: (p: { requestId: string }) => rpc(sb, 'rpc_cancel_accessory_request', { p_request_id: p.requestId }),
     deleteAccessoryRequest: (p: { requestId: string }) => rpc(sb, 'rpc_delete_accessory_request', { p_request_id: p.requestId }),
     createPR: (p: { jobId: string; requestIds: string[] }) =>

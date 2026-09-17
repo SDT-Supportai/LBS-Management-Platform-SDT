@@ -106,13 +106,17 @@ async function jobStatusText(env, jobNoRaw) {
   const { data: st } = await sb.from('v_job_status').select('*').eq('job_id', job.id).maybeSingle()
   const status = st?.status ?? 'draft'
 
-  // ข้อมูลรายเครื่อง + ทีมที่มอบหมาย (0035/0036) + ความคืบหน้าการเบิก (0059)
-  const [{ data: units }, { data: states }, { data: assigns }, { data: accs }] = await Promise.all([
+  // ข้อมูลรายเครื่อง + ทีมที่มอบหมาย (0035/0036) + ความคืบหน้าการเบิก (0059) + การเลื่อนกำหนดส่ง (0075)
+  const [{ data: units }, { data: states }, { data: assigns }, { data: accs }, { data: dueExt }] = await Promise.all([
     sb.from('lbs_units').select('id, status').eq('job_id', job.id),
     sb.from('v_unit_install_state').select('outcome').eq('job_id', job.id),
     sb.from('job_assignments').select('is_lead, team_members(first_name, last_name)').eq('job_id', job.id),
     sb.from('job_accessory_requests')
       .select('status, qty_requested, qty_transferred, issued_to_service_at').eq('job_id', job.id),
+    // 0075 — แถวล่าสุดคือกำหนดที่มีผล · ถ้าไม่ตอบตัวนี้ บอทจะบอกกำหนดเดิมที่เลิกใช้แล้ว
+    //   ⚠️ ตารางอาจยังไม่มี (ยังไม่รัน 0075) → error ถูกกลืน ใช้กำหนดตามสัญญาต่อได้ตามปกติ
+    sb.from('job_due_extensions').select('new_due_date, reason')
+      .eq('job_id', job.id).order('created_at', { ascending: false }).limit(1).maybeSingle(),
   ])
   // นับจาก job_id ตรง ๆ — หลังเบิก unit เปลี่ยนเป็น status 'issued' ทำให้ v_job_status.lbs_allocated เป็น 0
   const attached = units?.length ?? 0
@@ -160,6 +164,9 @@ async function jobStatusText(env, jobNoRaw) {
     lines.push(`📅 ติดตั้งเสร็จเมื่อ: ${job.installed_at?.slice(0, 10) ?? '-'}`)
   } else if (status === 'cancelled') {
     lines.push(`เหตุผล: ${job.cancel_reason ?? '-'}`)
+  } else if (dueExt?.new_due_date) {
+    // 0075 — บอกกำหนดที่มีผล + กำหนดตามสัญญาเดิมเสมอ (เลขในแชทต้องตรงกับที่เห็นบนเว็บ)
+    lines.push(`กำหนดส่ง: ${dueExt.new_due_date} (เลื่อนจาก ${job.required_date ?? '-'} · ${dueExt.reason})`)
   } else if (job.required_date) {
     lines.push(`กำหนดส่ง: ${job.required_date}`)
   }

@@ -443,6 +443,39 @@ export interface JobPayment {
   createdAt: string
 }
 
+/**
+ * เอกสารแนบรายงวดเงิน (0076) — ใบแจ้งหนี้ · ใบเสร็จ/ใบกำกับภาษี · PAC · สำเนาโอนเงิน
+ * `filePath` เก็บคนละอย่างใน 2 โหมด เหมือน LbsUnitFile (0074):
+ *   LIVE = path ใน private bucket `payment-docs` ⇒ ขอ signed URL ก่อนเปิด
+ *   demo = data URL ตรง ๆ ⇒ เปิดได้เลย
+ */
+export interface JobPaymentFile {
+  id: string
+  paymentId: string
+  fileName: string
+  filePath: string
+  mimeType: string
+  sizeBytes: number
+  note?: string
+  uploadedBy: string
+  uploadedAt: string
+}
+
+/**
+ * การเลื่อน/ขยายกำหนดส่ง (0075) — "แถวล่าสุดชนะ" · Job.requiredDate คงเป็นกำหนดตามสัญญาเดิมเสมอ
+ * เก็บเป็นประวัติเพราะ "เลื่อนกี่ครั้ง เพราะอะไร" คือหลักฐานตอนเคลมค่าปรับ/ต่อสัญญา
+ * — ทับคอลัมน์เดียวบน Job = เลื่อนครั้งที่ 2 ลบเหตุผลของครั้งที่ 1 ทิ้ง
+ */
+export interface JobDueExtension {
+  id: string
+  jobId: string
+  prevDueDate?: string         // กำหนดที่มีผลก่อนแถวนี้ (ว่าง = ไม่เคยระบุกำหนด)
+  newDueDate: string
+  reason: string
+  createdBy: string
+  createdAt: string
+}
+
 // Standard Drawing (0045) — 1 แบบ = 1 แถว + PDF ล่าสุด
 // แก้ไข = ทับข้อมูลเดิม + stamp updatedAt/updatedBy (ไม่เก็บตาราง revision ตามมติ 2026-08-04)
 // ไฟล์เก่าไม่ถูกลบจาก Storage และ audit บันทึก URL เก่า→ใหม่ไว้ ถ้าต้องย้อนดู
@@ -577,6 +610,8 @@ export interface DB {
   jobAssignments: JobAssignment[]
   stockMovements: StockMovement[]
   jobPayments: JobPayment[]
+  jobPaymentFiles: JobPaymentFile[]
+  jobDueExtensions: JobDueExtension[]
   stdDrawings: StdDrawing[]
   stdPrices: StdPrice[]
   stdBoms: StdBom[]

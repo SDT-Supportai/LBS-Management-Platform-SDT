@@ -1,21 +1,34 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
-import { deriveJobStatus, jobIsFieldActive, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, qtyOutToField, parseLatLng, fmtLatLng, PAYMENT_TYPES } from '../data/logic'
-import { BudgetFields, CoordInput, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, sitesToApi, sitesFromJob, type CostForm, type InstallSite } from '../ui/components'
+import { deriveJobStatus, jobIsFieldActive, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, qtyOutToField, parseLatLng, fmtLatLng, PAYMENT_TYPES, jobDelivery, jobDueExtensions, paymentFiles, paymentFileCount, isAllowedDocFile, MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB, todayIso, daysBetweenIso } from '../data/logic'
+import { BudgetFields, CoordInput, DeliveryBadge, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useToast, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, sitesToApi, sitesFromJob, readAsDataUrl, type CostForm, type InstallSite } from '../ui/components'
+import { uploadPaymentDoc, signedPaymentDocUrl, removePaymentDocs } from '../data/remote'
+import { supabase } from '../lib/supabase'
 import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, EPICOR_TXN, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, DEPT_LABEL, JOB_STATUS_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import {
   type Cell, type NumKind, type ReportCol, type SumTable,
   SHEET_SUMMARY, SHEET_GUIDE, buildWorkbook, dataSheet, guideSheet,
   orDash, saveReport, stampMeta, summarySheet,
 } from '../ui/xlsxReport'
-import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType, EpicorTxnType, AccessoryRequest } from '../types'
+import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType, EpicorTxnType, AccessoryRequest, JobPayment } from '../types'
 
 // ฟอร์มงวดเงิน (0044) — id = null คือเพิ่มงวดใหม่
+// 0076: `files` = ไฟล์ที่เลือกไว้แต่ **ยังไม่อัปโหลด** — งวดใหม่ยังไม่มี id จึงผูกไฟล์ไม่ได้
+//   จนกว่าจะกดบันทึก · ไฟล์ที่แนบไปแล้วอ่านจาก db ไม่ได้อยู่ในฟอร์ม (การลบมีผลทันที)
 interface PayForm {
   id: string | null; payType: PaymentType
   invoiceNo: string; invoiceDate: string; percent: string; amount: string; paidAt: string; note: string
+  files: File[]
 }
+
+const payFormOf = (r: JobPayment): PayForm => ({
+  id: r.id, payType: r.payType,
+  invoiceNo: r.invoiceNo ?? '', invoiceDate: r.invoiceDate ?? '',
+  percent: r.percent !== undefined ? String(r.percent) : '',
+  amount: r.percent !== undefined ? '' : String(r.amount),
+  paidAt: r.paidAt ?? '', note: r.note ?? '', files: [],
+})
 
 const COST_LABEL: Record<string, string> = Object.fromEntries(COST_CATEGORIES.map(c => [c.key, c.label]))
 
@@ -103,6 +116,8 @@ export default function JobDetailPage() {
   const { db, user, act } = useStore()
   const navigate = useNavigate()
   const tryAction = useTryAction()
+  const { show } = useToast()
+  const isDemo = !supabase                 // 0076 — เพดานขนาดไฟล์คนละค่า (demo เก็บใน localStorage)
 
   const job = db.jobs.find(j => j.id === jobId)
   const [modal, setModal] = useState<'draw' | 'return' | 'accessory' | 'issue' | 'cancel' | 'edit' | 'budget' | 'swap' | null>(null)
@@ -113,6 +128,8 @@ export default function JobDetailPage() {
   const [payOpen, setPayOpen] = useState(false)         // ตารางงวดเงิน (0044 · เริ่มซ่อน เหมือน 7 หมวด)
   const [poOpen, setPoOpen] = useState(false)           // ตารางวัสดุใน Purchase Orders — เริ่มซ่อน (หน้ายาวเกินไปเมื่อวัสดุเยอะ)
   const [payForm, setPayForm] = useState<PayForm | null>(null)
+  const [dueForm, setDueForm] = useState<{ newDueDate: string; reason: string } | null>(null)   // ขยายกำหนดส่ง (0075)
+  const [uploading, setUploading] = useState(false)      // กำลังอัปโหลดเอกสารแนบงวดเงิน (0076)
   const [drawStock, setDrawStock] = useState('')
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [returnTarget, setReturnTarget] = useState('')
@@ -171,6 +188,10 @@ export default function JobDetailPage() {
 
   const budget = jobBudgetSummary(db, job)
   const pay = jobPaymentSummary(db, job)
+  // 0075 — สถานะกำหนดส่ง · ขยายได้จนถึง issued (ปิดเมื่อ installed/cancelled ตรงกับ guard ฝั่ง DB)
+  const delivery = jobDelivery(db, job)
+  const dueHistory = jobDueExtensions(db, job.id)
+  const canExtendDue = canManage && !procureLocked
   const itemOf = (id: string) => db.items.find(i => i.id === id)
   const stockOf = (id: string) => db.projectStocks.find(s => s.id === id)
   const userOf = (id: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
@@ -442,7 +463,16 @@ export default function JobDetailPage() {
         ['เบอร์ติดต่อ', job.contactPhone || '-'],
         ['Scope งาน', job.scope || '-'],
         ['สถานที่ติดตั้ง', job.installLocation || '-'],
-        ['กำหนดส่ง', fmtDate(job.requiredDate)],
+        // 0075 — แยก "ตามสัญญา" กับ "ที่มีผล" ให้ชัด · ไฟล์นี้ถูกส่งต่อออกนอกระบบ
+        //   ถ้าเขียนแค่ค่าเดียวหลังมีการเลื่อน คนอ่านจะไม่รู้ว่าเทียบกับวันไหน
+        ['กำหนดส่ง (ตามสัญญา)', fmtDate(delivery.contractDue)],
+        ...(delivery.extension
+          ? [
+            ['กำหนดส่ง (ที่มีผล)', `${fmtDate(delivery.due)} · เลื่อน ${delivery.extensionCount} ครั้ง`] as [string, string],
+            ['เหตุผลการเลื่อนล่าสุด', delivery.extension.reason] as [string, string],
+          ]
+          : []),
+        ['สถานะกำหนดส่ง', delivery.label],
         ['สถานะงาน', JOB_STATUS_LABEL[status]],
         ['ผู้รับผิดชอบงาน', job.openedBy ? userOf(job.openedBy) : 'ไม่ระบุ (งานเก่า)'],
         ['LBS ตาม Scope / ดึงเข้างานแล้ว', `${job.lbsQtyRequired} / ${allocatedUnits.length} เครื่อง`],
@@ -525,9 +555,15 @@ export default function JobDetailPage() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div className="page-title">{job.jobNo}</div>
         <JobStatusBadge status={status} />
+        <DeliveryBadge d={delivery} />
       </div>
       <div className="page-sub">
-        {job.customerName}{job.contactPhone && <> · 📞 {job.contactPhone}</>} · {job.scope || 'ไม่ระบุ scope'} · ติดตั้งที่ {job.installLocation || '-'} · กำหนด {fmtDate(job.requiredDate)}
+        {job.customerName}{job.contactPhone && <> · 📞 {job.contactPhone}</>} · {job.scope || 'ไม่ระบุ scope'} · ติดตั้งที่ {job.installLocation || '-'} ·{' '}
+        {/* 0075: กำหนดที่มีผล + กำหนดตามสัญญาเดิมเสมอ — ตัวเลขในระบบต้องตรงกับในสัญญา */}
+        กำหนดส่ง {delivery.due ? fmtDate(delivery.due) : '-'}
+        {delivery.extension && delivery.contractDue && (
+          <> <span className="badge amber">เลื่อนจาก {fmtDate(delivery.contractDue)} · {delivery.extensionCount} ครั้ง</span></>
+        )}
       </div>
       <div className="muted" style={{ marginBottom: 8 }}>
         👤 ผู้รับผิดชอบงาน: <b>{job.openedBy ? userOf(job.openedBy) : 'ไม่ระบุ (งานเก่า)'}</b>
@@ -544,6 +580,75 @@ export default function JobDetailPage() {
           <div className="muted">ถ้าต้องแก้งานใบนี้จริง ให้แจ้ง Manage เข้าไปทำแทน</div>
         </div></div>
       )}
+
+      {/* ---------- สถานะกำหนดส่ง + ขยายกำหนดส่ง (0075) ----------
+          วางไว้บนสุดของใบ เพราะเป็นคำถามแรกที่ทุกคนถามถึงงานหนึ่งใบ ("ทันไหม ใครค้าง")
+          🔴 การขยายกำหนดไม่ได้แก้ requiredDate — เก็บเป็นประวัติแยก กำหนดตามสัญญาเดิมจึงไม่หาย */}
+      <div className="panel" style={{ borderLeft: `4px solid var(--${delivery.tone === 'red' ? 'red' : delivery.tone === 'amber' ? 'amber' : delivery.tone === 'blue' ? 'primary' : 'green'})` }}>
+        <div className="panel-head">
+          <h3>📅 สถานะกำหนดส่ง <DeliveryBadge d={delivery} /></h3>
+          {canExtendDue && (
+            <button className="small" onClick={() => setDueForm({
+              newDueDate: delivery.due ?? todayIso(), reason: '',
+            })}>ขยาย/แก้กำหนดส่ง</button>
+          )}
+        </div>
+        <div className="panel-body">
+          <div className="budget-grid" style={{ marginBottom: dueHistory.length > 0 ? 12 : 0 }}>
+            <div className="budget-cell">
+              <div className="b-label">กำหนดตามสัญญา</div>
+              <div className="b-value">{delivery.contractDue ? fmtDate(delivery.contractDue) : '-'}</div>
+            </div>
+            <div className="budget-cell">
+              <div className="b-label">กำหนดที่มีผลตอนนี้</div>
+              <div className="b-value">{delivery.due ? fmtDate(delivery.due) : '-'}</div>
+            </div>
+            <div className="budget-cell">
+              <div className="b-label">{delivery.daysLate > 0 ? 'เลยกำหนดมาแล้ว' : 'เหลือเวลา'}</div>
+              <div className={`b-value ${delivery.daysLate > 0 ? 'neg' : 'pos'}`}>
+                {delivery.daysLeft === undefined ? '-' : `${Math.abs(delivery.daysLeft)} วัน`}
+              </div>
+            </div>
+            <div className="budget-cell">
+              <div className="b-label">เลื่อนมาแล้ว</div>
+              <div className="b-value">{delivery.extensionCount} ครั้ง</div>
+            </div>
+          </div>
+          <div><b>สิ่งที่ต้องทำต่อ:</b> {delivery.nextStep}</div>
+          {dueHistory.length > 0 && (
+            <div className="table-scroll" style={{ marginTop: 10 }}>
+              <table>
+                <thead><tr><th>เลื่อนเมื่อ</th><th>โดย</th><th>จาก</th><th>เป็น</th><th>เหตุผล</th>{canExtendDue && <th></th>}</tr></thead>
+                <tbody>
+                  {dueHistory.map((e, i) => (
+                    <tr key={e.id}>
+                      <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(e.createdAt)}</td>
+                      <td>{userOf(e.createdBy)}</td>
+                      <td>{e.prevDueDate ? fmtDate(e.prevDueDate) : <span className="muted">ไม่เคยระบุ</span>}</td>
+                      <td><b>{fmtDate(e.newDueDate)}</b></td>
+                      <td>{e.reason}</td>
+                      {canExtendDue && (
+                        <td style={{ textAlign: 'right' }}>
+                          {/* ยกเลิกได้เฉพาะแถวล่าสุด — ประวัติก่อนหน้าเป็นหลักฐาน (กติกาเดียวกับ RPC) */}
+                          {i === 0 && (
+                            <button className="small danger" onClick={async () => {
+                              if (await askConfirm({
+                                title: 'ยกเลิกการเลื่อนกำหนดส่งครั้งล่าสุด',
+                                description: <>กำหนดส่งจะกลับไปเป็น <b>{e.prevDueDate ? fmtDate(e.prevDueDate) : 'กำหนดตามสัญญา'}</b> · การยกเลิกถูกบันทึกใน Audit Log</>,
+                                confirmLabel: 'ยกเลิกการเลื่อน',
+                              })) tryAction(() => act.deleteJobDueExtension({ extensionId: e.id }), 'ยกเลิกการเลื่อนกำหนดส่งแล้ว')
+                            }}>ยกเลิก</button>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* จุดติดตั้ง — แสดงเมื่อมีหลายจุด (จุดที่ 1 = install_location หลัก + จุดที่ 2+ = installSites) */}
       {job.installSites && job.installSites.length > 0 && (
@@ -938,11 +1043,11 @@ export default function JobDetailPage() {
                 <table>
                   <thead><tr>
                     <th>งวด</th><th>Invoice No.</th><th>Date</th><th style={{ textAlign: 'right' }}>%</th>
-                    <th style={{ textAlign: 'right' }}>ยอดเงิน</th><th>รับเงิน</th><th>หมายเหตุ</th>{canPay && <th></th>}
+                    <th style={{ textAlign: 'right' }}>ยอดเงิน</th><th>รับเงิน</th><th>เอกสาร</th><th>หมายเหตุ</th>{canPay && <th></th>}
                   </tr></thead>
                   <tbody>
                     {pay.rows.length === 0 && (
-                      <tr><td colSpan={canPay ? 8 : 7}><div className="empty">ยังไม่มีงวดเงิน</div></td></tr>
+                      <tr><td colSpan={canPay ? 9 : 8}><div className="empty">ยังไม่มีงวดเงิน</div></td></tr>
                     )}
                     {pay.rows.map(r => (
                       <tr key={r.id}>
@@ -954,26 +1059,37 @@ export default function JobDetailPage() {
                         <td>{r.paidAt
                           ? <span className="badge green">รับแล้ว {fmtDate(r.paidAt)}</span>
                           : <span className="badge neutral">รอรับเงิน</span>}</td>
+                        {/* 0076 — เอกสารแนบรายงวด · กดแล้วเปิดโมดัลเดียวกับ "แก้" (ส่วนเอกสารอยู่ในนั้น) */}
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          {paymentFileCount(db, r.id) > 0
+                            ? <button className="small" title="ดู/แนบเอกสารของงวดนี้"
+                              onClick={() => setPayForm(payFormOf(r))}>📎 {paymentFileCount(db, r.id)}</button>
+                            : canPay
+                              ? <button className="small muted" title="แนบเอกสารของงวดนี้"
+                                onClick={() => setPayForm(payFormOf(r))}>📎 แนบ</button>
+                              : <span className="muted">-</span>}
+                        </td>
                         <td className="muted">{r.note || '-'}</td>
                         {canPay && (
                           <td style={{ whiteSpace: 'nowrap' }}>
-                            <button className="small" onClick={() => setPayForm({
-                              id: r.id, payType: r.payType,
-                              invoiceNo: r.invoiceNo ?? '', invoiceDate: r.invoiceDate ?? '',
-                              percent: r.percent !== undefined ? String(r.percent) : '',
-                              amount: r.percent !== undefined ? '' : String(r.amount),
-                              paidAt: r.paidAt ?? '', note: r.note ?? '',
-                            })}>แก้</button>
+                            <button className="small" onClick={() => setPayForm(payFormOf(r))}>แก้</button>
                             <button className="small danger" style={{ marginLeft: 6 }} onClick={async () => {
+                              // เก็บ path ไว้ก่อนลบ — หลังลบแถวแล้วอ่านจาก db ไม่ได้อีก (0076 CASCADE)
+                              const paths = paymentFiles(db, r.id).map(f => f.filePath)
                               if (await askConfirm({
                                 title: `ลบงวด ${PAYMENT_TYPE_LABEL[r.payType]} #${r.seq}`,
                                 description: <>
                                   {r.invoiceNo ? <>Invoice <b className="mono">{r.invoiceNo}</b> · </> : null}
                                   ยอด <b>{fmtBaht(r.amount)}</b> · ยอดรวมที่ออกใบแล้วจะลดลงตามนี้
+                                  {paths.length > 0 && <> · <b>เอกสารแนบ {paths.length} ไฟล์จะถูกลบไปด้วย</b></>}
                                   {r.paidAt && <> · <span style={{ color: 'var(--red)' }}>งวดนี้บันทึกว่ารับเงินแล้ว ระบบจะไม่ให้ลบ</span></>}
                                 </>,
                                 confirmLabel: 'ลบงวดเงิน',
-                              })) tryAction(() => act.deleteJobPayment({ paymentId: r.id }), 'ลบงวดเงินแล้ว')
+                              })) {
+                                if (await tryAction(() => act.deleteJobPayment({ paymentId: r.id }), 'ลบงวดเงินแล้ว')) {
+                                  if (supabase) await removePaymentDocs(supabase, paths)
+                                }
+                              }
                             }}>ลบ</button>
                           </td>
                         )}
@@ -986,7 +1102,7 @@ export default function JobDetailPage() {
                 <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   {PAYMENT_TYPES.map(t => (
                     <button key={t} className="small" onClick={() => setPayForm({
-                      id: null, payType: t, invoiceNo: '', invoiceDate: '', percent: '', amount: '', paidAt: '', note: '',
+                      id: null, payType: t, invoiceNo: '', invoiceDate: '', percent: '', amount: '', paidAt: '', note: '', files: [],
                     })}>+ {PAYMENT_TYPE_LABEL[t]}</button>
                   ))}
                   <span className="muted">ใส่ % ของราคาขาย ({fmtBaht(job.budgetSalePrice)}) แล้วระบบคำนวณยอดให้ · หรือกรอกยอดเงินตรงๆ</span>
@@ -1988,12 +2104,36 @@ export default function JobDetailPage() {
         </Modal>
       )}
 
-      {/* งวดเงิน (0044) — เพิ่ม/แก้ · ใส่ % ให้ระบบคำนวณ หรือกรอกยอดเงินตรงๆ */}
+      {/* งวดเงิน (0044) — เพิ่ม/แก้ · ใส่ % ให้ระบบคำนวณ หรือกรอกยอดเงินตรงๆ
+          0076: แนบเอกสารได้ในโมดัลเดียวกัน — ไฟล์ที่เลือกจะถูกอัปโหลด "หลัง" บันทึกงวดสำเร็จ
+          เพราะงวดใหม่ยังไม่มี id ให้ผูกไฟล์จนกว่าจะบันทึก */}
       {payForm && (() => {
         const pct = toBudgetNum(payForm.percent)
         const preview = pct !== undefined && job.budgetSalePrice !== undefined
           ? Math.round(job.budgetSalePrice * pct) / 100
           : toBudgetNum(payForm.amount)
+        const attached = payForm.id ? paymentFiles(db, payForm.id) : []
+        const maxMb = isDemo ? DEMO_MAX_DOC_FILE_MB : MAX_DOC_FILE_MB
+
+        // อัปโหลดไฟล์ที่ staged ไว้ทีละไฟล์ · คืนไฟล์ที่ยังไม่สำเร็จ (ค้างไว้ให้ลองใหม่ ไม่หายเงียบ)
+        const uploadStaged = async (paymentId: string): Promise<File[]> => {
+          const failed: File[] = []
+          for (const f of payForm.files) {
+            try {
+              const filePath = supabase
+                ? await uploadPaymentDoc(supabase, paymentId, f)
+                : await readAsDataUrl(f)               // demo — เก็บเนื้อไฟล์ตรง ๆ
+              await act.addPaymentFile({
+                paymentId, fileName: f.name, filePath, mimeType: f.type, sizeBytes: f.size,
+              })
+            } catch (err) {
+              failed.push(f)
+              show(err instanceof Error ? err.message : `แนบ ${f.name} ไม่สำเร็จ`, true)
+            }
+          }
+          return failed
+        }
+
         return (
           <Modal
             title={`${payForm.id ? 'แก้' : 'เพิ่ม'}งวด ${PAYMENT_TYPE_LABEL[payForm.payType]} — ${job.jobNo}`}
@@ -2001,17 +2141,38 @@ export default function JobDetailPage() {
             onClose={() => setPayForm(null)}
             footer={<>
               <button onClick={() => setPayForm(null)}>ยกเลิก</button>
-              <button className="primary" onClick={async () => {
+              <button className="primary" disabled={uploading} onClick={async () => {
                 const payload = {
                   invoiceNo: payForm.invoiceNo, invoiceDate: payForm.invoiceDate,
                   percent: pct, amount: pct !== undefined ? undefined : toBudgetNum(payForm.amount),
                   paidAt: payForm.paidAt, note: payForm.note,
                 }
-                const save = payForm.id
-                  ? () => act.updateJobPayment({ paymentId: payForm.id!, ...payload })
-                  : () => act.addJobPayment({ jobId: job.id, payType: payForm.payType, ...payload })
-                if (await tryAction(save, payForm.id ? 'แก้งวดเงินแล้ว' : 'บันทึกงวดเงินแล้ว')) setPayForm(null)
-              }}>บันทึก</button>
+                // บันทึกงวดก่อนเสมอ — ได้ id มาแล้วค่อยผูกไฟล์
+                let paymentId = payForm.id
+                const saved = await tryAction(
+                  async () => {
+                    if (payForm.id) await act.updateJobPayment({ paymentId: payForm.id, ...payload })
+                    else paymentId = await act.addJobPayment({ jobId: job.id, payType: payForm.payType, ...payload })
+                  },
+                  payForm.files.length > 0
+                    ? (payForm.id ? 'แก้งวดเงินแล้ว — กำลังแนบเอกสาร' : 'บันทึกงวดเงินแล้ว — กำลังแนบเอกสาร')
+                    : (payForm.id ? 'แก้งวดเงินแล้ว' : 'บันทึกงวดเงินแล้ว'),
+                )
+                if (!saved) return
+                if (payForm.files.length === 0 || !paymentId) { setPayForm(null); return }
+
+                setUploading(true)
+                const failed = await uploadStaged(paymentId)
+                setUploading(false)
+                if (failed.length === 0) {
+                  show(`แนบเอกสารแล้ว ${payForm.files.length} ไฟล์`)
+                  setPayForm(null)
+                } else {
+                  // งวดถูกบันทึกไปแล้ว — คงโมดัลไว้ในโหมด "แก้" ของงวดนั้น ไม่งั้นกดบันทึกซ้ำจะได้งวดซ้ำ
+                  setPayForm({ ...payForm, id: paymentId, files: failed })
+                  show(`แนบไม่สำเร็จ ${failed.length} ไฟล์ — งวดเงินถูกบันทึกแล้ว ลองแนบใหม่ได้`, true)
+                }
+              }}>{uploading ? 'กำลังแนบเอกสาร…' : 'บันทึก'}</button>
             </>}
           >
             <div className="muted" style={{ marginBottom: 12 }}>
@@ -2049,6 +2210,139 @@ export default function JobDetailPage() {
                 <input value={payForm.note} onChange={e => setPayForm({ ...payForm, note: e.target.value })} />
               </label>
             </div>
+
+            {/* ---------- เอกสารแนบของงวดนี้ (0076) ---------- */}
+            <div className="budget-legend">เอกสารแนบของงวดนี้</div>
+            <div className="muted" style={{ marginBottom: 8 }}>
+              ใบแจ้งหนี้ · ใบเสร็จ/ใบกำกับภาษี · หนังสือรับรองผลงาน (PAC) · สำเนาโอนเงิน —
+              รับ <b>PDF และรูปภาพ</b> ไม่เกิน <b>{maxMb} MB</b>/ไฟล์
+              {isDemo
+                ? <><br />⚠️ โหมด Demo เก็บไฟล์ไว้ในเบราว์เซอร์ (localStorage) จึงจำกัดที่ {DEMO_MAX_DOC_FILE_MB} MB — ระบบจริงได้ถึง {MAX_DOC_FILE_MB} MB</>
+                : <><br />ไฟล์เก็บใน storage แบบปิด — เปิดได้เฉพาะคนที่ล็อกอิน และลิงก์หมดอายุใน 5 นาที</>}
+            </div>
+
+            {attached.length > 0 && (
+              <div className="table-scroll" style={{ marginBottom: 10 }}>
+                <table>
+                  <thead><tr><th>ไฟล์ที่แนบแล้ว</th><th style={{ textAlign: 'right' }}>ขนาด</th><th>แนบเมื่อ</th><th>โดย</th><th></th></tr></thead>
+                  <tbody>
+                    {attached.map(f => (
+                      <tr key={f.id}>
+                        <td>
+                          <button className="small" title="เปิดไฟล์" onClick={async () => {
+                            try {
+                              // LIVE: ขอ signed URL ใหม่ทุกครั้ง (ลิงก์หมดอายุ) · demo: filePath คือ data URL อยู่แล้ว
+                              const url = supabase ? await signedPaymentDocUrl(supabase, f.filePath) : f.filePath
+                              window.open(url, '_blank', 'noopener')
+                            } catch (err) {
+                              show(err instanceof Error ? err.message : 'เปิดไฟล์ไม่ได้', true)
+                            }
+                          }}>{f.mimeType === 'application/pdf' ? '📄' : '🖼️'} {f.fileName}</button>
+                        </td>
+                        <td style={{ textAlign: 'right' }}>{Math.max(1, Math.round(f.sizeBytes / 1024)).toLocaleString('th-TH')} KB</td>
+                        <td className="muted">{fmtDateTime(f.uploadedAt)}</td>
+                        <td className="muted">{userOf(f.uploadedBy)}</td>
+                        <td style={{ textAlign: 'right' }}>
+                          {canPay && (
+                            <button className="small danger" onClick={async () => {
+                              if (!await askConfirm({
+                                title: `ลบเอกสาร "${f.fileName}"`,
+                                description: <>ลบแล้วกู้คืนไม่ได้ · <b>มีผลทันที</b> ไม่ต้องกดบันทึก · การลบถูกบันทึกใน Audit Log</>,
+                                confirmLabel: 'ลบเอกสาร',
+                              })) return
+                              if (await tryAction(() => act.deletePaymentFile({ fileId: f.id }), 'ลบเอกสารแล้ว')) {
+                                // ลบแถวสำเร็จก่อน แล้วค่อยเก็บกวาดไฟล์จริง — ล้มเหลวก็แค่เหลือไฟล์กำพร้า
+                                if (supabase) await removePaymentDocs(supabase, [f.filePath])
+                              }
+                            }}>ลบ</button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {canPay && (
+              <label className="field">
+                <span>เพิ่มเอกสาร (เลือกได้หลายไฟล์ — แนบจริงเมื่อกด "บันทึก")</span>
+                <input type="file" multiple accept="application/pdf,image/*" disabled={uploading}
+                  onChange={e => {
+                    const picked = [...(e.target.files ?? [])]
+                    e.target.value = ''                    // ให้เลือกไฟล์ชื่อเดิมซ้ำได้
+                    const ok: File[] = []
+                    for (const f of picked) {
+                      // เช็คตั้งแต่ตอนเลือก ไม่รอตอนกดบันทึก — ผู้ใช้จะได้แก้ทันทีขณะยังอยู่หน้าเดิม
+                      if (f.size > maxMb * 1024 * 1024) { show(`${f.name}: ไฟล์ใหญ่เกิน ${maxMb} MB`, true); continue }
+                      if (!isAllowedDocFile(f.type)) { show(`${f.name}: รับเฉพาะ PDF และรูปภาพ`, true); continue }
+                      ok.push(f)
+                    }
+                    if (ok.length > 0) setPayForm({ ...payForm, files: [...payForm.files, ...ok] })
+                  }} />
+              </label>
+            )}
+            {payForm.files.length > 0 && (
+              <div style={{ marginTop: 4 }}>
+                <div className="muted" style={{ marginBottom: 4 }}>รอแนบเมื่อกดบันทึก ({payForm.files.length} ไฟล์):</div>
+                {payForm.files.map((f, i) => (
+                  <div key={`${f.name}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span>{f.type === 'application/pdf' ? '📄' : '🖼️'} {f.name}</span>
+                    <span className="muted">{Math.max(1, Math.round(f.size / 1024)).toLocaleString('th-TH')} KB</span>
+                    <button className="small" disabled={uploading}
+                      onClick={() => setPayForm({ ...payForm, files: payForm.files.filter((_, j) => j !== i) })}>เอาออก</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Modal>
+        )
+      })()}
+      {/* ขยาย/แก้กำหนดส่ง (0075) — requiredDate เดิมไม่ถูกแตะ เก็บเป็นประวัติแยก */}
+      {dueForm && (() => {
+        const newDue = dueForm.newDueDate
+        const diff = delivery.contractDue && newDue ? daysBetweenIso(delivery.contractDue, newDue) : undefined
+        return (
+          <Modal
+            title={`ขยาย/แก้กำหนดส่ง — ${job.jobNo}`}
+            onClose={() => setDueForm(null)}
+            footer={<>
+              <button onClick={() => setDueForm(null)}>ยกเลิก</button>
+              <button className="primary" disabled={!newDue || !dueForm.reason.trim()}
+                onClick={async () => {
+                  if (await tryAction(
+                    () => act.extendJobDue({ jobId: job.id, newDueDate: newDue, reason: dueForm.reason }),
+                    'บันทึกกำหนดส่งใหม่แล้ว',
+                  )) setDueForm(null)
+                }}>บันทึกกำหนดใหม่</button>
+            </>}
+          >
+            <div className="muted" style={{ marginBottom: 12 }}>
+              ใช้เมื่อ <b>ตกลงเลื่อนวันส่งมอบกับลูกค้าแล้ว</b> — ระบบจะนับ "เลยกำหนด" จากวันใหม่
+              แต่ยัง<b>เก็บกำหนดตามสัญญาเดิมไว้</b> ({delivery.contractDue ? fmtDate(delivery.contractDue) : 'ไม่ได้ระบุ'})
+              และบันทึกทุกครั้งที่เลื่อนไว้เป็นประวัติ — จำนวนครั้งและเหตุผลคือหลักฐานตอนเคลมค่าปรับ/ต่อสัญญา
+            </div>
+            <div className="row">
+              <label className="field"><span>กำหนดส่งใหม่ *</span>
+                <input type="date" value={dueForm.newDueDate}
+                  onChange={e => setDueForm({ ...dueForm, newDueDate: e.target.value })} />
+              </label>
+              <label className="field"><span>กำหนดที่มีผลตอนนี้</span>
+                <input value={delivery.due ? fmtDate(delivery.due) : 'ยังไม่ระบุ'} disabled />
+              </label>
+            </div>
+            {diff !== undefined && (
+              <div className="budget-legend">
+                {diff >= 0
+                  ? `ช้ากว่าสัญญาเดิมรวม ${diff} วัน`
+                  : `เร็วกว่าสัญญาเดิม ${-diff} วัน`}
+              </div>
+            )}
+            <label className="field"><span>เหตุผล * (ใครขอเลื่อน เพราะอะไร)</span>
+              <textarea rows={3} value={dueForm.reason}
+                onChange={e => setDueForm({ ...dueForm, reason: e.target.value })}
+                placeholder="เช่น ลูกค้าขอเลื่อนดับไฟเป็นสัปดาห์ถัดไป (หนังสือ PEA ที่ ... ลว. ...)" />
+            </label>
           </Modal>
         )
       })()}

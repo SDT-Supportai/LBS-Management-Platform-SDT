@@ -3,9 +3,9 @@ import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import {
   deriveJobStatus, stockSummary, jobInstallSummary, jobIsFieldActive, jobAllocatedQty,
-  jobDueDate, jobDaysLeft, todayIso, DUE_WARN_DAYS, stockComments,
+  jobDelivery, todayIso, DUE_WARN_DAYS, stockComments,
 } from '../data/logic'
-import { JobStatusBadge, useTryAction } from '../ui/components'
+import { DeliveryBadge, JobStatusBadge, useTryAction } from '../ui/components'
 import { fmtDate, fmtDateTime, DEPT_LABEL } from '../ui/format'
 import type { JobStatus } from '../types'
 
@@ -61,15 +61,21 @@ export default function DashboardPage() {
   const recent = db.auditLogs.slice(0, 10)
   const userName = (id: string) => db.users.find(u => u.id === id)?.fullName ?? id
 
-  // ---- Job List: เรียงตาม "กำหนดส่ง" ใกล้สุดก่อน + เตือน 30 วันก่อนถึงกำหนด ----
+  // ---- Job List: เรียงตาม "กำหนดส่งที่มีผล" ใกล้สุดก่อน ----
   // นับเฉพาะงานที่ยังไม่จบ (installed/cancelled = จบแล้ว ไม่ต้องเตือน)
   // งานที่ยังไม่ระบุกำหนดส่งไปอยู่ท้ายรายการ — ไม่ใช่หัวรายการ (สำคัญ: ถ้า sort ค่าว่างจะขึ้นก่อน)
+  // 0075: เรียงตาม d.due (กำหนดที่ขยายแล้ว) ไม่ใช่ requiredDate — ไม่งั้นงานที่ตกลงเลื่อนกับลูกค้า
+  //       ยังค้างหัวรายการตลอดไป · และตัวนับใช้ d.state ไม่ใช่ daysLeft < 0 (ดู jobDelivery)
   const jobList = db.jobs
     .filter(j => j.terminalStatus !== 'installed' && j.terminalStatus !== 'cancelled')
-    .map(j => ({ job: j, due: jobDueDate(j), daysLeft: jobDaysLeft(j, today) }))
-    .sort((a, b) => (a.due ?? '9999-12-31').localeCompare(b.due ?? '9999-12-31'))
-  const overdue = jobList.filter(x => x.daysLeft !== undefined && x.daysLeft < 0).length
-  const dueSoon = jobList.filter(x => x.daysLeft !== undefined && x.daysLeft >= 0 && x.daysLeft <= DUE_WARN_DAYS).length
+    .map(j => ({ job: j, d: jobDelivery(db, j, today) }))
+    .sort((a, b) => (a.d.due ?? '9999-12-31').localeCompare(b.d.due ?? '9999-12-31'))
+  // "เลยกำหนด" = เลยจริงและของยังไม่ออกหน้างาน · งานที่กำลังติดตั้งอยู่แยกไปอีกตัวนับ
+  const overdue = jobList.filter(x => x.d.state === 'overdue').length
+  const inFieldLate = jobList.filter(x => x.d.state === 'in_field_late').length
+  const blocked = jobList.filter(x => x.d.state === 'blocked').length
+  const dueSoon = jobList.filter(x => x.d.state === 'due_soon').length
+  const awaitingClose = jobList.filter(x => x.d.state === 'awaiting_close').length
 
   return (
     <div className="dash">
@@ -92,7 +98,14 @@ export default function DashboardPage() {
           <div className="label">Jobs In Progress</div>
           <div className="value">{db.jobs.filter(j => !j.terminalStatus || j.terminalStatus === 'issued').length}</div>
           <div className="hint">
-            {overdue > 0 && <><b style={{ color: 'var(--danger)' }}>เลยกำหนดส่ง {overdue} งาน</b> · </>}
+            {/* 0075: "ต้องเร่ง" = เลยกำหนดทั้งที่ยังไม่ออกหน้างาน + งานที่ติดปัญหาหน้างาน
+                งานที่กำลังติดตั้งอยู่แล้วเลยแผน ไม่ถูกนับรวม — มันเดินอยู่ ไม่ได้ค้าง */}
+            {overdue + blocked > 0 && (
+              <><b style={{ color: 'var(--danger)' }} title="เลยกำหนดทั้งที่ของยังไม่ออกจากคลัง หรือติดปัญหาหน้างาน">
+                ต้องเร่ง {overdue + blocked} งาน
+              </b> · </>
+            )}
+            {inFieldLate > 0 && <><b style={{ color: 'var(--amber, #d97706)' }} title="ทีมกำลังติดตั้งอยู่ แต่เลยกำหนดส่งเดิม — บันทึกขยายกำหนดส่งได้ที่หน้า Job">กำลังติดตั้ง เลยแผน {inFieldLate} งาน</b> · </>}
             {dueSoon > 0 && <><b style={{ color: 'var(--amber, #d97706)' }}>ใกล้ครบกำหนด {dueSoon} งาน</b> · </>}
             พร้อมเบิก {statusCount.get('ready_to_issue') ?? 0}
             {(statusCount.get('partially_issued') ?? 0) > 0 && (
@@ -181,46 +194,49 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Job List — เรียงตามกำหนดส่ง (ใกล้สุดก่อน) + ทำเครื่องหมายเตือนเมื่อเหลือ ≤ 30 วัน
-          เดิมเรียงตามลำดับที่สร้าง (slice(-6)) และรวมงานที่ปิด/ยกเลิกแล้ว = ไม่ได้ช่วยจัดลำดับงานจริง */}
+      {/* Job List — เรียงตามกำหนดส่งที่มีผล (ใกล้สุดก่อน)
+          0075: คอลัมน์ "เหลือ" กลายเป็น "สถานะกำหนดส่ง" ที่บอกทั้งเรื่องวันและเรื่องหน้างาน
+          เดิมโชว์แค่ "เลย N วัน" สีแดง ⇒ งานที่ช่างกำลังติดตั้งอยู่ดูเหมือนงานที่ยังไม่มีใครแตะ */}
       <div className="panel">
         <div className="panel-head">
           <h3>
             Job List <span className="muted" style={{ fontWeight: 400 }}>· เรียงตามกำหนดส่ง — งานที่ยังไม่ปิด</span>
-            {overdue > 0 && <span className="badge red" style={{ marginLeft: 8 }}>เลยกำหนด {overdue}</span>}
+            {overdue > 0 && <span className="badge red" style={{ marginLeft: 8 }} title="เลยกำหนดทั้งที่ของยังไม่ออกจากคลัง">เลยกำหนด {overdue}</span>}
+            {blocked > 0 && <span className="badge red" style={{ marginLeft: 6 }}>ติดปัญหาหน้างาน {blocked}</span>}
+            {inFieldLate > 0 && <span className="badge amber" style={{ marginLeft: 6 }} title="กำลังติดตั้งอยู่ แต่เลยกำหนดเดิม">กำลังติดตั้ง เลยแผน {inFieldLate}</span>}
             {dueSoon > 0 && <span className="badge amber" style={{ marginLeft: 6 }}>≤{DUE_WARN_DAYS} วัน {dueSoon}</span>}
+            {awaitingClose > 0 && <span className="badge blue" style={{ marginLeft: 6 }}>รอปิดงาน {awaitingClose}</span>}
           </h3>
           <Link to="/jobs">ดูทั้งหมด →</Link>
         </div>
         <div className="table-scroll">
           <table className="grid">
-            <thead><tr><th>กำหนดส่ง</th><th>เหลือ</th><th>Job No.</th><th>ลูกค้า</th><th>สถานะ</th><th>LBS</th></tr></thead>
+            <thead><tr><th>กำหนดส่ง</th><th>สถานะกำหนดส่ง</th><th>Job No.</th><th>ลูกค้า</th><th>สถานะงาน</th><th>LBS</th></tr></thead>
             <tbody>
               {jobList.length === 0 && (
                 <tr><td colSpan={6}><div className="empty">ไม่มีงานที่กำลังดำเนินการ</div></td></tr>
               )}
-              {jobList.slice(0, 8).map(({ job: j, due, daysLeft }) => {
+              {jobList.slice(0, 8).map(({ job: j, d }) => {
                 const allocated = jobAllocatedQty(db, j.id)   // 0059: allocated + issued (แหล่งเดียวกับหน้า Jobs)
-                const late = daysLeft !== undefined && daysLeft < 0
-                const soon = daysLeft !== undefined && daysLeft >= 0 && daysLeft <= DUE_WARN_DAYS
                 // หลายจุดติดตั้ง → วันที่แสดงคือจุดที่ใกล้ที่สุด บอกจำนวนจุดที่เหลือให้เห็นด้วย
                 const extraSites = (j.installSites?.length ?? 0)
                 return (
                   <tr key={j.id}>
                     <td style={{ whiteSpace: 'nowrap' }}>
-                      {late && <span title="เลยกำหนดส่งแล้ว">🔴 </span>}
-                      {soon && <span title={`เหลือ ≤ ${DUE_WARN_DAYS} วันก่อนกำหนดส่ง`}>⚠️ </span>}
-                      {due ? fmtDate(due) : <span className="muted">ยังไม่ระบุ</span>}
+                      {d.due ? fmtDate(d.due) : <span className="muted">ยังไม่ระบุ</span>}
+                      {/* ขยายกำหนดแล้ว → โชว์กำหนดตามสัญญาเดิมกำกับเสมอ ไม่งั้นตัวเลขในระบบ
+                          กับในสัญญาไม่ตรงกันโดยไม่มีใครรู้ */}
+                      {d.extension && d.contractDue && (
+                        <div className="muted" style={{ fontSize: 11 }}
+                          title={`เลื่อน ${d.extensionCount} ครั้ง · ล่าสุด: ${d.extension.reason}`}>
+                          เลื่อนจาก {fmtDate(d.contractDue)}
+                        </div>
+                      )}
                       {extraSites > 0 && (
                         <div className="muted" style={{ fontSize: 11 }}>+{extraSites} จุดติดตั้ง</div>
                       )}
                     </td>
-                    <td style={{ whiteSpace: 'nowrap' }}>
-                      {daysLeft === undefined ? <span className="muted">-</span>
-                        : late ? <span className="badge red">เลย {Math.abs(daysLeft)} วัน</span>
-                        : soon ? <span className="badge amber">{daysLeft} วัน</span>
-                        : <span className="muted">{daysLeft} วัน</span>}
-                    </td>
+                    <td style={{ whiteSpace: 'nowrap' }}><DeliveryBadge d={d} compact /></td>
                     <td><Link to={`/jobs/${j.id}`}><b>{j.jobNo}</b></Link></td>
                     <td>{j.customerName}</td>
                     <td><JobStatusBadge status={deriveJobStatus(db, j)} /></td>

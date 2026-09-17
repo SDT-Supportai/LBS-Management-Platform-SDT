@@ -16,8 +16,10 @@ import {
   adjustPoLine, confirmUnitInstall, blockUnitInstall, assignJobTeam, logSiteVisit, closeJobInstall,
   jobInstallSummary, jobHasIssuedUnits, jobIsFieldActive, unitInstallState, jobTeam, qtyOutToField,
   updateUnitPlan, unitCustomerInfo, importUnitsToStock,
-  addUnitFile, deleteUnitFile, unitFiles, unitFileCount, isAllowedUnitFile,
-  MAX_UNIT_FILE_MB, DEMO_MAX_UNIT_FILE_MB,
+  addUnitFile, deleteUnitFile, unitFiles, unitFileCount, isAllowedDocFile,
+  MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB,
+  jobDelivery, jobEffectiveDue, jobDueExtensions, extendJobDue, deleteJobDueExtension,
+  addJobPayment, addPaymentFile, deletePaymentFile, paymentFiles, paymentFileCount, deleteJobPayment,
 } from './logic'
 
 // =============================================================================
@@ -48,6 +50,7 @@ const EMPTY: DB = {
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [], approvalComments: [],
   auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
+  jobPaymentFiles: [], jobDueExtensions: [],
   stdDrawings: [], stdPrices: [], stdBoms: [], stdBomLines: [],
 }
 
@@ -1578,7 +1581,7 @@ describe('เอกสารแนบรายเครื่อง (0074)', () 
   })
 
   it('ไฟล์ใหญ่เกินเพดาน / ไฟล์ว่าง ไม่รับ', () => {
-    expect(() => addUnitFile(base(), actor, file({ sizeBytes: MAX_UNIT_FILE_MB * 1024 * 1024 + 1 })))
+    expect(() => addUnitFile(base(), actor, file({ sizeBytes: MAX_DOC_FILE_MB * 1024 * 1024 + 1 })))
       .toThrow(/ใหญ่เกิน/)
     expect(() => addUnitFile(base(), actor, file({ sizeBytes: 0 }))).toThrow(/ไฟล์ว่าง/)
   })
@@ -1601,8 +1604,211 @@ describe('เอกสารแนบรายเครื่อง (0074)', () 
   })
 
   it('เพดานโหมด demo ต้องต่ำกว่า LIVE (localStorage มีโควตาจำกัด)', () => {
-    expect(DEMO_MAX_UNIT_FILE_MB).toBeLessThan(MAX_UNIT_FILE_MB)
-    expect(isAllowedUnitFile('IMAGE/PNG')).toBe(true)            // ไม่แคร์ตัวพิมพ์
-    expect(isAllowedUnitFile('application/pdf')).toBe(true)
+    expect(DEMO_MAX_DOC_FILE_MB).toBeLessThan(MAX_DOC_FILE_MB)
+    expect(isAllowedDocFile('IMAGE/PNG')).toBe(true)            // ไม่แคร์ตัวพิมพ์
+    expect(isAllowedDocFile('application/pdf')).toBe(true)
+  })
+})
+
+// =============================================================================
+// สถานะกำหนดส่ง + ขยายกำหนดส่ง (0075)
+//
+// 🔴 บั๊กต้นเรื่อง: Dashboard ขึ้น "เลยกำหนด" (แดง) กับงานที่ช่างกำลังติดตั้งอยู่หน้างาน
+//    เพราะทุกหน้าตัดสินด้วย daysLeft < 0 อย่างเดียว · เทสต์ชุดนี้ล็อกไว้ว่า
+//    "เลยกำหนดจริง" (overdue) ต้องเกิดเฉพาะตอนที่ของ **ยังไม่ออกจากคลัง** เท่านั้น
+// =============================================================================
+describe('สถานะกำหนดส่ง (0075)', () => {
+  const actor = { id: 'u1', email: 'p@x.co', password: '', fullName: 'โปรเจกต์', department: 'project' as const, isActive: true }
+  const TODAY = '2026-09-17'
+  const PAST = '2026-08-01'          // เลยมาแล้ว 47 วัน
+  const SOON = '2026-10-01'          // เหลือ 14 วัน (≤ 30)
+  const FAR = '2027-01-01'
+
+  // งานที่ "ของออกไปอยู่กับช่างแล้ว" = มี unit status issued อย่างน้อย 1 เครื่อง
+  const inFieldDb = (due: string, over: Partial<DB> = {}) => db({
+    users: [actor],
+    jobs: [job({ requiredDate: due, openedBy: 'u1' })],
+    lbsUnits: [
+      unit({ id: 'a', status: 'issued', jobId: 'j1' }),
+      unit({ id: 'b', serialLvb: 'LVB-002', serialOm: 'OM-002', status: 'issued', jobId: 'j1' }),
+    ],
+    ...over,
+  })
+  const notStartedDb = (due: string) => db({
+    users: [actor],
+    jobs: [job({ requiredDate: due, openedBy: 'u1' })],
+    lbsUnits: [unit({ id: 'a', status: 'allocated', jobId: 'j1' })],
+  })
+  const d1 = (d: DB) => jobDelivery(d, d.jobs[0], TODAY)
+
+  it('🔴 เลยกำหนดแต่กำลังติดตั้งอยู่ = in_field_late (ส้ม) ไม่ใช่ overdue (แดง)', () => {
+    const d = d1(inFieldDb(PAST))
+    expect(d.state).toBe('in_field_late')
+    expect(d.tone).toBe('amber')
+    expect(d.atRisk).toBe(false)               // ไม่ถูกนับเป็น "ต้องเร่ง"
+    expect(d.daysLate).toBe(47)                // ยังบอกจำนวนวันที่เลยแผนตามจริง
+  })
+
+  it('🔴 เลยกำหนดและของยังไม่ออกจากคลัง = overdue (แดง) + บอกว่าใครค้าง', () => {
+    const d = d1(notStartedDb(PAST))
+    expect(d.state).toBe('overdue')
+    expect(d.tone).toBe('red')
+    expect(d.atRisk).toBe(true)
+    expect(d.nextStep).toMatch(/LBS|PR|จัดซื้อ|เบิก/)
+  })
+
+  it('ใกล้กำหนด ≤30 วัน = due_soon · ไกลกว่านั้น = on_track · ไม่ระบุวัน = no_due', () => {
+    expect(d1(notStartedDb(SOON)).state).toBe('due_soon')
+    expect(d1(notStartedDb(FAR)).state).toBe('on_track')
+    expect(d1(notStartedDb('')).state).toBe('no_due')
+  })
+
+  it('มีเครื่องติดตั้งไม่ได้ = blocked (แดง) มาก่อนเรื่องวันที่เสมอ', () => {
+    const base = inFieldDb(FAR, {
+      unitInstallations: [{
+        id: 'ui1', unitId: 'a', jobId: 'j1', outcome: 'blocked', reason: 'ยังไม่เดินสายเมน',
+        performedBy: 'u1', performedAt: '2026-09-10T00:00:00.000Z',
+      }],
+    })
+    const d = d1(base)
+    expect(d.state).toBe('blocked')
+    expect(d.atRisk).toBe(true)                // ยังไม่เลยกำหนดด้วยซ้ำ แต่ต้องมีคนเข้าไปแก้
+  })
+
+  it('ทุกเครื่องได้ข้อสรุปแล้ว = awaiting_close (ฟ้า) ไม่ใช่แดง แม้เลยกำหนด', () => {
+    const base = inFieldDb(PAST, {
+      unitInstallations: [
+        { id: 'ui1', unitId: 'a', jobId: 'j1', outcome: 'installed', installedDate: '2026-09-15', performedBy: 'u1', performedAt: '2026-09-15T00:00:00.000Z' },
+        { id: 'ui2', unitId: 'b', jobId: 'j1', outcome: 'installed', installedDate: '2026-09-16', performedBy: 'u1', performedAt: '2026-09-16T00:00:00.000Z' },
+      ],
+    })
+    const d = d1(base)
+    expect(d.state).toBe('awaiting_close')
+    expect(d.tone).toBe('blue')
+    expect(d.atRisk).toBe(false)
+  })
+
+  it('งานที่ปิด/ยกเลิกแล้วไม่เตือนอะไรอีก', () => {
+    for (const t of ['installed', 'cancelled'] as const) {
+      const d = db({ users: [actor], jobs: [job({ requiredDate: PAST, terminalStatus: t })] })
+      expect(jobDelivery(d, d.jobs[0], TODAY).state).toBe('closed')
+      expect(jobDelivery(d, d.jobs[0], TODAY).atRisk).toBe(false)
+    }
+  })
+
+  it('🔴 ขยายกำหนดส่งแล้วนับจากวันใหม่ — แต่ requiredDate เดิมต้องไม่ถูกแก้', () => {
+    const d0 = notStartedDb(PAST)
+    expect(d1(d0).state).toBe('overdue')
+    const d = extendJobDue(d0, actor, { jobId: 'j1', newDueDate: FAR, reason: 'ลูกค้าขอเลื่อนดับไฟ' })
+    expect(d.jobs[0].requiredDate).toBe(PAST)          // กำหนดตามสัญญาไม่หาย
+    expect(jobEffectiveDue(d, d.jobs[0])).toBe(FAR)
+    const dd = jobDelivery(d, d.jobs[0], TODAY)
+    expect(dd.state).toBe('on_track')
+    expect(dd.contractDue).toBe(PAST)
+    expect(dd.extensionCount).toBe(1)
+  })
+
+  it('เลื่อนต้องมีเหตุผล · เลื่อนเป็นวันเดิมไม่ได้ · เก็บเป็นประวัติทุกครั้ง', () => {
+    const d0 = notStartedDb(PAST)
+    expect(() => extendJobDue(d0, actor, { jobId: 'j1', newDueDate: FAR, reason: '  ' })).toThrow(/เหตุผล/)
+    expect(() => extendJobDue(d0, actor, { jobId: 'j1', newDueDate: PAST, reason: 'x' })).toThrow(/ตรงกับกำหนดเดิม/)
+    let d = extendJobDue(d0, actor, { jobId: 'j1', newDueDate: SOON, reason: 'รอบที่ 1' })
+    d = extendJobDue(d, actor, { jobId: 'j1', newDueDate: FAR, reason: 'รอบที่ 2' })
+    expect(jobDueExtensions(d, 'j1')).toHaveLength(2)
+    expect(jobDueExtensions(d, 'j1')[0].reason).toBe('รอบที่ 2')    // ใหม่สุดก่อน = ตัวที่มีผล
+    expect(jobDueExtensions(d, 'j1')[0].prevDueDate).toBe(SOON)     // ต่อจากรอบที่ 1 ไม่ใช่จากสัญญา
+    expect(jobEffectiveDue(d, d.jobs[0])).toBe(FAR)
+  })
+
+  it('ยกเลิกการเลื่อนได้เฉพาะครั้งล่าสุด (ประวัติก่อนหน้าเป็นหลักฐาน)', () => {
+    let d = extendJobDue(notStartedDb(PAST), actor, { jobId: 'j1', newDueDate: SOON, reason: 'รอบที่ 1' })
+    const first = d.jobDueExtensions[0].id
+    d = extendJobDue(d, actor, { jobId: 'j1', newDueDate: FAR, reason: 'รอบที่ 2' })
+    expect(() => deleteJobDueExtension(d, actor, { extensionId: first })).toThrow(/ล่าสุด/)
+    const d2 = deleteJobDueExtension(d, actor, { extensionId: d.jobDueExtensions[1].id })
+    expect(jobEffectiveDue(d2, d2.jobs[0])).toBe(SOON)              // กลับไปใช้รอบที่ 1
+  })
+
+  it('งานที่ปิด/ยกเลิกแล้วเลื่อนกำหนดส่งไม่ได้', () => {
+    for (const t of ['installed', 'cancelled'] as const) {
+      const d = db({ users: [actor], jobs: [job({ requiredDate: PAST, terminalStatus: t, openedBy: 'u1' })] })
+      expect(() => extendJobDue(d, actor, { jobId: 'j1', newDueDate: FAR, reason: 'x' })).toThrow()
+    }
+  })
+
+  it('Project ที่ไม่ใช่เจ้าของงานเลื่อนกำหนดส่งไม่ได้ (0042)', () => {
+    const other = { ...actor, id: 'u9' }
+    expect(() => extendJobDue(notStartedDb(PAST), other, { jobId: 'j1', newDueDate: FAR, reason: 'x' }))
+      .toThrow(/ไม่ใช่งานที่คุณเปิด/)
+  })
+
+  it('การเลื่อนกำหนดส่งต้องไม่กินโควตา LINE (แจ้งในระบบอย่างเดียว)', () => {
+    const d = extendJobDue(notStartedDb(PAST), actor, { jobId: 'j1', newDueDate: FAR, reason: 'x' })
+    const n = d.notifications.find(x => x.type === 'job_due_extended')
+    expect(n).toBeTruthy()
+    expect(LINE_PUSH_TYPES.has('job_due_extended')).toBe(false)
+    expect(n!.lineStatus).toBe('off')
+  })
+})
+
+// =============================================================================
+// เอกสารแนบรายงวดเงิน (0076)
+// =============================================================================
+describe('เอกสารแนบรายงวดเงิน (0076)', () => {
+  const actor = { id: 'u1', email: 'p@x.co', password: '', fullName: 'โปรเจกต์', department: 'project' as const, isActive: true }
+  const withPayment = (over: Partial<Job> = {}) => {
+    const d0 = db({ users: [actor], jobs: [job({ openedBy: 'u1', budgetSalePrice: 1_000_000, ...over })] })
+    const d = addJobPayment(d0, actor, { jobId: 'j1', payType: 'advance', percent: 15, invoiceNo: 'INV-001' })
+    return { d, paymentId: d.jobPayments[0].id }
+  }
+  const f = (paymentId: string, over: Partial<Parameters<typeof addPaymentFile>[2]> = {}) => ({
+    paymentId, fileName: 'invoice.pdf', filePath: `payment/${paymentId}/x.pdf`,
+    mimeType: 'application/pdf', sizeBytes: 300_000, ...over,
+  })
+
+  it('แนบได้หลายไฟล์ต่องวด · ใหม่สุดขึ้นก่อน · นับต่องวดถูกต้อง', () => {
+    const { d: d0, paymentId } = withPayment()
+    let d = addPaymentFile(d0, actor, f(paymentId))
+    d = addPaymentFile(d, actor, f(paymentId, { fileName: 'receipt.jpg', mimeType: 'image/jpeg' }))
+    expect(paymentFileCount(d, paymentId)).toBe(2)
+    expect(paymentFiles(d, paymentId)[0].fileName).toBe('receipt.jpg')
+  })
+
+  it('กติกาชนิด/ขนาดไฟล์ชุดเดียวกับเอกสารรายเครื่อง', () => {
+    const { d, paymentId } = withPayment()
+    expect(() => addPaymentFile(d, actor, f(paymentId, { mimeType: 'application/zip' }))).toThrow(/PDF และรูปภาพ/)
+    expect(() => addPaymentFile(d, actor, f(paymentId, { sizeBytes: MAX_DOC_FILE_MB * 1024 * 1024 + 1 }))).toThrow(/ใหญ่เกิน/)
+    expect(() => addPaymentFile(d, actor, f(paymentId, { sizeBytes: 0 }))).toThrow(/ไฟล์ว่าง/)
+    expect(() => addPaymentFile(d, actor, f(paymentId, { filePath: ' ' }))).toThrow(/ที่อยู่ไฟล์/)
+  })
+
+  it('🔴 ปิดงานติดตั้งแล้วยังแนบได้ (PAC/Retention มาหลังปิดงานเสมอ) · ยกเลิกแล้วแนบไม่ได้', () => {
+    const { d, paymentId } = withPayment({ terminalStatus: 'installed' })
+    expect(paymentFileCount(addPaymentFile(d, actor, f(paymentId)), paymentId)).toBe(1)
+
+    const cancelled = { ...d, jobs: [{ ...d.jobs[0], terminalStatus: 'cancelled' as const }] }
+    expect(() => addPaymentFile(cancelled, actor, f(paymentId))).toThrow(/ยกเลิก/)
+  })
+
+  it('ลบงวดเงินแล้วเอกสารแนบของงวดนั้นหายตาม (CASCADE)', () => {
+    const { d: d0, paymentId } = withPayment()
+    const d1 = addPaymentFile(d0, actor, f(paymentId))
+    const d2 = deleteJobPayment(d1, actor, { paymentId })
+    expect(d2.jobPayments).toHaveLength(0)
+    expect(d2.jobPaymentFiles).toHaveLength(0)
+    expect(d2.auditLogs.some(a => a.action === 'delete_job_payment' && /เอกสารแนบ 1 ไฟล์/.test(a.detail))).toBe(true)
+  })
+
+  it('ลบเอกสารทีละไฟล์ได้ + ลง audit', () => {
+    const { d: d0, paymentId } = withPayment()
+    const d1 = addPaymentFile(d0, actor, f(paymentId))
+    const d2 = deletePaymentFile(d1, actor, { fileId: d1.jobPaymentFiles[0].id })
+    expect(paymentFileCount(d2, paymentId)).toBe(0)
+    expect(d2.auditLogs.some(a => a.action === 'delete_payment_file')).toBe(true)
+  })
+
+  it('Project ที่ไม่ใช่เจ้าของงานแนบเอกสารไม่ได้ (0042)', () => {
+    const { d, paymentId } = withPayment()
+    expect(() => addPaymentFile(d, { ...actor, id: 'u9' }, f(paymentId))).toThrow(/ไม่ใช่งานที่คุณเปิด/)
   })
 })

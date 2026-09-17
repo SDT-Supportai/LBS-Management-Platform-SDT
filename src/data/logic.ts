@@ -1,5 +1,6 @@
 import type {
   DB, Job, JobStatus, User, AccessoryRequest, AccReqStatus, PurchaseOrder, Department, LbsUnit, LbsUnitFile,
+  JobPaymentFile, JobDueExtension,
   ApprovalType, ApprovalPayload, BudgetCosts, CostCategoryKey,
   SiteVisit, SiteVisitOutcome, UnitInstallOutcome, TeamMember, JobAssignment,
   StockMovementType, PaymentType, EpicorTxnType,
@@ -384,6 +385,207 @@ export function jobDaysLeft(job: Job, today = todayIso()): number | undefined {
 /** เตือนเมื่อเหลือ ≤ 30 วันก่อนกำหนดส่ง (มติ 2026-08-08) */
 export const DUE_WARN_DAYS = 30
 
+// =============================================================================
+// สถานะกำหนดส่ง (0075) — "เลยกำหนด" ต้องแยกจาก "เลยแผนแต่กำลังทำอยู่"
+//
+// ปัญหาเดิม: ทุกหน้าตัดสินด้วย `daysLeft < 0` อย่างเดียว ⇒ งานที่ช่างกำลังติดตั้งอยู่หน้างาน
+//   ขึ้นแดง "เลยกำหนด" เหมือนงานที่ยังไม่ได้เริ่มเลย · ทั้งที่สองใบนี้ต้องการคนละการกระทำ
+//   (ใบแรกต้องตามความคืบหน้า · ใบหลังต้องเร่งของ/เร่งทีม) พอสีเดียวกันหมด คนอ่านก็เลิกเชื่อสีแดง
+//
+// โมเดลใหม่ = 2 แกนไขว้กัน แล้วยุบเป็นสถานะเดียวที่อ่านแล้วรู้ว่า "ใครต้องทำอะไรต่อ":
+//   แกนเวลา  : กำหนดที่ **มีผล** (ขยายแล้วนับจากวันใหม่ — ดู jobEffectiveDue) เทียบวันนี้
+//   แกนหน้างาน: ของออกจากคลังไปแล้วหรือยัง · ติดตั้งได้ข้อสรุปครบหรือยัง · มีเครื่องติดปัญหาไหม
+//
+// ลำดับตัดสิน (บนสุดชนะ) — เรียงตาม "สิ่งที่ต้องลงมือก่อน" ไม่ใช่ตามความรุนแรงของวันที่:
+//   ปิดแล้ว → ติดปัญหาหน้างาน → รอปิดงาน → กำลังติดตั้ง(เลยแผน/ตามแผน) → เลยกำหนด → ใกล้กำหนด → ตามแผน
+//   🔴 blocked มาก่อน in_field_late เสมอ: เครื่องที่ติดตั้งไม่ได้คือของจริงที่ค้าง ส่วนวันที่เลื่อนได้
+//   🔴 awaiting_close มาก่อน late: ทุกเครื่องได้ข้อสรุปแล้ว เหลือแค่กดปิด — ไล่เรื่องวันที่ตอนนี้ไม่ช่วยอะไร
+// =============================================================================
+export type DeliveryState =
+  | 'closed'          // ปิดงาน/ยกเลิกแล้ว — ไม่ต้องเตือนอะไรอีก
+  | 'blocked'         // มีเครื่องติดตั้งไม่ได้ และยังไม่ได้ข้อสรุปครบทั้งใบ
+  | 'awaiting_close'  // ทุกเครื่องได้ข้อสรุปแล้ว รอ Service กดปิดงาน
+  | 'in_field_late'   // ของอยู่หน้างาน กำลังติดตั้ง แต่เลยกำหนดที่มีผลแล้ว
+  | 'in_field'        // ของอยู่หน้างาน กำลังติดตั้ง ยังอยู่ในกำหนด
+  | 'overdue'         // เลยกำหนด และของยังไม่ออกจากคลังเลย ← สีแดงตัวจริง
+  | 'due_soon'        // เหลือ ≤ DUE_WARN_DAYS วัน และยังไม่ออกหน้างาน
+  | 'on_track'        // ยังอยู่ในแผน
+  | 'no_due'          // ยังไม่ระบุกำหนดส่ง
+
+export interface JobDelivery {
+  state: DeliveryState
+  tone: 'red' | 'amber' | 'blue' | 'green' | 'neutral'
+  label: string
+  /** ใครต้องลงมือต่อ — ใช้เป็น title/บรรทัดรอง ไม่ใช่แค่บอกว่าช้า */
+  nextStep: string
+  contractDue?: string          // กำหนดตามสัญญา (ไม่เคยถูกแก้)
+  due?: string                  // กำหนดที่มีผล = ขยายล่าสุด ถ้ามี
+  extension?: JobDueExtension   // การเลื่อนครั้งล่าสุด
+  extensionCount: number
+  daysLeft?: number             // เทียบ due ที่มีผล (ลบ = เลยแล้ว)
+  daysLate: number              // เลยมากี่วัน (0 = ยังไม่เลย)
+  /** true = ต้องมีคนเร่ง/แก้ตอนนี้ — ตัวนับ "ต้องเร่ง" ทุกหน้าใช้ค่านี้ ห้ามนับ daysLeft<0 เอง */
+  atRisk: boolean
+}
+
+/** การเลื่อนกำหนดส่งครั้งล่าสุดของ Job (0075) — ไม่มี = ยังใช้กำหนดตามสัญญา */
+export function jobDueExtension(db: DB, jobId: string): JobDueExtension | undefined {
+  // บันทึกรวดเดียวกันได้ createdAt เท่ากัน ⇒ ใช้ลำดับที่ append เป็นตัวตัดสินที่ 2 (เหมือน unitFiles)
+  return db.jobDueExtensions
+    .map((e, i) => ({ e, i }))
+    .filter(x => x.e.jobId === jobId)
+    .sort((a, b) => b.e.createdAt.localeCompare(a.e.createdAt) || b.i - a.i)[0]?.e
+}
+
+/** ประวัติการเลื่อนทั้งหมด — ใหม่สุดก่อน */
+export function jobDueExtensions(db: DB, jobId: string): JobDueExtension[] {
+  return db.jobDueExtensions
+    .map((e, i) => ({ e, i }))
+    .filter(x => x.e.jobId === jobId)
+    .sort((a, b) => b.e.createdAt.localeCompare(a.e.createdAt) || b.i - a.i)
+    .map(x => x.e)
+}
+
+/** กำหนดส่งที่ **มีผล** — ขยายแล้วนับจากวันใหม่ · ไม่เคยขยาย = กำหนดตามสัญญา */
+export function jobEffectiveDue(db: DB, job: Job): string | undefined {
+  return jobDueExtension(db, job.id)?.newDueDate ?? jobDueDate(job)
+}
+
+export function jobDelivery(db: DB, job: Job, today = todayIso()): JobDelivery {
+  const contractDue = jobDueDate(job)
+  const ext = jobDueExtension(db, job.id)
+  const due = ext?.newDueDate ?? contractDue
+  const daysLeft = due ? daysBetweenIso(today, due) : undefined
+  const daysLate = daysLeft !== undefined && daysLeft < 0 ? -daysLeft : 0
+  const extensionCount = db.jobDueExtensions.reduce((n, e) => n + (e.jobId === job.id ? 1 : 0), 0)
+  const base = { contractDue, due, extension: ext, extensionCount, daysLeft, daysLate }
+  const lateTail = daysLate > 0 ? ` · เลยแผน ${daysLate} วัน` : ''
+
+  if (job.terminalStatus === 'installed' || job.terminalStatus === 'cancelled') {
+    return {
+      ...base, state: 'closed', tone: 'neutral', atRisk: false,
+      label: job.terminalStatus === 'installed' ? 'ปิดงานแล้ว' : 'ยกเลิกแล้ว',
+      nextStep: 'ไม่มีงานค้างในใบนี้',
+    }
+  }
+
+  const inst = jobInstallSummary(db, job.id)
+  const inField = jobIsFieldActive(db, job)
+
+  // 1) ติดปัญหาหน้างาน — ของจริงค้างอยู่ ต้องแก้ก่อนเรื่องวันที่
+  if (inst.blocked > 0 && !inst.canClose) {
+    return {
+      ...base, state: 'blocked', tone: 'red', atRisk: true,
+      label: `ติดปัญหาหน้างาน ${inst.blocked} เครื่อง${lateTail}`,
+      nextStep: 'Project ต้องเคลียร์ปัญหาให้ทีมช่างเดินต่อได้ (ดูเหตุผลที่บันทึกไว้รายเครื่อง)',
+    }
+  }
+  // 2) ได้ข้อสรุปครบแล้ว เหลือกดปิด — ไล่วันที่ตอนนี้ไม่ช่วยอะไร
+  if (inst.canClose) {
+    return {
+      ...base, state: 'awaiting_close', tone: 'blue', atRisk: false,
+      label: `ติดตั้งครบ รอปิดงาน${lateTail}`,
+      nextStep: `Service กดปิดงานติดตั้ง (สำเร็จ ${inst.installed}${inst.blocked > 0 ? ` · ติดปัญหา ${inst.blocked}` : ''} จาก ${inst.total} เครื่อง)`,
+    }
+  }
+  // 3) ของอยู่กับช่างแล้ว = งานเดินอยู่จริง — เลยแผนก็ยังไม่ใช่ "เลยกำหนด" แบบงานที่ยังไม่เริ่ม
+  if (inField) {
+    const progress = `ติดตั้งแล้ว ${inst.outInstalled}/${inst.outTotal} เครื่องที่เบิกออกไป`
+    return daysLate > 0
+      ? {
+        ...base, state: 'in_field_late', tone: 'amber', atRisk: false,
+        label: `กำลังติดตั้ง · เลยแผน ${daysLate} วัน`,
+        nextStep: `${progress} — ถ้าตกลงเลื่อนวันส่งมอบกับลูกค้าแล้ว ให้บันทึก "ขยายกำหนดส่ง" ที่หน้า Job`,
+      }
+      : {
+        ...base, state: 'in_field', tone: 'green', atRisk: false,
+        label: 'กำลังติดตั้ง', nextStep: progress,
+      }
+  }
+
+  // 4) ยังไม่ออกหน้างาน — ตรงนี้เท่านั้นที่ "เลยกำหนด" แปลว่าเลยจริง
+  const status = deriveJobStatus(db, job)
+  const blockedBy =
+    status === 'ready_to_issue' ? 'ของครบแล้ว — Project กดเบิกให้ Service ได้ทันที'
+    : status === 'procuring_accessory' ? 'รอวัสดุจากฝ่ายจัดซื้อให้ครบก่อนเบิก (ดูหน้า Purchasing)'
+    : status === 'allocated' ? 'ดึง LBS เข้างานแล้ว — เปิด PR วัสดุที่เหลือ'
+    : status === 'partially_issued' ? 'เบิกไปแล้วบางส่วน — เบิกส่วนที่เหลือให้ Service'
+    : 'ยังไม่ได้ดึง LBS เข้างาน — Project ดึงเครื่องจาก Project Stock'
+
+  if (daysLate > 0) {
+    return {
+      ...base, state: 'overdue', tone: 'red', atRisk: true,
+      label: `เลยกำหนด ${daysLate} วัน · ยังไม่ออกหน้างาน`,
+      nextStep: blockedBy,
+    }
+  }
+  if (daysLeft === undefined) {
+    return {
+      ...base, state: 'no_due', tone: 'neutral', atRisk: false,
+      label: 'ยังไม่ระบุกำหนดส่ง',
+      nextStep: 'Project กรอกวันที่ต้องการติดตั้งในใบงาน ไม่งั้นงานนี้จะไม่ถูกจัดลำดับความเร่งด่วน',
+    }
+  }
+  if (daysLeft <= DUE_WARN_DAYS) {
+    return {
+      ...base, state: 'due_soon', tone: 'amber', atRisk: false,
+      label: `ใกล้กำหนด · เหลือ ${daysLeft} วัน`, nextStep: blockedBy,
+    }
+  }
+  return {
+    ...base, state: 'on_track', tone: 'neutral', atRisk: false,
+    label: `ตามแผน · เหลือ ${daysLeft} วัน`, nextStep: blockedBy,
+  }
+}
+
+// ---------------- ขยาย/แก้กำหนดส่ง (sync 0075) ----------------
+// guard = assertJobProcurable — เลื่อนได้จนถึง issued ปิดเมื่อ installed/cancelled
+// requiredDate ไม่ถูกแตะ: เก็บไว้เป็นกำหนดตามสัญญาเดิมสำหรับเทียบว่าเลื่อนรวมกี่วัน
+export function extendJobDue(
+  db: DB, actor: User, p: { jobId: string; newDueDate: string; reason: string },
+): DB {
+  const job = assertJobProcurable(db, p.jobId, actor)
+  const reason = p.reason?.trim()
+  if (!reason)
+    throw new Error('ต้องระบุเหตุผลที่เลื่อนกำหนดส่ง — เหตุผลคือหลักฐานตอนเคลมค่าปรับ/ต่อสัญญา')
+  const newDue = p.newDueDate?.slice(0, 10)
+  if (!newDue) throw new Error('กรุณาระบุกำหนดส่งใหม่')
+  const prev = jobEffectiveDue(db, job)
+  if (prev && prev === newDue)
+    throw new Error(`กำหนดส่งใหม่ตรงกับกำหนดเดิม (${prev}) — ไม่มีอะไรเปลี่ยน`)
+
+  const next: DB = {
+    ...db,
+    jobDueExtensions: [...db.jobDueExtensions, {
+      id: uid(), jobId: p.jobId, prevDueDate: prev, newDueDate: newDue,
+      reason, createdBy: actor.id, createdAt: now(),
+    }],
+  }
+  const contract = jobDueDate(job)
+  const withNotify = notify(next, {
+    type: 'job_due_extended',
+    message: `📅 ${job.jobNo} เลื่อนกำหนดส่งเป็น ${newDue} · ${reason}`,
+    dept: 'all', jobId: p.jobId,
+  })
+  return audit(withNotify, actor, 'job', p.jobId, 'extend_job_due',
+    `${job.jobNo} เลื่อนกำหนดส่ง ${prev ?? '(ไม่เคยระบุ)'} → ${newDue}` +
+    (contract ? ` (ตามสัญญา ${contract} · รวม ${daysBetweenIso(contract, newDue)} วัน)` : '') +
+    ` · เหตุผล: ${reason}`)
+}
+
+/** ยกเลิกการเลื่อน — ได้เฉพาะครั้งล่าสุด (ประวัติก่อนหน้าเป็นหลักฐาน แก้ย้อนหลังไม่ได้) */
+export function deleteJobDueExtension(db: DB, actor: User, p: { extensionId: string }): DB {
+  const ext = db.jobDueExtensions.find(e => e.id === p.extensionId)
+  if (!ext) throw new Error('ไม่พบรายการเลื่อนกำหนดส่งนี้')
+  const job = assertJobProcurable(db, ext.jobId, actor)
+  if (jobDueExtension(db, ext.jobId)?.id !== p.extensionId)
+    throw new Error('ยกเลิกได้เฉพาะการเลื่อนครั้งล่าสุด — ประวัติก่อนหน้าเป็นหลักฐาน แก้ย้อนหลังไม่ได้')
+
+  const next: DB = { ...db, jobDueExtensions: db.jobDueExtensions.filter(e => e.id !== p.extensionId) }
+  return audit(next, actor, 'job', ext.jobId, 'delete_job_due_extension',
+    `${job.jobNo} ยกเลิกการเลื่อนกำหนดส่ง (กลับไปใช้ ${ext.prevDueDate ?? 'กำหนดตามสัญญา'})`)
+}
+
 /**
  * จำนวน LBS ที่ "ดึงเข้า Job แล้ว" — รวมเครื่องที่เบิกให้ Service ไปแล้ว (0059)
  * เดิมนับแค่ allocated ทำให้ Job ที่เบิกแล้วโชว์ 0/N ทุกที่ (หน้า Job List ต้องเขียน workaround เอง)
@@ -458,22 +660,26 @@ export interface UnitSerialInput {
 }
 
 // =============================================================================
-// เอกสารแนบรายเครื่อง (0074) — สัญญา / ใบส่งของ / รูปสภาพเครื่อง
+// เอกสารแนบ — กติกากลางของทุกจุดที่แนบไฟล์ได้
+//   0074 รายเครื่อง (สัญญา / ใบส่งของ / รูปสภาพเครื่อง) · bucket unit-docs
+//   0076 รายงวดเงิน (ใบแจ้งหนี้ / ใบเสร็จ / PAC)        · bucket payment-docs
+// ⚠️ ชนิดและเพดานขนาดต้องเป็นค่าเดียวกันทั้ง 2 จุด — CHECK ฝั่ง DB ของทั้งสองตารางคัดลอก
+//    กติกานี้ไปตรง ๆ (10 MB · PDF/รูป) แยกค่าเมื่อไหร่ต้องแก้ทั้ง 3 ที่พร้อมกัน
 //
 // ทำไมต้องคุมชนิดและขนาดที่นี่ ไม่ใช่แค่ที่ <input accept>:
 //   accept ใน HTML เป็นแค่ตัวกรองในหน้าต่างเลือกไฟล์ — ลากไฟล์ใส่หรือยิง RPC ตรงก็ผ่านได้
 //   ⇒ กติกาตัวจริงต้องอยู่ที่ logic + RPC (และ DB CHECK อีกชั้น)
 //
 // ⚠️ โหมด demo เก็บไฟล์เป็น data URL ใน localStorage ซึ่งมีโควตาราว 5–10MB **ทั้งแอป**
-//    PDF ใบเดียวก็กินหมดได้ ⇒ เพดานคนละค่ากับ LIVE (ดู MAX_UNIT_FILE_MB / DEMO_MAX_UNIT_FILE_MB)
+//    PDF ใบเดียวก็กินหมดได้ ⇒ เพดานคนละค่ากับ LIVE (ดู MAX_DOC_FILE_MB / DEMO_MAX_DOC_FILE_MB)
 //    ถ้าไม่แยก ผู้ใช้จะอัปโหลดแล้วแอปพังทั้งตัวเพราะเขียน localStorage ไม่ได้
 // =============================================================================
-export const MAX_UNIT_FILE_MB = 10          // LIVE — เข้า Supabase Storage (private bucket)
-export const DEMO_MAX_UNIT_FILE_MB = 1      // demo — data URL ใน localStorage
-export const UNIT_FILE_TYPES = ['application/pdf', 'image/'] as const
+export const MAX_DOC_FILE_MB = 10          // LIVE — เข้า Supabase Storage (private bucket)
+export const DEMO_MAX_DOC_FILE_MB = 1      // demo — data URL ใน localStorage
+export const DOC_FILE_TYPES = ['application/pdf', 'image/'] as const
 
 /** ชนิดไฟล์ที่รับ: PDF หรือรูปภาพเท่านั้น */
-export function isAllowedUnitFile(mimeType: string): boolean {
+export function isAllowedDocFile(mimeType: string): boolean {
   const t = (mimeType || '').toLowerCase()
   return t === 'application/pdf' || t.startsWith('image/')
 }
@@ -510,11 +716,11 @@ export function addUnitFile(
   const fileName = p.fileName.trim()
   if (!fileName) throw new Error('ไม่พบชื่อไฟล์')
   if (!p.filePath.trim()) throw new Error('อัปโหลดไฟล์ไม่สำเร็จ — ไม่ได้ที่อยู่ไฟล์กลับมา')
-  if (!isAllowedUnitFile(p.mimeType))
+  if (!isAllowedDocFile(p.mimeType))
     throw new Error(`${fileName}: รับเฉพาะไฟล์ PDF และรูปภาพ`)
   if (p.sizeBytes <= 0) throw new Error(`${fileName}: ไฟล์ว่าง`)
-  if (p.sizeBytes > MAX_UNIT_FILE_MB * 1024 * 1024)
-    throw new Error(`${fileName}: ไฟล์ใหญ่เกิน ${MAX_UNIT_FILE_MB} MB`)
+  if (p.sizeBytes > MAX_DOC_FILE_MB * 1024 * 1024)
+    throw new Error(`${fileName}: ไฟล์ใหญ่เกิน ${MAX_DOC_FILE_MB} MB`)
 
   const stock = db.projectStocks.find(s => s.id === unit.projectStockId)
   const next: DB = {
@@ -1115,9 +1321,74 @@ export function deleteJobPayment(db: DB, actor: User, p: { paymentId: string }):
   const job = assertJobCostEditable(db, pm.jobId, actor)
   if (pm.paidAt)
     throw new Error(`งวดนี้บันทึกว่ารับเงินแล้ว (${pm.paidAt}) ลบไม่ได้ — ถ้าบันทึกผิดให้แก้ไขแล้วล้างวันที่รับเงินก่อน`)
-  const next: DB = { ...db, jobPayments: db.jobPayments.filter(x => x.id !== p.paymentId) }
+  // เอกสารแนบของงวดหายตามไปด้วย (ฝั่ง DB คือ ON DELETE CASCADE ของ 0076)
+  // ⚠️ ไฟล์จริงใน storage ไม่หายเอง — UI ต้องเก็บ path ไว้ก่อนเรียก แล้วค่อยเก็บกวาด
+  const files = db.jobPaymentFiles.filter(f => f.paymentId === p.paymentId).length
+  const next: DB = {
+    ...db,
+    jobPayments: db.jobPayments.filter(x => x.id !== p.paymentId),
+    jobPaymentFiles: db.jobPaymentFiles.filter(f => f.paymentId !== p.paymentId),
+  }
   return audit(next, actor, 'job_payment', pm.jobId, 'delete_job_payment',
-    `${job.jobNo} ลบงวด ${pm.payType} #${pm.seq} (Invoice ${pm.invoiceNo ?? '-'} · ${pm.amount} ฿)`)
+    `${job.jobNo} ลบงวด ${pm.payType} #${pm.seq} (Invoice ${pm.invoiceNo ?? '-'} · ${pm.amount} ฿)` +
+    (files > 0 ? ` · เอกสารแนบ ${files} ไฟล์ถูกลบตาม` : ''))
+}
+
+// ---------------- เอกสารแนบรายงวดเงิน (sync 0076) ----------------
+// ใบแจ้งหนี้ · ใบเสร็จ/ใบกำกับภาษี · PAC · สำเนาโอนเงิน — หลายไฟล์ต่องวด
+// guard = assertJobCostEditable เหมือนงวดเงินทั้งชุด: เอกสาร PAC/Retention มาหลังปิดงานเสมอ
+
+/** เอกสารของงวดนี้ — ใหม่สุดขึ้นก่อน (ตัวตัดสินที่ 2 = ลำดับที่ append เหมือน unitFiles) */
+export function paymentFiles(db: DB, paymentId: string): JobPaymentFile[] {
+  return db.jobPaymentFiles
+    .map((f, i) => ({ f, i }))
+    .filter(x => x.f.paymentId === paymentId)
+    .sort((a, b) => b.f.uploadedAt.localeCompare(a.f.uploadedAt) || b.i - a.i)
+    .map(x => x.f)
+}
+
+/** จำนวนเอกสารต่องวด — ใช้โชว์ badge บนปุ่ม 📎 โดยไม่ต้องดึงทั้งลิสต์ */
+export function paymentFileCount(db: DB, paymentId: string): number {
+  return db.jobPaymentFiles.reduce((n, f) => n + (f.paymentId === paymentId ? 1 : 0), 0)
+}
+
+export function addPaymentFile(
+  db: DB, actor: User,
+  p: { paymentId: string; fileName: string; filePath: string; mimeType: string; sizeBytes: number; note?: string },
+): DB {
+  const pm = db.jobPayments.find(x => x.id === p.paymentId)
+  if (!pm) throw new Error('ไม่พบงวดเงินนี้')
+  const job = assertJobCostEditable(db, pm.jobId, actor)
+  const fileName = p.fileName.trim()
+  if (!fileName) throw new Error('ไม่พบชื่อไฟล์')
+  if (!p.filePath.trim()) throw new Error('อัปโหลดไฟล์ไม่สำเร็จ — ไม่ได้ที่อยู่ไฟล์กลับมา')
+  if (!isAllowedDocFile(p.mimeType)) throw new Error(`${fileName}: รับเฉพาะไฟล์ PDF และรูปภาพ`)
+  if (p.sizeBytes <= 0) throw new Error(`${fileName}: ไฟล์ว่าง`)
+  if (p.sizeBytes > MAX_DOC_FILE_MB * 1024 * 1024)
+    throw new Error(`${fileName}: ไฟล์ใหญ่เกิน ${MAX_DOC_FILE_MB} MB`)
+
+  const next: DB = {
+    ...db,
+    jobPaymentFiles: [...db.jobPaymentFiles, {
+      id: uid(), paymentId: p.paymentId, fileName, filePath: p.filePath,
+      mimeType: p.mimeType, sizeBytes: p.sizeBytes, note: p.note?.trim() || undefined,
+      uploadedBy: actor.id, uploadedAt: now(),
+    }],
+  }
+  return audit(next, actor, 'job_payment', pm.jobId, 'add_payment_file',
+    `${job.jobNo} งวด ${pm.payType} #${pm.seq} แนบเอกสาร "${fileName}" (${Math.round(p.sizeBytes / 1024)} KB)`)
+}
+
+/** ลบเอกสารแนบ — ไฟล์จริงใน storage ถูกลบโดย UI หลังลบแถวสำเร็จ (ลบแถวก่อนเสมอ) */
+export function deletePaymentFile(db: DB, actor: User, p: { fileId: string }): DB {
+  const file = db.jobPaymentFiles.find(f => f.id === p.fileId)
+  if (!file) throw new Error('ไม่พบเอกสารแนบ')
+  const pm = db.jobPayments.find(x => x.id === file.paymentId)
+  if (!pm) throw new Error('ไม่พบงวดเงินนี้')
+  const job = assertJobCostEditable(db, pm.jobId, actor)
+  const next: DB = { ...db, jobPaymentFiles: db.jobPaymentFiles.filter(f => f.id !== p.fileId) }
+  return audit(next, actor, 'job_payment', pm.jobId, 'delete_payment_file',
+    `${job.jobNo} งวด ${pm.payType} #${pm.seq} ลบเอกสารแนบ "${file.fileName}"`)
 }
 
 // สรุปยอดสำหรับการ์ด Payment — ยอดออกใบแล้ว / รับเงินแล้ว / ยังไม่ออกใบ

@@ -3,7 +3,7 @@ import type { DB, User, Department, AppSettings, AppNotification } from '../type
 import { buildSeedDb } from './seed'
 import * as L from './logic'
 import { supabase, isSupabaseMode } from '../lib/supabase'
-import { loadAll, remoteActions, createShareLinkRemote, markNotificationsRead as remoteMarkRead, setNotificationLineStatus as remoteSetLine } from './remote'
+import { loadAll, remoteActions, createShareLinkRemote, addJobPaymentRemote, markNotificationsRead as remoteMarkRead, setNotificationLineStatus as remoteSetLine } from './remote'
 
 const DB_KEY = 'lbs-platform-db-v2'
 const DB_KEY_V1 = 'lbs-platform-db-v1'
@@ -120,6 +120,7 @@ const EMPTY_DB: DB = {
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [], approvalComments: [],
   auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
+  jobPaymentFiles: [], jobDueExtensions: [],
   stdDrawings: [], stdPrices: [], stdBoms: [], stdBomLines: [],
 }
 
@@ -161,6 +162,8 @@ function migrateDb(raw: unknown): DB {
     jobAssignments: d.jobAssignments ?? [],
     stockMovements: d.stockMovements ?? [],
     jobPayments: d.jobPayments ?? [],
+    jobPaymentFiles: d.jobPaymentFiles ?? [],     // 0076 — เอกสารแนบรายงวดเงิน
+    jobDueExtensions: d.jobDueExtensions ?? [],   // 0075 — ประวัติเลื่อนกำหนดส่ง
     stdDrawings: d.stdDrawings ?? [],
     stdPrices: d.stdPrices ?? [],
     stdBoms: d.stdBoms ?? [],
@@ -257,9 +260,14 @@ export interface StoreActions {
   /** นับยอดเปิดดูลิงก์สาธารณะ — demo เท่านั้น (LIVE นับใน RPC ฝั่ง server) · ไม่ต้อง login */
   touchShareLink: (p: { token: string }) => void
   writeOffJobMaterial: (p: Parameters<typeof L.writeOffJobMaterial>[2]) => MaybePromise
-  addJobPayment: (p: Parameters<typeof L.addJobPayment>[2]) => MaybePromise
+  /** คืน id ของงวดที่เพิ่งบันทึก — โมดัล "เพิ่มงวด" ใช้ผูกเอกสารแนบทันที (0076) */
+  addJobPayment: (p: Parameters<typeof L.addJobPayment>[2]) => Promise<string> | string
   updateJobPayment: (p: Parameters<typeof L.updateJobPayment>[2]) => MaybePromise
   deleteJobPayment: (p: Parameters<typeof L.deleteJobPayment>[2]) => MaybePromise
+  addPaymentFile: (p: Parameters<typeof L.addPaymentFile>[2]) => MaybePromise
+  deletePaymentFile: (p: Parameters<typeof L.deletePaymentFile>[2]) => MaybePromise
+  extendJobDue: (p: Parameters<typeof L.extendJobDue>[2]) => MaybePromise
+  deleteJobDueExtension: (p: Parameters<typeof L.deleteJobDueExtension>[2]) => MaybePromise
   createStdDrawing: (p: Parameters<typeof L.createStdDrawing>[2]) => MaybePromise
   updateStdDrawing: (p: Parameters<typeof L.updateStdDrawing>[2]) => MaybePromise
   deleteStdDrawing: (p: Parameters<typeof L.deleteStdDrawing>[2]) => MaybePromise
@@ -470,9 +478,19 @@ function DemoProvider({ children }: { children: ReactNode }) {
         touchShareLink: (p: { token: string }) => applyDb(L.touchShareLink(dbRef.current, p.token)),
         writeOffJobMaterial: run('job.manage', L.writeOffJobMaterial),
         // Payment — Project (เจ้าของงาน ตาม 0042) + Manage
-        addJobPayment: run('job.manage', L.addJobPayment),
+        // คืน id ของงวดที่เพิ่งเพิ่ม (0076) — แถวใหม่ถูก append ต่อท้ายเสมอ เหมือน createShareLink
+        addJobPayment: (p: Parameters<typeof L.addJobPayment>[2]) => {
+          const actor = requirePerm('job.manage')
+          const next = L.addJobPayment(dbRef.current, actor, p)
+          applyDb(next)
+          return next.jobPayments[next.jobPayments.length - 1].id
+        },
         updateJobPayment: run('job.manage', L.updateJobPayment),
         deleteJobPayment: run('job.manage', L.deleteJobPayment),
+        addPaymentFile: run('job.manage', L.addPaymentFile),
+        deletePaymentFile: run('job.manage', L.deletePaymentFile),
+        extendJobDue: run('job.manage', L.extendJobDue),
+        deleteJobDueExtension: run('job.manage', L.deleteJobDueExtension),
         // Standard Drawing / BOM (0045)
         createStdDrawing: run('standards.manage', L.createStdDrawing),
         updateStdDrawing: run('standards.manage', L.updateStdDrawing),
@@ -638,6 +656,13 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
 
     // 0069 — createShareLink ต้องคืน token ที่ server สุ่มให้ · rpc() ตัวกลางคืน void
     //   จึงต่อเองแล้ว reload ต่อท้ายให้เหมือน action อื่น (แถวใหม่ต้องโผล่ในตารางทันที)
+    // 0076 — บันทึกงวดเงินต้องคืน id ให้โมดัลผูกเอกสารแนบที่ผู้ใช้เลือกไว้ต่อทันที
+    act.addJobPayment = async (p) => {
+      const id = await addJobPaymentRemote(sb, p)
+      try { await reload() } catch { setStale(true) }
+      return id
+    }
+
     act.createShareLink = async (p) => {
       const token = await createShareLinkRemote(sb, p)
       try { await reload() } catch { setStale(true) }

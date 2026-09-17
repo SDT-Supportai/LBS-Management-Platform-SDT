@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { jobInstallSummary, jobIsFieldActive, memberSchedule, jobTeam } from '../data/logic'
-import { Modal, useConfirm, useTryAction } from '../ui/components'
+import { jobDelivery, jobInstallSummary, jobIsFieldActive, memberSchedule, jobTeam } from '../data/logic'
+import { DeliveryBadge, Modal, useConfirm, useTryAction } from '../ui/components'
 import { fmtDate } from '../ui/format'
 import type { TeamMember } from '../types'
 
@@ -115,7 +115,7 @@ export default function ServiceSchedulingPage() {
           <div className="panel-head"><h3>⚠️ งานที่เบิกแล้วแต่ยังไม่มอบหมายทีม ({unassigned.length})</h3></div>
           <div className="table-scroll">
             <table>
-              <thead><tr><th>Job No.</th><th>ลูกค้า / สถานที่</th><th>นัดติดตั้ง</th><th>ติดตั้ง</th></tr></thead>
+              <thead><tr><th>Job No.</th><th>ลูกค้า / สถานที่</th><th>นัดติดตั้ง</th><th>สถานะกำหนดส่ง</th><th>ติดตั้ง</th></tr></thead>
               <tbody>
                 {unassigned.map(j => {
                   const s = jobInstallSummary(db, j.id)
@@ -123,7 +123,10 @@ export default function ServiceSchedulingPage() {
                     <tr key={j.id}>
                       <td><Link to={`/jobs/${j.id}`}><b>{j.jobNo}</b></Link></td>
                       <td>{j.customerName}<div className="muted">📍 {j.issueLocation || j.installLocation || '-'}</div></td>
+                      {/* "นัดติดตั้ง" = วันที่ทีมจะออกไซต์ · คนละตัวกับกำหนดส่งตามสัญญา (0075)
+                          ตารางนี้จึงต้องมีทั้งคู่ ไม่งั้นคนจัดคิวจะไม่รู้ว่าใบไหนเลยกำหนดไปแล้ว */}
                       <td>{j.installStartDate ? `${fmtDate(j.installStartDate)} – ${fmtDate(j.installEndDate)}` : '-'}</td>
+                      <td><DeliveryBadge d={jobDelivery(db, j)} compact /></td>
                       <td><span className="badge neutral">{s.installed}/{s.total}</span></td>
                     </tr>
                   )

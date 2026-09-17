@@ -1,7 +1,7 @@
 import { Component, createContext, useCallback, useContext, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react'
 import type { JobStatus, BudgetCosts, CostCategoryKey } from '../types'
 import { JOB_STATUS_LABEL, fmtBaht, COST_CATEGORIES } from './format'
-import { parseLatLng, fmtLatLng } from '../data/logic'
+import { parseLatLng, fmtLatLng, type JobDelivery, type DeliveryState } from '../data/logic'
 
 // ---------------- Toast + สถานะกำลังบันทึก ----------------
 // busy เป็น "ทั้งแอป" ไม่ใช่ต่อปุ่ม — ระหว่างมี action ค้างอยู่ ห้ามยิง action ใหม่
@@ -304,8 +304,40 @@ export function Modal({ title, onClose, children, footer, size = 'default' }: {
 
 // ---------------- Badges ----------------
 
+/**
+ * อ่านไฟล์เป็น data URL — ใช้เฉพาะโหมด demo ที่ไม่มี Supabase Storage (เก็บเนื้อไฟล์ใน localStorage)
+ * ⚠️ กิน memory/โควตา localStorage ตามขนาดไฟล์จริง ⇒ ผู้เรียกต้องเช็คขนาดกับ DEMO_MAX_DOC_FILE_MB ก่อน
+ */
+export function readAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(String(r.result))
+    r.onerror = () => reject(new Error(`อ่านไฟล์ ${file.name} ไม่สำเร็จ`))
+    r.readAsDataURL(file)
+  })
+}
+
 export function JobStatusBadge({ status }: { status: JobStatus }) {
   return <span className={`badge ${status}`}>{JOB_STATUS_LABEL[status]}</span>
+}
+
+/**
+ * ป้าย "สถานะกำหนดส่ง" (0075) — ตัวเดียวใช้ทุกหน้า (Dashboard · Jobs · Job Detail · Service)
+ * ⚠️ ห้ามหน้าไหนคำนวณสีจาก daysLeft < 0 เองอีก — นั่นคือบั๊กเดิมที่ทำให้งานที่ช่าง
+ *    กำลังติดตั้งอยู่ขึ้นแดงเหมือนงานที่ยังไม่เริ่ม · ทุกหน้าต้องมาจาก jobDelivery() เท่านั้น
+ */
+const DELIVERY_ICON: Record<DeliveryState, string> = {
+  closed: '', blocked: '🛑', awaiting_close: '📦', in_field_late: '🔧',
+  in_field: '🔧', overdue: '🔴', due_soon: '⚠️', on_track: '', no_due: '',
+}
+export function DeliveryBadge({ d, compact }: { d: JobDelivery; compact?: boolean }) {
+  const icon = DELIVERY_ICON[d.state]
+  return (
+    <span className={`badge ${d.tone}`} title={d.nextStep}>
+      {icon && `${icon} `}
+      {compact && d.state === 'overdue' ? `เลยกำหนด ${d.daysLate} วัน` : d.label}
+    </span>
+  )
 }
 
 // ---------------- จุดติดตั้ง ↔ รูปแบบที่ API รับ (0060) ----------------

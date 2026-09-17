@@ -46,7 +46,7 @@ export function buildSeedDb(): DB {
         type: 'initial', note: 'ยอดตั้งต้นข้อมูลตัวอย่าง', performedBy: 'u-admin', performedAt: '2026-06-01T09:00:00.000Z' },
     ],
     accessoryRequests: [], prs: [], pos: [], approvalRequests: [], approvalComments: [], auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
-    teamMembers: [], jobAssignments: [], jobPayments: [],
+    teamMembers: [], jobAssignments: [], jobPayments: [], jobPaymentFiles: [], jobDueExtensions: [],
     // Standard Drawing / BOM ตัวอย่าง (0045) — drawing ตัวที่ 2 ยังไม่แนบไฟล์ ให้เห็นสถานะนั้นด้วย
     stdDrawings: [
       { id: 's-dwg-1', title: 'Single Line Diagram — 115kV LBS Standard', drawingNo: 'STD-SLD-001',

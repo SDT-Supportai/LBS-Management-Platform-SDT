@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { deriveJobStatus, jobInstallSummary, jobIsFieldActive, qtyOutToField, effectiveQty, unitInstallState, jobTeam, memberFullName, serviceIssues } from '../data/logic'
+import { deriveJobStatus, jobDelivery, jobInstallSummary, jobIsFieldActive, qtyOutToField, effectiveQty, unitInstallState, jobTeam, memberFullName, serviceIssues } from '../data/logic'
 import type { ServiceIssueKind } from '../data/logic'
 
 const ISSUE_KIND: Record<ServiceIssueKind, { label: string; cls: string }> = {
@@ -9,7 +9,7 @@ const ISSUE_KIND: Record<ServiceIssueKind, { label: string; cls: string }> = {
   site_visit: { label: 'ติดปัญหาหน้างาน', cls: 'red' },
   unit_blocked: { label: 'เครื่องติดตั้งไม่ได้', cls: 'red' },
 }
-import { Modal, useToast, useTryAction } from '../ui/components'
+import { DeliveryBadge, Modal, useToast, useTryAction } from '../ui/components'
 import { fmtDate, fmtDateTime } from '../ui/format'
 import { supabase } from '../lib/supabase'
 
@@ -314,17 +314,28 @@ export default function ServicePage() {
         <div className="panel-head"><h3>รอ Project เบิกให้ ({ready.length})</h3></div>
         <div className="table-scroll">
           <table>
-            <thead><tr><th>Job No.</th><th>ลูกค้า</th><th>สถานที่</th><th>กำหนดติดตั้ง</th></tr></thead>
+            <thead><tr><th>Job No.</th><th>ลูกค้า</th><th>สถานที่</th><th>กำหนดติดตั้ง</th><th>สถานะกำหนดส่ง</th></tr></thead>
             <tbody>
-              {ready.length === 0 && <tr><td colSpan={4}><div className="empty">ไม่มีงานพร้อมเบิก</div></td></tr>}
-              {ready.map(j => (
-                <tr key={j.id}>
-                  <td><Link to={`/jobs/${j.id}`}><b>{j.jobNo}</b></Link></td>
-                  <td>{j.customerName}</td>
-                  <td>{j.installLocation || '-'}</td>
-                  <td>{fmtDate(j.requiredDate)}</td>
-                </tr>
-              ))}
+              {ready.length === 0 && <tr><td colSpan={5}><div className="empty">ไม่มีงานพร้อมเบิก</div></td></tr>}
+              {ready.map(j => {
+                // 0075: ฝั่ง Service เคยไม่เห็นสัญญาณเรื่องกำหนดส่งเลย — เห็นแต่วันที่เปล่า ๆ
+                //   ทั้งที่เป็นคนที่ต้องเร่งจริงเมื่อของพร้อมแล้วแต่ยังไม่ออกหน้างาน
+                const d = jobDelivery(db, j)
+                return (
+                  <tr key={j.id}>
+                    <td><Link to={`/jobs/${j.id}`}><b>{j.jobNo}</b></Link></td>
+                    <td>{j.customerName}</td>
+                    <td>{j.installLocation || '-'}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {d.due ? fmtDate(d.due) : '-'}
+                      {d.extension && d.contractDue && (
+                        <div className="muted" style={{ fontSize: 11 }}>เลื่อนจาก {fmtDate(d.contractDue)}</div>
+                      )}
+                    </td>
+                    <td><DeliveryBadge d={d} compact /></td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -356,6 +367,8 @@ export default function ServicePage() {
                         📍 {j.issueLocation || j.installLocation || '-'}
                         {j.installStartDate && <> · 📅 นัดติดตั้ง <b>{fmtDate(j.installStartDate)} – {fmtDate(j.installEndDate)}</b></>}
                       </div>
+                      {/* 0075 — สถานะกำหนดส่งเทียบกำหนดที่มีผล (ไม่ใช่ requiredDate ดิบ) */}
+                      <div style={{ marginTop: 3 }}><DeliveryBadge d={jobDelivery(db, j)} compact /></div>
                       {j.issuedNote && <div className="muted">📝 {j.issuedNote}</div>}
                       {(() => { const v = lastVisit(j.id); return v && (
                         <div className="muted" style={{ color: v.outcome === 'failed' ? 'var(--danger)' : undefined }}>
@@ -810,14 +823,30 @@ export default function ServicePage() {
             </select>
           </label>
           {visitOutcome === 'rescheduled' && (
-            <div className="row">
-              <label className="field"><span>วันนัดใหม่ (เริ่ม) *</span>
-                <input type="date" value={visitStart} onChange={e => setVisitStart(e.target.value)} />
-              </label>
-              <label className="field"><span>ถึง (เว้นว่าง = วันเดียว)</span>
-                <input type="date" value={visitEnd} onChange={e => setVisitEnd(e.target.value)} />
-              </label>
-            </div>
+            <>
+              <div className="row">
+                <label className="field"><span>วันนัดใหม่ (เริ่ม) *</span>
+                  <input type="date" value={visitStart} onChange={e => setVisitStart(e.target.value)} />
+                </label>
+                <label className="field"><span>ถึง (เว้นว่าง = วันเดียว)</span>
+                  <input type="date" value={visitEnd} onChange={e => setVisitEnd(e.target.value)} />
+                </label>
+              </div>
+              {/* 0075 — เลื่อนนัดทีมช่าง ≠ เลื่อนกำหนดส่งตามสัญญา · แยกกันโดยตั้งใจ
+                  ทีมช่างเลื่อนคิวเองได้ แต่การเลื่อนวันส่งมอบเป็นเรื่องที่ต้องตกลงกับลูกค้า
+                  ⇒ เตือนเฉพาะตอนที่นัดใหม่เลยกำหนดส่งจริง ให้ Project ไปบันทึกที่หน้า Job */}
+              {(() => {
+                const d = jobDelivery(db, visitJob)
+                const pastDue = !!visitStart && !!d.due && visitStart > d.due
+                return pastDue && (
+                  <div className="muted" style={{ color: 'var(--danger)', marginBottom: 10 }}>
+                    ⚠️ วันนัดใหม่เลยกำหนดส่ง ({fmtDate(d.due)}) — การเลื่อนนัดนี้<b>ไม่ได้</b>เลื่อนกำหนดส่งตามสัญญา
+                    ถ้าตกลงเลื่อนวันส่งมอบกับลูกค้าแล้ว ให้ Project บันทึก "ขยายกำหนดส่ง" ที่หน้า{' '}
+                    <Link to={`/jobs/${visitJob.id}`}>{visitJob.jobNo}</Link> ด้วย
+                  </div>
+                )
+              })()}
+            </>
           )}
           <label className="field"><span>เหตุผล / รายละเอียดหน้างาน *</span>
             <textarea rows={3} value={visitReason} onChange={e => setVisitReason(e.target.value)}
