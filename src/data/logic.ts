@@ -1,5 +1,5 @@
 import type {
-  DB, Job, JobStatus, User, AccessoryRequest, AccReqStatus, PurchaseOrder, Department, LbsUnit,
+  DB, Job, JobStatus, User, AccessoryRequest, AccReqStatus, PurchaseOrder, Department, LbsUnit, LbsUnitFile,
   ApprovalType, ApprovalPayload, BudgetCosts, CostCategoryKey,
   SiteVisit, SiteVisitOutcome, UnitInstallOutcome, TeamMember, JobAssignment,
   StockMovementType, PaymentType, EpicorTxnType,
@@ -455,6 +455,88 @@ export interface UnitSerialInput {
   fob?: string                 // FOB date (0049) — ETA to WH คำนวณต่อจากนี้
   leadDays?: number            // ระยะขนส่ง FOB → คลัง (วัน) · ว่าง = ค่ามาตรฐาน
   planPoReceipt?: string; planDelivery?: string
+}
+
+// =============================================================================
+// เอกสารแนบรายเครื่อง (0074) — สัญญา / ใบส่งของ / รูปสภาพเครื่อง
+//
+// ทำไมต้องคุมชนิดและขนาดที่นี่ ไม่ใช่แค่ที่ <input accept>:
+//   accept ใน HTML เป็นแค่ตัวกรองในหน้าต่างเลือกไฟล์ — ลากไฟล์ใส่หรือยิง RPC ตรงก็ผ่านได้
+//   ⇒ กติกาตัวจริงต้องอยู่ที่ logic + RPC (และ DB CHECK อีกชั้น)
+//
+// ⚠️ โหมด demo เก็บไฟล์เป็น data URL ใน localStorage ซึ่งมีโควตาราว 5–10MB **ทั้งแอป**
+//    PDF ใบเดียวก็กินหมดได้ ⇒ เพดานคนละค่ากับ LIVE (ดู MAX_UNIT_FILE_MB / DEMO_MAX_UNIT_FILE_MB)
+//    ถ้าไม่แยก ผู้ใช้จะอัปโหลดแล้วแอปพังทั้งตัวเพราะเขียน localStorage ไม่ได้
+// =============================================================================
+export const MAX_UNIT_FILE_MB = 10          // LIVE — เข้า Supabase Storage (private bucket)
+export const DEMO_MAX_UNIT_FILE_MB = 1      // demo — data URL ใน localStorage
+export const UNIT_FILE_TYPES = ['application/pdf', 'image/'] as const
+
+/** ชนิดไฟล์ที่รับ: PDF หรือรูปภาพเท่านั้น */
+export function isAllowedUnitFile(mimeType: string): boolean {
+  const t = (mimeType || '').toLowerCase()
+  return t === 'application/pdf' || t.startsWith('image/')
+}
+
+/**
+ * เอกสารของเครื่องนี้ — ใหม่สุดขึ้นก่อน
+ * ⚠️ แนบหลายไฟล์รวดเดียวได้ `uploadedAt` เท่ากันทั้งชุด (ระดับมิลลิวินาที) ⇒ ต้องมีตัวตัดสินที่ 2
+ *    ไม่งั้นลำดับสลับไปมาทุกครั้งที่ re-render · ใช้ลำดับที่ถูก append เป็นตัวตัดสิน (ทีหลัง = ใหม่กว่า)
+ */
+export function unitFiles(db: DB, unitId: string): LbsUnitFile[] {
+  return db.lbsUnitFiles
+    .map((f, i) => ({ f, i }))
+    .filter(x => x.f.unitId === unitId)
+    .sort((a, b) => b.f.uploadedAt.localeCompare(a.f.uploadedAt) || b.i - a.i)
+    .map(x => x.f)
+}
+
+/** จำนวนเอกสารต่อเครื่อง — ใช้โชว์ badge บนปุ่ม 📎 โดยไม่ต้องดึงทั้งลิสต์ */
+export function unitFileCount(db: DB, unitId: string): number {
+  return db.lbsUnitFiles.reduce((n, f) => n + (f.unitId === unitId ? 1 : 0), 0)
+}
+
+/**
+ * แนบเอกสารเข้าเครื่อง
+ * ⚠️ **ไม่บล็อกเครื่องที่เบิกไปแล้ว** ต่างจาก updateUnitPlan — เอกสาร (ใบส่งของ · รูปสภาพเครื่อง
+ *    ตอนส่งมอบ) มักมาถึงหลังของออกจากคลัง การล็อกไว้ไม่ได้ป้องกันอะไร มีแต่ทำให้แนบหลักฐานไม่ได้
+ */
+export function addUnitFile(
+  db: DB, actor: User,
+  p: { unitId: string; fileName: string; filePath: string; mimeType: string; sizeBytes: number; note?: string },
+): DB {
+  const unit = db.lbsUnits.find(u => u.id === p.unitId)
+  if (!unit) throw new Error('ไม่พบเครื่อง LBS')
+  const fileName = p.fileName.trim()
+  if (!fileName) throw new Error('ไม่พบชื่อไฟล์')
+  if (!p.filePath.trim()) throw new Error('อัปโหลดไฟล์ไม่สำเร็จ — ไม่ได้ที่อยู่ไฟล์กลับมา')
+  if (!isAllowedUnitFile(p.mimeType))
+    throw new Error(`${fileName}: รับเฉพาะไฟล์ PDF และรูปภาพ`)
+  if (p.sizeBytes <= 0) throw new Error(`${fileName}: ไฟล์ว่าง`)
+  if (p.sizeBytes > MAX_UNIT_FILE_MB * 1024 * 1024)
+    throw new Error(`${fileName}: ไฟล์ใหญ่เกิน ${MAX_UNIT_FILE_MB} MB`)
+
+  const stock = db.projectStocks.find(s => s.id === unit.projectStockId)
+  const next: DB = {
+    ...db,
+    lbsUnitFiles: [...db.lbsUnitFiles, {
+      id: uid(), unitId: p.unitId, fileName, filePath: p.filePath,
+      mimeType: p.mimeType, sizeBytes: p.sizeBytes, note: p.note?.trim() || undefined,
+      uploadedBy: actor.id, uploadedAt: now(),
+    }],
+  }
+  return audit(next, actor, 'lbs_unit', p.unitId, 'add_unit_file',
+    `${stock?.stockNo ?? ''} · ${unit.serialLvb} แนบเอกสาร "${fileName}" (${Math.round(p.sizeBytes / 1024)} KB)`)
+}
+
+/** ลบเอกสารแนบ — ไฟล์จริงใน storage ถูกลบโดย UI หลัง RPC สำเร็จ (ลบแถวก่อนเสมอ) */
+export function deleteUnitFile(db: DB, actor: User, p: { fileId: string }): DB {
+  const file = db.lbsUnitFiles.find(f => f.id === p.fileId)
+  if (!file) throw new Error('ไม่พบเอกสารแนบ')
+  const unit = db.lbsUnits.find(u => u.id === file.unitId)
+  const next: DB = { ...db, lbsUnitFiles: db.lbsUnitFiles.filter(f => f.id !== p.fileId) }
+  return audit(next, actor, 'lbs_unit', file.unitId, 'delete_unit_file',
+    `${unit?.serialLvb ?? ''} ลบเอกสารแนบ "${file.fileName}"`)
 }
 
 /**

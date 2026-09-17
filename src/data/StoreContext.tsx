@@ -116,7 +116,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 const EMPTY_DB: DB = {
   users: [], publicShareLinks: [],
-  items: [], projectStocks: [], lbsUnits: [], jobs: [], allocations: [],
+  items: [], projectStocks: [], lbsUnits: [], lbsUnitFiles: [], jobs: [], allocations: [],
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [], approvalComments: [],
   auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
@@ -151,6 +151,7 @@ function migrateDb(raw: unknown): DB {
     })),
     approvalRequests: d.approvalRequests ?? [],
     publicShareLinks: d.publicShareLinks ?? [],   // 0069
+    lbsUnitFiles: d.lbsUnitFiles ?? [],           // 0074 — เอกสารแนบรายเครื่อง
     // scope เพิ่มใน 0051 — คอมเมนต์ที่บันทึกไว้ก่อนหน้าไม่มีฟิลด์นี้ ถ้าไม่เติมจะถูก filter ทิ้งทั้งหมด
     approvalComments: (d.approvalComments ?? []).map(c => ({ ...c, scope: c.scope ?? 'approval' })),
     notifications: d.notifications ?? [],
@@ -202,6 +203,8 @@ export interface StoreActions {
   deleteProjectStock: (p: Parameters<typeof L.deleteProjectStock>[2]) => MaybePromise
   updateUnitInfo: (p: Parameters<typeof L.updateUnitInfo>[2]) => MaybePromise
   updateUnitPlan: (p: Parameters<typeof L.updateUnitPlan>[2]) => MaybePromise
+  addUnitFile: (p: Parameters<typeof L.addUnitFile>[2]) => MaybePromise
+  deleteUnitFile: (p: Parameters<typeof L.deleteUnitFile>[2]) => MaybePromise
   setStockFob: (p: Parameters<typeof L.setStockFob>[2]) => MaybePromise
   deleteDraftJob: (p: Parameters<typeof L.deleteDraftJob>[2]) => MaybePromise
   drawLbs: (p: Parameters<typeof L.drawLbs>[2]) => MaybePromise
@@ -397,6 +400,9 @@ function DemoProvider({ children }: { children: ReactNode }) {
         deleteProjectStock: run('stock.manage', L.deleteProjectStock),
         updateUnitInfo: run('stock.manage', L.updateUnitInfo),
         updateUnitPlan: run('stock.manage', L.updateUnitPlan),
+        // 0074 — เอกสารแนบรายเครื่อง (Division + Manage เหมือนงานคลังอื่น)
+        addUnitFile: run('stock.manage', L.addUnitFile),
+        deleteUnitFile: run('stock.manage', L.deleteUnitFile),
         setStockFob: run('stock.manage', L.setStockFob),
         deleteDraftJob: run('job.manage', L.deleteDraftJob),
         drawLbs: run('job.manage', L.drawLbs),

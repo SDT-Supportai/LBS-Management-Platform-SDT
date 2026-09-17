@@ -16,6 +16,8 @@ import {
   adjustPoLine, confirmUnitInstall, blockUnitInstall, assignJobTeam, logSiteVisit, closeJobInstall,
   jobInstallSummary, jobHasIssuedUnits, jobIsFieldActive, unitInstallState, jobTeam, qtyOutToField,
   updateUnitPlan, unitCustomerInfo, importUnitsToStock,
+  addUnitFile, deleteUnitFile, unitFiles, unitFileCount, isAllowedUnitFile,
+  MAX_UNIT_FILE_MB, DEMO_MAX_UNIT_FILE_MB,
 } from './logic'
 
 // =============================================================================
@@ -42,7 +44,7 @@ import {
 // ---------- fixture ----------
 const EMPTY: DB = {
   users: [], publicShareLinks: [],
-  items: [], projectStocks: [], lbsUnits: [], jobs: [], allocations: [],
+  items: [], projectStocks: [], lbsUnits: [], lbsUnitFiles: [], jobs: [], allocations: [],
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [], approvalComments: [],
   auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
@@ -1537,5 +1539,70 @@ describe('Contract No. รายเครื่อง (0073)', () => {
       stockId: 's1', newUnits: [{ lvb: 'LVB-9', om: 'OM-9', contractNo: 'CT-1', customer: 'PEA' }],
       updateUnits: [],
     })).toThrow(/Contract No./)
+  })
+})
+
+// =============================================================================
+// เอกสารแนบรายเครื่อง (0074)
+//
+// กฎที่ต้องไม่หลุด:
+//   1) รับเฉพาะ PDF + รูปภาพ · ไม่เกินเพดาน — <input accept> เป็นแค่ตัวกรองหน้าต่างเลือกไฟล์
+//      ลากไฟล์ใส่/ยิง RPC ตรงก็ผ่าน ⇒ กติกาตัวจริงต้องอยู่ที่นี่ (+ CHECK ฝั่ง DB)
+//   2) **ไม่บล็อกเครื่องที่เบิกไปแล้ว** ต่างจาก updateUnitPlan — ใบส่งของ/รูปตอนส่งมอบ
+//      มาถึงหลังของออกจากคลังเสมอ
+// =============================================================================
+describe('เอกสารแนบรายเครื่อง (0074)', () => {
+  const actor = { id: 'u1', email: 'd@x.co', password: '', fullName: 'สมชาย', department: 'sales' as const, isActive: true }
+  const base = (over: Partial<DB> = {}) => db({
+    users: [actor],
+    projectStocks: [{ id: 's1', stockNo: 'ST-1', itemId: 'i-lbs', status: 'open' as const, createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' }],
+    lbsUnits: [unit({ id: 'a', projectStockId: 's1' })],
+    ...over,
+  })
+  const file = (over: Partial<Parameters<typeof addUnitFile>[2]> = {}) => ({
+    unitId: 'a', fileName: 'contract.pdf', filePath: 'unit/a/x.pdf',
+    mimeType: 'application/pdf', sizeBytes: 500_000, ...over,
+  })
+
+  it('แนบ PDF/รูป ได้หลายไฟล์ · เรียงใหม่สุดก่อน', () => {
+    let d = addUnitFile(base(), actor, file())
+    d = addUnitFile(d, actor, file({ fileName: 'photo.jpg', mimeType: 'image/jpeg', filePath: 'unit/a/y.jpg' }))
+    expect(unitFiles(d, 'a')).toHaveLength(2)
+    expect(unitFileCount(d, 'a')).toBe(2)
+    expect(unitFiles(d, 'a')[0].fileName).toBe('photo.jpg')     // ใหม่สุดขึ้นก่อน
+  })
+
+  it('ชนิดไฟล์อื่นไม่รับ', () => {
+    for (const mt of ['application/zip', 'text/html', 'application/x-msdownload', ''])
+      expect(() => addUnitFile(base(), actor, file({ mimeType: mt }))).toThrow(/PDF และรูปภาพ/)
+  })
+
+  it('ไฟล์ใหญ่เกินเพดาน / ไฟล์ว่าง ไม่รับ', () => {
+    expect(() => addUnitFile(base(), actor, file({ sizeBytes: MAX_UNIT_FILE_MB * 1024 * 1024 + 1 })))
+      .toThrow(/ใหญ่เกิน/)
+    expect(() => addUnitFile(base(), actor, file({ sizeBytes: 0 }))).toThrow(/ไฟล์ว่าง/)
+  })
+
+  it('อัปโหลดไม่สำเร็จ (ไม่ได้ path กลับมา) ต้องไม่ลงแถวค้างไว้', () => {
+    expect(() => addUnitFile(base(), actor, file({ filePath: '  ' }))).toThrow(/ที่อยู่ไฟล์/)
+  })
+
+  it('🔴 เครื่องที่เบิกให้ Service ไปแล้วยังแนบเอกสารได้ (ใบส่งของมาทีหลังเสมอ)', () => {
+    const d0 = base({ lbsUnits: [unit({ id: 'a', projectStockId: 's1', status: 'issued', jobId: 'j1' })] })
+    const d = addUnitFile(d0, actor, file({ fileName: 'delivery-note.pdf' }))
+    expect(unitFileCount(d, 'a')).toBe(1)
+  })
+
+  it('ลบเอกสารได้ + ลง audit', () => {
+    const d0 = addUnitFile(base(), actor, file())
+    const d = deleteUnitFile(d0, actor, { fileId: d0.lbsUnitFiles[0].id })
+    expect(unitFileCount(d, 'a')).toBe(0)
+    expect(d.auditLogs.some(a => a.action === 'delete_unit_file')).toBe(true)
+  })
+
+  it('เพดานโหมด demo ต้องต่ำกว่า LIVE (localStorage มีโควตาจำกัด)', () => {
+    expect(DEMO_MAX_UNIT_FILE_MB).toBeLessThan(MAX_UNIT_FILE_MB)
+    expect(isAllowedUnitFile('IMAGE/PNG')).toBe(true)            // ไม่แคร์ตัวพิมพ์
+    expect(isAllowedUnitFile('application/pdf')).toBe(true)
   })
 })

@@ -2,11 +2,24 @@ import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import {
-  stockSummary, unitInstallDate, unitCustomerInfo,
+  stockSummary, unitInstallDate, unitCustomerInfo, unitFiles, unitFileCount, isAllowedUnitFile,
+  MAX_UNIT_FILE_MB, DEMO_MAX_UNIT_FILE_MB,
   unitEta, unitEtaIsAuto, unitFlowState, unitLeadDays, addDaysIso,
   ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX,
 } from '../data/logic'
+import { uploadUnitDoc, signedUnitDocUrl, removeUnitDoc } from '../data/remote'
+import { supabase } from '../lib/supabase'
 import { Modal, useConfirm, useToast, useTryAction, toBudgetNum } from '../ui/components'
+
+// อ่านไฟล์เป็น data URL — ใช้เฉพาะโหมด demo ที่ไม่มี Supabase Storage (เก็บเนื้อไฟล์ใน localStorage)
+function readAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(String(r.result))
+    r.onerror = () => reject(new Error(`อ่านไฟล์ ${file.name} ไม่สำเร็จ`))
+    r.readAsDataURL(file)
+  })
+}
 import { fmtBaht, fmtDate, fmtDateTime, DEPT_LABEL, UNIT_FLOW } from '../ui/format'
 import {
   type Cell, type NumKind, type ReportCol, type SumTable,
@@ -215,6 +228,7 @@ function UnitRowsEditor({ rows, setRows }: { rows: UnitRow[]; setRows: (r: UnitR
 
 export default function StocksPage() {
   const { db, user, act } = useStore()
+  const isDemo = !supabase                 // 0074 — เพดานขนาดไฟล์คนละค่า (demo เก็บใน localStorage)
   const tryAction = useTryAction()
   const { ask: askConfirm, element: confirmEl } = useConfirm()
   const { show } = useToast()
@@ -232,6 +246,8 @@ export default function StocksPage() {
   const [editPoNo, setEditPoNo] = useState('')
   const [editStatus, setEditStatus] = useState<'open' | 'closed'>('open')
   const [editPlan, setEditPlan] = useState<PlanForm | null>(null)
+  const [filesFor, setFilesFor] = useState<string | null>(null)   // 0074 — โมดัลเอกสารแนบรายเครื่อง
+  const [uploading, setUploading] = useState(false)
   const [costStock, setCostStock] = useState<string | null>(null)          // ดูต้นทุนรายเครื่อง (กดจากป้ายมูลค่าคลัง)
   const [fobStock, setFobStock] = useState<string | null>(null)            // ตั้ง FOB date ทั้งคลัง
   const [fobDate, setFobDate] = useState('')
@@ -1082,6 +1098,12 @@ export default function StocksPage() {
                           <td>{actualDelivery ? fmtDate(actualDelivery) : '-'}</td>
                           {canManage && (
                             <td style={{ whiteSpace: 'nowrap' }}>
+                              {/* 0074: ปุ่มเอกสารขึ้นทุกสถานะรวมเครื่องที่เบิกไปแล้ว — ใบส่งของ/รูปสภาพเครื่อง
+                                  ตอนส่งมอบมักมาถึงหลังของออกจากคลัง ล็อกไว้ = แนบหลักฐานไม่ได้ */}
+                              <button className="small" style={{ marginRight: 6 }} title="เอกสารแนบของเครื่องนี้ (สัญญา · ใบส่งของ · รูป)"
+                                onClick={() => setFilesFor(u.id)}>
+                                📎{unitFileCount(db, u.id) > 0 ? ` ${unitFileCount(db, u.id)}` : ''}
+                              </button>
                               {u.status === 'issued'
                                 ? <span className="muted" title="เบิกให้ Service แล้ว — allocation ถูกล็อก แก้ข้อมูลรายเครื่องไม่ได้">🔒</span>
                                 : <button className="small" onClick={() => setEditPlan({
@@ -1301,6 +1323,102 @@ export default function StocksPage() {
           <UnitRowsEditor rows={rows} setRows={setRows} />
         </Modal>
       )}
+
+      {/* ---------------- เอกสารแนบรายเครื่อง (0074) ----------------
+          แยกโมดัลจาก "แก้ข้อมูล" เพราะการอัปโหลดเกิดผลทันทีทีละไฟล์ ส่วนฟอร์มแก้ข้อมูลบันทึกทีเดียว
+          ปนกันแล้วผู้ใช้จะไม่รู้ว่ากด "ยกเลิก" แล้วไฟล์ที่เพิ่งอัปโหลดหายด้วยหรือไม่ */}
+      {filesFor && (() => {
+        const u = db.lbsUnits.find(x => x.id === filesFor)
+        if (!u) return null
+        const files = unitFiles(db, filesFor)
+        const maxMb = isDemo ? DEMO_MAX_UNIT_FILE_MB : MAX_UNIT_FILE_MB
+        return (
+          <Modal title={`เอกสารแนบ — ${u.serialLvb}`} size="wide" onClose={() => setFilesFor(null)}
+            footer={<button onClick={() => setFilesFor(null)}>ปิด</button>}>
+            <div className="muted" style={{ marginBottom: 12 }}>
+              สัญญา · ใบส่งของ · รูปสภาพเครื่อง — แนบได้หลายไฟล์ · รับ <b>PDF และรูปภาพ</b> ขนาดไม่เกิน <b>{maxMb} MB</b>/ไฟล์
+              {/* บอกเหตุผลของเพดานที่ต่างกัน ไม่งั้นคนเทสต์บนเดโมจะคิดว่าระบบจริงก็จำกัดแค่นี้ */}
+              {isDemo
+                ? <><br />⚠️ โหมด Demo เก็บไฟล์ไว้ในเบราว์เซอร์ (localStorage) จึงจำกัดที่ {DEMO_MAX_UNIT_FILE_MB} MB — ระบบจริงได้ถึง {MAX_UNIT_FILE_MB} MB</>
+                : <><br />ไฟล์เก็บใน storage แบบปิด — เปิดได้เฉพาะคนที่ล็อกอิน และลิงก์หมดอายุใน 5 นาที</>}
+            </div>
+
+            <label className="field">
+              <span>เพิ่มเอกสาร (เลือกได้หลายไฟล์)</span>
+              <input type="file" multiple accept="application/pdf,image/*" disabled={uploading}
+                onChange={async e => {
+                  const picked = [...(e.target.files ?? [])]
+                  e.target.value = ''                      // ให้เลือกไฟล์ชื่อเดิมซ้ำได้
+                  if (picked.length === 0) return
+                  setUploading(true)
+                  let ok = 0
+                  for (const f of picked) {
+                    // เช็คขนาดก่อนอ่านไฟล์ — โหมด demo อ่านเป็น data URL ซึ่งกิน memory ตามขนาดไฟล์
+                    if (f.size > maxMb * 1024 * 1024) { show(`${f.name}: ไฟล์ใหญ่เกิน ${maxMb} MB`, true); continue }
+                    if (!isAllowedUnitFile(f.type)) { show(`${f.name}: รับเฉพาะ PDF และรูปภาพ`, true); continue }
+                    try {
+                      const filePath = supabase
+                        ? await uploadUnitDoc(supabase, u.id, f)
+                        : await readAsDataUrl(f)           // demo — เก็บเนื้อไฟล์ตรง ๆ
+                      await act.addUnitFile({
+                        unitId: u.id, fileName: f.name, filePath,
+                        mimeType: f.type, sizeBytes: f.size,
+                      })
+                      ok++
+                    } catch (err) {
+                      show(err instanceof Error ? err.message : `แนบ ${f.name} ไม่สำเร็จ`, true)
+                    }
+                  }
+                  setUploading(false)
+                  if (ok > 0) show(`แนบเอกสารแล้ว ${ok} ไฟล์`)
+                }} />
+            </label>
+            {uploading && <div className="muted">กำลังอัปโหลด…</div>}
+
+            <div className="table-scroll" style={{ marginTop: 10 }}>
+              <table>
+                <thead><tr><th>ชื่อไฟล์</th><th>ชนิด</th><th style={{ textAlign: 'right' }}>ขนาด</th><th>แนบเมื่อ</th><th>โดย</th><th></th></tr></thead>
+                <tbody>
+                  {files.length === 0 && <tr><td colSpan={6}><div className="empty">ยังไม่มีเอกสารแนบ</div></td></tr>}
+                  {files.map(f => (
+                    <tr key={f.id}>
+                      <td>
+                        <button className="small" title="เปิดไฟล์"
+                          onClick={async () => {
+                            try {
+                              // LIVE: ขอ signed URL ใหม่ทุกครั้ง (ลิงก์หมดอายุ) · demo: filePath คือ data URL อยู่แล้ว
+                              const url = supabase ? await signedUnitDocUrl(supabase, f.filePath) : f.filePath
+                              window.open(url, '_blank', 'noopener')
+                            } catch (err) {
+                              show(err instanceof Error ? err.message : 'เปิดไฟล์ไม่ได้', true)
+                            }
+                          }}>{f.mimeType === 'application/pdf' ? '📄' : '🖼️'} {f.fileName}</button>
+                      </td>
+                      <td className="muted">{f.mimeType || '-'}</td>
+                      <td style={{ textAlign: 'right' }}>{Math.max(1, Math.round(f.sizeBytes / 1024)).toLocaleString('th-TH')} KB</td>
+                      <td className="muted">{fmtDateTime(f.uploadedAt)}</td>
+                      <td className="muted">{db.users.find(x => x.id === f.uploadedBy)?.fullName ?? '-'}</td>
+                      <td style={{ textAlign: 'right' }}>
+                        <button className="small danger" onClick={async () => {
+                          if (!await askConfirm({
+                            title: `ลบเอกสาร "${f.fileName}"`,
+                            description: <>ลบแล้วกู้คืนไม่ได้ · การลบถูกบันทึกใน Audit Log</>,
+                            confirmLabel: 'ลบเอกสาร',
+                          })) return
+                          if (await tryAction(() => act.deleteUnitFile({ fileId: f.id }), 'ลบเอกสารแล้ว')) {
+                            // ลบแถวสำเร็จก่อน แล้วค่อยเก็บกวาดไฟล์จริง — ล้มเหลวก็แค่เหลือไฟล์กำพร้า
+                            if (supabase) await removeUnitDoc(supabase, f.filePath)
+                          }
+                        }}>ลบ</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Modal>
+        )
+      })()}
 
       {/* แก้ข้อมูลรายเครื่อง (0043/0049) — Division/Manage · ทำได้ก่อนเบิกให้ Service
           รวม "แก้ Serial" เข้ามาที่นี่แล้ว (เดิมเป็นปุ่มแยก) — Serial แก้ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก */}

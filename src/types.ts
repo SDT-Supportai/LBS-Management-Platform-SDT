@@ -72,6 +72,27 @@ export interface LbsUnit {
   // Actual Delivery + สถานะติดตั้ง = derive จาก unitInstallations (0035) ไม่เก็บซ้ำ
 }
 
+/**
+ * เอกสารแนบรายเครื่อง (0074) — สัญญา / ใบส่งของ / รูปสภาพเครื่อง · หลายไฟล์ต่อเครื่อง
+ *
+ * ⚠️ `filePath` เก็บคนละอย่างใน 2 โหมด — UI ต้องแยกให้ถูกก่อนเอาไปเปิด:
+ *   LIVE  = path ใน **private bucket** `unit-docs` ⇒ ต้องขอ signed URL ก่อนเปิดทุกครั้ง
+ *   demo  = data URL ตรง ๆ (เก็บใน localStorage) ⇒ เปิดได้เลย
+ * ที่ไม่ใช้ public bucket แบบ install-photos (0019) เพราะเอกสารสัญญาเป็นข้อมูลเชิงพาณิชย์ + PDPA
+ * — public bucket คือใครมี URL ก็เปิดได้โดยไม่ต้อง login
+ */
+export interface LbsUnitFile {
+  id: string
+  unitId: string
+  fileName: string
+  filePath: string
+  mimeType: string
+  sizeBytes: number
+  note?: string
+  uploadedBy: string
+  uploadedAt: string
+}
+
 // Project Budget — ต้นทุนแยก 7 หมวด (0021)
 // raw_mat/outsourcing: actual มาจากมูลค่าวัสดุใน PR/PO ที่ตัดเข้าหมวดนั้น
 // trans/eng/ove/pm/fin: actual กรอกเอง
@@ -539,6 +560,7 @@ export interface DB {
   items: Item[]
   projectStocks: ProjectStock[]
   lbsUnits: LbsUnit[]
+  lbsUnitFiles: LbsUnitFile[]
   jobs: Job[]
   allocations: AllocationTxn[]
   accessoryStock: AccessoryStockRow[]

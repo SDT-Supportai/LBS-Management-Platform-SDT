@@ -32,7 +32,7 @@ export function buildSeedDb(): DB {
     users: USERS,
     publicShareLinks: [],
     items: ITEMS,
-    projectStocks: [], lbsUnits: [], jobs: [], allocations: [],
+    projectStocks: [], lbsUnits: [], lbsUnitFiles: [], jobs: [], allocations: [],
     // Lot No. (0055) — ตัวอย่างมีทั้งแบบระบุล็อตและไม่ระบุ ให้เห็นทั้ง 2 สถานะในตาราง
     accessoryStock: [
       { itemId: 'i-ct', qtyOnHand: 20, avgUnitCost: 80000, lotNo: 'LOT-CT-2026-01' },

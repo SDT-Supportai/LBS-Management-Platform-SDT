@@ -4,7 +4,7 @@ import type {
   AccessoryRequest, PurchaseRequisition, PurchaseOrder, AuditLog, AppNotification,
   Department, ApprovalRequest, ApprovalComment, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit, UnitInstallation,
   TeamMember, JobAssignment, StockMovement, JobPayment, PaymentType,
-  StdDrawing, StdPrice, StdBom, StdBomLine,
+  StdDrawing, StdPrice, StdBom, StdBomLine, LbsUnitFile,
   PublicShareLink, PublicStockView,
 } from '../types'
 
@@ -52,6 +52,15 @@ function mapUnit(r: Row): LbsUnit {
     etaLeadDays: r.eta_lead_days != null ? Number(r.eta_lead_days) : undefined,
     planPoReceiptDate: r.plan_po_receipt_date ?? undefined,
     planDeliveryDate: r.plan_delivery_date ?? undefined,
+  }
+}
+// 0074 — เอกสารแนบรายเครื่อง · file_path เป็น path ใน private bucket ไม่ใช่ URL เปิดตรงได้
+function mapUnitFile(r: Row): LbsUnitFile {
+  return {
+    id: r.id, unitId: r.unit_id, fileName: r.file_name, filePath: r.file_path,
+    mimeType: r.mime_type ?? '', sizeBytes: r.size_bytes != null ? Number(r.size_bytes) : 0,
+    note: r.note ?? undefined,
+    uploadedBy: r.uploaded_by ?? '', uploadedAt: r.uploaded_at,
   }
 }
 function mapStdDrawing(r: Row): StdDrawing {
@@ -279,8 +288,43 @@ async function q(sb: SupabaseClient, table: string, order?: { col: string; asc?:
   return data as Row[]
 }
 
+// =============================================================================
+// เอกสารแนบรายเครื่อง — Storage (0074)
+//
+// 🔴 bucket `unit-docs` เป็น **private** ต่างจาก `install-photos` (0019) ที่ public
+//    เอกสารสัญญาเป็นข้อมูลเชิงพาณิชย์ + PDPA — public bucket คือใครมี URL ก็เปิดได้โดยไม่ต้อง login
+//    ⇒ DB เก็บ **path** ไม่ใช่ URL · ตอนจะเปิดต้องขอ signed URL ที่หมดอายุเสมอ
+// =============================================================================
+export const UNIT_DOCS_BUCKET = 'unit-docs'
+const SIGNED_URL_TTL_SEC = 300      // 5 นาที — พอให้กดเปิด/ดาวน์โหลด แต่ส่งต่อลิงก์ไม่ได้นาน
+
+/** อัปโหลดไฟล์เข้า private bucket แล้วคืน path ที่จะเก็บลง DB */
+export async function uploadUnitDoc(sb: SupabaseClient, unitId: string, file: File): Promise<string> {
+  const ext = (file.name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '')
+  const path = `unit/${unitId}/${crypto.randomUUID()}.${ext}`
+  const { error } = await sb.storage.from(UNIT_DOCS_BUCKET).upload(path, file, { upsert: false })
+  if (error) throw new Error(`อัปโหลด ${file.name} ไม่สำเร็จ: ${error.message}`)
+  return path
+}
+
+/** ขอ URL ชั่วคราวสำหรับเปิดไฟล์ — ต้องเรียกใหม่ทุกครั้ง ไม่เก็บลง DB */
+export async function signedUnitDocUrl(sb: SupabaseClient, filePath: string): Promise<string> {
+  const { data, error } = await sb.storage.from(UNIT_DOCS_BUCKET).createSignedUrl(filePath, SIGNED_URL_TTL_SEC)
+  if (error || !data?.signedUrl) throw new Error(`เปิดไฟล์ไม่ได้: ${error?.message ?? 'ไม่พบไฟล์'}`)
+  return data.signedUrl
+}
+
+/**
+ * ลบไฟล์จริงออกจาก bucket — เรียก **หลัง** ลบแถวสำเร็จแล้วเท่านั้น
+ * ล้มเหลวไม่ throw: แถวหายไปแล้ว ไฟล์ค้างเป็นขยะที่ไม่มีใครอ้างถึง ดีกว่าให้ผู้ใช้เห็น error
+ * ทั้งที่การลบสำเร็จไปแล้วครึ่งทาง
+ */
+export async function removeUnitDoc(sb: SupabaseClient, filePath: string): Promise<void> {
+  try { await sb.storage.from(UNIT_DOCS_BUCKET).remove([filePath]) } catch { /* ไฟล์ค้างเป็นขยะ ไม่กระทบผู้ใช้ */ }
+}
+
 export async function loadAll(sb: SupabaseClient): Promise<DB> {
-  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, approvalComments, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, prices, boms, bomLines, shareLinks] =
+  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, approvalComments, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, prices, boms, bomLines, shareLinks, unitFiles] =
     await Promise.all([
       q(sb, 'profiles'),
       q(sb, 'items', { col: 'code', limit: 10000 }),
@@ -311,6 +355,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       q(sb, 'std_boms', { col: 'title' }),
       q(sb, 'std_bom_lines', { col: 'created_at' }),
       q(sb, 'public_share_links', { col: 'created_at', asc: false }),   // 0069 (ตารางเล็ก)
+      q(sb, 'lbs_unit_files', { col: 'uploaded_at', asc: false }),      // 0074 — เอกสารแนบรายเครื่อง
     ])
 
   const readsByNotif = new Map<string, string[]>()
@@ -334,6 +379,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     items: items.map(mapItem),
     projectStocks: stocks.map(mapStock),
     lbsUnits: units.map(mapUnit),
+    lbsUnitFiles: unitFiles.map(mapUnitFile),
     jobs: jobs.map(mapJob),
     allocations: allocs.map(mapAlloc),
     accessoryStock: accStock.map(r => ({
@@ -444,6 +490,13 @@ export function remoteActions(sb: SupabaseClient) {
         p_fob_date: p.fobDate || null, p_lead_days: p.etaLeadDays ?? null,
         p_plan_po_receipt: p.planPoReceiptDate || null, p_plan_delivery: p.planDeliveryDate || null,
       }),
+    // 0074 — เอกสารแนบรายเครื่อง · ไฟล์จริงถูกอัปโหลดเข้า private bucket จาก UI ก่อน แล้วค่อยลงแถว
+    addUnitFile: (p: { unitId: string; fileName: string; filePath: string; mimeType: string; sizeBytes: number; note?: string }) =>
+      rpc(sb, 'rpc_add_unit_file', {
+        p_unit_id: p.unitId, p_file_name: p.fileName, p_file_path: p.filePath,
+        p_mime_type: p.mimeType, p_size_bytes: p.sizeBytes, p_note: p.note || null,
+      }),
+    deleteUnitFile: (p: { fileId: string }) => rpc(sb, 'rpc_delete_unit_file', { p_file_id: p.fileId }),
     // ตั้ง FOB date + ระยะขนส่ง ทั้งคลังในครั้งเดียว (0049)
     setStockFob: (p: { stockId: string; fobDate: string; leadDays?: number; overwrite: boolean }) =>
       rpc(sb, 'rpc_set_stock_fob', {
