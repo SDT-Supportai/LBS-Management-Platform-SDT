@@ -43,8 +43,17 @@ export interface LbsUnit {
   jobId: string | null
   unitCost?: number            // ต้นทุนตัว LBS ต่อเครื่อง (บาท) — กรอกตอนสร้าง/รับเข้า Stock
                                // ดึงเข้า Job → บวกเข้า actual หมวด Raw Material (jobBudgetSummary)
+  /**
+   * เลขที่สัญญาขายของเครื่องนี้ (0073) — จุดที่ "แผน" กลายเป็น "ตกลงแล้ว"
+   * กรอกแล้ว ⇒ Customer / Contact / Location เลิกเป็นข้อมูลแผน (ดู unitCustomerInfo)
+   * ⚠️ **ผูก Job แล้วตัวนี้เป็นข้อมูลอ้างอิง (Ref.) เท่านั้น** — Job ยังชนะเรื่องลูกค้า/สถานที่
+   *    ตาม 0014 (มติ 2026-09-16) · ถ้า 2 ฝั่งไม่ตรงกันให้ขึ้นเตือน ไม่ใช่กลืนเงียบ
+   * ⚠️ ห้ามใส่ลงลิงก์สาธารณะ (0069) — เป็นข้อมูลเชิงพาณิชย์
+   */
+  contractNo?: string
   // ข้อมูลลูกค้า/สถานที่ "จริง" ref จาก Job ที่เครื่องถูกดึงเข้า (single source of truth ตาม 0014)
   // ข้างล่างคือ "ข้อมูลแผน" ที่ Division กรอกได้ก่อนเครื่องถูกผูก Job (0043) — Job ชนะเมื่อผูกแล้ว
+  // 0073: ถ้ามี contractNo แล้ว 3 ช่องนี้ไม่ใช่ "แผน" อีกต่อไป (ค่ายังเก็บที่เดิม เปลี่ยนแค่ความหมาย)
   planCustomerName?: string
   planContactPhone?: string
   planInstallLocation?: string

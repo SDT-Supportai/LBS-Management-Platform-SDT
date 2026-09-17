@@ -15,6 +15,7 @@ import {
   createShareLink, revokeShareLink, publicStockView, touchShareLink, newShareToken,
   adjustPoLine, confirmUnitInstall, blockUnitInstall, assignJobTeam, logSiteVisit, closeJobInstall,
   jobInstallSummary, jobHasIssuedUnits, jobIsFieldActive, unitInstallState, jobTeam, qtyOutToField,
+  updateUnitPlan, unitCustomerInfo, importUnitsToStock,
 } from './logic'
 
 // =============================================================================
@@ -1440,5 +1441,101 @@ describe('ปิดใบเงียบ — ประกาศให้ Service
     expect(announce(d)).toHaveLength(0)                    // แต่ไม่ยิง job_ready_to_install
     // หาง "ครบทั้งใบแล้ว" ยังอยู่ในข้อความของ action ตัวเองเหมือนเดิม
     expect(d.notifications.some(n => n.type === 'accessory_issued_to_service' && n.message.includes('ครบทั้งใบแล้ว'))).toBe(true)
+  })
+})
+
+// =============================================================================
+// Contract No. รายเครื่อง (0073)
+//
+// 0014 ตัดข้อมูลลูกค้าออกจาก lbs_units แล้วให้ Job เป็น source of truth เดียว · 0043 คืนมาเป็น
+// "ข้อมูลแผน" ⇒ มี 2 สถานะ · 0073 แทรกสถานะกลาง "ตกลงตามสัญญาแล้ว"
+//
+// กฎที่ต้องไม่หลุด:
+//   1) ลำดับความจริง Job > สัญญา > แผน — Job ชนะเสมอ (0014 ไม่เปลี่ยน)
+//   2) ผูก Job แล้วเลขสัญญาเป็น Ref. · ถ้า 2 ฝั่งไม่ตรงต้องมีธงให้เห็น ไม่ใช่กลืนเงียบ
+//   3) มีเลขสัญญาต้องมี Customer + Location ครบ — **ยกเว้นเครื่องที่ผูก Job แล้ว**
+//      (ไม่ยกเว้นจะกรอกเลขสัญญาให้เครื่องที่มี Job ไม่ได้เลย ซึ่งเป็นเคสที่เจอบ่อยสุด)
+// =============================================================================
+describe('Contract No. รายเครื่อง (0073)', () => {
+  const actor = { id: 'u1', email: 'd@x.co', password: '', fullName: 'สมชาย', department: 'sales' as const, isActive: true }
+  const base = (over: Partial<DB> = {}) => db({
+    users: [actor],
+    projectStocks: [{ id: 's1', stockNo: 'ST-1', itemId: 'i-lbs', status: 'open' as const, createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' }],
+    lbsUnits: [unit({ id: 'a', projectStockId: 's1' })],
+    ...over,
+  })
+  const plan = { planCustomerName: 'PEA เชียงใหม่', planInstallLocation: 'สถานีสันทราย' }
+
+  it('ยังไม่มีทั้งสัญญาและ Job = ข้อมูลแผน', () => {
+    const d = updateUnitPlan(base(), actor, { unitId: 'a', ...plan })
+    expect(unitCustomerInfo(d, d.lbsUnits[0]).source).toBe('plan')
+  })
+
+  it('กรอกเลขสัญญาแล้ว = เลิกเป็นแผน', () => {
+    const d = updateUnitPlan(base(), actor, { unitId: 'a', contractNo: ' CT-2026-001 ', ...plan })
+    expect(d.lbsUnits[0].contractNo).toBe('CT-2026-001')     // trim ให้
+    expect(unitCustomerInfo(d, d.lbsUnits[0]).source).toBe('contract')
+  })
+
+  it('มีเลขสัญญาแต่ไม่มี Customer/Location = ไม่ให้บันทึก', () => {
+    expect(() => updateUnitPlan(base(), actor, { unitId: 'a', contractNo: 'CT-1', planCustomerName: 'PEA' }))
+      .toThrow(/Location \/ Site/)
+    expect(() => updateUnitPlan(base(), actor, { unitId: 'a', contractNo: 'CT-1', planInstallLocation: 'สถานี' }))
+      .toThrow(/Customer/)
+  })
+
+  it('ผูก Job แล้ว: Job ชนะ · เลขสัญญาเป็น Ref. · กรอกได้โดยไม่ต้องมีข้อมูลแผน', () => {
+    const d0 = base({
+      jobs: [job({ customerName: 'EGAT บางปะกง', contactPhone: '02-111-2222', installLocation: 'โรงไฟฟ้าบางปะกง' })],
+      lbsUnits: [unit({ id: 'a', projectStockId: 's1', status: 'allocated', jobId: 'j1' })],
+    })
+    // ไม่ส่งข้อมูลแผนมาเลย แต่กรอกเลขสัญญาได้ — เพราะข้อมูลจริงมาจาก Job
+    const d = updateUnitPlan(d0, actor, { unitId: 'a', contractNo: 'CT-2026-009' })
+    const info = unitCustomerInfo(d, d.lbsUnits[0])
+    expect(info.source).toBe('job')
+    expect(info.customer).toBe('EGAT บางปะกง')              // Job ชนะ ไม่ใช่ค่าจากสัญญา
+    expect(info.location).toBe('โรงไฟฟ้าบางปะกง')
+    expect(d.lbsUnits[0].contractNo).toBe('CT-2026-009')     // เลขสัญญายังอยู่เป็น Ref.
+  })
+
+  it('ผูก Job แล้วข้อมูลฝั่งสัญญาไม่ตรงกับ Job → ขึ้นธงเตือน (ไม่บล็อก)', () => {
+    const d = base({
+      jobs: [job({ customerName: 'EGAT บางปะกง', installLocation: 'โรงไฟฟ้าบางปะกง' })],
+      lbsUnits: [unit({
+        id: 'a', projectStockId: 's1', status: 'allocated', jobId: 'j1',
+        contractNo: 'CT-9', planCustomerName: 'PEA เชียงใหม่', planInstallLocation: 'โรงไฟฟ้าบางปะกง',
+      })],
+    })
+    const info = unitCustomerInfo(d, d.lbsUnits[0])
+    expect(info.mismatch).toEqual(['Customer'])              // สถานที่ตรง จึงไม่ติดธง
+    expect(info.customer).toBe('EGAT บางปะกง')               // ระบบยังใช้ค่าจาก Job
+  })
+
+  it('ไม่มีเลขสัญญา = ไม่เทียบ ไม่ขึ้นธง แม้ข้อมูลแผนจะต่างจาก Job', () => {
+    const d = base({
+      jobs: [job({ customerName: 'EGAT', installLocation: 'บางปะกง' })],
+      lbsUnits: [unit({ id: 'a', projectStockId: 's1', status: 'allocated', jobId: 'j1', planCustomerName: 'PEA' })],
+    })
+    expect(unitCustomerInfo(d, d.lbsUnits[0]).mismatch).toEqual([])
+  })
+
+  it('Import Excel: เลขสัญญาเขียนได้แม้เครื่องผูก Job แล้ว (ต่างจาก Customer/Location ที่ถูกข้าม)', () => {
+    const d0 = base({
+      jobs: [job({ customerName: 'EGAT', installLocation: 'บางปะกง' })],
+      lbsUnits: [unit({ id: 'a', serialLvb: 'LVB-1', serialOm: 'OM-1', projectStockId: 's1', status: 'allocated', jobId: 'j1' })],
+    })
+    const d = importUnitsToStock(d0, actor, {
+      stockId: 's1', newUnits: [],
+      updateUnits: [{ lvb: 'LVB-1', om: 'OM-1', contractNo: 'CT-777', customer: 'ลูกค้าอื่น' }],
+    })
+    expect(d.lbsUnits[0].contractNo).toBe('CT-777')          // เลขสัญญาเข้า
+    expect(d.lbsUnits[0].planCustomerName).toBeUndefined()   // ช่องของ Job ถูกข้ามตาม 0014
+  })
+
+  it('Import Excel: เครื่องใหม่ที่มีเลขสัญญาแต่ข้อมูลไม่ครบ = ไม่ให้เข้า', () => {
+    expect(() => importUnitsToStock(base(), actor, {
+      stockId: 's1', newUnits: [{ lvb: 'LVB-9', om: 'OM-9', contractNo: 'CT-1', customer: 'PEA' }],
+      updateUnits: [],
+    })).toThrow(/Contract No./)
   })
 })

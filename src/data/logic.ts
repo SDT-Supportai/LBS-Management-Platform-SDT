@@ -449,6 +449,7 @@ function notifyIfBecameReady(_before: DB, after: DB, _jobId: string): DB {
 // ข้อมูลแผน (sync 0048) มาได้จาก Import Excel ด้วย · ทุกช่อง optional
 export interface UnitSerialInput {
   lvb: string; om: string; cost?: number
+  contractNo?: string          // เลขที่สัญญาขาย (0073) — กรอกแล้วข้อมูลลูกค้าเลิกเป็น "แผน"
   customer?: string; phone?: string; location?: string
   planPo?: string              // Plan PO receipt (0053) — วันที่คาดว่าจะได้รับ PO จากลูกค้า
   fob?: string                 // FOB date (0049) — ETA to WH คำนวณต่อจากนี้
@@ -456,11 +457,26 @@ export interface UnitSerialInput {
   planPoReceipt?: string; planDelivery?: string
 }
 
+/**
+ * 0073 — มีเลขสัญญาต้องมีลูกค้า + สถานที่ครบ (ยกเว้นเครื่องที่ผูก Job แล้ว ซึ่งใช้ข้อมูลจาก Job)
+ * คืนค่าเดิมกลับไปเพื่อให้เรียกคร่อมตอนประกอบแถวได้เลย · กติกาเดียวกับ CHECK
+ * `lbs_units_contract_needs_info_ck` ฝั่ง DB — ที่นี่มีไว้ให้ error อ่านรู้เรื่องและบอกว่าเครื่องไหน
+ */
+function assertContractInfo(
+  contractNo: string | undefined, jobId: string | null,
+  customer: string | undefined, location: string | undefined, serial: string,
+): string | undefined {
+  if (!contractNo || jobId) return contractNo
+  if (!customer || !location)
+    throw new Error(`${serial}: กรอก Contract No. แล้วต้องมี Customer และ Location / Site ครบ — ข้อมูลชุดนี้จะเลิกเป็น "แผน"`)
+  return contractNo
+}
+
 function normalizeUnits(rows: UnitSerialInput[]): UnitSerialInput[] {
   const t = (s?: string) => { const v = s?.trim(); return v ? v : undefined }
   return rows
     .map(r => ({
-      lvb: r.lvb.trim(), om: r.om.trim(), cost: r.cost,
+      lvb: r.lvb.trim(), om: r.om.trim(), cost: r.cost, contractNo: t(r.contractNo),
       customer: t(r.customer), phone: t(r.phone), location: t(r.location), planPo: t(r.planPo),
       fob: t(r.fob), leadDays: normalizeLeadDays(r.leadDays),
       planPoReceipt: t(r.planPoReceipt), planDelivery: t(r.planDelivery),
@@ -575,7 +591,7 @@ export function importUnitsToStock(
     if (x.projectStockId !== p.stockId) return x
     const u = upByKey.get(`${x.serialLvb}|${x.serialOm}`)
     if (!u) return x
-    const hasAny = u.cost !== undefined || u.customer || u.phone || u.location || u.planPo || u.fob
+    const hasAny = u.cost !== undefined || u.contractNo || u.customer || u.phone || u.location || u.planPo || u.fob
       || u.leadDays !== undefined || u.planPoReceipt || u.planDelivery
     if (!hasAny) return x
     if (x.status === 'issued') { lockedCount++; return x }
@@ -589,6 +605,10 @@ export function importUnitsToStock(
       // มี FOB ในไฟล์ → ETA เป็นค่าคำนวณ ล้างค่ากรอกมือทิ้ง (แหล่งความจริงเดียว — sync 0049)
       planPoReceiptDate: u.fob ? undefined : (u.planPoReceipt ?? x.planPoReceiptDate),
       planDeliveryDate: u.planDelivery ?? x.planDeliveryDate,
+      // 0073: Contract No. เป็นข้อเท็จจริงฝั่งสัญญา ไม่ถูก Job ทับ ⇒ เขียนได้เสมอ ต่างจาก 3 ช่องล่าง
+      contractNo: assertContractInfo(u.contractNo ?? x.contractNo, x.jobId,
+        x.jobId ? undefined : (u.customer ?? x.planCustomerName),
+        x.jobId ? undefined : (u.location ?? x.planInstallLocation), x.serialLvb),
       planCustomerName: x.jobId ? x.planCustomerName : (u.customer ?? x.planCustomerName),
       planContactPhone: x.jobId ? x.planContactPhone : (u.phone ?? x.planContactPhone),
       planInstallLocation: x.jobId ? x.planInstallLocation : (u.location ?? x.planInstallLocation),
@@ -604,6 +624,8 @@ export function importUnitsToStock(
     ...newUnits.map(u => ({
       id: uid(), serialLvb: u.lvb, serialOm: u.om, projectStockId: p.stockId,
       status: 'in_stock' as const, jobId: null, unitCost: u.cost,
+      // เครื่องใหม่ยังไม่มี Job แน่นอน ⇒ มีเลขสัญญาต้องมีลูกค้า+สถานที่ครบ (CHECK ฝั่ง DB คุมซ้ำอีกชั้น)
+      contractNo: assertContractInfo(u.contractNo, null, u.customer, u.location, u.lvb),
       planCustomerName: u.customer, planContactPhone: u.phone, planInstallLocation: u.location,
       planPoDate: u.planPo,
       fobDate: u.fob, etaLeadDays: leadDaysToStore(u.leadDays),
@@ -677,13 +699,45 @@ export function updateUnitInfo(
     `แก้ Serial: ${unit.serialLvb}/${unit.serialOm} → ${lvb}/${om}`)
 }
 
-// แก้ข้อมูลรายเครื่อง: ต้นทุน + ข้อมูลแผน (ลูกค้า/เบอร์/สถานที่) + Plan PO receipt / Plan Delivery
+/**
+ * ลูกค้า/เบอร์/สถานที่ ของเครื่อง 1 ตัว + **บอกว่าข้อมูลชุดนี้มาจากไหน** (0073)
+ *
+ * เดิมมี 2 สถานะ: ยังไม่ผูก Job = "แผน" · ผูกแล้ว = ค่าจาก Job (0014)
+ * 0073 แทรกสถานะกลาง — พอมีเลขสัญญาแล้ว ข้อมูลลูกค้าไม่ใช่การเดาอีกต่อไป:
+ *   plan     ยังไม่มีทั้งสัญญาและ Job → ข้อมูลแผนที่ Division กรอกล่วงหน้า (ติดป้าย "แผน")
+ *   contract มีเลขสัญญา ยังไม่ผูก Job → ข้อมูลตามสัญญา (ไม่ใช่แผน)
+ *   job      ผูก Job แล้ว            → **Job ชนะตาม 0014 ไม่เปลี่ยน** · สัญญากลายเป็น Ref.
+ *
+ * ⚠️ mismatch = ผูก Job แล้วแต่ข้อมูลฝั่งสัญญาไม่ตรงกับฝั่ง Job — ต้องเห็น ไม่ใช่กลืนเงียบ
+ *    (ไม่บล็อกอะไร เป็นธงให้คนไปตรวจว่าดึงเครื่องผิดใบหรือกรอกสัญญาผิด)
+ */
+export type UnitInfoSource = 'job' | 'contract' | 'plan'
+export function unitCustomerInfo(db: DB, u: LbsUnit) {
+  const job = u.jobId ? db.jobs.find(j => j.id === u.jobId) : undefined
+  const source: UnitInfoSource = job ? 'job' : (u.contractNo ? 'contract' : 'plan')
+  const same = (a?: string, b?: string) => !a || !b || a.trim() === b.trim()
+  const mismatch = job && u.contractNo
+    ? ([
+        !same(u.planCustomerName, job.customerName) && 'Customer',
+        !same(u.planInstallLocation, job.installLocation) && 'Location / Site',
+      ].filter(Boolean) as string[])
+    : []
+  return {
+    job, source, mismatch,
+    customer: job?.customerName ?? u.planCustomerName,
+    phone: job?.contactPhone ?? u.planContactPhone,
+    location: job?.installLocation || u.planInstallLocation,
+  }
+}
+
+// แก้ข้อมูลรายเครื่อง: ต้นทุน + เลขสัญญา + ข้อมูลลูกค้า/เบอร์/สถานที่ + Plan PO receipt / Plan Delivery
 // (sync 0043) ฟอร์มส่งค่าครบทุกช่อง → ค่าว่าง = ล้างค่า ไม่ใช่ "ไม่เปลี่ยน"
 // แก้ได้เฉพาะเครื่องที่ยังไม่ถูกเบิก — LIVE มี trigger trg_block_issued_edit บล็อกอยู่แล้ว
 export function updateUnitPlan(
   db: DB, actor: User,
   p: {
     unitId: string; unitCost?: number
+    contractNo?: string
     planCustomerName?: string; planContactPhone?: string; planInstallLocation?: string
     planPoDate?: string
     fobDate?: string; etaLeadDays?: number; planPoReceiptDate?: string; planDeliveryDate?: string
@@ -695,6 +749,21 @@ export function updateUnitPlan(
     throw new Error(`Serial ${unit.serialLvb} ถูกเบิกให้ Service แล้ว — แก้ข้อมูลรายเครื่องไม่ได้ (allocation ถูกล็อก)`)
   if (p.unitCost !== undefined && p.unitCost < 0) throw new Error('ต้นทุน/เครื่องต้องไม่ติดลบ')
   const clean = (s?: string) => { const t = s?.trim(); return t ? t : undefined }
+  // 0073: กรอกเลขสัญญาแล้ว = ประกาศว่าข้อมูลลูกค้าชุดนี้ "ตกลงแล้ว" ไม่ใช่แผน
+  //   ถ้าปล่อยให้ว่างได้ ป้าย "แผน" จะหายไปจากช่องที่ไม่มีข้อมูล = แย่กว่าเดิม
+  //   เบอร์ติดต่อไม่บังคับ — ตอนเซ็นสัญญามักยังไม่รู้ว่าใครเป็นผู้ประสานงานหน้างาน
+  // ⚠️ บังคับเฉพาะเครื่องที่ **ยังไม่ผูก Job** — ผูกแล้วข้อมูลลูกค้า/สถานที่มาจาก Job
+  //    และเลขสัญญาเป็นแค่ Ref. (มติ 2026-09-16) · บังคับต่อไปจะกรอกเลขสัญญาให้เครื่องที่มี Job ไม่ได้
+  //    กติกาเดียวกันถูกล็อกไว้ที่ CHECK lbs_units_contract_needs_info_ck ฝั่ง DB ด้วย
+  const contractNo = clean(p.contractNo)
+  if (contractNo && !unit.jobId) {
+    const missing = [
+      !clean(p.planCustomerName) && 'Customer',
+      !clean(p.planInstallLocation) && 'Location / Site',
+    ].filter(Boolean)
+    if (missing.length > 0)
+      throw new Error(`กรอก Contract No. แล้วต้องระบุ ${missing.join(' และ ')} ด้วย — ข้อมูลชุดนี้จะเลิกเป็น "แผน"`)
+  }
   const lead = leadDaysToStore(normalizeLeadDays(p.etaLeadDays))
   const stock = db.projectStocks.find(s => s.id === unit.projectStockId)
   const next: DB = {
@@ -702,6 +771,7 @@ export function updateUnitPlan(
     lbsUnits: db.lbsUnits.map(u => u.id === p.unitId ? {
       ...u,
       unitCost: p.unitCost,
+      contractNo,
       planCustomerName: clean(p.planCustomerName),
       planContactPhone: clean(p.planContactPhone),
       planInstallLocation: clean(p.planInstallLocation),
@@ -718,7 +788,8 @@ export function updateUnitPlan(
   })
   return audit(next, actor, 'lbs_unit', p.unitId, 'update_unit_plan',
     `${stock?.stockNo ?? ''} · ${unit.serialLvb}/${unit.serialOm} → ต้นทุน ${p.unitCost ?? '-'} ฿` +
-    ` · Customer(แผน) ${clean(p.planCustomerName) ?? '-'}` +
+    ` · Contract No. ${contractNo ?? '-'}` +
+    ` · Customer${contractNo ? '' : '(แผน)'} ${clean(p.planCustomerName) ?? '-'}` +
     ` · Plan PO receipt ${clean(p.planPoDate) ?? '-'}` +
     ` · FOB ${clean(p.fobDate) ?? '-'} +${lead ?? ETA_LEAD_DAYS} วัน · ETA to WH ${eta ?? '-'}` +
     ` · Plan Delivery ${clean(p.planDeliveryDate) ?? '-'}`)

@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import {
-  stockSummary, unitInstallDate,
+  stockSummary, unitInstallDate, unitCustomerInfo,
   unitEta, unitEtaIsAuto, unitFlowState, unitLeadDays, addDaysIso,
   ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX,
 } from '../data/logic'
@@ -44,10 +44,11 @@ const PCT: NumKind = 'pct'
 // ฟอร์มแก้ข้อมูลรายเครื่อง (0043/0049) — รวม "แก้ Serial" เข้ามาในฟอร์มเดียวแล้ว
 // serialLvb/serialOm แก้ได้เฉพาะเครื่องที่ยังอยู่ในสต็อก (in_stock) — บันทึกผ่าน updateUnitInfo แยก call
 interface PlanForm {
-  id: string; canEditSerial: boolean
+  id: string; canEditSerial: boolean; hasJob: boolean
   serialLvb: string; serialOm: string
   origLvb: string; origOm: string
   cost: string
+  contractNo: string
   customerName: string; contactPhone: string; installLocation: string; planPoDate: string
   fobDate: string; leadDays: string; planPoReceiptDate: string; planDeliveryDate: string
 }
@@ -55,6 +56,7 @@ interface PlanForm {
 // ฟอร์มกรอกมือใช้แค่ 3 ช่องแรก · ช่องข้อมูลแผน (0048/0049) มาจาก Import Excel เท่านั้น
 interface UnitRow {
   lvb: string; om: string; cost: string
+  contractNo?: string
   customer?: string; phone?: string; location?: string
   planPo?: string
   fob?: string; leadDays?: number; planPoReceipt?: string; planDelivery?: string
@@ -63,6 +65,8 @@ const emptyRow = (): UnitRow => ({ lvb: '', om: '', cost: '' })
 
 // เครื่องที่ดึงเข้า Job แล้ว: ช่องที่ Job เป็นเจ้าของถูกตัดทิ้งก่อนส่ง (กฎ 0014)
 // — Customer / Contact Number / Location / Site / Plan PO receipt ค่าจริงมาจาก Job
+// ⚠️ 0073: **Contract No. ไม่ถูกตัด** — เป็นข้อเท็จจริงฝั่งสัญญาคนละชั้นกับ Job (Job ไม่ได้เป็นเจ้าของ)
+//    ผูก Job แล้วยังแก้เลขสัญญาผ่าน Excel ได้ตามปกติ
 type DupRow = { row: UnitRow; hasJob?: boolean; locked?: boolean }
 const effectiveRow = (d: DupRow): UnitRow =>
   d.hasJob
@@ -72,14 +76,14 @@ const effectiveRow = (d: DupRow): UnitRow =>
 // แถวนี้จะเปลี่ยนอะไรจริงไหมหลังตัดช่องของ Job ออกแล้ว — ตรงกับกติกา hasAny ฝั่ง logic/RPC
 const rowChangesSomething = (d: DupRow): boolean => {
   const r = effectiveRow(d)
-  return r.cost.trim() !== '' || !!r.customer || !!r.phone || !!r.location || !!r.planPo
+  return r.cost.trim() !== '' || !!r.contractNo || !!r.customer || !!r.phone || !!r.location || !!r.planPo
     || !!r.fob || r.leadDays !== undefined || !!r.planPoReceipt || !!r.planDelivery
 }
 
 // UnitRow (ฟอร์ม string) → payload logic/RPC · ช่องว่าง = ไม่ส่งไป (คงค่าเดิมฝั่ง server)
 const rowsToUnits = (rows: UnitRow[]) =>
   rows.map(r => ({
-    lvb: r.lvb, om: r.om, cost: toBudgetNum(r.cost),
+    lvb: r.lvb, om: r.om, cost: toBudgetNum(r.cost), contractNo: r.contractNo,
     customer: r.customer, phone: r.phone, location: r.location, planPo: r.planPo,
     fob: r.fob, leadDays: r.leadDays, planPoReceipt: r.planPoReceipt, planDelivery: r.planDelivery,
   }))
@@ -120,14 +124,18 @@ const SHEET_COLS: ColSpec[] = [
   { key: 'Cost/Set', io: 'in', width: 14, format: 'ตัวเลข (บาท)', num: 'money',
     note: 'ต้นทุนต่อเครื่อง — ตัวเลขไม่ติดลบ · ปล่อยว่าง = คงค่าเดิม',
     alias: ['ต้นทุน/เครื่อง', 'ต้นทุน', 'cost', 'unit_cost', 'cost/set'] },
+  // 0073 — เลขสัญญาเป็นข้อเท็จจริงฝั่งขาย ไม่ถูก Job ทับ จึงเขียนได้เสมอ (ต่างจาก 3 ช่องล่าง)
+  { key: 'Contract No.', io: 'in', width: 18, format: 'ข้อความ',
+    note: 'เลขที่สัญญาขาย — กรอกแล้ว Customer / Contact / Location เลิกเป็น "ข้อมูลแผน" · เขียนได้ทุกเครื่อง (รวมที่ดึงเข้า Job แล้ว) เพราะเป็นข้อมูลอ้างอิงคนละชั้นกับ Job',
+    alias: ['contract', 'contract no', 'contract_no', 'เลขที่สัญญา', 'สัญญา'] },
   { key: 'Customer', io: 'in', width: 24, format: 'ข้อความ',
-    note: 'ข้อมูลแผน — เขียนได้เฉพาะเครื่องที่ยังไม่ถูกดึงเข้า Job (เครื่องที่มี Job แล้วใช้ค่าจาก Job)',
+    note: 'เขียนได้เฉพาะเครื่องที่ยังไม่ถูกดึงเข้า Job (เครื่องที่มี Job แล้วใช้ค่าจาก Job) · เป็น "ข้อมูลแผน" จนกว่าจะมี Contract No.',
     alias: ['ชื่อลูกค้า', 'ลูกค้า', 'customer', 'customer_name'] },
   { key: 'Contact Number', io: 'in', width: 16, format: 'ข้อความ',
-    note: 'ข้อมูลแผน — เงื่อนไขเดียวกับ Customer',
+    note: 'เงื่อนไขเดียวกับ Customer',
     alias: ['เบอร์ติดต่อ', 'เบอร์', 'phone', 'contact_phone', 'contact number'] },
   { key: 'Location / Site', io: 'in', width: 28, format: 'ข้อความ',
-    note: 'ข้อมูลแผน — เงื่อนไขเดียวกับ Customer',
+    note: 'เงื่อนไขเดียวกับ Customer',
     alias: ['สถานที่ติดตั้ง', 'สถานที่', 'location', 'install_location', 'location / site', 'location/site'] },
   { key: 'Plan PO receipt', io: 'in', width: 15, format: 'YYYY-MM-DD',
     note: 'วันที่คาดว่าจะได้รับ PO จากลูกค้า (แผนฝั่งขาย) — คนละตัวกับ ETA to WH ที่เป็นวันของเข้าคลัง · เงื่อนไขเดียวกับ Customer',
@@ -361,6 +369,7 @@ export default function StocksPage() {
         'Serial.LVB': u.serialLvb,
         'Serial.OM': u.serialOm,
         'Cost/Set': u.unitCost ?? '',
+        'Contract No.': u.contractNo ?? '',
         'Customer': job?.customerName ?? u.planCustomerName ?? '',
         'Contact Number': job?.contactPhone ?? u.planContactPhone ?? '',
         'Location / Site': job?.installLocation || u.planInstallLocation || '',
@@ -587,6 +596,7 @@ export default function StocksPage() {
         if (leadStr !== '' && !fob)
           return void errors.push(`${no}: กรอก "ระยะขนส่ง (วัน)" แต่ไม่ได้กรอก "FOB date" — ระยะขนส่งใช้คำนวณต่อจาก FOB เท่านั้น`)
         const plan = {
+          contractNo: cell(row, colKeys('Contract No.')) || undefined,
           customer: cell(row, colKeys('Customer')) || undefined,
           phone: cell(row, colKeys('Contact Number')) || undefined,
           location: cell(row, colKeys('Location / Site')) || undefined,
@@ -1016,16 +1026,17 @@ export default function StocksPage() {
                 {/* grid = ตีเส้นตารางบางๆ ทุกช่อง (อ่านตารางกว้างง่ายขึ้น)
                     Status = flow เดียวจบทั้งชีวิตเครื่อง (0052) — ไม่มีคอลัมน์ "สถานะเครื่อง" แยกแล้ว */}
                 <table className="grid">
-                  <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>Cost/Set</th><th>Customer</th><th>Contact Number</th><th>Location / Site</th><th>Plan PO receipt</th><th>Job No.</th><th>FOB date</th><th>ETA to WH</th><th>Status</th><th>Plan Delivery</th><th>Actual Delivery</th>{canManage && <th></th>}</tr></thead>
+                  <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>Cost/Set</th><th>Contract No.</th><th>Customer</th><th>Contact Number</th><th>Location / Site</th><th>Plan PO receipt</th><th>Job No.</th><th>FOB date</th><th>ETA to WH</th><th>Status</th><th>Plan Delivery</th><th>Actual Delivery</th>{canManage && <th></th>}</tr></thead>
                   <tbody>
                     {units.map(u => {
-                      // ข้อมูลลูกค้า "จริง" ref จาก Job ที่เครื่องถูกดึงเข้า (0014) — ยังไม่เข้า Job ใช้ค่าแผน (0043)
-                      const job = u.jobId ? db.jobs.find(j => j.id === u.jobId) : undefined
-                      // ค่าจาก Job ชนะ · ถ้าไม่มี Job ใช้ค่าแผนแล้วติดป้าย "แผน" ให้เห็นว่ายังไม่ผูกงาน
-                      const planned = !job
-                      const cust = job?.customerName ?? u.planCustomerName
-                      const phone = job?.contactPhone ?? u.planContactPhone
-                      const loc = job?.installLocation || u.planInstallLocation
+                      // 0073: ลำดับความจริง 3 ชั้น — Job ชนะ (0014) → สัญญา → แผน · helper เดียวใช้ทุกที่
+                      const info = unitCustomerInfo(db, u)
+                      const job = info.job
+                      // ติดป้าย "แผน" เฉพาะตอนที่ยังไม่มีทั้งสัญญาและ Job เท่านั้น
+                      const planned = info.source === 'plan'
+                      const cust = info.customer
+                      const phone = info.phone
+                      const loc = info.location
                       // Actual Delivery = auto ตาม flow Service (0035) ไม่มีคอลัมน์เก็บซ้ำ
                       const actualDelivery = unitInstallDate(db, u.id)
                       // ETA to WH = FOB + ระยะขนส่ง (auto) หรือค่าที่กรอกเอง
@@ -1038,9 +1049,24 @@ export default function StocksPage() {
                           <td className="mono">{u.serialLvb}</td>
                           <td className="mono">{u.serialOm}</td>
                           <td style={{ textAlign: 'right' }}>{fmtBaht(u.unitCost)}</td>
-                          <td>{cust ?? '-'}{planned && cust && <span className="badge neutral" style={{ marginLeft: 6 }}>แผน</span>}</td>
-                          <td>{phone ?? '-'}</td>
-                          <td>{loc || '-'}</td>
+                          <td className="mono">
+                            {u.contractNo || '-'}
+                            {/* ผูก Job แล้ว เลขสัญญาเป็นข้อมูลอ้างอิง — Job ยังเป็นแหล่งความจริงของลูกค้า/สถานที่ */}
+                            {u.contractNo && job && <div className="muted" style={{ fontSize: 11 }}>Ref.</div>}
+                          </td>
+                          <td>
+                            {cust ?? '-'}
+                            {planned && cust && <span className="badge neutral" style={{ marginLeft: 6 }}>แผน</span>}
+                            {/* ธงให้คนไปตรวจ ไม่บล็อกอะไร — มักแปลว่าดึงเครื่องผิดใบ หรือกรอกสัญญาผิด */}
+                            {info.mismatch.length > 0 && (
+                              <div style={{ fontSize: 11, color: 'var(--danger)' }}
+                                title={`ข้อมูลฝั่งสัญญา ${u.contractNo} ไม่ตรงกับ Job — ระบบใช้ค่าจาก Job`}>
+                                ⚠️ ต่างจากสัญญา: {info.mismatch.join(', ')}
+                              </div>
+                            )}
+                          </td>
+                          <td>{phone ?? '-'}{planned && phone && <span className="badge neutral" style={{ marginLeft: 6 }}>แผน</span>}</td>
+                          <td>{loc || '-'}{planned && loc && <span className="badge neutral" style={{ marginLeft: 6 }}>แผน</span>}</td>
                           <td>{fmtDate(u.planPoDate)}</td>
                           <td>{u.jobId ? <Link to={`/jobs/${u.jobId}`}>{jobNo(u.jobId)}</Link> : '-'}</td>
                           <td>{fmtDate(u.fobDate)}</td>
@@ -1059,10 +1085,11 @@ export default function StocksPage() {
                               {u.status === 'issued'
                                 ? <span className="muted" title="เบิกให้ Service แล้ว — allocation ถูกล็อก แก้ข้อมูลรายเครื่องไม่ได้">🔒</span>
                                 : <button className="small" onClick={() => setEditPlan({
-                                    id: u.id, canEditSerial: u.status === 'in_stock',
+                                    id: u.id, canEditSerial: u.status === 'in_stock', hasJob: !!u.jobId,
                                     serialLvb: u.serialLvb, serialOm: u.serialOm,
                                     origLvb: u.serialLvb, origOm: u.serialOm,
                                     cost: u.unitCost !== undefined ? String(u.unitCost) : '',
+                                    contractNo: u.contractNo ?? '',
                                     customerName: u.planCustomerName ?? '', contactPhone: u.planContactPhone ?? '',
                                     installLocation: u.planInstallLocation ?? '', planPoDate: u.planPoDate ?? '',
                                     fobDate: u.fobDate ?? '', leadDays: String(unitLeadDays(u)),
@@ -1282,6 +1309,10 @@ export default function StocksPage() {
         const serialEmpty = !editPlan.serialLvb.trim() || !editPlan.serialOm.trim()
         // ETA to WH: มี FOB → คำนวณอัตโนมัติ (ช่องกรอกเองถูกปิด) · ไม่มี FOB → กรอกเองได้
         const lead = Number(editPlan.leadDays) || ETA_LEAD_DAYS
+        // 0073: มีเลขสัญญาแล้ว 3 ช่องนี้ไม่ใช่ "แผน" อีกต่อไป — ป้ายเปลี่ยนตามที่พิมพ์ทันที
+        // ผูก Job แล้ว ข้อมูลลูกค้ามาจาก Job ไม่ใช่ทั้งแผนและทั้งสัญญา จึงไม่ติดป้ายและไม่บังคับกรอก
+        const planLabel = (editPlan.hasJob || editPlan.contractNo.trim()) ? '' : ' (แผน)'
+        const contractNeedsInfo = !editPlan.hasJob && !!editPlan.contractNo.trim()
         const autoEta = editPlan.fobDate ? addDaysIso(editPlan.fobDate, lead) : ''
         return (
         <Modal
@@ -1303,6 +1334,7 @@ export default function StocksPage() {
                   await act.updateUnitPlan({
                     unitId: editPlan.id,
                     unitCost: toBudgetNum(editPlan.cost),
+                    contractNo: editPlan.contractNo,
                     planCustomerName: editPlan.customerName,
                     planContactPhone: editPlan.contactPhone,
                     planInstallLocation: editPlan.installLocation,
@@ -1320,9 +1352,16 @@ export default function StocksPage() {
           </>}
         >
           <div className="muted" style={{ marginBottom: 12 }}>
-            ช่องที่เว้นว่าง = ล้างค่าเดิม ·
-            ลูกค้า/เบอร์/สถานที่ ที่กรอกที่นี่คือ <b>ข้อมูลแผน</b> — เมื่อเครื่องถูกดึงเข้า Job ตารางจะแสดงค่าจาก Job แทน
-            (Job เป็นแหล่งข้อมูลจริงตามกติกาเดิมของระบบ) · <b>Status / Actual Delivery ไม่ต้องกรอก</b> ระบบคำนวณเองจาก ETA และ flow ติดตั้ง
+            ช่องที่เว้นว่าง = ล้างค่าเดิม · <b>Status / Actual Delivery ไม่ต้องกรอก</b> ระบบคำนวณเองจาก ETA และ flow ติดตั้ง
+            {/* 0073: อธิบายลำดับความจริง 3 ชั้นให้เห็นในที่ที่คนกำลังกรอกจริง ๆ
+                ไม่งั้นคนกรอกไม่รู้ว่าทำไมบางทีติดป้าย "แผน" บางทีไม่ติด */}
+            <div style={{ marginTop: 6 }}>
+              ลูกค้า/เบอร์/สถานที่ เป็น <b>ข้อมูลแผน</b> จนกว่าจะกรอก <b>Contract No.</b> —
+              กรอกแล้วถือว่าตกลงกับลูกค้าแล้ว ป้าย "แผน" จะหายไป
+              <br />เมื่อเครื่องถูกดึงเข้า Job ตารางจะแสดงค่าจาก <b>Job</b> แทนเสมอ
+              (Job เป็นแหล่งข้อมูลจริงตามกติกาเดิม) · <b>Contract No. กลายเป็นข้อมูลอ้างอิง (Ref.)</b>
+              และถ้า 2 ฝั่งไม่ตรงกันตารางจะขึ้นเตือนให้ไปตรวจ
+            </div>
           </div>
 
           <div className="row">
@@ -1347,17 +1386,22 @@ export default function StocksPage() {
               <input type="number" min={0} value={editPlan.cost}
                 onChange={e => setEditPlan({ ...editPlan, cost: e.target.value })} />
             </label>
-            <label className="field"><span>Customer (แผน)</span>
-              <input value={editPlan.customerName}
-                onChange={e => setEditPlan({ ...editPlan, customerName: e.target.value })} placeholder="PEA เชียงใหม่" />
+            <label className="field"><span>Contract No.</span>
+              <input className="mono" value={editPlan.contractNo}
+                onChange={e => setEditPlan({ ...editPlan, contractNo: e.target.value })} placeholder="เช่น CT-2026-001" />
             </label>
           </div>
           <div className="row">
-            <label className="field"><span>Contact Number (แผน)</span>
+            {/* ป้าย "(แผน)" หายทันทีที่พิมพ์เลขสัญญา — สื่อกติกาในขณะที่คนกำลังกรอก ไม่ต้องรอบันทึก */}
+            <label className="field"><span>Customer{planLabel}{contractNeedsInfo ? ' *' : ''}</span>
+              <input value={editPlan.customerName}
+                onChange={e => setEditPlan({ ...editPlan, customerName: e.target.value })} placeholder="PEA เชียงใหม่" />
+            </label>
+            <label className="field"><span>Contact Number{planLabel}</span>
               <input value={editPlan.contactPhone}
                 onChange={e => setEditPlan({ ...editPlan, contactPhone: e.target.value })} placeholder="08x-xxx-xxxx" />
             </label>
-            <label className="field"><span>Location / Site (แผน)</span>
+            <label className="field"><span>Location / Site{planLabel}{contractNeedsInfo ? ' *' : ''}</span>
               <input value={editPlan.installLocation}
                 onChange={e => setEditPlan({ ...editPlan, installLocation: e.target.value })} />
             </label>
@@ -1521,7 +1565,7 @@ export default function StocksPage() {
                 </div>
                 <label className="field" style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-start', marginBottom: 6 }}>
                   <input type="radio" name="dupAction" checked={dupAction === 'update'} onChange={() => setDupAction('update')} style={{ marginTop: 3 }} />
-                  <span><b>อัพเดทข้อมูลเครื่องเดิม</b> — Cost/Set · Customer / Contact Number / Location / Site (แผน) · Plan PO receipt · FOB date · ระยะขนส่ง · ETA to WH · Plan Delivery
+                  <span><b>อัพเดทข้อมูลเครื่องเดิม</b> — Cost/Set · Contract No. · Customer / Contact Number / Location / Site · Plan PO receipt · FOB date · ระยะขนส่ง · ETA to WH · Plan Delivery
                     <div className="muted">ช่องที่เว้นว่างในไฟล์ = คงค่าเดิม (ไม่ล้างค่า) · ถ้าต้องการล้างค่าให้ใช้ปุ่ม "แก้ข้อมูล" รายเครื่อง</div>
                   </span>
                 </label>
@@ -1536,7 +1580,7 @@ export default function StocksPage() {
                 )}
                 {dupUnits.some(d => d.hasJob && !d.locked && (d.row.customer || d.row.phone || d.row.location)) && (
                   <div className="muted" style={{ marginTop: 6 }}>
-                    ℹ️ เครื่องที่ดึงเข้า Job แล้ว ระบบจะ<b>ข้ามช่อง Customer / Contact Number / Location / Site / Plan PO receipt</b> — ข้อมูลจริงมาจาก Job
+                    ℹ️ เครื่องที่ดึงเข้า Job แล้ว ระบบจะ<b>ข้ามช่อง Customer / Contact Number / Location / Site / Plan PO receipt</b> — ข้อมูลจริงมาจาก Job · <b>Contract No. ยังเขียนได้</b> (เป็นข้อมูลอ้างอิงคนละชั้นกับ Job)
                     (แก้ที่หน้า Job) · ส่วนต้นทุนกับวันแผนยังอัพเดทให้ตามไฟล์
                   </div>
                 )}
@@ -1545,7 +1589,7 @@ export default function StocksPage() {
                     <thead><tr>
                       <th>#</th><th>Serial.LVB</th><th>Serial.OM</th>
                       <th style={{ textAlign: 'right' }}>Cost/Set เดิม</th><th style={{ textAlign: 'right' }}>Cost/Set ใหม่</th>
-                      <th>Customer / Contact / Location (แผน)</th><th>Plan PO receipt</th><th>FOB date</th><th>ETA to WH</th><th>Plan Delivery</th><th>ผล</th>
+                      <th>Contract No.</th><th>Customer / Contact / Location</th><th>Plan PO receipt</th><th>FOB date</th><th>ETA to WH</th><th>Plan Delivery</th><th>ผล</th>
                     </tr></thead>
                     <tbody>
                       {dupUnits.map((d, i) => {
@@ -1562,6 +1606,11 @@ export default function StocksPage() {
                               {skip ? <span className="muted">—</span>
                                 : hasNewCost ? fmtBaht(Number(d.row.cost))
                                 : <span className="muted">คงเดิม</span>}
+                            </td>
+                            {/* 0073: Contract No. ไม่ถูกข้ามแม้เครื่องจะมี Job แล้ว (คนละชั้นกับ Job) */}
+                            <td className="mono">
+                              {skip ? <span className="muted">—</span>
+                                : d.row.contractNo || <span className="muted">คงเดิม</span>}
                             </td>
                             <td>
                               {custParts.length === 0 ? <span className="muted">คงเดิม</span>
