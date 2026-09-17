@@ -604,13 +604,23 @@ export default function JobDetailPage() {
               <div className="b-value">{delivery.due ? fmtDate(delivery.due) : '-'}</div>
             </div>
             <div className="budget-cell">
-              <div className="b-label">{delivery.daysLate > 0 ? 'เลยกำหนดมาแล้ว' : 'เหลือเวลา'}</div>
-              <div className={`b-value ${delivery.daysLate > 0 ? 'neg' : 'pos'}`}>
+              <div className="b-label">{delivery.isLate ? 'เลยกำหนดส่งมาแล้ว' : 'เหลือเวลาถึงกำหนดส่ง'}</div>
+              <div className={`b-value ${delivery.isLate ? 'neg' : 'pos'}`}>
                 {delivery.daysLeft === undefined ? '-' : `${Math.abs(delivery.daysLeft)} วัน`}
               </div>
             </div>
+            {/* 🔴 นาฬิกาเรือนที่ 2 — "นัดติดตั้ง" คือช่วงที่ทีมช่างออกไซต์ Service เลื่อนเองได้
+                คนละตัวกับกำหนดส่งที่ผูกกับลูกค้า · วางคู่กันตรงนี้เพื่อไม่ให้อ่านป้ายสถานะผิด */}
             <div className="budget-cell">
-              <div className="b-label">เลื่อนมาแล้ว</div>
+              <div className="b-label">นัดติดตั้ง (ทีมช่างออกไซต์)</div>
+              <div className="b-value" style={{ fontSize: 15 }}>
+                {delivery.visitStart
+                  ? <>{fmtDate(delivery.visitStart)}{delivery.visitEnd && delivery.visitEnd !== delivery.visitStart && <> – {fmtDate(delivery.visitEnd)}</>}</>
+                  : <span className="muted">ยังไม่ได้นัด</span>}
+              </div>
+            </div>
+            <div className="budget-cell">
+              <div className="b-label">เลื่อนกำหนดส่งมาแล้ว</div>
               <div className="b-value">{delivery.extensionCount} ครั้ง</div>
             </div>
           </div>

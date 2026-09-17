@@ -46,7 +46,9 @@ export default function JobsPage() {
   // นับจากงานทั้งหมด ไม่ใช่จากรายการที่ถูกกรองอยู่ — ไม่งั้นตัวเลขเตือนเปลี่ยนตามตัวกรองที่เพิ่งเลือก
   const overdue = allJobs.filter(x => x.d.state === 'overdue').length
   const blocked = allJobs.filter(x => x.d.state === 'blocked').length
-  const inFieldLate = allJobs.filter(x => x.d.state === 'in_field_late').length
+  const visitOverdue = allJobs.filter(x => x.d.state === 'visit_overdue').length
+  const lateButMoving = allJobs.filter(x => x.d.isLate && !x.d.atRisk
+    && (x.d.state === 'installing' || x.d.state === 'awaiting_visit')).length
   const dueSoon = allJobs.filter(x => x.d.state === 'due_soon').length
 
   const submit = async () => {
@@ -76,14 +78,15 @@ export default function JobsPage() {
       <div className="page-title">Project ID (Jobs)</div>
       <div className="page-sub">
         เปิดและติดตามงานโครงการตาม Scope ลูกค้า — สถานะไหลอัตโนมัติ Draft → Allocated → Procuring Accessory → Ready to Issue → Issued → Installed ·
-        <b> เรียงตามกำหนดส่ง (ใกล้สุดก่อน)</b> · 🔴 เลยกำหนดทั้งที่ของยังไม่ออกหน้างาน ·
-        🔧 กำลังติดตั้งอยู่ (เลยแผนก็ยังไม่นับว่าค้าง) · ⚠️ เหลือ ≤{DUE_WARN_DAYS} วัน
-        {(overdue > 0 || blocked > 0 || inFieldLate > 0 || dueSoon > 0) && (
+        <b> เรียงตามกำหนดส่ง (ใกล้สุดก่อน)</b> · 🔴 เลยกำหนดส่งทั้งที่ของยังไม่ออกจากคลัง ·
+        🚚 เบิกของแล้วรอถึงวันนัด · 🔧 กำลังติดตั้งตามนัด · ⏰ เลยวันนัดติดตั้ง · ⚠️ ใกล้ครบกำหนด ≤{DUE_WARN_DAYS} วัน
+        {(overdue > 0 || blocked > 0 || visitOverdue > 0 || lateButMoving > 0 || dueSoon > 0) && (
           <>
             {' '}
-            {overdue > 0 && <span className="badge red">เลยกำหนด {overdue}</span>}{' '}
+            {overdue > 0 && <span className="badge red">เลยกำหนดส่ง {overdue}</span>}{' '}
             {blocked > 0 && <span className="badge red">ติดปัญหาหน้างาน {blocked}</span>}{' '}
-            {inFieldLate > 0 && <span className="badge amber">กำลังติดตั้ง เลยแผน {inFieldLate}</span>}{' '}
+            {visitOverdue > 0 && <span className="badge red">เลยวันนัดติดตั้ง {visitOverdue}</span>}{' '}
+            {lateButMoving > 0 && <span className="badge amber">เลยกำหนดส่งแต่งานเดินอยู่ {lateButMoving}</span>}{' '}
             {dueSoon > 0 && <span className="badge amber">≤{DUE_WARN_DAYS} วัน {dueSoon}</span>}
           </>
         )}
@@ -94,7 +97,7 @@ export default function JobsPage() {
         <select style={{ width: 'auto' }} value={filter} onChange={e => setFilter(e.target.value as typeof FILTERS[number])}>
           <option value="active">เฉพาะงานที่กำลังดำเนินการ</option>
           <option value="all">ทุกสถานะ</option>
-          <option value="at_risk">⚠️ เฉพาะงานที่ต้องเร่ง ({overdue + blocked})</option>
+          <option value="at_risk">⚠️ เฉพาะงานที่ต้องเร่ง ({overdue + blocked + visitOverdue})</option>
           {FILTERS.slice(3).map(f => <option key={f} value={f}>{JOB_STATUS_LABEL[f as JobStatus]}</option>)}
         </select>
         {isProject && (
@@ -146,9 +149,16 @@ export default function JobsPage() {
                       {(job.installSites?.length ?? 0) > 0 && (
                         <div className="muted" style={{ fontSize: 11 }}>ใกล้สุดจาก {(job.installSites?.length ?? 0) + 1} จุด</div>
                       )}
+                      {/* นาฬิกาเรือนที่ 2 — วันนัดที่ทีมช่างออกไซต์ ต้องเห็นคู่กับกำหนดส่งเสมอ (0075) */}
+                      {d.visitStart && (
+                        <div className="muted" style={{ fontSize: 11 }}>
+                          นัดติดตั้ง {fmtDate(d.visitStart)}
+                          {d.visitEnd && d.visitEnd !== d.visitStart && <> – {fmtDate(d.visitEnd)}</>}
+                        </div>
+                      )}
                     </td>
                     <td style={{ whiteSpace: 'nowrap' }}>
-                      {d.state === 'closed' ? <span className="muted">-</span> : <DeliveryBadge d={d} compact />}
+                      {d.state === 'closed' ? <span className="muted">-</span> : <DeliveryBadge d={d} />}
                     </td>
                     <td>
                       {allocated}/{job.lbsQtyRequired}

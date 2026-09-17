@@ -1625,9 +1625,13 @@ describe('สถานะกำหนดส่ง (0075)', () => {
   const FAR = '2027-01-01'
 
   // งานที่ "ของออกไปอยู่กับช่างแล้ว" = มี unit status issued อย่างน้อย 1 เครื่อง
-  const inFieldDb = (due: string, over: Partial<DB> = {}) => db({
+  // visit = ช่วงนัดติดตั้ง (installStartDate–EndDate) — นาฬิกาคนละเรือนกับกำหนดส่ง
+  const inFieldDb = (due: string, over: Partial<DB> = {}, visit?: { start: string; end?: string }) => db({
     users: [actor],
-    jobs: [job({ requiredDate: due, openedBy: 'u1' })],
+    jobs: [job({
+      requiredDate: due, openedBy: 'u1',
+      installStartDate: visit?.start, installEndDate: visit?.end ?? visit?.start,
+    })],
     lbsUnits: [
       unit({ id: 'a', status: 'issued', jobId: 'j1' }),
       unit({ id: 'b', serialLvb: 'LVB-002', serialOm: 'OM-002', status: 'issued', jobId: 'j1' }),
@@ -1641,15 +1645,65 @@ describe('สถานะกำหนดส่ง (0075)', () => {
   })
   const d1 = (d: DB) => jobDelivery(d, d.jobs[0], TODAY)
 
-  it('🔴 เลยกำหนดแต่กำลังติดตั้งอยู่ = in_field_late (ส้ม) ไม่ใช่ overdue (แดง)', () => {
-    const d = d1(inFieldDb(PAST))
-    expect(d.state).toBe('in_field_late')
-    expect(d.tone).toBe('amber')
-    expect(d.atRisk).toBe(false)               // ไม่ถูกนับเป็น "ต้องเร่ง"
-    expect(d.daysLate).toBe(47)                // ยังบอกจำนวนวันที่เลยแผนตามจริง
+  // 🔴🔴 2 เคสนี้คือบั๊กที่ผู้ใช้จับได้จากของจริง (2026-09-17) — ห้ามถอย
+  it('🔴 เบิกของออกจากคลังแล้วแต่ยังไม่ถึงวันนัด = awaiting_visit ห้ามขึ้นว่า "กำลังติดตั้ง"', () => {
+    // ของจริง: 102LB20J3189 นัดติดตั้ง 25 ก.ย. แต่วันนี้ 17 ก.ย. — ไม่มีใครไปไซต์เลย
+    const d = d1(inFieldDb(FAR, {}, { start: '2026-09-25' }))
+    expect(d.state).toBe('awaiting_visit')
+    expect(d.label).toContain('รอถึงวันนัด')
+    expect(d.label).not.toContain('กำลังติดตั้ง')
+    expect(d.atRisk).toBe(false)
   })
 
-  it('🔴 เลยกำหนดและของยังไม่ออกจากคลัง = overdue (แดง) + บอกว่าใครค้าง', () => {
+  it('🔴 อยู่ในช่วงนัดติดตั้งแต่เลยกำหนดส่ง = installing + คำนำหน้า "เลยกำหนดส่ง N วัน" (ห้ามใช้คำว่า "เลยแผน")', () => {
+    // ของจริง: 102LB10J3076 กำหนดส่ง 15 ก.ย. · นัดติดตั้ง 14–18 ก.ย. · วันนี้ 17 ก.ย.
+    //   = เลยกำหนดส่ง 2 วันจริง แต่ทีมอยู่หน้างานตามนัด ⇒ ส้ม ไม่ใช่แดง และต้องไม่เขียนว่า "เลยแผน"
+    const d = d1(inFieldDb('2026-09-15', {}, { start: '2026-09-14', end: '2026-09-18' }))
+    expect(d.state).toBe('installing')
+    expect(d.tone).toBe('amber')
+    expect(d.isLate).toBe(true)
+    expect(d.daysLate).toBe(2)
+    expect(d.label).toContain('เลยกำหนดส่ง 2 วัน')
+    expect(d.label).not.toContain('เลยแผน')
+    expect(d.atRisk).toBe(false)               // งานเดินอยู่ — ไม่ใช่ใบที่ต้องเร่ง
+  })
+
+  it('อยู่ในช่วงนัดและยังไม่เลยกำหนดส่ง = installing (เขียว) ไม่มีคำนำหน้า', () => {
+    const d = d1(inFieldDb(FAR, {}, { start: '2026-09-14', end: '2026-09-18' }))
+    expect(d.state).toBe('installing')
+    expect(d.tone).toBe('green')
+    expect(d.isLate).toBe(false)
+    expect(d.label).not.toContain('เลยกำหนดส่ง')
+  })
+
+  it('🔴 เลยวันนัดติดตั้งแล้วยังไม่มีผลยืนยัน = visit_overdue + ต้องเร่ง (ถึงกำหนดส่งยังไม่ถึงก็ตาม)', () => {
+    const d = d1(inFieldDb(FAR, {}, { start: '2026-09-10', end: '2026-09-12' }))
+    expect(d.state).toBe('visit_overdue')
+    expect(d.atRisk).toBe(true)                // มีคนต้องตอบว่าเกิดอะไรขึ้นหน้างาน
+    expect(d.tone).toBe('amber')               // ยังไม่เลยกำหนดส่ง → ส้ม
+    expect(d.label).toContain('เลยวันนัดติดตั้ง 5 วัน')
+    // เลยทั้งวันนัดและกำหนดส่ง = แดง
+    expect(d1(inFieldDb(PAST, {}, { start: '2026-09-10', end: '2026-09-12' })).tone).toBe('red')
+  })
+
+  it('เบิกของแล้วแต่ยังไม่ได้นัดวันติดตั้ง = awaiting_visit + บอกให้ Service ไปนัด', () => {
+    const d = d1(inFieldDb(FAR))
+    expect(d.state).toBe('awaiting_visit')
+    expect(d.label).toContain('ยังไม่ได้นัด')
+    expect(d.nextStep).toContain('ระบุวันนัดติดตั้ง')
+  })
+
+  it('เริ่มยืนยันรายเครื่องก่อนถึงวันนัด = installing (ของจริงชนะวันนัดบนกระดาษ)', () => {
+    const d = d1(inFieldDb(FAR, {
+      unitInstallations: [{
+        id: 'ui1', unitId: 'a', jobId: 'j1', outcome: 'installed', installedDate: '2026-09-16',
+        performedBy: 'u1', performedAt: '2026-09-16T00:00:00.000Z',
+      }],
+    }, { start: '2026-09-25' }))
+    expect(d.state).toBe('installing')
+  })
+
+  it('🔴 เลยกำหนดส่งและของยังไม่ออกจากคลัง = overdue (แดง) + บอกว่าใครค้าง', () => {
     const d = d1(notStartedDb(PAST))
     expect(d.state).toBe('overdue')
     expect(d.tone).toBe('red')

@@ -70,10 +70,13 @@ export default function DashboardPage() {
     .filter(j => j.terminalStatus !== 'installed' && j.terminalStatus !== 'cancelled')
     .map(j => ({ job: j, d: jobDelivery(db, j, today) }))
     .sort((a, b) => (a.d.due ?? '9999-12-31').localeCompare(b.d.due ?? '9999-12-31'))
-  // "เลยกำหนด" = เลยจริงและของยังไม่ออกหน้างาน · งานที่กำลังติดตั้งอยู่แยกไปอีกตัวนับ
+  // "เลยกำหนดส่ง" = เลยจริงและของยังไม่ออกจากคลัง · งานที่เดินอยู่หน้างานแยกไปอีกตัวนับ
   const overdue = jobList.filter(x => x.d.state === 'overdue').length
-  const inFieldLate = jobList.filter(x => x.d.state === 'in_field_late').length
   const blocked = jobList.filter(x => x.d.state === 'blocked').length
+  const visitOverdue = jobList.filter(x => x.d.state === 'visit_overdue').length
+  // เลยกำหนดส่งแล้ว แต่งานเดินอยู่จริง (อยู่ในช่วงนัด / รอถึงวันนัด) — ต้องตามให้ขยายกำหนดส่ง ไม่ใช่เร่ง
+  const lateButMoving = jobList.filter(x => x.d.isLate && !x.d.atRisk
+    && (x.d.state === 'installing' || x.d.state === 'awaiting_visit')).length
   const dueSoon = jobList.filter(x => x.d.state === 'due_soon').length
   const awaitingClose = jobList.filter(x => x.d.state === 'awaiting_close').length
 
@@ -98,14 +101,15 @@ export default function DashboardPage() {
           <div className="label">Jobs In Progress</div>
           <div className="value">{db.jobs.filter(j => !j.terminalStatus || j.terminalStatus === 'issued').length}</div>
           <div className="hint">
-            {/* 0075: "ต้องเร่ง" = เลยกำหนดทั้งที่ยังไม่ออกหน้างาน + งานที่ติดปัญหาหน้างาน
-                งานที่กำลังติดตั้งอยู่แล้วเลยแผน ไม่ถูกนับรวม — มันเดินอยู่ ไม่ได้ค้าง */}
-            {overdue + blocked > 0 && (
-              <><b style={{ color: 'var(--danger)' }} title="เลยกำหนดทั้งที่ของยังไม่ออกจากคลัง หรือติดปัญหาหน้างาน">
-                ต้องเร่ง {overdue + blocked} งาน
+            {/* 0075: "ต้องเร่ง" = ใบที่ไม่มีใครเดินอยู่จริง — เลยกำหนดส่งทั้งที่ของยังไม่ออกจากคลัง ·
+                ติดปัญหาหน้างาน · เลยวันนัดติดตั้งแล้วยังไม่มีผลยืนยัน
+                ใบที่อยู่ในช่วงนัดติดตั้งไม่ถูกนับ — มันเดินอยู่ ไม่ได้ค้าง */}
+            {overdue + blocked + visitOverdue > 0 && (
+              <><b style={{ color: 'var(--danger)' }} title="เลยกำหนดส่งทั้งที่ของยังไม่ออกจากคลัง · ติดปัญหาหน้างาน · หรือเลยวันนัดติดตั้งแล้วยังไม่มีผลยืนยัน">
+                ต้องเร่ง {overdue + blocked + visitOverdue} งาน
               </b> · </>
             )}
-            {inFieldLate > 0 && <><b style={{ color: 'var(--amber, #d97706)' }} title="ทีมกำลังติดตั้งอยู่ แต่เลยกำหนดส่งเดิม — บันทึกขยายกำหนดส่งได้ที่หน้า Job">กำลังติดตั้ง เลยแผน {inFieldLate} งาน</b> · </>}
+            {lateButMoving > 0 && <><b style={{ color: 'var(--amber, #d97706)' }} title="งานเดินอยู่ตามวันนัดติดตั้ง แต่เลยกำหนดส่งที่ให้ลูกค้าไว้ — ถ้าตกลงเลื่อนแล้วให้บันทึกขยายกำหนดส่ง">เลยกำหนดส่งแต่งานเดินอยู่ {lateButMoving} งาน</b> · </>}
             {dueSoon > 0 && <><b style={{ color: 'var(--amber, #d97706)' }}>ใกล้ครบกำหนด {dueSoon} งาน</b> · </>}
             พร้อมเบิก {statusCount.get('ready_to_issue') ?? 0}
             {(statusCount.get('partially_issued') ?? 0) > 0 && (
@@ -201,9 +205,10 @@ export default function DashboardPage() {
         <div className="panel-head">
           <h3>
             Job List <span className="muted" style={{ fontWeight: 400 }}>· เรียงตามกำหนดส่ง — งานที่ยังไม่ปิด</span>
-            {overdue > 0 && <span className="badge red" style={{ marginLeft: 8 }} title="เลยกำหนดทั้งที่ของยังไม่ออกจากคลัง">เลยกำหนด {overdue}</span>}
+            {overdue > 0 && <span className="badge red" style={{ marginLeft: 8 }} title="เลยกำหนดส่งทั้งที่ของยังไม่ออกจากคลัง">เลยกำหนดส่ง {overdue}</span>}
             {blocked > 0 && <span className="badge red" style={{ marginLeft: 6 }}>ติดปัญหาหน้างาน {blocked}</span>}
-            {inFieldLate > 0 && <span className="badge amber" style={{ marginLeft: 6 }} title="กำลังติดตั้งอยู่ แต่เลยกำหนดเดิม">กำลังติดตั้ง เลยแผน {inFieldLate}</span>}
+            {visitOverdue > 0 && <span className="badge red" style={{ marginLeft: 6 }} title="เลยวันนัดติดตั้งแล้วแต่ยังไม่มีผลยืนยันรายเครื่อง">เลยวันนัดติดตั้ง {visitOverdue}</span>}
+            {lateButMoving > 0 && <span className="badge amber" style={{ marginLeft: 6 }} title="งานเดินอยู่ตามวันนัด แต่เลยกำหนดส่งที่ให้ลูกค้าไว้">เลยกำหนดส่งแต่งานเดินอยู่ {lateButMoving}</span>}
             {dueSoon > 0 && <span className="badge amber" style={{ marginLeft: 6 }}>≤{DUE_WARN_DAYS} วัน {dueSoon}</span>}
             {awaitingClose > 0 && <span className="badge blue" style={{ marginLeft: 6 }}>รอปิดงาน {awaitingClose}</span>}
           </h3>
@@ -235,8 +240,16 @@ export default function DashboardPage() {
                       {extraSites > 0 && (
                         <div className="muted" style={{ fontSize: 11 }}>+{extraSites} จุดติดตั้ง</div>
                       )}
+                      {/* 🔴 นาฬิกาเรือนที่ 2 — ต้องเห็นคู่กันเสมอ ไม่งั้นผู้บริหารอ่านป้าย
+                          "เลยกำหนดส่ง" แล้วนึกว่าทีมยังไม่ได้ทำอะไร ทั้งที่อยู่ในช่วงนัดที่ตกลงกันไว้ */}
+                      {d.visitStart && (
+                        <div className="muted" style={{ fontSize: 11 }}>
+                          นัดติดตั้ง {fmtDate(d.visitStart)}
+                          {d.visitEnd && d.visitEnd !== d.visitStart && <> – {fmtDate(d.visitEnd)}</>}
+                        </div>
+                      )}
                     </td>
-                    <td style={{ whiteSpace: 'nowrap' }}><DeliveryBadge d={d} compact /></td>
+                    <td style={{ whiteSpace: 'nowrap' }}><DeliveryBadge d={d} /></td>
                     <td><Link to={`/jobs/${j.id}`}><b>{j.jobNo}</b></Link></td>
                     <td>{j.customerName}</td>
                     <td><JobStatusBadge status={deriveJobStatus(db, j)} /></td>

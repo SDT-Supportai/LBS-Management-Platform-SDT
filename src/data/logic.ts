@@ -386,30 +386,40 @@ export function jobDaysLeft(job: Job, today = todayIso()): number | undefined {
 export const DUE_WARN_DAYS = 30
 
 // =============================================================================
-// สถานะกำหนดส่ง (0075) — "เลยกำหนด" ต้องแยกจาก "เลยแผนแต่กำลังทำอยู่"
+// สถานะกำหนดส่ง (0075) — **3 นาฬิกาที่ห้ามสับสนกัน**
 //
-// ปัญหาเดิม: ทุกหน้าตัดสินด้วย `daysLeft < 0` อย่างเดียว ⇒ งานที่ช่างกำลังติดตั้งอยู่หน้างาน
-//   ขึ้นแดง "เลยกำหนด" เหมือนงานที่ยังไม่ได้เริ่มเลย · ทั้งที่สองใบนี้ต้องการคนละการกระทำ
-//   (ใบแรกต้องตามความคืบหน้า · ใบหลังต้องเร่งของ/เร่งทีม) พอสีเดียวกันหมด คนอ่านก็เลิกเชื่อสีแดง
+// ปัญหารอบแรก: ทุกหน้าตัดสินด้วย `daysLeft < 0` อย่างเดียว ⇒ งานที่ช่างกำลังติดตั้งอยู่หน้างาน
+//   ขึ้นแดง "เลยกำหนด" เหมือนงานที่ยังไม่ได้เริ่มเลย
+// ปัญหารอบสอง (ผู้ใช้จับได้จากของจริง 2026-09-17 — **บั๊กของโมเดลนี้เอง**):
+//   (1) ของเบิกออกจากคลังแล้ว **ไม่ได้แปลว่ากำลังติดตั้ง** — ใบที่นัดติดตั้ง 25 ก.ย. แต่วันนี้ 17 ก.ย.
+//       ยังไม่มีใครไปไซต์เลย แต่ระบบขึ้น "กำลังติดตั้ง"
+//   (2) คำว่า "เลยแผน" กำกวมจนขัดกับหน้าจอตัวเอง — ใบที่นัดติดตั้ง 14–18 ก.ย. (ยังอยู่ในช่วงนัด)
+//       ขึ้นว่า "เลยแผน 2 วัน" เพราะไปเทียบกับ **กำหนดส่ง** คนละตัวกับ "แผนติดตั้ง" ที่โชว์อยู่ข้าง ๆ
 //
-// โมเดลใหม่ = 2 แกนไขว้กัน แล้วยุบเป็นสถานะเดียวที่อ่านแล้วรู้ว่า "ใครต้องทำอะไรต่อ":
-//   แกนเวลา  : กำหนดที่ **มีผล** (ขยายแล้วนับจากวันใหม่ — ดู jobEffectiveDue) เทียบวันนี้
-//   แกนหน้างาน: ของออกจากคลังไปแล้วหรือยัง · ติดตั้งได้ข้อสรุปครบหรือยัง · มีเครื่องติดปัญหาไหม
+// ⇒ คำศัพท์ถูกล็อกไว้แล้ว ห้ามปนกันอีก:
+//   "กำหนดส่ง"     = ข้อผูกพันกับลูกค้า (required_date + EOT) — เลื่อนได้เฉพาะผ่าน extendJobDue
+//   "นัดติดตั้ง"    = ช่วงที่ทีมช่างออกไซต์ (installStartDate–EndDate) — Service เลื่อนเองได้
+//   "ผลติดตั้งจริง" = unitInstallations รายเครื่อง
+//   ห้ามใช้คำว่า "แผน" ลอย ๆ ในป้ายสถานะเด็ดขาด — มันชี้ได้ทั้ง 2 อัน
 //
-// ลำดับตัดสิน (บนสุดชนะ) — เรียงตาม "สิ่งที่ต้องลงมือก่อน" ไม่ใช่ตามความรุนแรงของวันที่:
-//   ปิดแล้ว → ติดปัญหาหน้างาน → รอปิดงาน → กำลังติดตั้ง(เลยแผน/ตามแผน) → เลยกำหนด → ใกล้กำหนด → ตามแผน
-//   🔴 blocked มาก่อน in_field_late เสมอ: เครื่องที่ติดตั้งไม่ได้คือของจริงที่ค้าง ส่วนวันที่เลื่อนได้
-//   🔴 awaiting_close มาก่อน late: ทุกเครื่องได้ข้อสรุปแล้ว เหลือแค่กดปิด — ไล่เรื่องวันที่ตอนนี้ไม่ช่วยอะไร
+// ลำดับตัดสิน (บนสุดชนะ) — เรียงตาม "สิ่งที่ต้องลงมือก่อน" ไม่ใช่ความรุนแรงของวันที่:
+//   ปิดแล้ว → ติดปัญหาหน้างาน → รอปิดงาน → [เลยวันนัด → กำลังติดตั้ง → รอถึงวันนัด] → เลยกำหนดส่ง
+//   → ใกล้กำหนด → ตามกำหนด
+//   🔴 blocked มาก่อนทุกเรื่องวันที่: เครื่องที่ติดตั้งไม่ได้คือของจริงที่ค้าง ส่วนวันที่ยังเลื่อนได้
+//   🔴 awaiting_close มาก่อน late: ทุกเครื่องได้ข้อสรุปแล้ว เหลือแค่กดปิด — ไล่วันที่ตอนนี้ไม่ช่วยอะไร
+//   🔴 `overdue` (แดง "เลยกำหนดส่ง") เกิดได้เฉพาะตอน **ของยังไม่ออกจากคลัง** เท่านั้น
+//      ของออกไปแล้ว = ใช้สถานะฝั่งหน้างาน แล้วเติมคำนำหน้า "เลยกำหนดส่ง N วัน · " แทน
 // =============================================================================
 export type DeliveryState =
   | 'closed'          // ปิดงาน/ยกเลิกแล้ว — ไม่ต้องเตือนอะไรอีก
   | 'blocked'         // มีเครื่องติดตั้งไม่ได้ และยังไม่ได้ข้อสรุปครบทั้งใบ
   | 'awaiting_close'  // ทุกเครื่องได้ข้อสรุปแล้ว รอ Service กดปิดงาน
-  | 'in_field_late'   // ของอยู่หน้างาน กำลังติดตั้ง แต่เลยกำหนดที่มีผลแล้ว
-  | 'in_field'        // ของอยู่หน้างาน กำลังติดตั้ง ยังอยู่ในกำหนด
-  | 'overdue'         // เลยกำหนด และของยังไม่ออกจากคลังเลย ← สีแดงตัวจริง
+  | 'visit_overdue'   // ของอยู่กับช่างแล้ว แต่เลยวันนัดติดตั้งสุดท้ายโดยยังไม่ได้ข้อสรุป
+  | 'installing'      // อยู่ในช่วงนัดติดตั้ง หรือมีผลยืนยันรายเครื่องแล้ว = เดินอยู่จริง
+  | 'awaiting_visit'  // เบิกของแล้ว แต่ยังไม่ถึงวันนัด (หรือยังไม่ได้นัด) — ยังไม่มีใครไปไซต์
+  | 'overdue'         // เลยกำหนดส่ง และของยังไม่ออกจากคลังเลย ← สีแดงตัวจริง
   | 'due_soon'        // เหลือ ≤ DUE_WARN_DAYS วัน และยังไม่ออกหน้างาน
-  | 'on_track'        // ยังอยู่ในแผน
+  | 'on_track'        // ยังอยู่ในกำหนด
   | 'no_due'          // ยังไม่ระบุกำหนดส่ง
 
 export interface JobDelivery {
@@ -423,7 +433,14 @@ export interface JobDelivery {
   extension?: JobDueExtension   // การเลื่อนครั้งล่าสุด
   extensionCount: number
   daysLeft?: number             // เทียบ due ที่มีผล (ลบ = เลยแล้ว)
-  daysLate: number              // เลยมากี่วัน (0 = ยังไม่เลย)
+  daysLate: number              // เลยกำหนด**ส่ง**มากี่วัน (0 = ยังไม่เลย)
+  /** เลยกำหนดส่งแล้ว — แยกจาก state เพราะงานหน้างานเดินอยู่ก็เลยกำหนดส่งได้ */
+  isLate: boolean
+  // ---- ฝั่งนัดติดตั้ง (คนละนาฬิกากับกำหนดส่ง) ----
+  visitStart?: string
+  visitEnd?: string
+  /** วันคงเหลือถึงวันนัดติดตั้ง (ลบ = เลยวันนัดสุดท้ายมาแล้ว) · undefined = ยังไม่ได้นัด */
+  visitDaysLeft?: number
   /** true = ต้องมีคนเร่ง/แก้ตอนนี้ — ตัวนับ "ต้องเร่ง" ทุกหน้าใช้ค่านี้ ห้ามนับ daysLeft<0 เอง */
   atRisk: boolean
 }
@@ -458,8 +475,18 @@ export function jobDelivery(db: DB, job: Job, today = todayIso()): JobDelivery {
   const daysLeft = due ? daysBetweenIso(today, due) : undefined
   const daysLate = daysLeft !== undefined && daysLeft < 0 ? -daysLeft : 0
   const extensionCount = db.jobDueExtensions.reduce((n, e) => n + (e.jobId === job.id ? 1 : 0), 0)
-  const base = { contractDue, due, extension: ext, extensionCount, daysLeft, daysLate }
-  const lateTail = daysLate > 0 ? ` · เลยแผน ${daysLate} วัน` : ''
+  const isLate = daysLate > 0
+  // นัดติดตั้ง = นาฬิกาคนละเรือนกับกำหนดส่ง · end ว่าง = นัดวันเดียว (ใช้ start เป็นวันสุดท้าย)
+  const visitStart = job.installStartDate?.slice(0, 10) || undefined
+  const visitEnd = job.installEndDate?.slice(0, 10) || visitStart
+  const visitDaysLeft = visitEnd ? daysBetweenIso(today, visitEnd) : undefined
+  const base = {
+    contractDue, due, extension: ext, extensionCount, daysLeft, daysLate, isLate,
+    visitStart, visitEnd, visitDaysLeft,
+  }
+  // 🔴 คำนำหน้าเดียวที่ใช้บอกว่าช้ากว่าสัญญา — ต้องระบุว่า "กำหนดส่ง" เสมอ ห้ามเขียนแค่ "เลยแผน"
+  //    (บั๊กรอบก่อน: ใบที่ยังอยู่ในช่วงนัดติดตั้งขึ้นว่า "เลยแผน 2 วัน" แล้วขัดกับวันนัดที่โชว์ข้าง ๆ)
+  const latePrefix = isLate ? `เลยกำหนดส่ง ${daysLate} วัน · ` : ''
 
   if (job.terminalStatus === 'installed' || job.terminalStatus === 'cancelled') {
     return {
@@ -476,7 +503,7 @@ export function jobDelivery(db: DB, job: Job, today = todayIso()): JobDelivery {
   if (inst.blocked > 0 && !inst.canClose) {
     return {
       ...base, state: 'blocked', tone: 'red', atRisk: true,
-      label: `ติดปัญหาหน้างาน ${inst.blocked} เครื่อง${lateTail}`,
+      label: `${latePrefix}ติดปัญหาหน้างาน ${inst.blocked} เครื่อง`,
       nextStep: 'Project ต้องเคลียร์ปัญหาให้ทีมช่างเดินต่อได้ (ดูเหตุผลที่บันทึกไว้รายเครื่อง)',
     }
   }
@@ -484,26 +511,52 @@ export function jobDelivery(db: DB, job: Job, today = todayIso()): JobDelivery {
   if (inst.canClose) {
     return {
       ...base, state: 'awaiting_close', tone: 'blue', atRisk: false,
-      label: `ติดตั้งครบ รอปิดงาน${lateTail}`,
+      label: `${latePrefix}ติดตั้งครบ รอปิดงาน`,
       nextStep: `Service กดปิดงานติดตั้ง (สำเร็จ ${inst.installed}${inst.blocked > 0 ? ` · ติดปัญหา ${inst.blocked}` : ''} จาก ${inst.total} เครื่อง)`,
     }
   }
-  // 3) ของอยู่กับช่างแล้ว = งานเดินอยู่จริง — เลยแผนก็ยังไม่ใช่ "เลยกำหนด" แบบงานที่ยังไม่เริ่ม
+  // 3) ของอยู่กับช่างแล้ว — ต้องแยกอีกชั้นว่า "ถึงคิวออกไซต์หรือยัง"
+  //    🔴 เบิกของออกจากคลัง ≠ กำลังติดตั้ง · ใบที่นัด 25 ก.ย. แต่วันนี้ 17 ก.ย. ยังไม่มีใครไปไซต์
+  //    ตัวชี้ว่า "เริ่มแล้วจริง" = อยู่ในช่วงนัด หรือมีผลยืนยันรายเครื่องแล้ว (เริ่มก่อนนัดก็นับ)
   if (inField) {
+    const started = inst.outInstalled > 0 || inst.outBlocked > 0
     const progress = `ติดตั้งแล้ว ${inst.outInstalled}/${inst.outTotal} เครื่องที่เบิกออกไป`
-    return daysLate > 0
-      ? {
-        ...base, state: 'in_field_late', tone: 'amber', atRisk: false,
-        label: `กำลังติดตั้ง · เลยแผน ${daysLate} วัน`,
-        nextStep: `${progress} — ถ้าตกลงเลื่อนวันส่งมอบกับลูกค้าแล้ว ให้บันทึก "ขยายกำหนดส่ง" ที่หน้า Job`,
+    const lateHint = isLate
+      ? ' — ถ้าตกลงเลื่อนวันส่งมอบกับลูกค้าแล้ว ให้บันทึก "ขยายกำหนดส่ง" ที่หน้า Job'
+      : ''
+
+    // 3.1 เลยวันนัดสุดท้ายแล้วแต่ยังไม่ได้ข้อสรุป — ไม่ว่ากำหนดส่งจะเลยหรือยัง ก็ต้องมีคนตอบ
+    if (visitEnd && visitDaysLeft !== undefined && visitDaysLeft < 0) {
+      return {
+        ...base, state: 'visit_overdue', tone: isLate ? 'red' : 'amber', atRisk: true,
+        label: `${latePrefix}เลยวันนัดติดตั้ง ${-visitDaysLeft} วัน`,
+        nextStep: `${progress} — Service ต้องยืนยันผลรายเครื่อง หรือบันทึกเลื่อนนัด/ติดปัญหาหน้างาน${lateHint}`,
       }
-      : {
-        ...base, state: 'in_field', tone: 'green', atRisk: false,
-        label: 'กำลังติดตั้ง', nextStep: progress,
+    }
+    // 3.2 ยังไม่ถึงวันนัด (หรือยังไม่ได้นัด) และยังไม่เริ่มติดตั้ง = ของอยู่กับช่าง รอถึงคิว
+    if (!started && (!visitStart || visitStart > today)) {
+      return {
+        ...base,
+        state: 'awaiting_visit',
+        tone: isLate ? 'amber' : visitStart ? 'green' : 'amber',
+        atRisk: false,
+        label: visitStart
+          ? `${latePrefix}เบิกของแล้ว · รอถึงวันนัดอีก ${daysBetweenIso(today, visitStart)} วัน`
+          : `${latePrefix}เบิกของแล้ว · ยังไม่ได้นัดวันติดตั้ง`,
+        nextStep: visitStart
+          ? `ของอยู่กับทีมช่างแล้ว ${inst.outTotal} เครื่อง — รอถึงวันนัดติดตั้งตามที่ตกลงกับลูกค้า${lateHint}`
+          : `ของอยู่กับทีมช่างแล้ว ${inst.outTotal} เครื่อง แต่ยังไม่มีวันนัด — Service ระบุวันนัดติดตั้ง${lateHint}`,
       }
+    }
+    // 3.3 อยู่ในช่วงนัด หรือเริ่มยืนยันรายเครื่องแล้ว = เดินอยู่จริง
+    return {
+      ...base, state: 'installing', tone: isLate ? 'amber' : 'green', atRisk: false,
+      label: `${latePrefix}กำลังติดตั้ง${visitEnd && visitDaysLeft !== undefined ? ` (นัดถึงอีก ${visitDaysLeft} วัน)` : ''}`,
+      nextStep: `${progress}${lateHint}`,
+    }
   }
 
-  // 4) ยังไม่ออกหน้างาน — ตรงนี้เท่านั้นที่ "เลยกำหนด" แปลว่าเลยจริง
+  // 4) ยังไม่ออกจากคลัง — ตรงนี้เท่านั้นที่ "เลยกำหนดส่ง" แปลว่างานค้างจริง ไม่มีใครกำลังทำอยู่
   const status = deriveJobStatus(db, job)
   const blockedBy =
     status === 'ready_to_issue' ? 'ของครบแล้ว — Project กดเบิกให้ Service ได้ทันที'
@@ -515,7 +568,7 @@ export function jobDelivery(db: DB, job: Job, today = todayIso()): JobDelivery {
   if (daysLate > 0) {
     return {
       ...base, state: 'overdue', tone: 'red', atRisk: true,
-      label: `เลยกำหนด ${daysLate} วัน · ยังไม่ออกหน้างาน`,
+      label: `เลยกำหนดส่ง ${daysLate} วัน · ยังไม่ออกหน้างาน`,
       nextStep: blockedBy,
     }
   }
@@ -529,12 +582,12 @@ export function jobDelivery(db: DB, job: Job, today = todayIso()): JobDelivery {
   if (daysLeft <= DUE_WARN_DAYS) {
     return {
       ...base, state: 'due_soon', tone: 'amber', atRisk: false,
-      label: `ใกล้กำหนด · เหลือ ${daysLeft} วัน`, nextStep: blockedBy,
+      label: `ใกล้กำหนดส่ง · เหลือ ${daysLeft} วัน`, nextStep: blockedBy,
     }
   }
   return {
     ...base, state: 'on_track', tone: 'neutral', atRisk: false,
-    label: `ตามแผน · เหลือ ${daysLeft} วัน`, nextStep: blockedBy,
+    label: `ตามกำหนด · เหลือ ${daysLeft} วัน`, nextStep: blockedBy,
   }
 }
 

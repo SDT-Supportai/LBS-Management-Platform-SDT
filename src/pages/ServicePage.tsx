@@ -332,7 +332,7 @@ export default function ServicePage() {
                         <div className="muted" style={{ fontSize: 11 }}>เลื่อนจาก {fmtDate(d.contractDue)}</div>
                       )}
                     </td>
-                    <td><DeliveryBadge d={d} compact /></td>
+                    <td><DeliveryBadge d={d} /></td>
                   </tr>
                 )
               })}
@@ -368,7 +368,7 @@ export default function ServicePage() {
                         {j.installStartDate && <> · 📅 นัดติดตั้ง <b>{fmtDate(j.installStartDate)} – {fmtDate(j.installEndDate)}</b></>}
                       </div>
                       {/* 0075 — สถานะกำหนดส่งเทียบกำหนดที่มีผล (ไม่ใช่ requiredDate ดิบ) */}
-                      <div style={{ marginTop: 3 }}><DeliveryBadge d={jobDelivery(db, j)} compact /></div>
+                      <div style={{ marginTop: 3 }}><DeliveryBadge d={jobDelivery(db, j)} /></div>
                       {j.issuedNote && <div className="muted">📝 {j.issuedNote}</div>}
                       {(() => { const v = lastVisit(j.id); return v && (
                         <div className="muted" style={{ color: v.outcome === 'failed' ? 'var(--danger)' : undefined }}>

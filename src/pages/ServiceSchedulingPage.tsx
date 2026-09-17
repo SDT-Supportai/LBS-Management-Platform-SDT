@@ -126,7 +126,7 @@ export default function ServiceSchedulingPage() {
                       {/* "นัดติดตั้ง" = วันที่ทีมจะออกไซต์ · คนละตัวกับกำหนดส่งตามสัญญา (0075)
                           ตารางนี้จึงต้องมีทั้งคู่ ไม่งั้นคนจัดคิวจะไม่รู้ว่าใบไหนเลยกำหนดไปแล้ว */}
                       <td>{j.installStartDate ? `${fmtDate(j.installStartDate)} – ${fmtDate(j.installEndDate)}` : '-'}</td>
-                      <td><DeliveryBadge d={jobDelivery(db, j)} compact /></td>
+                      <td><DeliveryBadge d={jobDelivery(db, j)} /></td>
                       <td><span className="badge neutral">{s.installed}/{s.total}</span></td>
                     </tr>
                   )

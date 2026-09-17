@@ -327,15 +327,13 @@ export function JobStatusBadge({ status }: { status: JobStatus }) {
  *    กำลังติดตั้งอยู่ขึ้นแดงเหมือนงานที่ยังไม่เริ่ม · ทุกหน้าต้องมาจาก jobDelivery() เท่านั้น
  */
 const DELIVERY_ICON: Record<DeliveryState, string> = {
-  closed: '', blocked: '🛑', awaiting_close: '📦', in_field_late: '🔧',
-  in_field: '🔧', overdue: '🔴', due_soon: '⚠️', on_track: '', no_due: '',
+  closed: '', blocked: '🛑', awaiting_close: '📦', visit_overdue: '⏰',
+  installing: '🔧', awaiting_visit: '🚚', overdue: '🔴', due_soon: '⚠️', on_track: '', no_due: '',
 }
-export function DeliveryBadge({ d, compact }: { d: JobDelivery; compact?: boolean }) {
-  const icon = DELIVERY_ICON[d.state]
+export function DeliveryBadge({ d }: { d: JobDelivery }) {
   return (
     <span className={`badge ${d.tone}`} title={d.nextStep}>
-      {icon && `${icon} `}
-      {compact && d.state === 'overdue' ? `เลยกำหนด ${d.daysLate} วัน` : d.label}
+      {DELIVERY_ICON[d.state] && `${DELIVERY_ICON[d.state]} `}{d.label}
     </span>
   )
 }
