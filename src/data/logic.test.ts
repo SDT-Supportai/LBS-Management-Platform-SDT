@@ -20,6 +20,7 @@ import {
   MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB,
   jobDelivery, jobEffectiveDue, jobDueExtensions, extendJobDue, deleteJobDueExtension,
   addJobPayment, addPaymentFile, deletePaymentFile, paymentFiles, paymentFileCount, deleteJobPayment,
+  updateJobBudget,
 } from './logic'
 
 // =============================================================================
@@ -1864,5 +1865,58 @@ describe('เอกสารแนบรายงวดเงิน (0076)', () 
   it('Project ที่ไม่ใช่เจ้าของงานแนบเอกสารไม่ได้ (0042)', () => {
     const { d, paymentId } = withPayment()
     expect(() => addPaymentFile(d, { ...actor, id: 'u9' }, f(paymentId))).toThrow(/ไม่ใช่งานที่คุณเปิด/)
+  })
+})
+
+// =============================================================================
+// สิทธิ์แก้งบประมาณหลัง Job ล็อก (0077)
+//
+// 🔴 ที่มา: ผู้ใช้เปิดใบที่เบิกให้ Service แล้วด้วยบัญชี Project → ปุ่มแก้งบหายทั้งปุ่ม
+//    เพราะ 0023 ล็อก rpc_update_job_budget ไว้ที่ Manage เท่านั้น ⇒ ต้นทุนจริง 5 หมวด
+//    ที่กรอกมือ (ขนส่ง/eng/ove/pm/fin) ซึ่งเกิด "หลังเบิก" เป็นส่วนใหญ่ บันทึกไม่ได้เลย
+// =============================================================================
+describe('แก้งบประมาณหลังใบล็อก (0077)', () => {
+  const owner = { id: 'u1', email: 'p@x.co', password: '', fullName: 'เจ้าของงาน', department: 'project' as const, isActive: true }
+  const manage = { id: 'u9', email: 'a@x.co', password: '', fullName: 'ผู้ดูแล', department: 'admin' as const, isActive: true }
+  const base = (over: Partial<Job> = {}) => db({
+    users: [owner, manage],
+    jobs: [job({ openedBy: 'u1', budgetSalePrice: 1_000_000, ...over })],
+  })
+  const costs = { trans: { budget: 50_000, actual: 62_000 } }
+
+  it('🔴 Job ที่เบิกให้ Service แล้ว เจ้าของงานยังบันทึกต้นทุนใช้จริงได้', () => {
+    const d = updateJobBudget(base({ terminalStatus: 'issued' }), owner,
+      { jobId: 'j1', budgetSalePrice: 1_000_000, budgetCosts: costs })
+    expect(d.jobs[0].budgetCosts?.trans?.actual).toBe(62_000)
+    expect(d.auditLogs[0].detail).toContain('แก้ไขงบประมาณ')
+  })
+
+  it('ปิดงานติดตั้งแล้วก็ยังแก้ได้ (ค่าใช้จ่ายช่วงท้ายงานมาทีหลังเสมอ)', () => {
+    const d = updateJobBudget(base({ terminalStatus: 'installed' }), owner,
+      { jobId: 'j1', budgetSalePrice: 1_000_000, budgetCosts: costs })
+    expect(d.jobs[0].budgetCost).toBe(50_000)
+  })
+
+  it('Manage แก้ใบของคนอื่นได้เหมือนเดิม', () => {
+    const d = updateJobBudget(base({ terminalStatus: 'issued' }), manage,
+      { jobId: 'j1', budgetSalePrice: 2_000_000, budgetCosts: costs })
+    expect(d.jobs[0].budgetSalePrice).toBe(2_000_000)
+  })
+
+  it('Project ที่ไม่ใช่เจ้าของงานแก้ไม่ได้ (0042 ยังคุมอยู่)', () => {
+    expect(() => updateJobBudget(base({ terminalStatus: 'issued' }), { ...owner, id: 'u404' },
+      { jobId: 'j1', budgetSalePrice: 1, budgetCosts: costs })).toThrow(/ไม่ใช่งานที่คุณเปิด/)
+  })
+
+  it('🔴 ใบที่ยกเลิกแล้วแก้งบไม่ได้ — แม้แต่ Manage (ตัวเลขเงินของใบที่ยกเลิกต้องไม่ขยับ)', () => {
+    for (const actor of [owner, manage]) {
+      expect(() => updateJobBudget(base({ terminalStatus: 'cancelled' }), actor,
+        { jobId: 'j1', budgetSalePrice: 1, budgetCosts: costs })).toThrow(/ยกเลิก/)
+    }
+  })
+
+  it('ยอดติดลบยังถูกปฏิเสธเหมือนเดิม', () => {
+    expect(() => updateJobBudget(base({ terminalStatus: 'issued' }), owner,
+      { jobId: 'j1', budgetSalePrice: -1, budgetCosts: costs })).toThrow()
   })
 })

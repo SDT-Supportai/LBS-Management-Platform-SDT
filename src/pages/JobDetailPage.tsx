@@ -188,13 +188,24 @@ export default function JobDetailPage() {
 
   const budget = jobBudgetSummary(db, job)
   const pay = jobPaymentSummary(db, job)
+  const userOf = (id: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
+  // ---- สิทธิ์แก้ Project Budget (0023 · ขยายสิทธิ์ที่ 0077) ----
+  // Project เจ้าของงาน + Manage แก้ได้ **ทุกสถานะ ยกเว้นใบที่ยกเลิก** — ตรงกับ guard ฝั่ง DB
+  //   (app_assert_job_cost_editable) เพราะต้นทุนจริง 5 หมวดที่กรอกมือเกิดหลังเบิกเป็นส่วนใหญ่
+  // canBudgetRole = คนที่ "ตำแหน่งเกี่ยวกับงบ" (Project/Manage) → เห็นปุ่มเสมอ แม้กดไม่ได้
+  const canBudgetRole = can(user, 'job.manage')
+  const blockedBudgetReason =
+    !canManage && !isManage
+      ? `ใบนี้เปิดโดย${job.openedBy ? ` ${userOf(job.openedBy)}` : 'ผู้ใช้อื่น'} — แก้งบประมาณได้เฉพาะเจ้าของงาน หรือ Manage`
+    : job.terminalStatus === 'cancelled'
+      ? `${job.jobNo} ถูกยกเลิกไปแล้ว — ตัวเลขเงินของใบที่ยกเลิกต้องไม่ขยับอีก`
+      : ''
   // 0075 — สถานะกำหนดส่ง · ขยายได้จนถึง issued (ปิดเมื่อ installed/cancelled ตรงกับ guard ฝั่ง DB)
   const delivery = jobDelivery(db, job)
   const dueHistory = jobDueExtensions(db, job.id)
   const canExtendDue = canManage && !procureLocked
   const itemOf = (id: string) => db.items.find(i => i.id === id)
   const stockOf = (id: string) => db.projectStocks.find(s => s.id === id)
-  const userOf = (id: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
   const togglePick = (id: string) => setPicked(prev => {
     const next = new Set(prev)
     next.has(id) ? next.delete(id) : next.add(id)
@@ -997,8 +1008,16 @@ export default function JobDetailPage() {
           <h3>Project Budget</h3>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <span className="muted">กำไร = ราคาขาย − ต้นทุนรวม(งบ) · คงเหลือ = งบ − ใช้จริง</span>
-            {/* Manage แก้งบได้แม้ Job ล็อกแล้ว (แก้ตัวเลขบัญชีย้อนหลัง) — role อื่นแก้ได้เฉพาะก่อนล็อก */}
-            {((canManage && !locked) || isManage) && (
+            {/* Manage แก้งบได้แม้ Job ล็อกแล้ว (แก้ตัวเลขบัญชีย้อนหลัง · 0023) — role อื่นแก้ได้เฉพาะก่อนล็อก
+                🔴 คนที่แก้ไม่ได้ต้องเห็นปุ่ม **แบบปิด + เหตุผล** ไม่ใช่ปุ่มหายเงียบ ๆ
+                   (ผู้ใช้รายงาน 2026-09-18: เปิดใบที่เบิกแล้วด้วยบัญชี Project แล้วปุ่มหายไปทั้งปุ่ม
+                    ไม่มีอะไรบอกว่าใครแก้ได้ ⇒ อ่านว่า "ระบบเสีย" ไม่ใช่ "ถูกล็อกตามกติกา")
+                   แสดงเฉพาะคนที่ตำแหน่งเกี่ยวกับงบ (Project/Manage) — แผนกอื่นไม่ต้องเห็นปุ่มที่กดไม่ได้ */}
+            {canBudgetRole && (blockedBudgetReason ? (
+              <button className="small" disabled title={blockedBudgetReason}>
+                🔒 แก้ไขงบประมาณไม่ได้
+              </button>
+            ) : (
               <button className="small" onClick={() => {
                 setEditForm({
                   jobNo: job.jobNo, customerName: job.customerName, contactPhone: job.contactPhone ?? '',
@@ -1009,10 +1028,14 @@ export default function JobDetailPage() {
                 })
                 setEditCosts(costFormFromJob(job.budgetCosts))
                 setModal('budget')
-              }}>✏️ แก้ไขงบประมาณ{locked ? ' (ล็อกแล้ว)' : ''}</button>
-            )}
+              }}>✏️ แก้ไขงบประมาณ{locked ? ' (ย้อนหลัง)' : ''}</button>
+            ))}
           </div>
         </div>
+        {/* บอกเหตุผลเป็นข้อความด้วย ไม่ใช่มีแต่ tooltip — บนมือถือไม่มี hover ให้เห็น */}
+        {canBudgetRole && blockedBudgetReason && (
+          <div className="panel-body muted" style={{ paddingBottom: 0 }}>🔒 {blockedBudgetReason}</div>
+        )}
         <div className="panel-body">
           <div className="budget-grid" style={{ marginBottom: 16 }}>
             <div className="budget-cell"><div className="b-label">ราคาขาย</div><div className="b-value">{fmtBaht(budget.salePrice)}</div></div>
@@ -2092,7 +2115,7 @@ export default function JobDetailPage() {
       )}
 
       {modal === 'budget' && (
-        <Modal title={`แก้ไขงบประมาณ — ${job.jobNo}`} onClose={close}
+        <Modal title={`แก้ไขงบประมาณ — ${job.jobNo}${locked ? ' (แก้ย้อนหลัง)' : ''}`} onClose={close}
           footer={<>
             <button onClick={close}>ยกเลิก</button>
             <button className="primary"
@@ -2106,6 +2129,21 @@ export default function JobDetailPage() {
                 if (await tryAction(save, 'บันทึกงบประมาณแล้ว')) close()
               }}>บันทึก</button>
           </>}>
+          {locked && (
+            <div className="muted" style={{ marginBottom: 10 }}>
+              ใบนี้เบิกให้ Service ไปแล้ว — โมดัลนี้แก้ได้เฉพาะ <b>ราคาขายและต้นทุน 7 หมวด</b>{' '}
+              (Scope · จำนวน LBS · จุดติดตั้ง ยังล็อกอยู่) · ทุกการแก้ถูกบันทึกใน Audit Log ว่าแก้ย้อนหลัง
+            </div>
+          )}
+          {/* 🔴 ราคาขายเป็นฐานของงวดที่คิดเป็น % — งวดที่ออกใบไปแล้ว freeze ยอดไว้ (0044) ไม่ขยับตาม
+              ต้องเตือนตรงจุดที่กำลังจะพิมพ์ ไม่ใช่ไปเห็นป้าย stale ทีหลังตอนเปิดตาราง Payment */}
+          {pay.rows.some(r => r.percent !== undefined) && (
+            <div style={{ color: 'var(--danger)', marginBottom: 10 }}>
+              ⚠️ งานนี้ออกใบวางบิลแบบคิด % ไปแล้ว {pay.rows.filter(r => r.percent !== undefined).length} งวด —
+              แก้ราคาขายแล้ว <b>ยอดในงวดที่ออกไปแล้วจะไม่เปลี่ยนตาม</b> (ตรึงไว้ให้ตรงกับเอกสารจริง)
+              ถ้าต้องการให้คิดตามราคาใหม่ ต้องเข้าไปกด "แก้" งวดนั้นแล้วบันทึกซ้ำเอง
+            </div>
+          )}
           <BudgetFields
             sale={editForm.salePrice} costs={editCosts}
             onSale={v => setEditForm({ ...editForm, salePrice: v })}

@@ -404,7 +404,9 @@ function DemoProvider({ children }: { children: ReactNode }) {
         createJob: run('job.manage', L.createJob),
         updateJob: run('job.manage', L.updateJob),
         // แก้งบอย่างเดียว — เฉพาะ Manage (admin) และแก้ได้แม้ Job ล็อกแล้ว
-        updateJobBudget: run('master.manage', L.updateJobBudget),
+        // 0077: Project เจ้าของงาน + Manage (เดิม master.manage = Manage เท่านั้น)
+        //   สิทธิ์ระดับแถว (เจ้าของงาน) บังคับใน L.updateJobBudget ผ่าน assertJobCostEditable
+        updateJobBudget: run('job.manage', L.updateJobBudget),
         deleteProjectStock: run('stock.manage', L.deleteProjectStock),
         updateUnitInfo: run('stock.manage', L.updateUnitInfo),
         updateUnitPlan: run('stock.manage', L.updateUnitPlan),

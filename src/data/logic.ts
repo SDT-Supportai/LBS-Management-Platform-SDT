@@ -1280,12 +1280,17 @@ export function updateJob(
 
 // แก้เฉพาะงบประมาณ (ราคาขาย + ต้นทุน 7 หมวด) — Manage แก้ได้แม้ Job ล็อกแล้ว
 // (ไม่แตะ scope/allocation/Job No. จึงไม่ผ่าน assertJobEditable) — สำหรับแก้ตัวเลขบัญชีย้อนหลัง
+/**
+ * แก้เฉพาะราคาขาย + ต้นทุน 7 หมวด — **แก้ได้แม้ใบล็อกแล้ว** (0023 · ขยายสิทธิ์ที่ 0077)
+ * guard = assertJobCostEditable: เจ้าของงาน (0042) + กันใบที่ยกเลิก · ไม่แตะ scope/allocation
+ * ⚠️ 0077 เปลี่ยนจาก "Manage เท่านั้น" เป็น "Project เจ้าของงาน + Manage" เพราะต้นทุนจริง
+ *    5 หมวดที่กรอกมือ (ขนส่ง/eng/ove/pm/fin) เกิดหลังเบิกเป็นส่วนใหญ่ — ล็อกไว้ = บันทึกไม่ได้เลย
+ */
 export function updateJobBudget(
   db: DB, actor: User,
   p: { jobId: string } & JobBudgetInput,
 ): DB {
-  const job = db.jobs.find(j => j.id === p.jobId)
-  if (!job) throw new Error('ไม่พบ Job')
+  const job = assertJobCostEditable(db, p.jobId, actor)
   const salePrice = normalizeBudget(p.budgetSalePrice)
   const costs = assertBudgetCosts(p.budgetCosts)
   const next: DB = {
