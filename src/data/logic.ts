@@ -432,10 +432,17 @@ export interface JobDelivery {
   due?: string                  // กำหนดที่มีผล = ขยายล่าสุด ถ้ามี
   extension?: JobDueExtension   // การเลื่อนครั้งล่าสุด
   extensionCount: number
-  daysLeft?: number             // เทียบ due ที่มีผล (ลบ = เลยแล้ว)
-  daysLate: number              // เลยกำหนด**ส่ง**มากี่วัน (0 = ยังไม่เลย)
-  /** เลยกำหนดส่งแล้ว — แยกจาก state เพราะงานหน้างานเดินอยู่ก็เลยกำหนดส่งได้ */
+  daysLeft?: number             // เทียบ due ที่มีผล กับ **วันนี้** (ลบ = เลยแล้ว)
+  /**
+   * ช้ากว่ากำหนดส่งกี่วัน (0 = ไม่ช้า)
+   * 🔴 ฐานที่ใช้วัดเปลี่ยนตามสถานะ: งานที่ยังส่งไม่เสร็จวัดกับ **วันนี้** (เดินเพิ่มทุกวัน) ·
+   *    งานที่ส่งมอบครบแล้ววัดกับ **deliveredDate** (เลขนิ่ง ใช้อ้างค่าปรับได้)
+   */
+  daysLate: number
+  /** ช้ากว่ากำหนดส่ง — แยกจาก state เพราะงานหน้างานเดินอยู่ก็ช้ากว่ากำหนดส่งได้ */
   isLate: boolean
+  /** วันที่ส่งมอบเสร็จจริง (เครื่องสุดท้ายได้ข้อสรุป) · undefined = ยังส่งไม่เสร็จ */
+  deliveredDate?: string
   // ---- ฝั่งนัดติดตั้ง (คนละนาฬิกากับกำหนดส่ง) ----
   visitStart?: string
   visitEnd?: string
@@ -468,30 +475,72 @@ export function jobEffectiveDue(db: DB, job: Job): string | undefined {
   return jobDueExtension(db, job.id)?.newDueDate ?? jobDueDate(job)
 }
 
+/**
+ * วันที่ "ส่งมอบเสร็จจริง" = วันที่เครื่อง**สุดท้าย**ได้ข้อสรุป (ติดตั้งสำเร็จ หรือสรุปว่าติดตั้งไม่ได้)
+ * คืน undefined ถ้ายังมีเครื่องที่ไม่ได้ข้อสรุป = งานยังส่งไม่เสร็จ
+ *
+ * 🔴 ใช้ **วันที่ติดตั้งจริง** (installedDate ที่ช่างกรอก) ไม่ใช่วันที่กดปิดงาน —
+ *    การกดปิดงานเป็นงานเอกสาร เกิดช้ากว่าของจริงได้เป็นสัปดาห์ · ตัวเลข "ส่งช้ากี่วัน"
+ *    ใช้อ้างเรื่องค่าปรับได้ จึงต้องผูกกับวันที่ของถึงมือลูกค้าจริง
+ * ⚠️ เครื่องที่สรุปว่า blocked ไม่มี installedDate ⇒ ใช้วันที่บันทึกผลแทน (performedAt)
+ *    — ถือว่าวันนั้นคือวันที่งานของเครื่องนั้น "จบเรื่อง" แล้ว
+ */
+export function jobDeliveredDate(db: DB, job: Job): string | undefined {
+  const units = db.lbsUnits.filter(u => u.jobId === job.id)
+  if (units.length === 0) return undefined
+  let last = ''
+  for (const u of units) {
+    const rows = db.unitInstallations
+      .filter(r => r.unitId === u.id)
+      .sort((a, b) => b.performedAt.localeCompare(a.performedAt))
+    const latest = rows[0]
+    if (!latest) return undefined                       // ยังมีเครื่องที่ไม่ได้ข้อสรุป = ยังส่งไม่เสร็จ
+    const d = (latest.outcome === 'installed' ? latest.installedDate : undefined)
+      ?? latest.performedAt.slice(0, 10)
+    if (d > last) last = d
+  }
+  return last || undefined
+}
+
 export function jobDelivery(db: DB, job: Job, today = todayIso()): JobDelivery {
   const contractDue = jobDueDate(job)
   const ext = jobDueExtension(db, job.id)
   const due = ext?.newDueDate ?? contractDue
   const daysLeft = due ? daysBetweenIso(today, due) : undefined
-  const daysLate = daysLeft !== undefined && daysLeft < 0 ? -daysLeft : 0
   const extensionCount = db.jobDueExtensions.reduce((n, e) => n + (e.jobId === job.id ? 1 : 0), 0)
-  const isLate = daysLate > 0
   // นัดติดตั้ง = นาฬิกาคนละเรือนกับกำหนดส่ง · end ว่าง = นัดวันเดียว (ใช้ start เป็นวันสุดท้าย)
   const visitStart = job.installStartDate?.slice(0, 10) || undefined
   const visitEnd = job.installEndDate?.slice(0, 10) || visitStart
   const visitDaysLeft = visitEnd ? daysBetweenIso(today, visitEnd) : undefined
+
+  // 🔴 งานที่ส่งมอบเสร็จแล้ว ต้อง **หยุดนับ** — วัดกับวันที่ติดตั้งเสร็จจริง ไม่ใช่วันนี้
+  //    เดิมใช้ today เสมอ ⇒ ใบที่ติดตั้งครบไปแล้วแต่ยังไม่กดปิดงาน ตัวเลข "เลยกำหนดส่ง"
+  //    เดินเพิ่มวันละ 1 ไปเรื่อย ๆ ทั้งที่ของส่งมอบไปแล้ว · แย่กว่านั้นคือใบที่ติดตั้งเสร็จ
+  //    **ทันกำหนด** แต่ค้างกดปิดไว้ 3 วัน จะขึ้นว่า "เลยกำหนดส่ง 3 วัน" ซึ่งผิดข้อเท็จจริง
+  //    และเป็นตัวเลขที่ใช้อ้างเรื่องค่าปรับได้ ⇒ ต้อง freeze ที่วันส่งมอบจริง
+  const delivered = jobDeliveredDate(db, job)
+  const lateRef = delivered ?? today                       // ส่งเสร็จแล้ว = จบที่วันนั้น · ยังไม่เสร็จ = นับถึงวันนี้
+  const daysLate = due ? Math.max(0, -daysBetweenIso(lateRef, due)) : 0
+  const isLate = daysLate > 0
+
   const base = {
     contractDue, due, extension: ext, extensionCount, daysLeft, daysLate, isLate,
-    visitStart, visitEnd, visitDaysLeft,
+    visitStart, visitEnd, visitDaysLeft, deliveredDate: delivered,
   }
   // 🔴 คำนำหน้าเดียวที่ใช้บอกว่าช้ากว่าสัญญา — ต้องระบุว่า "กำหนดส่ง" เสมอ ห้ามเขียนแค่ "เลยแผน"
   //    (บั๊กรอบก่อน: ใบที่ยังอยู่ในช่วงนัดติดตั้งขึ้นว่า "เลยแผน 2 วัน" แล้วขัดกับวันนัดที่โชว์ข้าง ๆ)
-  const latePrefix = isLate ? `เลยกำหนดส่ง ${daysLate} วัน · ` : ''
+  //    ⚠️ ใช้ได้เฉพาะงานที่ "ยังส่งไม่เสร็จ" — ปัจจุบันกาล แปลว่ายังค้างอยู่ตอนนี้
+  const latePrefix = isLate && !delivered ? `เลยกำหนดส่ง ${daysLate} วัน · ` : ''
+  // งานที่ส่งมอบเสร็จแล้ว = คำตัดสินย้อนหลัง (อดีตกาล) ต่อท้าย ไม่ใช่คำเตือนนำหน้า
+  //    "เลยกำหนดส่ง" (ยังไม่ส่ง ค้างอยู่) ≠ "ส่งช้ากว่ากำหนด" (ส่งแล้ว แต่ช้าไปเท่านี้ · เลขนิ่ง)
+  const verdict = !delivered ? ''
+    : isLate ? ` · ส่งช้ากว่ากำหนด ${daysLate} วัน`
+    : ' · ส่งทันกำหนด'
 
   if (job.terminalStatus === 'installed' || job.terminalStatus === 'cancelled') {
     return {
       ...base, state: 'closed', tone: 'neutral', atRisk: false,
-      label: job.terminalStatus === 'installed' ? 'ปิดงานแล้ว' : 'ยกเลิกแล้ว',
+      label: job.terminalStatus === 'installed' ? `ปิดงานแล้ว${verdict}` : 'ยกเลิกแล้ว',
       nextStep: 'ไม่มีงานค้างในใบนี้',
     }
   }
@@ -507,12 +556,14 @@ export function jobDelivery(db: DB, job: Job, today = todayIso()): JobDelivery {
       nextStep: 'Project ต้องเคลียร์ปัญหาให้ทีมช่างเดินต่อได้ (ดูเหตุผลที่บันทึกไว้รายเครื่อง)',
     }
   }
-  // 2) ได้ข้อสรุปครบแล้ว เหลือกดปิด — ไล่วันที่ตอนนี้ไม่ช่วยอะไร
+  // 2) ได้ข้อสรุปครบแล้ว เหลือกดปิด — สิ่งที่ค้างคือ "การกดปิด" ไม่ใช่ "การส่งของ"
+  //    ⇒ ขึ้นต้นด้วยงานที่ต้องทำ แล้วต่อท้ายด้วยคำตัดสินเรื่องกำหนดส่งที่ freeze แล้ว
   if (inst.canClose) {
     return {
       ...base, state: 'awaiting_close', tone: 'blue', atRisk: false,
-      label: `${latePrefix}ติดตั้งครบ รอปิดงาน`,
-      nextStep: `Service กดปิดงานติดตั้ง (สำเร็จ ${inst.installed}${inst.blocked > 0 ? ` · ติดปัญหา ${inst.blocked}` : ''} จาก ${inst.total} เครื่อง)`,
+      label: `ติดตั้งครบ รอปิดงาน${verdict}`,
+      nextStep: `Service กดปิดงานติดตั้ง (สำเร็จ ${inst.installed}${inst.blocked > 0 ? ` · ติดปัญหา ${inst.blocked}` : ''} จาก ${inst.total} เครื่อง)`
+        + (delivered && inst.blocked > 0 ? ' · มีเครื่องที่สรุปว่าติดตั้งไม่ได้ — ตอบในช่องสรุปปัญหาตอนปิดงาน' : ''),
     }
   }
   // 3) ของอยู่กับช่างแล้ว — ต้องแยกอีกชั้นว่า "ถึงคิวออกไซต์หรือยัง"

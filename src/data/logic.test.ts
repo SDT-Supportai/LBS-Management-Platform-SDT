@@ -18,7 +18,7 @@ import {
   updateUnitPlan, unitCustomerInfo, importUnitsToStock,
   addUnitFile, deleteUnitFile, unitFiles, unitFileCount, isAllowedDocFile,
   MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB,
-  jobDelivery, jobEffectiveDue, jobDueExtensions, extendJobDue, deleteJobDueExtension,
+  jobDelivery, jobEffectiveDue, jobDueExtensions, extendJobDue, deleteJobDueExtension, jobDeliveredDate,
   addJobPayment, addPaymentFile, deletePaymentFile, paymentFiles, paymentFileCount, deleteJobPayment,
   updateJobBudget,
 } from './logic'
@@ -1918,5 +1918,107 @@ describe('แก้งบประมาณหลังใบล็อก (0077)
   it('ยอดติดลบยังถูกปฏิเสธเหมือนเดิม', () => {
     expect(() => updateJobBudget(base({ terminalStatus: 'issued' }), owner,
       { jobId: 'j1', budgetSalePrice: -1, budgetCosts: costs })).toThrow()
+  })
+})
+
+// =============================================================================
+// "เลยกำหนดส่ง" ต้องหยุดนับเมื่อส่งมอบเสร็จ (2026-09-21)
+//
+// 🔴 ผู้ใช้ทักว่า ใบที่ยืนยันติดตั้งครบแล้วยังขึ้นคำว่า "เลยกำหนดส่ง 3 วัน" อยู่
+//    ตรวจแล้วเจอว่าเป็นบั๊กจริง ไม่ใช่แค่เรื่องคำ: ตัวเลขวัดกับ "วันนี้" เสมอ
+//    ⇒ ใบที่ติดตั้งเสร็จ **ทันกำหนด** แต่ค้างกดปิดงานไว้ 3 วัน จะขึ้นว่าเลยกำหนด 3 วัน
+//    และใบที่ช้าจริงก็จะเดินเพิ่มวันละ 1 ไปเรื่อย ๆ ทั้งที่ของส่งมอบไปแล้ว
+// =============================================================================
+describe('หยุดนับเมื่อส่งมอบเสร็จ (2026-09-21)', () => {
+  const actor = { id: 'u1', email: 'p@x.co', password: '', fullName: 'โปรเจกต์', department: 'project' as const, isActive: true }
+  const TODAY = '2026-09-21'
+  const DUE = '2026-09-18'
+
+  // ทุกเครื่องได้ข้อสรุปแล้ว = ส่งมอบเสร็จ · installedAt = วันที่ช่างยืนยันติดตั้งจริง
+  const doneDb = (installedDate: string, over: Partial<Job> = {}) => db({
+    users: [actor],
+    jobs: [job({ requiredDate: DUE, openedBy: 'u1', installStartDate: '2026-09-14', installEndDate: DUE, ...over })],
+    lbsUnits: [unit({ id: 'a', status: 'issued', jobId: 'j1' })],
+    unitInstallations: [{
+      id: 'ui1', unitId: 'a', jobId: 'j1', outcome: 'installed', installedDate,
+      performedBy: 'u1', performedAt: installedDate + 'T09:00:00.000Z',
+    }],
+  })
+  const d1 = (d: DB) => jobDelivery(d, d.jobs[0], TODAY)
+
+  it('🔴 ติดตั้งเสร็จทันกำหนด แต่ค้างกดปิดงาน 3 วัน — ห้ามขึ้นว่าเลยกำหนดส่ง', () => {
+    const d = d1(doneDb('2026-09-17'))            // เสร็จ 17, กำหนด 18, วันนี้ 21
+    expect(d.state).toBe('awaiting_close')
+    expect(d.isLate).toBe(false)
+    expect(d.daysLate).toBe(0)
+    expect(d.label).not.toContain('เลยกำหนดส่ง')
+    expect(d.label).toContain('ส่งทันกำหนด')
+    expect(d.deliveredDate).toBe('2026-09-17')
+  })
+
+  it('🔴 ส่งช้าจริง — ตัวเลขต้อง freeze ที่วันส่งมอบ ไม่เดินตามวันนี้', () => {
+    const d = d1(doneDb('2026-09-20'))            // เสร็จ 20, กำหนด 18 ⇒ ช้า 2 วัน (ไม่ใช่ 3 ตามวันนี้)
+    expect(d.daysLate).toBe(2)
+    expect(d.label).toContain('ส่งช้ากว่ากำหนด 2 วัน')
+    // วันถัดไปตัวเลขต้องเท่าเดิม — นี่คือหัวใจของการ freeze
+    expect(jobDelivery(doneDb('2026-09-20'), doneDb('2026-09-20').jobs[0], '2026-10-31').daysLate).toBe(2)
+  })
+
+  it('คำต่างกันตามกาล: ยังส่งไม่เสร็จ = "เลยกำหนดส่ง" (นำหน้า) · ส่งแล้ว = "ส่งช้ากว่ากำหนด" (ต่อท้าย)', () => {
+    // ยังไม่ได้ข้อสรุป = ยังส่งไม่เสร็จ ⇒ นับถึงวันนี้ตามเดิม
+    const pending = db({
+      users: [actor],
+      jobs: [job({ requiredDate: DUE, openedBy: 'u1', installStartDate: '2026-09-14', installEndDate: DUE })],
+      lbsUnits: [unit({ id: 'a', status: 'issued', jobId: 'j1' })],
+    })
+    const p = jobDelivery(pending, pending.jobs[0], TODAY)
+    expect(p.deliveredDate).toBeUndefined()
+    expect(p.daysLate).toBe(3)                     // เดินตามวันนี้
+    expect(p.label).toContain('เลยกำหนดส่ง 3 วัน')
+    expect(p.label).not.toContain('ส่งช้ากว่ากำหนด')
+  })
+
+  it('ปิดงานแล้วยังบอกผลส่งมอบไว้เป็นประวัติ (ผู้บริหารดูย้อนหลังได้)', () => {
+    const late = d1(doneDb('2026-09-20', { terminalStatus: 'installed' }))
+    expect(late.state).toBe('closed')
+    expect(late.label).toBe('ปิดงานแล้ว · ส่งช้ากว่ากำหนด 2 วัน')
+    const ok = d1(doneDb('2026-09-17', { terminalStatus: 'installed' }))
+    expect(ok.label).toBe('ปิดงานแล้ว · ส่งทันกำหนด')
+    expect(ok.atRisk).toBe(false)
+  })
+
+  it('ใบที่ยกเลิกไม่ตัดสินเรื่องส่งมอบ', () => {
+    expect(d1(doneDb('2026-09-20', { terminalStatus: 'cancelled' })).label).toBe('ยกเลิกแล้ว')
+  })
+
+  it('เครื่องที่สรุปว่าติดตั้งไม่ได้ก็นับเป็น "ได้ข้อสรุป" — ใช้วันที่บันทึกผลเป็นวันส่งมอบ', () => {
+    const d = db({
+      users: [actor],
+      jobs: [job({ requiredDate: DUE, openedBy: 'u1' })],
+      lbsUnits: [
+        unit({ id: 'a', status: 'issued', jobId: 'j1' }),
+        unit({ id: 'b', serialLvb: 'LVB-002', serialOm: 'OM-002', status: 'issued', jobId: 'j1' }),
+      ],
+      unitInstallations: [
+        { id: 'ui1', unitId: 'a', jobId: 'j1', outcome: 'installed', installedDate: '2026-09-16', performedBy: 'u1', performedAt: '2026-09-16T09:00:00.000Z' },
+        { id: 'ui2', unitId: 'b', jobId: 'j1', outcome: 'blocked', reason: 'ฐานยังไม่เสร็จ', performedBy: 'u1', performedAt: '2026-09-19T09:00:00.000Z' },
+      ],
+    })
+    expect(jobDeliveredDate(d, d.jobs[0])).toBe('2026-09-19')   // เครื่องสุดท้ายที่ได้ข้อสรุป
+  })
+
+  it('ยังมีเครื่องที่ไม่ได้ข้อสรุป = ยังไม่มีวันส่งมอบ', () => {
+    const d = db({
+      users: [actor],
+      jobs: [job({ requiredDate: DUE, openedBy: 'u1' })],
+      lbsUnits: [
+        unit({ id: 'a', status: 'issued', jobId: 'j1' }),
+        unit({ id: 'b', serialLvb: 'LVB-002', serialOm: 'OM-002', status: 'issued', jobId: 'j1' }),
+      ],
+      unitInstallations: [
+        { id: 'ui1', unitId: 'a', jobId: 'j1', outcome: 'installed', installedDate: '2026-09-16', performedBy: 'u1', performedAt: '2026-09-16T09:00:00.000Z' },
+      ],
+    })
+    expect(jobDeliveredDate(d, d.jobs[0])).toBeUndefined()
   })
 })

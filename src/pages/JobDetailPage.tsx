@@ -614,11 +614,23 @@ export default function JobDetailPage() {
               <div className="b-label">กำหนดที่มีผลตอนนี้</div>
               <div className="b-value">{delivery.due ? fmtDate(delivery.due) : '-'}</div>
             </div>
+            {/* 🔴 ส่งมอบเสร็จแล้ว = หยุดนับ · โชว์คำตัดสินย้อนหลังแทนนาฬิกาที่ยังเดิน
+                (เดิมนับจากวันนี้เสมอ ⇒ ใบที่ติดตั้งเสร็จทันกำหนดแต่ค้างกดปิดงาน
+                 จะขึ้นว่า "เลยกำหนดส่ง N วัน" เพิ่มขึ้นทุกวัน ซึ่งผิดข้อเท็จจริง) */}
             <div className="budget-cell">
-              <div className="b-label">{delivery.isLate ? 'เลยกำหนดส่งมาแล้ว' : 'เหลือเวลาถึงกำหนดส่ง'}</div>
-              <div className={`b-value ${delivery.isLate ? 'neg' : 'pos'}`}>
-                {delivery.daysLeft === undefined ? '-' : `${Math.abs(delivery.daysLeft)} วัน`}
+              <div className="b-label">
+                {delivery.deliveredDate
+                  ? (delivery.isLate ? 'ส่งช้ากว่ากำหนด' : 'ส่งมอบทันกำหนด')
+                  : delivery.isLate ? 'เลยกำหนดส่งมาแล้ว' : 'เหลือเวลาถึงกำหนดส่ง'}
               </div>
+              <div className={`b-value ${delivery.isLate ? 'neg' : 'pos'}`}>
+                {delivery.deliveredDate
+                  ? (delivery.isLate ? `${delivery.daysLate} วัน` : '✓')
+                  : delivery.daysLeft === undefined ? '-' : `${Math.abs(delivery.daysLeft)} วัน`}
+              </div>
+              {delivery.deliveredDate && (
+                <div className="muted" style={{ fontSize: 11 }}>ติดตั้งเสร็จจริง {fmtDate(delivery.deliveredDate)}</div>
+              )}
             </div>
             {/* 🔴 นาฬิกาเรือนที่ 2 — "นัดติดตั้ง" คือช่วงที่ทีมช่างออกไซต์ Service เลื่อนเองได้
                 คนละตัวกับกำหนดส่งที่ผูกกับลูกค้า · วางคู่กันตรงนี้เพื่อไม่ให้อ่านป้ายสถานะผิด */}
