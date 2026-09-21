@@ -303,6 +303,31 @@ table.grid th:last-child, table.grid td:last-child { border-right: none; }
 table.grid tr:last-child td { border-bottom: 1px solid var(--line); }
 table.grid td { vertical-align: middle; }
 
+/* ---------- ตารางข้อมูลหนาแน่น (dense) + หัวกลุ่มในตาราง (group-row) ----------
+   ใช้กับตารางที่ "อ่านเพื่อหาตัวเลข" ไม่ใช่ตารางที่มีปุ่มให้กดรายแถว
+   เช่น "สรุปวัสดุที่รับครบจาก PO" ที่มีได้เป็นร้อยบรรทัดต่อ Job
+   padding มาตรฐาน 14px ทำให้เห็นได้ ~5 แถวต่อจอ = กวาดตาหาของไม่เจอ */
+table.dense th { padding: 8px 12px; }
+table.dense td { padding: 8px 12px; }
+/* 🔴 fixed layout — ความกว้างต้องมาจาก <colgroup> เท่านั้น
+   ปล่อยเป็น auto แล้วเบราว์เซอร์จะเกลี่ยความกว้างตาม "เนื้อหาที่ยาวที่สุดในคอลัมน์"
+   ซึ่งรวมข้อความในแถวหัวกลุ่ม (colSpan) ด้วย ⇒ ชื่อซัพพลายเออร์ยาว ๆ ไปบีบคอลัมน์ชื่ออุปกรณ์
+   จนตัดขึ้นบรรทัดใหม่ทั้งตาราง · min-width กันไม่ให้คอลัมน์ถูกบีบจนอ่านไม่ออกบนจอแคบ
+   (เลื่อนแนวนอนใน .table-scroll แทน) */
+table.dense { table-layout: fixed; min-width: 860px; }
+table.dense td { overflow-wrap: anywhere; }
+
+/* หัวกลุ่มย่อยในตารางเดียวกัน (เช่น PO แต่ละใบใต้ Job เดียว)
+   🔴 ต้องเป็นแถวในตารางเดียวกัน ไม่ใช่แยก <table> ต่อกลุ่ม — ไม่งั้นแต่ละกลุ่ม
+      คำนวณความกว้างคอลัมน์ของตัวเอง คอลัมน์เหลื่อมกันจนอ่านตามแนวตั้งไม่ได้ */
+table .group-row td {
+  background: var(--gray-soft); border-top: 1px solid var(--border);
+  padding-top: 7px; padding-bottom: 7px; color: var(--text);
+}
+/* ทับ zebra ของ tbody (แถวหัวกลุ่มคือแถวแรกของ tbody เสมอ) และไม่ต้องมีเส้นขวางในแถวนี้ */
+table .group-row td { border-right: none; }
+table tbody:first-of-type .group-row td { border-top: none; }
+
 /* ---------- badges (pastel) ----------
    พื้นอ่อน + ตัวอักษรเข้ม + เส้นขอบสีเดียวกันจาง ๆ
    เส้นขอบมีไว้ให้ badge ยัง "เห็นเป็นก้อน" ตอนวางบนแถบเว้นแถบ (พื้นเกือบสีเดียวกัน)
@@ -730,6 +755,8 @@ body.is-busy button.danger { opacity: .55; pointer-events: none; cursor: progres
   .panel { border: 1px solid #999; box-shadow: none; break-inside: avoid; margin-bottom: 12px; }
   .card { box-shadow: none; border-color: #999; }
   .table-scroll { overflow: visible !important; }
+  /* min-width ของตาราง dense มีไว้กันคอลัมน์ถูกบีบบนจอแคบ — บนกระดาษมันดันตารางล้นขอบแทน */
+  table.dense { min-width: 0 !important; }
   a { color: #000; text-decoration: none; }
   /* แถบเว้นแถบ + แถบแถวยังไม่อ่าน มีไว้ช่วยกวาดตาบนจอ — บนกระดาษมองไม่เห็น
      แต่ยังกินหมึกกับเครื่องพิมพ์ที่ทำ halftone จึงปิดทิ้งตอนพิมพ์ (2026-08-28) */

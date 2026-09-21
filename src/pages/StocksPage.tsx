@@ -231,6 +231,7 @@ export default function StocksPage() {
   const [tab, setTab] = useState<'stock' | 'material'>('stock')
   const [openMatJobs, setOpenMatJobs] = useState<Set<string>>(new Set())  // กลุ่ม Job ที่กางอยู่ — เริ่มต้นพับหมด
   const [matSearch, setMatSearch] = useState('')
+  const [matPendingOnly, setMatPendingOnly] = useState(false)   // เฉพาะของที่ยังไม่เบิกให้ Service
   const [editStock, setEditStock] = useState<string | null>(null)
   const [editNotes, setEditNotes] = useState('')
   const [editPoNo, setEditPoNo] = useState('')
@@ -299,11 +300,16 @@ export default function StocksPage() {
 
   const matTerm = matSearch.trim().toLowerCase()
   const matFiltered = receivedLines.filter(({ po, r, item }) => {
+    // 🔎 ตัวกรอง "ยังไม่เบิกให้ Service" — คำถามที่ถามหน้านี้บ่อยที่สุดคือ "ของอะไรค้างอยู่ที่ Job บ้าง"
+    //    เดิมต้องกางทุกกลุ่มแล้วไล่หาป้ายสีส้มเอง
+    if (matPendingOnly && r.issuedToServiceAt) return false
     if (!matTerm) return true
     const job = db.jobs.find(j => j.id === po.jobId)
     return [po.poNo, job?.jobNo, job?.customerName, item?.epicorCode, item?.name, po.supplierName]
       .some(v => v?.toLowerCase().includes(matTerm))
   })
+  // จำนวนที่ยังไม่เบิกให้ Service (นับจากของทั้งหมด ไม่ใช่จากที่กรองอยู่ — ตัวเลขบนปุ่มกรองต้องนิ่ง)
+  const matPendingCount = receivedLines.filter(x => !x.r.issuedToServiceAt).length
   // กลุ่ม 2 ชั้น: Job No. (ชั้นนอก) → PO (ชั้นใน) · เรียง Job ใหม่→เก่าตามวันรับของล่าสุด
   const lineValue = (r: typeof receivedLines[number]['r']) =>
     r.unitPrice !== undefined ? r.unitPrice * r.qtyReceived : 0
@@ -1141,7 +1147,15 @@ export default function StocksPage() {
               </h3>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                 <input style={{ width: 240 }} value={matSearch} onChange={e => setMatSearch(e.target.value)}
-                  placeholder="ค้น Job No. / PO No. / รหัส Epicor / ชื่ออุปกรณ์" />
+                  placeholder="🔎 ค้น Job No. / PO No. / รหัส Epicor / ชื่ออุปกรณ์" />
+                {/* ตัวกรองที่ตอบคำถามที่ถูกถามบ่อยสุดของหน้านี้: "ของอะไรยังค้างอยู่ที่ Job" */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                  title="ซ่อนรายการที่ส่งออกหน้างานไปแล้ว — เหลือเฉพาะของที่ยังอยู่กับ Job">
+                  <input type="checkbox" checked={matPendingOnly}
+                    onChange={e => setMatPendingOnly(e.target.checked)} />
+                  <span>เฉพาะที่ยังไม่เบิก</span>
+                  {matPendingCount > 0 && <span className="badge amber">{matPendingCount}</span>}
+                </label>
                 {canReport && (
                   <button className="small" onClick={exportMaterial} disabled={matFiltered.length === 0}
                     title={matFiltered.length === 0 ? 'ไม่มีรายการให้ export'
@@ -1176,7 +1190,8 @@ export default function StocksPage() {
           )}
 
           {matJobs.map(g => {
-            const open = openMatJobs.has(g.key)
+            // กำลังค้นหา/กรองอยู่ = กางให้เลย — ค้นแล้วยังต้องไล่กดกางทีละกลุ่มคือความหมายของ "หาไม่เจอ"
+            const open = openMatJobs.has(g.key) || !!matTerm || matPendingOnly
             return (
               <div className="panel" key={g.key}>
                 <div className="panel-head">
@@ -1190,52 +1205,82 @@ export default function StocksPage() {
                     <span className="badge blue" title="จำนวนใบ PO ที่รับของครบแล้วของงานนี้">{g.pos.length} PO</span>
                     <span className="badge neutral" title="จำนวนบรรทัดวัสดุ">{g.lines} รายการ</span>
                     <span className="muted">มูลค่า {fmtBaht(g.value)}</span>
-                    <button className="small" onClick={() => setOpenMatJobs(prev => {
-                      const n = new Set(prev)
-                      n.has(g.key) ? n.delete(g.key) : n.add(g.key)
-                      return n
-                    })}>
-                      {open ? 'ซ่อนรายการ' : `แสดงรายการ (${g.lines})`}
-                    </button>
+                    {matTerm || matPendingOnly
+                      // กางค้างไว้เพราะกำลังกรองอยู่ — ปุ่มพับจะทำให้งง (กดแล้วไม่มีอะไรเกิดขึ้น)
+                      ? <span className="muted" title="กางอัตโนมัติระหว่างค้นหา/กรอง">กางตามตัวกรอง</span>
+                      : (
+                        <button className="small" onClick={() => setOpenMatJobs(prev => {
+                          const n = new Set(prev)
+                          n.has(g.key) ? n.delete(g.key) : n.add(g.key)
+                          return n
+                        })}>
+                          {open ? 'ซ่อนรายการ' : `แสดงรายการ (${g.lines})`}
+                        </button>
+                      )}
                   </div>
                 </div>
-                {open && g.pos.map(p => (
-                  <div key={p.po.id}>
-                    <div className="panel-body" style={{ paddingBottom: 0, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <b className="mono">{p.po.poNo}</b>
-                      <span className="badge green">รับครบ {fmtDate(p.po.receivedAt)}</span>
-                      <span className="muted">{p.po.supplierName || 'ไม่ระบุซัพพลายเออร์'}</span>
-                      <span className="muted">· {p.rows.length} รายการ · มูลค่า {fmtBaht(p.value)}</span>
-                    </div>
-                    <div className="table-scroll">
-                      <table className="grid">
-                        <thead><tr>
-                          <th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>จำนวนที่รับ</th>
-                          <th style={{ textAlign: 'right' }}>ราคา/หน่วย</th>
-                          <th style={{ textAlign: 'right' }}>มูลค่า</th>
-                          <th>เบิกให้ Service</th>
-                        </tr></thead>
-                        <tbody>
+                {/* 🔴 ตารางเดียวต่อ Job · PO เป็น "แถวหัวกลุ่ม" ใน tbody ของตัวเอง
+                    เดิมแยก <table> ต่อ PO ⇒ แต่ละใบคำนวณความกว้างคอลัมน์เอง คอลัมน์จึงเหลื่อมกันทุกบล็อก
+                    และหัวตารางซ้ำทุก PO · กวาดตาหาตัวเลขตามแนวตั้งไม่ได้เลย (ผู้ใช้รายงาน 2026-09-21)
+                    colgroup ล็อกความกว้างไว้ให้ตรงกันทุก Job ด้วย ไม่ใช่แค่ภายใน Job เดียว */}
+                {open && (
+                  <div className="table-scroll">
+                    <table className="grid dense">
+                      {/* table-layout: fixed (styles.css) ⇒ ความกว้างมาจากตรงนี้ล้วน ๆ
+                          คอลัมน์ "ชื่ออุปกรณ์" ไม่กำหนด = กินที่เหลือทั้งหมด (ยาวสุด อ่านง่ายสุด) */}
+                      <colgroup>
+                        <col style={{ width: 150 }} />{/* รหัส Epicor — mono ความยาวคงที่ */}
+                        <col />{/* ชื่ออุปกรณ์ */}
+                        <col style={{ width: 110 }} />
+                        <col style={{ width: 105 }} />
+                        <col style={{ width: 115 }} />
+                        <col style={{ width: 185 }} />
+                      </colgroup>
+                      <thead><tr>
+                        <th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th>
+                        <th style={{ textAlign: 'right' }}>จำนวนที่รับ</th>
+                        <th style={{ textAlign: 'right' }}>ราคา/หน่วย</th>
+                        <th style={{ textAlign: 'right' }}>มูลค่า</th>
+                        <th>เบิกให้ Service</th>
+                      </tr></thead>
+                      {g.pos.map(p => (
+                        <tbody key={p.po.id}>
+                          <tr className="group-row">
+                            <td colSpan={6}>
+                              <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                                <b className="mono">{p.po.poNo}</b>
+                                <span className="badge green">รับครบ {fmtDate(p.po.receivedAt)}</span>
+                                <span className="muted">{p.po.supplierName || 'ไม่ระบุซัพพลายเออร์'}</span>
+                                <span className="muted" style={{ marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+                                  {p.rows.length} รายการ · <b style={{ color: 'var(--text)' }}>{fmtBaht(p.value)}</b>
+                                </span>
+                              </div>
+                            </td>
+                          </tr>
                           {p.rows.map(({ r, item }) => (
                             <tr key={r.id}>
-                              <td className="mono">{item?.epicorCode || '-'}</td>
+                              <td className="mono" style={{ whiteSpace: 'nowrap' }}>{item?.epicorCode || '-'}</td>
                               <td>{item?.name ?? '-'}</td>
-                              <td>{r.qtyReceived} {item?.uom ?? ''}</td>
+                              <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                {r.qtyReceived} <span className="muted">{item?.uom ?? ''}</span>
+                              </td>
                               <td style={{ textAlign: 'right' }}>{fmtBaht(r.unitPrice)}</td>
                               <td style={{ textAlign: 'right' }}>
                                 {fmtBaht(r.unitPrice !== undefined ? r.unitPrice * r.qtyReceived : undefined)}
                               </td>
-                              {/* 0059: ของที่รับแล้วยังต้องส่งต่อให้ Service อีกขั้น — ตรวจได้จากที่นี่เลย */}
-                              <td>{r.issuedToServiceAt
-                                ? <><span className="badge green">✅ เบิกแล้ว</span><div className="muted">{fmtDate(r.issuedToServiceAt)}</div></>
+                              {/* 0059: ของที่รับแล้วยังต้องส่งต่อให้ Service อีกขั้น — ตรวจได้จากที่นี่เลย
+                                  บรรทัดเดียวจบ (เดิมป้าย+วันที่ซ้อน 2 บรรทัด ทำให้ทุกแถวสูงขึ้นทั้งตาราง) */}
+                              <td style={{ whiteSpace: 'nowrap' }}>{r.issuedToServiceAt
+                                ? <><span className="badge green">✅ เบิกแล้ว</span>{' '}
+                                  <span className="muted">{fmtDate(r.issuedToServiceAt)}</span></>
                                 : <span className="badge amber">ยังอยู่กับ Job</span>}</td>
                             </tr>
                           ))}
                         </tbody>
-                      </table>
-                    </div>
+                      ))}
+                    </table>
                   </div>
-                ))}
+                )}
               </div>
             )
           })}
