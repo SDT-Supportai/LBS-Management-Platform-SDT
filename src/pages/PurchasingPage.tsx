@@ -321,7 +321,7 @@ export default function PurchasingPage() {
 
             {prsToOrder.length > 0 && prOpen[job.id] && (
               <div className="table-scroll">
-                <table>
+                <table className="dense">
                   <thead><tr>
                     <th>PR No.</th><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th>
                     <th style={{ textAlign: 'right' }}>จำนวน</th>
@@ -377,46 +377,125 @@ export default function PurchasingPage() {
               </div>
             )}
 
+            {/* 🔴 วัสดุใน PO เป็น "แถวจริง" ไม่ใช่ข้อความไหลในช่องเดียว (2026-09-21)
+                เดิมยัดทุกบรรทัดของ PO ไว้ในเซลล์เดียว ⇒ ชื่อ/จำนวน/ราคา/มูลค่า ไม่เป็นคอลัมน์
+                เทียบราคาข้าม PO ตามแนวตั้งไม่ได้ และแถวสูง 133px เมื่อ PO มี 2 รายการ
+                ข้อมูลระดับใบ (Supplier · กำหนดส่ง · สถานะ · ยอดรวม · ปุ่ม) ย้ายขึ้นแถวหัวกลุ่ม
+                ซึ่งเป็นที่ของมันจริง ๆ — มันเป็นข้อมูลของ PO ไม่ใช่ของวัสดุแต่ละบรรทัด */}
             {jobPos.length > 0 && poOpen[job.id] && (
               <div className="table-scroll">
-                <table>
-                  <thead><tr><th>PO No.</th><th>รายการใน PO · ราคาจริง</th><th style={{ textAlign: 'right' }}>ต้นทุนรวม</th><th>Supplier</th><th>กำหนดส่ง</th><th>รับของ</th><th>สถานะ</th><th></th></tr></thead>
-                  <tbody>
-                    {[...jobPos].reverse().map(po => {
-                      const lines = poLines(po.id)
-                      const totalOrdered = lines.reduce((s, r) => s + r.qtyRequested, 0)
-                      const totalReceived = lines.reduce((s, r) => s + r.qtyReceived, 0)
-                      const cost = poCostSummary(db, po.id)   // 0054 — ต้นทุนรวมต่อ PO No.
-                      return (
-                        <tr key={po.id}>
-                          <td className="mono"><b>{po.poNo}</b></td>
-                          <td>{lines.map(r => {
-                            const it = itemOf(r.itemId)!
-                            const value = r.unitPrice !== undefined ? r.unitPrice * r.qtyRequested : undefined
-                            // Purchasing บันทึกราคาจริงหลังออก PO — ราคาทับค่าประมาณการ กระทบงบ actual
-                            // ⚠️ ใบแจ้งหนี้มาช้ากว่าของเสมอ → 0037 ปลดล็อกฝั่ง RPC ให้แก้ได้แม้ปิดงานแล้ว
-                            //    (rpc_update_po_line_price ใช้ app_assert_job_cost_editable = ปิดเฉพาะ cancelled)
-                            //    gate เดิม `!job.terminalStatus` ซ่อนปุ่มตั้งแต่ Issued → actual หมวด raw_mat/outsourcing
-                            //    ค้างที่ค่าประมาณการถาวรทุกงาน ต้องตรงกับ guard ฝั่ง server
-                            const canEditPrice = canManage && po.status !== 'cancelled'
-                              && job.terminalStatus !== 'cancelled'
-                              && (r.status === 'po_ordered' || r.status === 'received')
-                            return (
-                              <div key={r.id} style={{ marginBottom: 3 }} className={r.status === 'cancelled' ? 'muted' : undefined}>
-                                <span style={r.status === 'cancelled' ? { textDecoration: 'line-through' } : undefined}>
-                                  {it.name} × {r.qtyRequested} {it.uom}
-                                </span> · <span className="mono">{fmtBaht(r.unitPrice)}</span>{value !== undefined ? ` = ${fmtBaht(value)}` : ''}
+                <table className="grid dense fixed-cols">
+                  <colgroup>
+                    <col />{/* ชื่ออุปกรณ์ — กินที่เหลือ */}
+                    <col style={{ width: 110 }} />
+                    <col style={{ width: 110 }} />
+                    <col style={{ width: 120 }} />
+                    <col style={{ width: 105 }} />
+                    <col style={{ width: 120 }} />
+                  </colgroup>
+                  <thead><tr>
+                    <th>ชื่ออุปกรณ์</th>
+                    <th style={{ textAlign: 'right' }}>จำนวนที่สั่ง</th>
+                    <th style={{ textAlign: 'right' }}>ราคา/หน่วย</th>
+                    <th style={{ textAlign: 'right' }} title="ราคา/หน่วย × จำนวนที่สั่ง — ยอดที่จ่ายซัพ">มูลค่าสั่งซื้อ</th>
+                    <th style={{ textAlign: 'right' }}>รับของแล้ว</th>
+                    <th></th>
+                  </tr></thead>
+                  {[...jobPos].reverse().map(po => {
+                    const lines = poLines(po.id)
+                    const totalOrdered = lines.reduce((s, r) => s + r.qtyRequested, 0)
+                    const totalReceived = lines.reduce((s, r) => s + r.qtyReceived, 0)
+                    const cost = poCostSummary(db, po.id)   // 0054 — ต้นทุนรวมต่อ PO No.
+                    return (
+                      <tbody key={po.id}>
+                        <tr className="group-row">
+                          <td colSpan={6}>
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                              <b className="mono">{po.poNo}</b>
+                              {po.status === 'issued' && (totalReceived > 0
+                                ? <span className="badge blue">รับบางส่วน {totalReceived}/{totalOrdered}</span>
+                                : <span className="badge amber">รอรับของ</span>)}
+                              {po.status === 'received' && <span className="badge green">รับของครบ {fmtDate(po.receivedAt)}</span>}
+                              {po.status === 'cancelled' && <span className="badge red">ยกเลิก</span>}
+                              <span className="muted">{po.supplierName}</span>
+                              <span className="muted">· กำหนดส่ง {fmtDate(po.expectedDate)}</span>
+                              {/* ต้นทุนรวมต่อ PO (0054) — "สั่งซื้อ" คือยอดที่จ่ายซัพ · "ตัดเข้างาน" คือยอดที่หักงบ Job
+                                  สองตัวนี้ต่างกันได้เมื่อโอนวัสดุเหลือคืนคลัง จึงต้องโชว์แยกไม่ยุบรวม */}
+                              <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+                                <span className="muted">{cost.lineCount} รายการ · </span><b>{fmtBaht(cost.ordered)}</b>
+                                {cost.charged !== cost.ordered && (
+                                  <span style={{ color: 'var(--amber, #d97706)', marginLeft: 8 }}
+                                    title={`โอนวัสดุเหลือคืนคลังแล้ว ${cost.transferredQty} หน่วย — ส่วนนั้นไม่ถูกตัดเป็นต้นทุนของ Job`}>
+                                    ตัดเข้างาน {fmtBaht(cost.charged)}
+                                  </span>
+                                )}
+                                {cost.missingPrice > 0 && (
+                                  <span style={{ color: 'var(--danger)', marginLeft: 8 }}
+                                    title="ยอดรวมยังไม่ครบ — กด 💰 ราคาจริง ให้ครบทุกรายการ">
+                                    ⚠️ ยังไม่กรอกราคา {cost.missingPrice}
+                                  </span>
+                                )}
+                              </span>
+                              {canManage && po.status === 'issued' && (
+                                <button className="small success" onClick={() => openReceive(po.id)}>รับของ</button>
+                              )}
+                              {canManage && po.status === 'issued' && totalReceived === 0 && (
+                                <button className="small danger" onClick={async () => {
+                                  const v = await askPrompt({
+                                    title: `ยกเลิก ${po.poNo}`,
+                                    description: <>รายการวัสดุใน PO นี้จะกลับไปสถานะ <b>รอออก PO</b> ให้ออก PO ใหม่ได้ · ทำได้เฉพาะ PO ที่ยังไม่รับของ</>,
+                                    fields: [{ key: 'reason', label: 'เหตุผลที่ยกเลิก', type: 'textarea', required: true,
+                                      placeholder: 'เช่น Supplier ส่งของไม่ได้ / เปลี่ยนสเปค / สั่งผิดรุ่น' }],
+                                    confirmLabel: 'ยืนยันยกเลิก PO', danger: true,
+                                  })
+                                  if (!v) return
+                                  tryAction(() => act.cancelPO({ poId: po.id, reason: v.reason }), `ยกเลิก ${po.poNo} แล้ว — รายการรอออก PO ใหม่`)
+                                }}>ยกเลิก PO</button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                        {lines.map(r => {
+                          const it = itemOf(r.itemId)
+                          const value = r.unitPrice !== undefined ? r.unitPrice * r.qtyRequested : undefined
+                          const dropped = r.status === 'cancelled'
+                          // Purchasing บันทึกราคาจริงหลังออก PO — ราคาทับค่าประมาณการ กระทบงบ actual
+                          // ⚠️ ใบแจ้งหนี้มาช้ากว่าของเสมอ → 0037 ปลดล็อกฝั่ง RPC ให้แก้ได้แม้ปิดงานแล้ว
+                          //    (rpc_update_po_line_price ใช้ app_assert_job_cost_editable = ปิดเฉพาะ cancelled)
+                          //    gate เดิม `!job.terminalStatus` ซ่อนปุ่มตั้งแต่ Issued → actual หมวด raw_mat/outsourcing
+                          //    ค้างที่ค่าประมาณการถาวรทุกงาน ต้องตรงกับ guard ฝั่ง server
+                          const canEditPrice = canManage && po.status !== 'cancelled'
+                            && job.terminalStatus !== 'cancelled'
+                            && (r.status === 'po_ordered' || r.status === 'received')
+                          return (
+                            <tr key={r.id} className={dropped ? 'muted' : undefined}>
+                              <td>
+                                <span style={dropped ? { textDecoration: 'line-through' } : undefined}>{it?.name ?? '-'}</span>
                                 {/* บรรทัดที่ถูกตัดออกด้วย ✏️ แก้จำนวน (0070) — เก็บไว้เป็นประวัติเอกสาร ไม่ลบทิ้ง */}
-                                {r.status === 'cancelled' && <span className="badge red" style={{ marginLeft: 6 }}>ตัดออกจาก PO</span>}
+                                {dropped && <span className="badge red" style={{ marginLeft: 6 }}>ตัดออกจาก PO</span>}
+                                {it?.epicorCode && <div className="muted mono" style={{ fontSize: 11 }}>{it.epicorCode}</div>}
+                              </td>
+                              <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                {r.qtyRequested} <span className="muted">{it?.uom ?? ''}</span>
+                              </td>
+                              <td style={{ textAlign: 'right' }}>{fmtBaht(r.unitPrice)}</td>
+                              <td style={{ textAlign: 'right' }}>{fmtBaht(value)}</td>
+                              <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                {dropped ? <span className="muted">-</span> : <>
+                                  {r.qtyReceived}/{r.qtyRequested}
+                                  <div className="progress"><div style={{ width: `${r.qtyRequested ? (r.qtyReceived / r.qtyRequested) * 100 : 0}%` }} /></div>
+                                </>}
+                              </td>
+                              <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                                 {canEditPrice && (
-                                  <button className="small" style={{ marginLeft: 6 }} title="บันทึก/แก้ราคาจริงจาก Supplier"
+                                  <button className="small" title="บันทึก/แก้ราคาจริงจาก Supplier"
                                     onClick={async () => {
                                       const v = await askPrompt({
-                                        title: `ราคาจริงจาก Supplier — ${it.name}`,
-                                        description: <>สั่ง {r.qtyRequested} {it.uom} · ราคาที่บันทึกไว้ {fmtBaht(r.unitPrice)} · <b>เว้นว่าง = ล้างราคา</b> (กลับไปใช้ราคาประมาณการ)</>,
+                                        title: `ราคาจริงจาก Supplier — ${it?.name ?? ''}`,
+                                        description: <>สั่ง {r.qtyRequested} {it?.uom ?? ''} · ราคาที่บันทึกไว้ {fmtBaht(r.unitPrice)} · <b>เว้นว่าง = ล้างราคา</b> (กลับไปใช้ราคาประมาณการ)</>,
                                         fields: [{
                                           key: 'price', label: 'ราคาจริงต่อหน่วย', type: 'number', min: 0,
-                                          suffix: `บาท/${it.uom}`, value: r.unitPrice !== undefined ? String(r.unitPrice) : '',
+                                          suffix: `บาท/${it?.uom ?? ''}`, value: r.unitPrice !== undefined ? String(r.unitPrice) : '',
                                           hint: 'กรอกเป็นตัวเลขล้วน ไม่ต้องใส่เครื่องหมาย ,',
                                         }],
                                       })
@@ -424,62 +503,13 @@ export default function PurchasingPage() {
                                       tryAction(() => act.updatePoLinePrice({ requestId: r.id, unitPrice: v.price === '' ? undefined : Number(v.price) }), 'บันทึกราคาจริงแล้ว — งบต้นทุนใช้จริงอัปเดต')
                                     }}>💰 ราคาจริง</button>
                                 )}
-                              </div>
-                            )
-                          })}</td>
-                          {/* ต้นทุนรวมต่อ PO (0054) — "สั่งซื้อ" คือยอดที่จ่ายซัพ · "ตัดเข้างาน" คือยอดที่หักงบ Job
-                              สองตัวนี้ต่างกันได้เมื่อโอนวัสดุเหลือคืนคลัง จึงต้องโชว์แยกไม่ยุบรวม */}
-                          <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                            <b>{fmtBaht(cost.ordered)}</b>
-                            <div className="muted" style={{ fontSize: 11 }}>สั่งซื้อ · {cost.lineCount} รายการ</div>
-                            {cost.charged !== cost.ordered && (
-                              <div style={{ fontSize: 11, color: 'var(--amber, #d97706)' }}
-                                title={`โอนวัสดุเหลือคืนคลังแล้ว ${cost.transferredQty} หน่วย — ส่วนนั้นไม่ถูกตัดเป็นต้นทุนของ Job`}>
-                                ตัดเข้างาน {fmtBaht(cost.charged)}
-                              </div>
-                            )}
-                            {cost.missingPrice > 0 && (
-                              <div style={{ fontSize: 11, color: 'var(--danger)' }}
-                                title="ยอดรวมยังไม่ครบ — กด 💰 ราคาจริง ให้ครบทุกรายการ">
-                                ⚠️ ยังไม่กรอกราคา {cost.missingPrice} รายการ
-                              </div>
-                            )}
-                          </td>
-                          <td>{po.supplierName}</td>
-                          <td>{fmtDate(po.expectedDate)}</td>
-                          <td>
-                            {totalReceived}/{totalOrdered}
-                            <div className="progress"><div style={{ width: `${totalOrdered ? (totalReceived / totalOrdered) * 100 : 0}%` }} /></div>
-                          </td>
-                          <td>
-                            {po.status === 'issued' && (totalReceived > 0
-                              ? <span className="badge blue">รับบางส่วน</span>
-                              : <span className="badge amber">รอรับของ</span>)}
-                            {po.status === 'received' && <span className="badge green">รับของครบ {fmtDate(po.receivedAt)}</span>}
-                            {po.status === 'cancelled' && <span className="badge red">ยกเลิก</span>}
-                          </td>
-                          <td style={{ whiteSpace: 'nowrap' }}>
-                            {canManage && po.status === 'issued' && (
-                              <button className="small success" onClick={() => openReceive(po.id)}>รับของ</button>
-                            )}{' '}
-                            {canManage && po.status === 'issued' && totalReceived === 0 && (
-                              <button className="small danger" onClick={async () => {
-                                const v = await askPrompt({
-                                  title: `ยกเลิก ${po.poNo}`,
-                                  description: <>รายการวัสดุใน PO นี้จะกลับไปสถานะ <b>รอออก PO</b> ให้ออก PO ใหม่ได้ · ทำได้เฉพาะ PO ที่ยังไม่รับของ</>,
-                                  fields: [{ key: 'reason', label: 'เหตุผลที่ยกเลิก', type: 'textarea', required: true,
-                                    placeholder: 'เช่น Supplier ส่งของไม่ได้ / เปลี่ยนสเปค / สั่งผิดรุ่น' }],
-                                  confirmLabel: 'ยืนยันยกเลิก PO', danger: true,
-                                })
-                                if (!v) return
-                                tryAction(() => act.cancelPO({ poId: po.id, reason: v.reason }), `ยกเลิก ${po.poNo} แล้ว — รายการรอออก PO ใหม่`)
-                              }}>ยกเลิก PO</button>
-                            )}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    )
+                  })}
                 </table>
               </div>
             )}

@@ -309,13 +309,14 @@ table.grid td { vertical-align: middle; }
    padding มาตรฐาน 14px ทำให้เห็นได้ ~5 แถวต่อจอ = กวาดตาหาของไม่เจอ */
 table.dense th { padding: 8px 12px; }
 table.dense td { padding: 8px 12px; }
-/* 🔴 fixed layout — ความกว้างต้องมาจาก <colgroup> เท่านั้น
+/* 🔴 fixed-cols — ความกว้างต้องมาจาก <colgroup> เท่านั้น · **ใช้คู่กับ colgroup เสมอ**
    ปล่อยเป็น auto แล้วเบราว์เซอร์จะเกลี่ยความกว้างตาม "เนื้อหาที่ยาวที่สุดในคอลัมน์"
    ซึ่งรวมข้อความในแถวหัวกลุ่ม (colSpan) ด้วย ⇒ ชื่อซัพพลายเออร์ยาว ๆ ไปบีบคอลัมน์ชื่ออุปกรณ์
    จนตัดขึ้นบรรทัดใหม่ทั้งตาราง · min-width กันไม่ให้คอลัมน์ถูกบีบจนอ่านไม่ออกบนจอแคบ
-   (เลื่อนแนวนอนใน .table-scroll แทน) */
-table.dense { table-layout: fixed; min-width: 860px; }
-table.dense td { overflow-wrap: anywhere; }
+   (เลื่อนแนวนอนใน .table-scroll แทน)
+   ⚠️ ใส่คลาสนี้โดยไม่มี colgroup = ทุกคอลัมน์กว้างเท่ากันหมด */
+table.fixed-cols { table-layout: fixed; min-width: 860px; }
+table.fixed-cols td { overflow-wrap: anywhere; }
 
 /* หัวกลุ่มย่อยในตารางเดียวกัน (เช่น PO แต่ละใบใต้ Job เดียว)
    🔴 ต้องเป็นแถวในตารางเดียวกัน ไม่ใช่แยก <table> ต่อกลุ่ม — ไม่งั้นแต่ละกลุ่ม
@@ -755,8 +756,8 @@ body.is-busy button.danger { opacity: .55; pointer-events: none; cursor: progres
   .panel { border: 1px solid #999; box-shadow: none; break-inside: avoid; margin-bottom: 12px; }
   .card { box-shadow: none; border-color: #999; }
   .table-scroll { overflow: visible !important; }
-  /* min-width ของตาราง dense มีไว้กันคอลัมน์ถูกบีบบนจอแคบ — บนกระดาษมันดันตารางล้นขอบแทน */
-  table.dense { min-width: 0 !important; }
+  /* min-width ของตาราง fixed-cols มีไว้กันคอลัมน์ถูกบีบบนจอแคบ — บนกระดาษมันดันตารางล้นขอบแทน */
+  table.fixed-cols { min-width: 0 !important; }
   a { color: #000; text-decoration: none; }
   /* แถบเว้นแถบ + แถบแถวยังไม่อ่าน มีไว้ช่วยกวาดตาบนจอ — บนกระดาษมองไม่เห็น
      แต่ยังกินหมึกกับเครื่องพิมพ์ที่ทำ halftone จึงปิดทิ้งตอนพิมพ์ (2026-08-28) */

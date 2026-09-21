@@ -1225,7 +1225,7 @@ export default function StocksPage() {
                     colgroup ล็อกความกว้างไว้ให้ตรงกันทุก Job ด้วย ไม่ใช่แค่ภายใน Job เดียว */}
                 {open && (
                   <div className="table-scroll">
-                    <table className="grid dense">
+                    <table className="grid dense fixed-cols">
                       {/* table-layout: fixed (styles.css) ⇒ ความกว้างมาจากตรงนี้ล้วน ๆ
                           คอลัมน์ "ชื่ออุปกรณ์" ไม่กำหนด = กินที่เหลือทั้งหมด (ยาวสุด อ่านง่ายสุด) */}
                       <colgroup>
