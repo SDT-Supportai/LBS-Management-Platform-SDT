@@ -22,6 +22,14 @@ export default function ServiceSchedulingPage() {
   const members = [...db.teamMembers].sort((a, b) =>
     Number(b.isActive) - Number(a.isActive) || a.firstName.localeCompare(b.firstName))
   const activeMembers = members.filter(m => m.isActive)
+  // แยก "คนที่มีงานค้าง" ออกจาก "คนว่าง" แล้วเรียงคนมีงานตามวันนัดที่ใกล้ที่สุด
+  //   ⇒ หัวตารางคือคิวที่ต้องจัดการจริง · คนว่างไปรวมท้ายตารางเป็นบรรทัดเดียว
+  const memberRows = activeMembers.map(m => ({ m, s: memberSchedule(db, m.id) }))
+  const firstVisit = (x: typeof memberRows[number]) =>
+    x.s.active[0]?.installStartDate ?? '9999-12-31'
+  const busyMembers = memberRows.filter(x => x.s.active.length > 0)
+    .sort((a, b) => firstVisit(a).localeCompare(firstVisit(b)))
+  const freeMembers = memberRows.filter(x => x.s.active.length === 0)
   // 0071: รวมงานที่เบิกบางส่วน — ของออกไปแล้วต้องมีทีมรับผิดชอบ ไม่ใช่รอจนใบครบ
   const issuedJobs = db.jobs.filter(j => jobIsFieldActive(db, j))
   const unassigned = issuedJobs.filter(j => !db.jobAssignments.some(a => a.jobId === j.id))
@@ -62,7 +70,9 @@ export default function ServiceSchedulingPage() {
           {canManage && <button className="small" onClick={openCreate}>+ เพิ่มช่าง (Add Team Member)</button>}
         </div>
         <div className="table-scroll">
-          <table>
+          {/* ทะเบียน = ตารางอ่านอย่างเดียว ใช้ความหนาแน่นชุดเดียวกับตารางข้อมูลอื่นในระบบ
+              (ไม่ใส่ fixed-cols เพราะไม่มี colgroup — จะกลายเป็นทุกคอลัมน์กว้างเท่ากัน) */}
+          <table className="dense">
             <thead>
               <tr>
                 <th>ชื่อ - สกุล</th><th>เบอร์ติดต่อ</th><th>ตำแหน่ง</th><th>บัญชีในระบบ</th>
@@ -78,11 +88,13 @@ export default function ServiceSchedulingPage() {
                 const linked = db.users.find(u => u.id === m.userId)
                 return (
                   <tr key={m.id} style={{ opacity: m.isActive ? 1 : 0.55 }}>
-                    <td><b>{m.firstName} {m.lastName}</b></td>
-                    <td className="mono">{m.phone}</td>
+                    {/* nowrap 3 ช่องนี้ — ชื่อคน/เบอร์/ตัวเลขสรุป ถูกตัดขึ้นบรรทัดใหม่แล้วอ่านยาก
+                        และทำให้ทุกแถวสูงขึ้นทั้งตาราง · ตารางแคบเกินให้เลื่อนแนวนอนแทน */}
+                    <td style={{ whiteSpace: 'nowrap' }}><b>{m.firstName} {m.lastName}</b></td>
+                    <td className="mono" style={{ whiteSpace: 'nowrap' }}>{m.phone}</td>
                     <td>{m.position}</td>
                     <td className="muted">{linked ? linked.email : '— (ไม่มี login)'}</td>
-                    <td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
                       <span className="badge blue">รอติดตั้ง {s.active.length}</span>{' '}
                       <span className="muted">ปิดแล้ว {s.doneCount} · ติดตั้ง {s.unitsInstalled} เครื่อง</span>
                     </td>
@@ -114,7 +126,7 @@ export default function ServiceSchedulingPage() {
         <div className="panel">
           <div className="panel-head"><h3>⚠️ งานที่เบิกแล้วแต่ยังไม่มอบหมายทีม ({unassigned.length})</h3></div>
           <div className="table-scroll">
-            <table>
+            <table className="dense">
               <thead><tr><th>Job No.</th><th>ลูกค้า / สถานที่</th><th>นัดติดตั้ง</th><th>สถานะกำหนดส่ง</th><th>ติดตั้ง</th></tr></thead>
               <tbody>
                 {unassigned.map(j => {
@@ -137,64 +149,86 @@ export default function ServiceSchedulingPage() {
         </div>
       )}
 
-      <div className="page-sub" style={{ marginTop: 24, marginBottom: 8, fontWeight: 700, color: 'var(--text)' }}>
-        ตารางงานรายบุคคล — งานที่เบิกแล้วรอติดตั้ง (เรียงตามวันนัด)
-      </div>
-      {activeMembers.length === 0 && (
-        <div className="panel"><div className="empty">ยังไม่มีช่างที่ใช้งาน</div></div>
-      )}
-      {activeMembers.map(m => {
-        const s = memberSchedule(db, m.id)
-        return (
-          <div className="panel" key={m.id}>
-            <div className="panel-head">
-              <h3>{m.firstName} {m.lastName} <span className="muted" style={{ fontWeight: 400 }}>· {m.position} · 📞 {m.phone}</span></h3>
-              <span className="muted">
-                {s.active.length > 0
-                  ? <span className="badge blue">{s.active.length} งานรอติดตั้ง</span>
-                  : <span className="badge green">ว่าง</span>}
-              </span>
-            </div>
-            {s.active.length === 0
-              ? <div className="empty">ไม่มีงานค้าง — ปิดงานแล้ว {s.doneCount} งาน · ติดตั้งไปทั้งหมด {s.unitsInstalled} เครื่อง</div>
-              : (
-                <div className="table-scroll">
-                  <table>
-                    <thead>
-                      <tr><th>นัดติดตั้ง</th><th>Job No.</th><th>ลูกค้า / สถานที่</th><th>บทบาท</th><th>ติดตั้ง</th></tr>
-                    </thead>
-                    <tbody>
-                      {s.active.map(j => {
-                        const sum = jobInstallSummary(db, j.id)
-                        const mine = jobTeam(db, j.id).find(t => t.member.id === m.id)
-                        return (
-                          <tr key={j.id}>
-                            <td style={{ whiteSpace: 'nowrap' }}>
-                              {j.installStartDate ? <b>{fmtDate(j.installStartDate)}</b> : <span className="muted">ไม่ระบุ</span>}
-                              {j.installEndDate && j.installEndDate !== j.installStartDate &&
-                                <div className="muted">ถึง {fmtDate(j.installEndDate)}</div>}
-                            </td>
-                            <td><Link to={`/jobs/${j.id}`}><b>{j.jobNo}</b></Link></td>
-                            <td>{j.customerName}<div className="muted">📍 {j.issueLocation || j.installLocation || '-'}</div></td>
-                            <td>{mine?.assignment.isLead
-                              ? <span className="badge amber">หัวหน้าทีม</span>
-                              : <span className="muted">ช่างติดตั้ง</span>}</td>
-                            <td>
-                              <span className={`badge ${sum.canClose ? 'green' : sum.installed > 0 ? 'blue' : 'neutral'}`}>
-                                {sum.installed}/{sum.total}
-                              </span>
-                              {sum.blocked > 0 && <div className="muted" style={{ color: 'var(--danger)' }}>ติดปัญหา {sum.blocked}</div>}
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+      {/* 🔴 ตารางเดียวสำหรับทุกคน · ช่างเป็น "แถวหัวกลุ่ม" (2026-09-22)
+          เดิมเป็น 1 panel + 1 ตารางต่อช่าง 1 คน ⇒ หัวตารางซ้ำทุกคน · คอลัมน์เหลื่อมกัน
+          เพราะแต่ละตารางคำนวณความกว้างเอง · และช่างที่ว่างยังกินพื้นที่คนละแผงเต็ม ๆ
+          เรียง "คนที่มีงาน" ขึ้นก่อน แล้วค่อยคนว่าง — หัวตารางคือสิ่งที่ต้องลงมือ */}
+      <div className="panel" style={{ marginTop: 24 }}>
+        <div className="panel-head">
+          <h3>ตารางงานรายบุคคล
+            <span className="muted" style={{ fontWeight: 400 }}> · งานที่เบิกแล้วรอติดตั้ง (เรียงตามวันนัด)</span>
+          </h3>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {busyMembers.length > 0 && <span className="badge blue">มีงาน {busyMembers.length} คน</span>}
+            {freeMembers.length > 0 && <span className="badge green">ว่าง {freeMembers.length} คน</span>}
           </div>
-        )
-      })}
+        </div>
+        {activeMembers.length === 0
+          ? <div className="empty">ยังไม่มีช่างที่ใช้งาน</div>
+          : (
+            <div className="table-scroll">
+              <table className="grid dense fixed-cols">
+                <colgroup>
+                  <col style={{ width: 130 }} />{/* นัดติดตั้ง */}
+                  <col style={{ width: 140 }} />{/* Job No. */}
+                  <col />{/* ลูกค้า / สถานที่ */}
+                  <col style={{ width: 230 }} />{/* สถานะกำหนดส่ง */}
+                  <col style={{ width: 110 }} />{/* บทบาท */}
+                  <col style={{ width: 95 }} />{/* ติดตั้ง */}
+                </colgroup>
+                <thead><tr>
+                  <th>นัดติดตั้ง</th><th>Job No.</th><th>ลูกค้า / สถานที่</th>
+                  <th>สถานะกำหนดส่ง</th><th>บทบาท</th><th style={{ textAlign: 'right' }}>ติดตั้ง</th>
+                </tr></thead>
+                {[...busyMembers, ...freeMembers].map(({ m, s }) => (
+                  <tbody key={m.id}>
+                    <tr className="group-row">
+                      <td colSpan={6}>
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                          <b>{m.firstName} {m.lastName}</b>
+                          <span className="muted">{m.position} · 📞 {m.phone}</span>
+                          {s.active.length > 0
+                            ? <span className="badge blue">{s.active.length} งานรอติดตั้ง</span>
+                            : <span className="badge green">ว่าง</span>}
+                          {/* สถิติสะสมย้ายมาอยู่บรรทัดเดียวกับชื่อ — เดิมกินพื้นที่ทั้งแผงเมื่อช่างว่าง */}
+                          <span className="muted" style={{ marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+                            ปิดงานแล้ว {s.doneCount} งาน · ติดตั้งสะสม {s.unitsInstalled} เครื่อง
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                    {s.active.map(j => {
+                      const sum = jobInstallSummary(db, j.id)
+                      const mine = jobTeam(db, j.id).find(t => t.member.id === m.id)
+                      return (
+                        <tr key={j.id}>
+                          <td style={{ whiteSpace: 'nowrap' }}>
+                            {j.installStartDate ? <b>{fmtDate(j.installStartDate)}</b> : <span className="muted">ไม่ระบุ</span>}
+                            {j.installEndDate && j.installEndDate !== j.installStartDate &&
+                              <div className="muted" style={{ fontSize: 11 }}>ถึง {fmtDate(j.installEndDate)}</div>}
+                          </td>
+                          <td><Link to={`/jobs/${j.id}`}><b>{j.jobNo}</b></Link></td>
+                          <td>{j.customerName}<div className="muted" style={{ fontSize: 11 }}>📍 {j.issueLocation || j.installLocation || '-'}</div></td>
+                          {/* คนจัดคิวต้องเห็นว่าใบไหนเลยกำหนดส่งแล้ว ไม่ใช่เห็นแค่วันนัด (0075) */}
+                          <td><DeliveryBadge d={jobDelivery(db, j)} /></td>
+                          <td>{mine?.assignment.isLead
+                            ? <span className="badge amber">หัวหน้าทีม</span>
+                            : <span className="muted">ช่างติดตั้ง</span>}</td>
+                          <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                            <span className={`badge ${sum.canClose ? 'green' : sum.installed > 0 ? 'blue' : 'neutral'}`}>
+                              {sum.installed}/{sum.total}
+                            </span>
+                            {sum.blocked > 0 && <div style={{ fontSize: 11, color: 'var(--danger)' }}>ติดปัญหา {sum.blocked}</div>}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                ))}
+              </table>
+            </div>
+          )}
+      </div>
 
       {modal && (
         <Modal title={modal === 'create' ? 'เพิ่มช่างในทะเบียน' : `แก้ข้อมูลช่าง — ${target?.firstName} ${target?.lastName}`}
