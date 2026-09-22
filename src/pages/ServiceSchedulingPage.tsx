@@ -8,6 +8,26 @@ import type { TeamMember } from '../types'
 
 const EMPTY_FORM = { firstName: '', lastName: '', phone: '', position: '', userId: '', isActive: true }
 
+/**
+ * ป้ายสรุปงานในมือช่าง — ใช้ทั้งตารางทะเบียนและตารางงานรายบุคคล **ตัวเดียวกัน**
+ * 🔴 ห้ามเรียกงานในมือทั้งก้อนว่า "รอติดตั้ง" — งานที่ติดตั้งครบแล้วรอแค่กดปิดงาน
+ *    ก็ยังอยู่ในมือช่าง ถ้าเหมารวมป้ายจะขัดกับสถานะของใบนั้นเองที่เขียนว่า "รอปิดงาน"
+ *    (ผู้ใช้จับได้ 2026-09-22) · ยอดแต่ละก้อนมาจาก state ของ jobDelivery ชุดเดียวกับป้ายในตาราง
+ */
+function WorkloadChips({ s }: { s: ReturnType<typeof memberSchedule> }) {
+  if (s.active.length === 0) return <span className="badge neutral">ว่าง</span>
+  return (
+    <>
+      {s.blockedJobs > 0 && <span className="badge red">ติดปัญหา {s.blockedJobs}</span>}
+      {s.pendingInstall > 0 && <span className="badge blue" style={{ marginLeft: s.blockedJobs > 0 ? 6 : 0 }}>รอติดตั้ง {s.pendingInstall}</span>}
+      {s.awaitingClose > 0 && (
+        <span className="badge green" style={{ marginLeft: s.blockedJobs + s.pendingInstall > 0 ? 6 : 0 }}
+          title="ติดตั้งครบแล้ว เหลือกดปิดงานที่หน้า Service (Installation)">รอปิดงาน {s.awaitingClose}</span>
+      )}
+    </>
+  )
+}
+
 // ทะเบียนทีมช่าง + ตารางงานรายบุคคล (เฟส C)
 // วันนัดติดตั้ง derive จาก Job — เลื่อนนัด (เฟส A) แล้วตารางนี้ขยับตามเอง
 export default function ServiceSchedulingPage() {
@@ -95,7 +115,7 @@ export default function ServiceSchedulingPage() {
                     <td>{m.position}</td>
                     <td className="muted">{linked ? linked.email : '— (ไม่มี login)'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
-                      <span className="badge blue">รอติดตั้ง {s.active.length}</span>{' '}
+                      <WorkloadChips s={s} />{' '}
                       <span className="muted">ปิดแล้ว {s.doneCount} · ติดตั้ง {s.unitsInstalled} เครื่อง</span>
                     </td>
                     <td>{m.isActive
@@ -156,7 +176,7 @@ export default function ServiceSchedulingPage() {
       <div className="panel" style={{ marginTop: 24 }}>
         <div className="panel-head">
           <h3>ตารางงานรายบุคคล
-            <span className="muted" style={{ fontWeight: 400 }}> · งานที่เบิกแล้วรอติดตั้ง (เรียงตามวันนัด)</span>
+            <span className="muted" style={{ fontWeight: 400 }}> · งานที่ของออกไปแล้วและยังไม่ปิด (เรียงตามวันนัด)</span>
           </h3>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             {busyMembers.length > 0 && <span className="badge blue">มีงาน {busyMembers.length} คน</span>}
@@ -187,9 +207,7 @@ export default function ServiceSchedulingPage() {
                         <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
                           <b>{m.firstName} {m.lastName}</b>
                           <span className="muted">{m.position} · 📞 {m.phone}</span>
-                          {s.active.length > 0
-                            ? <span className="badge blue">{s.active.length} งานรอติดตั้ง</span>
-                            : <span className="badge green">ว่าง</span>}
+                          <WorkloadChips s={s} />
                           {/* สถิติสะสมย้ายมาอยู่บรรทัดเดียวกับชื่อ — เดิมกินพื้นที่ทั้งแผงเมื่อช่างว่าง */}
                           <span className="muted" style={{ marginLeft: 'auto', whiteSpace: 'nowrap' }}>
                             ปิดงานแล้ว {s.doneCount} งาน · ติดตั้งสะสม {s.unitsInstalled} เครื่อง

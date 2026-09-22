@@ -3109,8 +3109,16 @@ export function memberSchedule(db: DB, memberId: string) {
   // 0071: งานที่เบิกบางส่วนก็ต้องอยู่ในตารางช่าง — ของออกไปแล้ว ช่างมีนัดต้องไปจริง
   const active = jobs.filter(j => jobIsFieldActive(db, j))
     .sort((a, b) => (a.installStartDate ?? '9999').localeCompare(b.installStartDate ?? '9999'))
+  // 🔴 `active` = "งานที่ของออกไปแล้วและยังไม่ปิด" — **ไม่ใช่** "งานรอติดตั้ง" ทั้งก้อน
+  //    ผู้ใช้จับได้ 2026-09-22: ช่างที่งานติดตั้งครบแล้ว (รอแค่กดปิดงาน) ยังขึ้นว่า
+  //    "1 งานรอติดตั้ง" ซึ่งขัดกับป้ายสถานะของใบเดียวกันที่เขียนว่า "ติดตั้งครบ รอปิดงาน"
+  //    ⇒ แยกยอดตาม state ของ jobDelivery ตัวเดียวกับที่ป้ายในตารางใช้ จะได้ไม่มีวันขัดกันอีก
+  const byState = active.map(j => jobDelivery(db, j).state)
   return {
     active,
+    pendingInstall: byState.filter(s => s !== 'awaiting_close' && s !== 'blocked').length,
+    awaitingClose: byState.filter(s => s === 'awaiting_close').length,
+    blockedJobs: byState.filter(s => s === 'blocked').length,
     doneCount: jobs.filter(j => j.terminalStatus === 'installed').length,
     // จำนวนเครื่องที่ช่างคนนี้ยืนยันติดตั้งเอง (จาก unit_installations)
     unitsInstalled: db.unitInstallations.filter(r => r.outcome === 'installed' && r.installedByMemberId === memberId).length,

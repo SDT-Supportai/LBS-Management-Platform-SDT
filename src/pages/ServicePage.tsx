@@ -342,12 +342,12 @@ export default function ServicePage() {
       </div>
 
       <div className="panel">
-        <div className="panel-head"><h3>เบิกแล้ว — รอติดตั้ง ({issued.length})</h3></div>
+        <div className="panel-head"><h3>เบิกแล้ว — งานที่อยู่กับทีมช่าง ({issued.length}) <span className="muted" style={{ fontWeight: 400 }}>· รวมงานที่ติดตั้งครบแล้วแต่ยังไม่กดปิดงาน</span></h3></div>
         <div className="table-scroll">
           <table>
             <thead><tr><th>Job No.</th><th>ลูกค้า / สถานที่</th><th>ของที่เบิก</th><th>ติดตั้ง</th><th></th></tr></thead>
             <tbody>
-              {issued.length === 0 && <tr><td colSpan={5}><div className="empty">ไม่มีงานรอติดตั้ง</div></td></tr>}
+              {issued.length === 0 && <tr><td colSpan={5}><div className="empty">ไม่มีงานที่อยู่กับทีมช่าง</div></td></tr>}
               {issued.map(j => {
                 const s = jobInstallSummary(db, j.id)
                 return (

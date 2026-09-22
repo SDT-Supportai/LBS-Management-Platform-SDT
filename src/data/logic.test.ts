@@ -18,7 +18,7 @@ import {
   updateUnitPlan, unitCustomerInfo, importUnitsToStock,
   addUnitFile, deleteUnitFile, unitFiles, unitFileCount, isAllowedDocFile,
   MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB,
-  jobDelivery, jobEffectiveDue, jobDueExtensions, extendJobDue, deleteJobDueExtension, jobDeliveredDate,
+  jobDelivery, jobEffectiveDue, jobDueExtensions, extendJobDue, deleteJobDueExtension, jobDeliveredDate, memberSchedule,
   addJobPayment, addPaymentFile, deletePaymentFile, paymentFiles, paymentFileCount, deleteJobPayment,
   updateJobBudget,
 } from './logic'
@@ -2020,5 +2020,70 @@ describe('หยุดนับเมื่อส่งมอบเสร็จ 
       ],
     })
     expect(jobDeliveredDate(d, d.jobs[0])).toBeUndefined()
+  })
+})
+
+// =============================================================================
+// ยอดงานในมือช่าง ต้องไม่ขัดกับป้ายสถานะของใบนั้นเอง (2026-09-22)
+//
+// 🔴 ผู้ใช้จับได้: ช่างที่งานติดตั้งครบแล้ว (ป้ายใบเขียนว่า "ติดตั้งครบ รอปิดงาน")
+//    แต่บรรทัดชื่อช่างยังขึ้นว่า "1 งานรอติดตั้ง" — ตัวเลขถูก แต่คำผิด
+//    เพราะ memberSchedule.active = "งานที่ของออกไปแล้วและยังไม่ปิด" ไม่ใช่ "งานรอติดตั้ง"
+// =============================================================================
+describe('ยอดงานในมือช่าง (2026-09-22)', () => {
+  const actor = { id: 'u1', email: 's@x.co', password: '', fullName: 'ช่าง', department: 'service' as const, isActive: true }
+  const member = {
+    id: 'tm1', firstName: 'ธีรพงษ์', lastName: 'กลั่นเพชร', phone: '061-712-4447',
+    position: 'Supervisor', isActive: true, createdAt: '2026-08-01T00:00:00.000Z',
+  }
+  const base = (installs: DB['unitInstallations']) => db({
+    users: [actor],
+    teamMembers: [member],
+    jobs: [job({ requiredDate: '2026-09-18', openedBy: 'u1', installStartDate: '2026-09-14', installEndDate: '2026-09-18' })],
+    lbsUnits: [unit({ id: 'a', status: 'issued', jobId: 'j1' })],
+    unitInstallations: installs,
+    jobAssignments: [{ id: 'ja1', jobId: 'j1', memberId: 'tm1', isLead: true, assignedBy: 'u1', assignedAt: '2026-09-01T00:00:00.000Z' }],
+  })
+
+  it('🔴 งานที่ติดตั้งครบแล้วต้องนับเป็น "รอปิดงาน" ไม่ใช่ "รอติดตั้ง"', () => {
+    const d = base([{
+      id: 'ui1', unitId: 'a', jobId: 'j1', outcome: 'installed', installedDate: '2026-09-17',
+      performedBy: 'u1', performedAt: '2026-09-17T09:00:00.000Z',
+    }])
+    const s = memberSchedule(d, 'tm1')
+    expect(s.active).toHaveLength(1)              // ยังอยู่ในมือช่าง (ยังไม่ปิดงาน)
+    expect(s.awaitingClose).toBe(1)
+    expect(s.pendingInstall).toBe(0)
+    // ต้องตรงกับป้ายของใบเดียวกัน — นี่คือสิ่งที่เคยขัดกัน
+    expect(jobDelivery(d, d.jobs[0], '2026-09-22').state).toBe('awaiting_close')
+  })
+
+  it('งานที่ยังติดตั้งไม่เสร็จ = รอติดตั้ง', () => {
+    const s = memberSchedule(base([]), 'tm1')
+    expect(s.pendingInstall).toBe(1)
+    expect(s.awaitingClose).toBe(0)
+    expect(s.blockedJobs).toBe(0)
+  })
+
+  it('งานที่ติดปัญหาหน้างานแยกเป็นอีกก้อน — ไม่ปนกับรอติดตั้ง', () => {
+    const d = base([{
+      id: 'ui1', unitId: 'a', jobId: 'j1', outcome: 'blocked', reason: 'ฐานยังไม่เสร็จ',
+      performedBy: 'u1', performedAt: '2026-09-17T09:00:00.000Z',
+    }])
+    const s = memberSchedule(d, 'tm1')
+    expect(s.blockedJobs).toBe(1)
+    expect(s.pendingInstall).toBe(0)
+    expect(s.awaitingClose).toBe(0)
+  })
+
+  it('3 ก้อนรวมกันต้องเท่ากับจำนวนงานในมือเสมอ (ไม่มีใบไหนตกหล่นหรือถูกนับซ้ำ)', () => {
+    for (const installs of [
+      [],
+      [{ id: 'ui1', unitId: 'a', jobId: 'j1', outcome: 'installed' as const, installedDate: '2026-09-17', performedBy: 'u1', performedAt: '2026-09-17T09:00:00.000Z' }],
+      [{ id: 'ui1', unitId: 'a', jobId: 'j1', outcome: 'blocked' as const, reason: 'x', performedBy: 'u1', performedAt: '2026-09-17T09:00:00.000Z' }],
+    ]) {
+      const s = memberSchedule(base(installs), 'tm1')
+      expect(s.pendingInstall + s.awaitingClose + s.blockedJobs).toBe(s.active.length)
+    }
   })
 })
