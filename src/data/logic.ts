@@ -4,7 +4,7 @@ import type {
   ApprovalType, ApprovalPayload, BudgetCosts, CostCategoryKey,
   SiteVisit, SiteVisitOutcome, UnitInstallOutcome, TeamMember, JobAssignment,
   StockMovementType, PaymentType, EpicorTxnType,
-  PublicShareLink, PublicStockView,
+  PublicShareLink, PublicStockView, StdDrawing, StdDrawingFile,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -3989,31 +3989,50 @@ export function unreadNotifications(db: DB, user: User) {
 // Drawing: แก้ไข = ทับข้อมูลเดิม + stamp ผู้แก้/วันที่ (ไม่เก็บ revision) · fileUrl ว่างตอนแก้ = คงไฟล์เดิม
 const clean = (s?: string) => { const t = s?.trim(); return t ? t : undefined }
 
+// 0078 — หลายไฟล์ต่อ Drawing · ข้อมูลก่อน 0078 มีแต่ fileUrl/fileName → อ่านเป็นไฟล์เดียว
+export const MAX_STD_DRAWING_FILES = 30
+export function stdDrawingFiles(d: StdDrawing): StdDrawingFile[] {
+  if (d.files && d.files.length > 0) return d.files
+  return d.fileUrl ? [{ url: d.fileUrl, name: d.fileName ?? 'drawing.pdf' }] : []
+}
+
+// กติกาเดียวกับ rpc_save_std_drawing: url + name ต้องไม่ว่าง · ไม่เกิน 30 ไฟล์
+function normStdDrawingFiles(files?: StdDrawingFile[]): StdDrawingFile[] {
+  const list = (files ?? []).map(f => ({ url: f.url?.trim() ?? '', name: f.name?.trim() ?? '', size: f.size }))
+  if (list.length > MAX_STD_DRAWING_FILES) throw new Error(`แนบได้ไม่เกิน ${MAX_STD_DRAWING_FILES} ไฟล์ต่อ Drawing`)
+  if (list.some(f => !f.url || !f.name)) throw new Error('ไฟล์แนบต้องมีทั้งชื่อและที่อยู่ไฟล์')
+  return list.map(f => f.size === undefined ? { url: f.url, name: f.name } : f)
+}
+
 export function createStdDrawing(
   db: DB, actor: User,
-  p: { title: string; drawingNo?: string; description?: string; fileUrl?: string; fileName?: string },
+  p: { title: string; drawingNo?: string; description?: string; files?: StdDrawingFile[] },
 ): DB {
   const title = p.title.trim()
   if (!title) throw new Error('กรุณาระบุหัวข้อ/ชื่อ Drawing')
   const no = clean(p.drawingNo)
   if (no && db.stdDrawings.some(d => d.drawingNo === no))
     throw new Error(`เลขแบบ "${no}" มีอยู่แล้ว`)
+  const files = normStdDrawingFiles(p.files)
   const id = uid()
   const next: DB = {
     ...db,
     stdDrawings: [...db.stdDrawings, {
       id, title, drawingNo: no, description: clean(p.description),
-      fileUrl: clean(p.fileUrl), fileName: clean(p.fileName),
+      files, fileUrl: files[0]?.url, fileName: files[0]?.name,
       createdBy: actor.id, createdAt: now(), updatedBy: actor.id, updatedAt: now(),
     }],
   }
   return audit(next, actor, 'std_drawing', id, 'create_std_drawing',
-    `เพิ่ม Standard Drawing "${title}"${clean(p.fileName) ? ` · ไฟล์ ${p.fileName}` : ' · ยังไม่แนบไฟล์'}`)
+    `เพิ่ม Standard Drawing "${title}"` +
+    (files.length ? ` · ไฟล์ ${files.map(f => f.name).join(', ')}` : ' · ยังไม่แนบไฟล์'))
 }
 
+// files = รายการไฟล์ "ทั้งชุด" ที่ต้องเหลือหลังบันทึก (ไฟล์เดิมที่ไม่ส่งมา = เอาออก)
+// ไฟล์ที่เอาออกไม่ถูกลบจาก Storage — audit เก็บชื่อไว้ย้อนดู (มติ 0045)
 export function updateStdDrawing(
   db: DB, actor: User,
-  p: { id: string; title: string; drawingNo?: string; description?: string; fileUrl?: string; fileName?: string; revNote?: string },
+  p: { id: string; title: string; drawingNo?: string; description?: string; files?: StdDrawingFile[]; revNote?: string },
 ): DB {
   const d = db.stdDrawings.find(x => x.id === p.id)
   if (!d) throw new Error('ไม่พบ Drawing นี้')
@@ -4022,29 +4041,33 @@ export function updateStdDrawing(
   const no = clean(p.drawingNo)
   if (no && db.stdDrawings.some(x => x.id !== p.id && x.drawingNo === no))
     throw new Error(`เลขแบบ "${no}" มีอยู่แล้ว`)
-  // อัปโหลดใหม่ = เปลี่ยนไฟล์ · ไม่ได้อัปโหลด = คงไฟล์เดิม
-  const newUrl = clean(p.fileUrl) ?? d.fileUrl
-  const newName = clean(p.fileUrl) ? clean(p.fileName) : d.fileName
+  const files = normStdDrawingFiles(p.files)
+  const before = stdDrawingFiles(d)
+  const added = files.filter(f => !before.some(o => o.url === f.url)).map(f => f.name)
+  const removed = before.filter(o => !files.some(f => f.url === o.url)).map(f => f.name)
   const next: DB = {
     ...db,
     stdDrawings: db.stdDrawings.map(x => x.id === p.id ? {
       ...x, title, drawingNo: no, description: clean(p.description),
-      fileUrl: newUrl, fileName: newName, revNote: clean(p.revNote),
+      files, fileUrl: files[0]?.url, fileName: files[0]?.name, revNote: clean(p.revNote),
       updatedBy: actor.id, updatedAt: now(),
     } : x),
   }
   return audit(next, actor, 'std_drawing', p.id, 'update_std_drawing',
     `แก้ Standard Drawing "${d.title}" → "${title}"` +
-    (newUrl !== d.fileUrl ? ` · เปลี่ยนไฟล์: ${d.fileName ?? '-'} → ${newName ?? '-'}` : ' · ไฟล์เดิม') +
+    (!added.length && !removed.length ? ' · ไฟล์เดิม' : '') +
+    (added.length ? ` · เพิ่มไฟล์: ${added.join(', ')}` : '') +
+    (removed.length ? ` · เอาไฟล์ออก: ${removed.join(', ')}` : '') +
     (clean(p.revNote) ? ` · หมายเหตุ: ${clean(p.revNote)}` : ''))
 }
 
 export function deleteStdDrawing(db: DB, actor: User, p: { id: string }): DB {
   const d = db.stdDrawings.find(x => x.id === p.id)
   if (!d) throw new Error('ไม่พบ Drawing นี้')
+  const names = stdDrawingFiles(d).map(f => f.name).join(', ')
   const next: DB = { ...db, stdDrawings: db.stdDrawings.filter(x => x.id !== p.id) }
   return audit(next, actor, 'std_drawing', p.id, 'delete_std_drawing',
-    `ลบ Standard Drawing "${d.title}" (ไฟล์ ${d.fileName ?? '-'} ยังอยู่ใน Storage)`)
+    `ลบ Standard Drawing "${d.title}" (ไฟล์ ${names || '-'} ยังอยู่ใน Storage)`)
 }
 
 // ---------------- Standard Price list (sync 0054) ----------------

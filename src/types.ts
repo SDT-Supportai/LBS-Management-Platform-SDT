@@ -479,12 +479,19 @@ export interface JobDueExtension {
 // Standard Drawing (0045) — 1 แบบ = 1 แถว + PDF ล่าสุด
 // แก้ไข = ทับข้อมูลเดิม + stamp updatedAt/updatedBy (ไม่เก็บตาราง revision ตามมติ 2026-08-04)
 // ไฟล์เก่าไม่ถูกลบจาก Storage และ audit บันทึก URL เก่า→ใหม่ไว้ ถ้าต้องย้อนดู
+// 0078 — แนบ PDF ได้หลายไฟล์ต่อ Drawing (url = public URL ใน install-photos · demo = data URL)
+export interface StdDrawingFile {
+  url: string
+  name: string
+  size?: number                // bytes
+}
 export interface StdDrawing {
   id: string
   title: string
   drawingNo?: string
   description?: string
-  fileUrl?: string             // ว่าง = ยังไม่แนบไฟล์
+  files?: StdDrawingFile[]     // 0078 — อ่านผ่าน stdDrawingFiles() เสมอ (ข้อมูลเก่ามีแต่ fileUrl)
+  fileUrl?: string             // กระจกของไฟล์แรก (compat 0045) · ว่าง = ยังไม่แนบไฟล์
   fileName?: string
   revNote?: string             // หมายเหตุการแก้ไขครั้งล่าสุด
   createdBy: string

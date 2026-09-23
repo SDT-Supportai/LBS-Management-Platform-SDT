@@ -1,7 +1,8 @@
 import { useRef, useState } from 'react'
 import { useStore, can } from '../data/StoreContext'
-import { stdBomSummary } from '../data/logic'
+import { stdBomSummary, stdDrawingFiles, MAX_STD_DRAWING_FILES } from '../data/logic'
 import type { StdBomLineInput } from '../data/logic'
+import type { StdDrawingFile } from '../types'
 import { supabase } from '../lib/supabase'
 import { Modal, useConfirm, useToast, useTryAction, toBudgetNum } from '../ui/components'
 import { fmtBaht, fmtDateTime } from '../ui/format'
@@ -19,11 +20,13 @@ function readAsDataUrl(file: File): Promise<string> {
   })
 }
 
+// 0078 — หลายไฟล์ต่อ Drawing: files = ไฟล์ที่บันทึกไว้แล้วและยังเก็บไว้ · ไฟล์ใหม่อยู่ใน newPdfs จนกดบันทึก
 interface DrawingForm {
   id: string | null
   title: string; drawingNo: string; description: string; revNote: string
-  currentFileName?: string
+  files: StdDrawingFile[]
 }
+interface PendingPdf { key: string; file: File; dataUrl?: string }
 // Standard Price list (0054) — โครงเดียวกับ DrawingForm (priceNo แทน drawingNo)
 interface PriceForm {
   id: string | null
@@ -62,6 +65,8 @@ export default function StandardsPage() {
   const [drawingForm, setDrawingForm] = useState<DrawingForm | null>(null)
   const [priceForm, setPriceForm] = useState<PriceForm | null>(null)
   const [pdf, setPdf] = useState<{ file: File; dataUrl: string } | null>(null)
+  const [newPdfs, setNewPdfs] = useState<PendingPdf[]>([])        // Drawing (0078) — รออัปโหลดตอนกดบันทึก
+  const [savingDwg, setSavingDwg] = useState(false)
   const [bomForm, setBomForm] = useState<BomForm | null>(null)
   const [lineForm, setLineForm] = useState<LineForm | null>(null)
   const [openBoms, setOpenBoms] = useState<Set<string>>(new Set())
@@ -89,32 +94,70 @@ export default function StandardsPage() {
     setPdf({ file, dataUrl: await readAsDataUrl(file) })
   }
 
-  // LIVE: อัปโหลดเข้า Storage คืน public URL (path ใหม่ทุกครั้ง ไม่ทับ object เดิม)
-  // demo: คืน data URL · ไม่ได้เลือกไฟล์ = undefined → ฝั่ง RPC/logic คงไฟล์เดิม
-  const resolvePdfUrl = async (prefix = 'standard-drawings'): Promise<string | undefined> => {
-    if (!pdf) return undefined
-    if (!supabase) return pdf.dataUrl
-    const safe = pdf.file.name.replace(/[^\w.\-]/g, '_')
-    const path = `${prefix}/${Date.now()}-${safe}`
-    const { error } = await supabase.storage.from('install-photos').upload(path, pdf.file, { upsert: false })
-    if (error) throw new Error(`อัปโหลด PDF ไม่สำเร็จ: ${error.message} (ตรวจว่ามี bucket install-photos)`)
+  // LIVE: อัปโหลดเข้า Storage คืน public URL (path ใหม่ทุกครั้ง ไม่ทับ object เดิม) · demo: คืน data URL
+  const uploadPdf = async (file: File, dataUrl: string | undefined, prefix: string): Promise<string> => {
+    if (!supabase) return dataUrl ?? await readAsDataUrl(file)
+    const safe = file.name.replace(/[^\w.\-]/g, '_')
+    const path = `${prefix}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safe}`
+    const { error } = await supabase.storage.from('install-photos').upload(path, file, { upsert: false })
+    if (error) throw new Error(`อัปโหลด ${file.name} ไม่สำเร็จ: ${error.message} (ตรวจว่ามี bucket install-photos)`)
     return supabase.storage.from('install-photos').getPublicUrl(path).data.publicUrl
   }
 
+  // Price list: ไม่ได้เลือกไฟล์ = undefined → ฝั่ง RPC/logic คงไฟล์เดิม
+  const resolvePdfUrl = async (prefix: string): Promise<string | undefined> =>
+    pdf ? uploadPdf(pdf.file, pdf.dataUrl, prefix) : undefined
+
+  // Drawing (0078) — เลือกได้หลายไฟล์ต่อครั้ง และกดเลือกเพิ่มได้เรื่อย ๆ (ต่อท้ายรายการเดิม)
+  const pickDrawingPdfs = async (list: FileList | null) => {
+    if (!list || !drawingForm) return
+    const picked: PendingPdf[] = []
+    const rejected: string[] = []
+    for (const file of Array.from(list)) {
+      if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+        rejected.push(`${file.name} (ไม่ใช่ PDF)`); continue
+      }
+      if (!supabase && file.size > DEMO_MAX_MB * 1024 * 1024) {
+        rejected.push(`${file.name} (demo รับไม่เกิน ${DEMO_MAX_MB} MB)`); continue
+      }
+      // เลือกไฟล์เดิมซ้ำ (ชื่อ+ขนาดเท่ากัน) = ข้าม ไม่งั้นอัปโหลดซ้ำ 2 ชุด
+      if ([...newPdfs, ...picked].some(p => p.file.name === file.name && p.file.size === file.size)) continue
+      picked.push({
+        key: `${file.name}-${file.size}-${file.lastModified}`, file,
+        dataUrl: supabase ? undefined : await readAsDataUrl(file),
+      })
+    }
+    const room = MAX_STD_DRAWING_FILES - drawingForm.files.length - newPdfs.length
+    if (picked.length > room) {
+      rejected.push(`อีก ${picked.length - Math.max(room, 0)} ไฟล์ (แนบได้ไม่เกิน ${MAX_STD_DRAWING_FILES} ไฟล์ต่อ Drawing)`)
+      picked.splice(Math.max(room, 0))
+    }
+    if (rejected.length) show(`ไม่ได้เพิ่ม: ${rejected.join(' · ')}`, true)
+    if (picked.length) setNewPdfs(prev => [...prev, ...picked])
+  }
+
+  const closeDrawing = () => { setDrawingForm(null); setNewPdfs([]) }
+
   const saveDrawing = async () => {
-    if (!drawingForm) return
+    if (!drawingForm || savingDwg) return
+    setSavingDwg(true)
     const ok = await tryAction(async () => {
-      const fileUrl = await resolvePdfUrl()
+      // อัปโหลดทีละไฟล์ตามลำดับที่เลือก · พังกลางทาง = ยังไม่เรียก RPC (ไฟล์ที่ขึ้นไปแล้วค้างใน Storage)
+      const uploaded: StdDrawingFile[] = []
+      for (const p of newPdfs) {
+        uploaded.push({ url: await uploadPdf(p.file, p.dataUrl, 'standard-drawings'), name: p.file.name, size: p.file.size })
+      }
       const base = {
         title: drawingForm.title, drawingNo: drawingForm.drawingNo,
         description: drawingForm.description,
-        fileUrl, fileName: fileUrl ? pdf?.file.name : undefined,
+        files: [...drawingForm.files, ...uploaded],
       }
       await (drawingForm.id
         ? act.updateStdDrawing({ id: drawingForm.id, ...base, revNote: drawingForm.revNote })
         : act.createStdDrawing(base))
     }, drawingForm.id ? 'บันทึกการแก้ไข Drawing แล้ว' : 'เพิ่ม Drawing แล้ว')
-    if (ok) { setDrawingForm(null); setPdf(null) }
+    setSavingDwg(false)
+    if (ok) closeDrawing()
   }
 
   // Standard Price list (0054) — ใช้ machinery เดียวกับ saveDrawing (pdf state + resolvePdfUrl)
@@ -359,8 +402,8 @@ export default function StandardsPage() {
           {canManage && (
             <div style={{ marginBottom: 12 }}>
               <button className="primary" onClick={() => {
-                setPdf(null)
-                setDrawingForm({ id: null, title: '', drawingNo: '', description: '', revNote: '' })
+                setNewPdfs([])
+                setDrawingForm({ id: null, title: '', drawingNo: '', description: '', revNote: '', files: [] })
               }}>+ เพิ่ม Drawing</button>
             </div>
           )}
@@ -375,16 +418,19 @@ export default function StandardsPage() {
                   {drawings.length === 0 && (
                     <tr><td colSpan={canManage ? 7 : 6}><div className="empty">ยังไม่มี Standard Drawing</div></td></tr>
                   )}
-                  {drawings.map(d => (
+                  {drawings.map(d => {
+                    const files = stdDrawingFiles(d)
+                    return (
                     <tr key={d.id}>
                       <td className="mono">{d.drawingNo || '-'}</td>
                       <td>{d.title}<div className="muted">{d.description || ''}</div></td>
                       <td>
-                        {d.fileUrl
-                          ? <a href={d.fileUrl} target="_blank" rel="noreferrer" download={d.fileName}>
-                              📄 {d.fileName || 'ดาวน์โหลด PDF'}
-                            </a>
-                          : <span className="badge amber">ยังไม่แนบไฟล์</span>}
+                        {files.length === 0 && <span className="badge amber">ยังไม่แนบไฟล์</span>}
+                        {files.map((f, i) => (
+                          <div key={f.url + i} style={{ marginTop: i ? 4 : 0 }}>
+                            <a href={f.url} target="_blank" rel="noreferrer" download={f.name}>📄 {f.name}</a>
+                          </div>
+                        ))}
                       </td>
                       <td>{fmtDateTime(d.updatedAt ?? d.createdAt)}</td>
                       <td>{userOf(d.updatedBy ?? d.createdBy)}</td>
@@ -392,11 +438,11 @@ export default function StandardsPage() {
                       {canManage && (
                         <td style={{ whiteSpace: 'nowrap' }}>
                           <button className="small" onClick={() => {
-                            setPdf(null)
+                            setNewPdfs([])
                             setDrawingForm({
                               id: d.id, title: d.title, drawingNo: d.drawingNo ?? '',
                               description: d.description ?? '', revNote: '',
-                              currentFileName: d.fileName,
+                              files,
                             })
                           }}>แก้ไข</button>
                           <button className="small danger" style={{ marginLeft: 6 }} onClick={async () => {
@@ -404,7 +450,7 @@ export default function StandardsPage() {
                               title: `ลบ Drawing "${d.title}"`,
                               description: <>
                                 {d.drawingNo && <>เลขแบบ <b className="mono">{d.drawingNo}</b> · </>}
-                                ทุกแผนกจะโหลดแบบนี้จากระบบไม่ได้อีก · <b>ไฟล์ PDF ยังอยู่ใน Storage</b> และ URL เดิมยังเปิดได้ (ลบรายการออกจากทะเบียนเท่านั้น)
+                                ทุกแผนกจะโหลดแบบนี้จากระบบไม่ได้อีก · <b>ไฟล์ PDF {files.length > 1 ? `ทั้ง ${files.length} ไฟล์` : ''}ยังอยู่ใน Storage</b> และ URL เดิมยังเปิดได้ (ลบรายการออกจากทะเบียนเท่านั้น)
                               </>,
                               confirmLabel: 'ลบ Drawing',
                             })) tryAction(() => act.deleteStdDrawing({ id: d.id }), 'ลบ Drawing แล้ว')
@@ -412,7 +458,8 @@ export default function StandardsPage() {
                         </td>
                       )}
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
@@ -620,10 +667,12 @@ export default function StandardsPage() {
         <Modal
           title={drawingForm.id ? 'แก้ไข Standard Drawing' : 'เพิ่ม Standard Drawing'}
           size="wide"
-          onClose={() => { setDrawingForm(null); setPdf(null) }}
+          onClose={() => { if (!savingDwg) closeDrawing() }}
           footer={<>
-            <button onClick={() => { setDrawingForm(null); setPdf(null) }}>ยกเลิก</button>
-            <button className="primary" disabled={!drawingForm.title.trim()} onClick={saveDrawing}>บันทึก</button>
+            <button disabled={savingDwg} onClick={closeDrawing}>ยกเลิก</button>
+            <button className="primary" disabled={!drawingForm.title.trim() || savingDwg} onClick={saveDrawing}>
+              {savingDwg ? (newPdfs.length ? `กำลังอัปโหลด ${newPdfs.length} ไฟล์…` : 'กำลังบันทึก…') : 'บันทึก'}
+            </button>
           </>}
         >
           <div className="row">
@@ -643,17 +692,42 @@ export default function StandardsPage() {
               onChange={e => setDrawingForm({ ...drawingForm, description: e.target.value })} />
           </label>
           <label className="field">
-            <span>ไฟล์ PDF {drawingForm.id ? '(เลือกใหม่ = แทนไฟล์เดิม · ไม่เลือก = คงไฟล์เดิม)' : ''}</span>
-            <input ref={pdfInput} type="file" accept="application/pdf,.pdf"
-              onChange={e => pickPdf(e.target.files?.[0])} />
+            <span>ไฟล์ PDF (เลือกได้หลายไฟล์ · กดเลือกซ้ำเพื่อเพิ่มต่อได้)</span>
+            {/* ล้าง value หลังเลือก ไม่งั้นเลือกไฟล์ชื่อเดิมอีกรอบแล้ว onChange ไม่ยิง */}
+            <input ref={pdfInput} type="file" accept="application/pdf,.pdf" multiple disabled={savingDwg}
+              onChange={async e => { await pickDrawingPdfs(e.target.files); e.target.value = '' }} />
           </label>
-          <div className="muted" style={{ marginBottom: 8 }}>
-            {pdf
-              ? <>ไฟล์ใหม่: <b>{pdf.file.name}</b> ({(pdf.file.size / 1024 / 1024).toFixed(2)} MB)</>
-              : drawingForm.currentFileName
-                ? <>ไฟล์ปัจจุบัน: <b>{drawingForm.currentFileName}</b></>
-                : 'ยังไม่ได้เลือกไฟล์'}
-            {!supabase && <> · โหมด demo รับไม่เกิน {DEMO_MAX_MB} MB</>}
+          <div style={{ marginBottom: 8 }}>
+            {drawingForm.files.length === 0 && newPdfs.length === 0 && (
+              <div className="muted">ยังไม่ได้เลือกไฟล์</div>
+            )}
+            {drawingForm.files.map((f, i) => (
+              <div key={f.url + i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                <a href={f.url} target="_blank" rel="noreferrer" style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
+                  📄 {f.name}
+                </a>
+                {f.size !== undefined && <span className="muted">{(f.size / 1024 / 1024).toFixed(2)} MB</span>}
+                <button className="small danger" disabled={savingDwg} title="เอาไฟล์นี้ออกจาก Drawing (ไฟล์ยังอยู่ใน Storage)"
+                  onClick={() => setDrawingForm({ ...drawingForm, files: drawingForm.files.filter((_, j) => j !== i) })}>
+                  เอาออก
+                </button>
+              </div>
+            ))}
+            {newPdfs.map(p => (
+              <div key={p.key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
+                  <span className="badge blue">ใหม่</span> {p.file.name}
+                </span>
+                <span className="muted">{(p.file.size / 1024 / 1024).toFixed(2)} MB</span>
+                <button className="small" disabled={savingDwg}
+                  onClick={() => setNewPdfs(prev => prev.filter(x => x.key !== p.key))}>ยกเลิก</button>
+              </div>
+            ))}
+            <div className="muted" style={{ marginTop: 6 }}>
+              รวม {drawingForm.files.length + newPdfs.length} / {MAX_STD_DRAWING_FILES} ไฟล์
+              {drawingForm.id && ' · ไฟล์ที่เอาออกยังอยู่ใน Storage (ลบออกจากรายการเท่านั้น)'}
+              {!supabase && <> · โหมด demo รับไม่เกิน {DEMO_MAX_MB} MB ต่อไฟล์</>}
+            </div>
           </div>
           {drawingForm.id && (
             <label className="field"><span>หมายเหตุการแก้ไขครั้งนี้ (จะแสดงในตารางพร้อมวันที่/ผู้แก้ไข)</span>

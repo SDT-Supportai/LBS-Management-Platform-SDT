@@ -4,7 +4,7 @@ import type {
   AccessoryRequest, PurchaseRequisition, PurchaseOrder, AuditLog, AppNotification,
   Department, ApprovalRequest, ApprovalComment, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit, UnitInstallation,
   TeamMember, JobAssignment, StockMovement, JobPayment, PaymentType,
-  StdDrawing, StdPrice, StdBom, StdBomLine, LbsUnitFile, JobPaymentFile, JobDueExtension,
+  StdDrawing, StdDrawingFile, StdPrice, StdBom, StdBomLine, LbsUnitFile, JobPaymentFile, JobDueExtension,
   PublicShareLink, PublicStockView,
 } from '../types'
 
@@ -85,6 +85,8 @@ function mapStdDrawing(r: Row): StdDrawing {
   return {
     id: r.id, title: r.title, drawingNo: r.drawing_no ?? undefined,
     description: r.description ?? undefined,
+    // 0078 — files ว่าง + มี file_url = แถวที่ client รุ่นก่อน 0078 สร้าง → stdDrawingFiles() อ่านเป็นไฟล์เดียว
+    files: Array.isArray(r.files) ? r.files : [],
     fileUrl: r.file_url ?? undefined, fileName: r.file_name ?? undefined,
     revNote: r.rev_note ?? undefined,
     createdBy: r.created_by ?? '', createdAt: r.created_at,
@@ -738,16 +740,16 @@ export function remoteActions(sb: SupabaseClient) {
     undoEpicorIssued: (p: { requestId: string; reason: string }) =>
       rpc(sb, 'rpc_undo_epicor_issued', { p_request_id: p.requestId, p_reason: p.reason }),
     // Standard Drawing / BOM (0045) — แก้ได้ Project/Division/Manage
-    createStdDrawing: (p: { title: string; drawingNo?: string; description?: string; fileUrl?: string; fileName?: string }) =>
-      rpc(sb, 'rpc_create_std_drawing', {
-        p_title: p.title, p_drawing_no: p.drawingNo ?? null, p_description: p.description ?? null,
-        p_file_url: p.fileUrl ?? null, p_file_name: p.fileName ?? null,
+    // 0078 — เพิ่ม/แก้ผ่าน rpc_save_std_drawing ตัวเดียว · p_files = รายการไฟล์ทั้งชุดที่ต้องเหลือ
+    createStdDrawing: (p: { title: string; drawingNo?: string; description?: string; files?: StdDrawingFile[] }) =>
+      rpc(sb, 'rpc_save_std_drawing', {
+        p_id: null, p_title: p.title, p_drawing_no: p.drawingNo ?? null, p_description: p.description ?? null,
+        p_files: p.files ?? [], p_rev_note: null,
       }),
-    // p_file_url ว่าง = ไม่ได้อัปโหลดใหม่ → ฝั่ง DB คงไฟล์เดิม
-    updateStdDrawing: (p: { id: string; title: string; drawingNo?: string; description?: string; fileUrl?: string; fileName?: string; revNote?: string }) =>
-      rpc(sb, 'rpc_update_std_drawing', {
+    updateStdDrawing: (p: { id: string; title: string; drawingNo?: string; description?: string; files?: StdDrawingFile[]; revNote?: string }) =>
+      rpc(sb, 'rpc_save_std_drawing', {
         p_id: p.id, p_title: p.title, p_drawing_no: p.drawingNo ?? null, p_description: p.description ?? null,
-        p_file_url: p.fileUrl ?? null, p_file_name: p.fileName ?? null, p_rev_note: p.revNote ?? null,
+        p_files: p.files ?? [], p_rev_note: p.revNote ?? null,
       }),
     deleteStdDrawing: (p: { id: string }) => rpc(sb, 'rpc_delete_std_drawing', { p_id: p.id }),
     // Standard Price list (0054) — กติกาเดียวกับ Drawing · p_file_url ว่าง = คงไฟล์เดิม

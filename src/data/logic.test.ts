@@ -21,6 +21,7 @@ import {
   jobDelivery, jobEffectiveDue, jobDueExtensions, extendJobDue, deleteJobDueExtension, jobDeliveredDate, memberSchedule,
   addJobPayment, addPaymentFile, deletePaymentFile, paymentFiles, paymentFileCount, deleteJobPayment,
   updateJobBudget,
+  createStdDrawing, updateStdDrawing, stdDrawingFiles, MAX_STD_DRAWING_FILES,
 } from './logic'
 
 // =============================================================================
@@ -2085,5 +2086,56 @@ describe('ยอดงานในมือช่าง (2026-09-22)', () => {
       const s = memberSchedule(base(installs), 'tm1')
       expect(s.pendingInstall + s.awaitingClose + s.blockedJobs).toBe(s.active.length)
     }
+  })
+})
+
+// =============================================================================
+// Standard Drawing แนบ PDF ได้หลายไฟล์ (0078 · 2026-09-23)
+//
+// 🔴 จุดที่พังได้จริง: แถวเก่าก่อน 0078 มีแต่ fileUrl — ถ้าโมดัลแก้ไขอ่าน files ตรง ๆ
+//    จะเห็นรายการว่าง แล้วกดบันทึก = ไฟล์เดิมหายจากทะเบียนเงียบ ๆ
+// =============================================================================
+describe('Standard Drawing หลายไฟล์ (0078)', () => {
+  const pm = { id: 'u1', email: 'p@x.co', password: '', fullName: 'Project', department: 'project' as const, isActive: true }
+  const f1 = { url: 'https://x/1.pdf', name: 'SLD.pdf', size: 1000 }
+  const f2 = { url: 'https://x/2.pdf', name: 'Layout.pdf' }
+  const f3 = { url: 'https://x/3.pdf', name: 'Foundation.pdf' }
+
+  it('เพิ่ม Drawing พร้อมหลายไฟล์ · fileUrl เป็นกระจกของไฟล์แรก', () => {
+    const d = createStdDrawing(db({ users: [pm] }), pm, { title: 'SLD', files: [f1, f2] })
+    const dw = d.stdDrawings[0]
+    expect(stdDrawingFiles(dw)).toEqual([f1, f2])
+    expect(dw.fileUrl).toBe(f1.url)
+    expect(d.auditLogs[0].detail).toContain('SLD.pdf, Layout.pdf')
+  })
+
+  it('🔴 แถวเก่าที่มีแต่ fileUrl อ่านเป็นไฟล์เดียว (ไม่หายตอนเปิดโมดัลแก้ไข)', () => {
+    const old = { id: 'd1', title: 'เก่า', fileUrl: 'https://x/old.pdf', fileName: 'old.pdf', createdBy: 'u1', createdAt: '' }
+    expect(stdDrawingFiles(old)).toEqual([{ url: 'https://x/old.pdf', name: 'old.pdf' }])
+    expect(stdDrawingFiles({ ...old, fileUrl: undefined })).toEqual([])
+  })
+
+  it('แก้ไข = ส่งรายการทั้งชุด → เพิ่ม/เอาออกรายตัวได้ + audit บอกทั้ง 2 ทาง', () => {
+    const d0 = createStdDrawing(db({ users: [pm] }), pm, { title: 'SLD', files: [f1, f2] })
+    const id = d0.stdDrawings[0].id
+    const d1 = updateStdDrawing(d0, pm, { id, title: 'SLD', files: [f2, f3], revNote: 'rev B' })
+    expect(stdDrawingFiles(d1.stdDrawings[0]).map(f => f.name)).toEqual(['Layout.pdf', 'Foundation.pdf'])
+    expect(d1.stdDrawings[0].fileUrl).toBe(f2.url)
+    const log = d1.auditLogs[0].detail
+    expect(log).toContain('เพิ่มไฟล์: Foundation.pdf')
+    expect(log).toContain('เอาไฟล์ออก: SLD.pdf')
+  })
+
+  it('เอาออกหมด = กลับเป็น "ยังไม่แนบไฟล์" (fileUrl ต้องว่างด้วย ไม่งั้น fallback ดึงไฟล์เก่าคืนมา)', () => {
+    const d0 = createStdDrawing(db({ users: [pm] }), pm, { title: 'SLD', files: [f1] })
+    const d1 = updateStdDrawing(d0, pm, { id: d0.stdDrawings[0].id, title: 'SLD', files: [] })
+    expect(d1.stdDrawings[0].fileUrl).toBeUndefined()
+    expect(stdDrawingFiles(d1.stdDrawings[0])).toEqual([])
+  })
+
+  it('เกินเพดานจำนวนไฟล์ / ไฟล์ไม่มี url ถูกปฏิเสธ', () => {
+    const many = Array.from({ length: MAX_STD_DRAWING_FILES + 1 }, (_, i) => ({ url: `u${i}`, name: `${i}.pdf` }))
+    expect(() => createStdDrawing(db({ users: [pm] }), pm, { title: 'x', files: many })).toThrow(/ไม่เกิน/)
+    expect(() => createStdDrawing(db({ users: [pm] }), pm, { title: 'x', files: [{ url: '', name: 'a.pdf' }] })).toThrow()
   })
 })
