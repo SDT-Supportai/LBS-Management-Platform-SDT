@@ -26,7 +26,10 @@ export default function DevSettingsPage() {
   const [form, setForm] = useState(settings)
   const [testing, setTesting] = useState(false)
   // โควตา LINE Messaging API (push/เดือน)
-  const [quota, setQuota] = useState<{ type: string; limit: number | null; used: number; remaining: number | null } | null>(null)
+  const [quota, setQuota] = useState<{
+    type: string; limit: number | null; used: number; remaining: number | null
+    groupMembers: number | null; groupError: string | null   // push เข้ากลุ่มหักโควตาต่อสมาชิก 1 คน
+  } | null>(null)
   const [loadingQuota, setLoadingQuota] = useState(false)
 
   // ---- จัดการผู้ใช้งาน (ย้ายมาจาก Material Database) ----
@@ -64,7 +67,14 @@ export default function DevSettingsPage() {
         method: 'POST', headers,
         body: JSON.stringify({ message: '🔔 ทดสอบการแจ้งเตือนจาก 115kV LBS Platform' }),
       })
-      show(r.ok ? 'ส่งทดสอบสำเร็จ — เช็คข้อความใน LINE group' : `endpoint ตอบกลับ ${r.status} — เช็ค env LINE_CHANNEL_ACCESS_TOKEN / LINE_GROUP_ID บน Cloudflare Pages`, !r.ok)
+      // 502 = LINE API ปฏิเสธ (โควตาหมด / group id ผิด / token หมดอายุ) — แสดง error จริงจาก function
+      //   เดิมโชว์ "เช็ค env" ทุกกรณี ทำให้ไปไล่ env ทั้งที่ต้นเหตุคือโควตาหมด
+      const data = r.ok ? null : await r.json().catch(() => null)
+      show(r.ok
+        ? 'ส่งทดสอบสำเร็จ — เช็คข้อความใน LINE group'
+        : data?.error
+          ? `ส่งไม่สำเร็จ: ${data.error}`
+          : `endpoint ตอบกลับ ${r.status} — เช็ค env LINE_CHANNEL_ACCESS_TOKEN / LINE_GROUP_ID บน Cloudflare Pages`, !r.ok)
     } catch {
       show('เรียก endpoint ไม่ได้ — บน localhost ยังไม่มี Pages Function ให้รัน (ใช้ npx wrangler pages dev dist หรือ deploy ก่อน)', true)
     }
@@ -83,7 +93,10 @@ export default function DevSettingsPage() {
       const r = await fetch(endpoint, { headers })
       const data = await r.json().catch(() => null)
       if (r.ok && data?.ok) {
-        setQuota({ type: data.type, limit: data.limit, used: data.used, remaining: data.remaining })
+        setQuota({
+          type: data.type, limit: data.limit, used: data.used, remaining: data.remaining,
+          groupMembers: data.groupMembers ?? null, groupError: data.groupError ?? null,
+        })
       } else {
         setQuota(null)
         show(data?.error ? `ตรวจโควตาไม่สำเร็จ: ${data.error}` : `endpoint ตอบกลับ ${r.status} — เช็ค env / deploy Pages Function`, true)
@@ -194,7 +207,24 @@ export default function DevSettingsPage() {
                     <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
                       ใช้ไป {quota.used.toLocaleString()} · คงเหลือ <b style={{ color }}>{(quota.remaining ?? 0).toLocaleString()}</b> ข้อความ ({pct}%)
                     </div>
+                    {quota.groupMembers !== null && (() => {
+                      // โควตานับต่อผู้รับ: ส่งเข้ากลุ่ม 1 ครั้ง = หัก groupMembers ข้อความ
+                      const sends = Math.floor((quota.remaining ?? 0) / quota.groupMembers)
+                      return (
+                        <div style={{ fontSize: 12, marginTop: 4, color: sends === 0 ? 'var(--red, #dc2626)' : undefined }}>
+                          กลุ่มมีสมาชิก {quota.groupMembers} คน → ส่ง 1 ครั้งหัก {quota.groupMembers} ข้อความ ·{' '}
+                          <b>{sends === 0
+                            ? 'ส่งไม่ได้แล้วเดือนนี้ (โควตาไม่พอสำหรับทั้งกลุ่ม) — reset วันที่ 1 ของเดือนถัดไป'
+                            : `ส่งได้อีกประมาณ ${sends.toLocaleString()} ครั้ง`}</b>
+                        </div>
+                      )
+                    })()}
                   </>
+                )}
+                {quota.groupError && (
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    นับสมาชิกกลุ่มไม่ได้ ({quota.groupError}) — ตรวจว่า LINE_GROUP_ID ถูกต้องและ bot ยังอยู่ในกลุ่ม
+                  </div>
                 )}
                 {unlimited && <div className="muted" style={{ fontSize: 12 }}>ส่งได้ไม่จำกัด · ใช้ไปเดือนนี้ {quota.used.toLocaleString()} ข้อความ</div>}
               </div>

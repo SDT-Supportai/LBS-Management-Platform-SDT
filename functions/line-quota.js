@@ -27,9 +27,14 @@ export async function onRequestGet(context) {
 
   const headers = { Authorization: `Bearer ${token}` }
   try {
-    const [qRes, cRes] = await Promise.all([
+    // push เข้ากลุ่ม 1 ครั้ง หักโควตา = จำนวนสมาชิกในกลุ่ม → ดึงจำนวนสมาชิกมาคำนวณว่าส่งได้อีกกี่ครั้งจริง
+    const groupId = env.LINE_GROUP_ID
+    const [qRes, cRes, gRes] = await Promise.all([
       fetch('https://api.line.me/v2/bot/message/quota', { headers }),
       fetch('https://api.line.me/v2/bot/message/quota/consumption', { headers }),
+      groupId
+        ? fetch(`https://api.line.me/v2/bot/group/${encodeURIComponent(groupId)}/members/count`, { headers }).catch(() => null)
+        : Promise.resolve(null),
     ])
     if (!qRes.ok) {
       const detail = await qRes.text()
@@ -39,12 +44,17 @@ export async function onRequestGet(context) {
     const c = cRes.ok ? await cRes.json() : { totalUsage: 0 }   // { totalUsage: number }
     const limit = q.type === 'limited' ? Number(q.value ?? 0) : null   // null = ไม่จำกัด
     const used = Number(c.totalUsage ?? 0)
+    // ดึงไม่ได้ (group id ผิด / bot ไม่ได้อยู่ในกลุ่ม) = null · UI แสดงแค่โควตาดิบ
+    const g = gRes && gRes.ok ? await gRes.json().catch(() => null) : null
+    const groupMembers = g && Number(g.count) > 0 ? Number(g.count) : null
     return Response.json({
       ok: true,
       type: q.type,
       limit,
       used,
       remaining: limit === null ? null : Math.max(0, limit - used),
+      groupMembers,
+      groupError: gRes && !gRes.ok ? `LINE API ${gRes.status}` : null,
     })
   } catch (e) {
     return Response.json({ ok: false, error: `เรียก LINE API ไม่ได้: ${e}` }, { status: 502 })

@@ -45,7 +45,12 @@ export async function onRequestPost(context) {
 
   if (!r.ok) {
     const detail = await r.text()
-    return Response.json({ ok: false, error: `LINE API ${r.status}: ${detail}` }, { status: 502 })
+    // 429 = โควตารายเดือนหมด (หรือยิงถี่เกิน) — ไม่ใช่ปัญหา env · push เข้ากลุ่มหักโควตา "ต่อสมาชิกในกลุ่ม"
+    //   ⇒ เหลือ 4 แต่กลุ่มมี 5 คน = ส่งไม่ได้แล้ว · reset วันที่ 1 ของเดือนถัดไป
+    const hint = r.status === 429 && /monthly limit/i.test(detail)
+      ? 'โควตาข้อความ LINE เดือนนี้หมดแล้ว (push เข้ากลุ่มหัก 1 ข้อความต่อสมาชิก 1 คน) — ส่งได้อีกครั้งวันที่ 1 ของเดือนถัดไป หรืออัปเกรดแพ็กเกจ LINE OA · '
+      : ''
+    return Response.json({ ok: false, lineStatus: r.status, error: `${hint}LINE API ${r.status}: ${detail}` }, { status: 502 })
   }
   return Response.json({ ok: true })
 }
