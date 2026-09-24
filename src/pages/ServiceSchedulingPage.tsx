@@ -24,6 +24,12 @@ function WorkloadChips({ s }: { s: ReturnType<typeof memberSchedule> }) {
         <span className="badge green" style={{ marginLeft: s.blockedJobs + s.pendingInstall > 0 ? 6 : 0 }}
           title="ติดตั้งครบแล้ว เหลือกดปิดงานที่หน้า Service (Installation)">รอปิดงาน {s.awaitingClose}</span>
       )}
+      {s.awaitingIssueRest > 0 && (
+        <span className="badge amber" style={{ marginLeft: s.blockedJobs + s.pendingInstall + s.awaitingClose > 0 ? 6 : 0 }}
+          title="ติดตั้งครบแล้ว แต่ใบยังเบิกของไม่ครบ — รอ Project เบิก/เคลียร์ของที่เหลือก่อนปิดงาน">
+          รอ Project เบิกของ {s.awaitingIssueRest}
+        </span>
+      )}
     </>
   )
 }
@@ -233,7 +239,7 @@ export default function ServiceSchedulingPage() {
                             ? <span className="badge amber">หัวหน้าทีม</span>
                             : <span className="muted">ช่างติดตั้ง</span>}</td>
                           <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                            <span className={`badge ${sum.canClose ? 'green' : sum.installed > 0 ? 'blue' : 'neutral'}`}>
+                            <span className={`badge ${sum.unitsDone ? 'green' : sum.installed > 0 ? 'blue' : 'neutral'}`}>
                               {sum.installed}/{sum.total}
                             </span>
                             {sum.blocked > 0 && <div style={{ fontSize: 11, color: 'var(--danger)' }}>ติดปัญหา {sum.blocked}</div>}

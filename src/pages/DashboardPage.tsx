@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import {
-  deriveJobStatus, stockSummary, jobInstallSummary, jobIsFieldActive, jobAllocatedQty,
+  deriveJobStatus, jobStatusPhase, stockSummary, jobInstallSummary, jobIsFieldActive, jobAllocatedQty,
   jobDelivery, todayIso, DUE_WARN_DAYS, stockComments,
 } from '../data/logic'
 import { DeliveryBadge, JobStatusBadge, useTryAction } from '../ui/components'
@@ -252,7 +252,7 @@ export default function DashboardPage() {
                     <td style={{ whiteSpace: 'nowrap' }}><DeliveryBadge d={d} /></td>
                     <td><Link to={`/jobs/${j.id}`}><b>{j.jobNo}</b></Link></td>
                     <td>{j.customerName}</td>
-                    <td><JobStatusBadge status={deriveJobStatus(db, j)} /></td>
+                    <td><JobStatusBadge status={deriveJobStatus(db, j)} phase={jobStatusPhase(db, j)} /></td>
                     <td>{allocated}/{j.lbsQtyRequired}</td>
                   </tr>
                 )

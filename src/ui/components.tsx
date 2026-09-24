@@ -317,8 +317,10 @@ export function readAsDataUrl(file: File): Promise<string> {
   })
 }
 
-export function JobStatusBadge({ status }: { status: JobStatus }) {
-  return <span className={`badge ${status}`}>{JOB_STATUS_LABEL[status]}</span>
+// phase = ช่วงย่อยหน้างานจาก jobStatusPhase() — แทนวงเล็บเดิม เช่น "Issued (รอติดตั้ง)" → "Issued (ติดตั้งครบ รอปิดงาน)"
+export function JobStatusBadge({ status, phase }: { status: JobStatus; phase?: string }) {
+  const label = phase ? `${JOB_STATUS_LABEL[status].replace(/\s*\(.*\)$/, '')} (${phase})` : JOB_STATUS_LABEL[status]
+  return <span className={`badge ${status}`}>{label}</span>
 }
 
 /**
@@ -327,7 +329,7 @@ export function JobStatusBadge({ status }: { status: JobStatus }) {
  *    กำลังติดตั้งอยู่ขึ้นแดงเหมือนงานที่ยังไม่เริ่ม · ทุกหน้าต้องมาจาก jobDelivery() เท่านั้น
  */
 const DELIVERY_ICON: Record<DeliveryState, string> = {
-  closed: '', blocked: '🛑', awaiting_close: '📦', visit_overdue: '⏰',
+  closed: '', blocked: '🛑', awaiting_close: '📦', awaiting_issue_rest: '📋', visit_overdue: '⏰',
   installing: '🔧', awaiting_visit: '🚚', overdue: '🔴', due_soon: '⚠️', on_track: '', no_due: '',
 }
 export function DeliveryBadge({ d }: { d: JobDelivery }) {

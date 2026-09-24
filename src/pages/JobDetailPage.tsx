@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
-import { deriveJobStatus, jobIsFieldActive, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, qtyOutToField, parseLatLng, fmtLatLng, PAYMENT_TYPES, jobDelivery, jobDueExtensions, paymentFiles, paymentFileCount, isAllowedDocFile, MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB, todayIso, daysBetweenIso } from '../data/logic'
+import { deriveJobStatus, jobStatusPhase, jobIsFieldActive, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, qtyOutToField, parseLatLng, fmtLatLng, PAYMENT_TYPES, jobDelivery, jobDueExtensions, paymentFiles, paymentFileCount, isAllowedDocFile, MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB, todayIso, daysBetweenIso } from '../data/logic'
 import { BudgetFields, CoordInput, DeliveryBadge, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useToast, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, sitesToApi, sitesFromJob, readAsDataUrl, type CostForm, type InstallSite } from '../ui/components'
 import { uploadPaymentDoc, signedPaymentDocUrl, removePaymentDocs } from '../data/remote'
 import { supabase } from '../lib/supabase'
@@ -484,7 +484,7 @@ export default function JobDetailPage() {
           ]
           : []),
         ['สถานะกำหนดส่ง', delivery.label],
-        ['สถานะงาน', JOB_STATUS_LABEL[status]],
+        ['สถานะงาน', JOB_STATUS_LABEL[status] + (jobStatusPhase(db, job) ? ` · ${jobStatusPhase(db, job)}` : '')],
         ['ผู้รับผิดชอบงาน', job.openedBy ? userOf(job.openedBy) : 'ไม่ระบุ (งานเก่า)'],
         ['LBS ตาม Scope / ดึงเข้างานแล้ว', `${job.lbsQtyRequired} / ${allocatedUnits.length} เครื่อง`],
         ...stampMeta(user, user ? DEPT_LABEL[user.department] : undefined),
@@ -565,7 +565,7 @@ export default function JobDetailPage() {
       <div style={{ marginBottom: 6 }}><Link to="/jobs">← กลับหน้า Jobs</Link></div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div className="page-title">{job.jobNo}</div>
-        <JobStatusBadge status={status} />
+        <JobStatusBadge status={status} phase={jobStatusPhase(db, job)} />
         <DeliveryBadge d={delivery} />
       </div>
       <div className="page-sub">
@@ -748,7 +748,7 @@ export default function JobDetailPage() {
             </>}
             <div style={{ marginTop: 6 }}>
               🔧 ติดตั้งแล้ว{' '}
-              <span className={`badge ${s.canClose ? 'green' : s.outInstalled > 0 ? 'blue' : 'neutral'}`}>{s.outInstalled}/{s.outTotal} เครื่อง</span>
+              <span className={`badge ${s.unitsDone ? 'green' : s.outInstalled > 0 ? 'blue' : 'neutral'}`}>{s.outInstalled}/{s.outTotal} เครื่อง</span>
               {partial && <span className="muted"> (ทั้งใบ {s.installed}/{s.total})</span>}
               {s.blocked > 0 && <> <span className="badge red">ติดตั้งไม่ได้ {s.blocked}</span></>}
             </div>

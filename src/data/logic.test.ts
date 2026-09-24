@@ -21,7 +21,7 @@ import {
   jobDelivery, jobEffectiveDue, jobDueExtensions, extendJobDue, deleteJobDueExtension, jobDeliveredDate, memberSchedule,
   addJobPayment, addPaymentFile, deletePaymentFile, paymentFiles, paymentFileCount, deleteJobPayment,
   updateJobBudget,
-  createStdDrawing, updateStdDrawing, stdDrawingFiles, MAX_STD_DRAWING_FILES,
+  createStdDrawing, updateStdDrawing, stdDrawingFiles, MAX_STD_DRAWING_FILES, jobStatusPhase,
 } from './logic'
 
 // =============================================================================
@@ -1733,6 +1733,7 @@ describe('สถานะกำหนดส่ง (0075)', () => {
 
   it('ทุกเครื่องได้ข้อสรุปแล้ว = awaiting_close (ฟ้า) ไม่ใช่แดง แม้เลยกำหนด', () => {
     const base = inFieldDb(PAST, {
+      jobs: [job({ requiredDate: PAST, openedBy: 'u1', terminalStatus: 'issued' })],   // ของออกครบทั้งใบ = ปิดงานได้
       unitInstallations: [
         { id: 'ui1', unitId: 'a', jobId: 'j1', outcome: 'installed', installedDate: '2026-09-15', performedBy: 'u1', performedAt: '2026-09-15T00:00:00.000Z' },
         { id: 'ui2', unitId: 'b', jobId: 'j1', outcome: 'installed', installedDate: '2026-09-16', performedBy: 'u1', performedAt: '2026-09-16T00:00:00.000Z' },
@@ -1938,7 +1939,8 @@ describe('หยุดนับเมื่อส่งมอบเสร็จ 
   // ทุกเครื่องได้ข้อสรุปแล้ว = ส่งมอบเสร็จ · installedAt = วันที่ช่างยืนยันติดตั้งจริง
   const doneDb = (installedDate: string, over: Partial<Job> = {}) => db({
     users: [actor],
-    jobs: [job({ requiredDate: DUE, openedBy: 'u1', installStartDate: '2026-09-14', installEndDate: DUE, ...over })],
+    // ของออกครบทั้งใบ (LBS 1/1 · ไม่มีวัสดุค้าง) = finalizeIssue ตั้ง 'issued' ให้แล้วในของจริง
+    jobs: [job({ requiredDate: DUE, openedBy: 'u1', installStartDate: '2026-09-14', installEndDate: DUE, lbsQtyRequired: 1, terminalStatus: 'issued', ...over })],
     lbsUnits: [unit({ id: 'a', status: 'issued', jobId: 'j1' })],
     unitInstallations: [{
       id: 'ui1', unitId: 'a', jobId: 'j1', outcome: 'installed', installedDate,
@@ -2040,7 +2042,7 @@ describe('ยอดงานในมือช่าง (2026-09-22)', () => {
   const base = (installs: DB['unitInstallations']) => db({
     users: [actor],
     teamMembers: [member],
-    jobs: [job({ requiredDate: '2026-09-18', openedBy: 'u1', installStartDate: '2026-09-14', installEndDate: '2026-09-18' })],
+    jobs: [job({ requiredDate: '2026-09-18', openedBy: 'u1', installStartDate: '2026-09-14', installEndDate: '2026-09-18', lbsQtyRequired: 1, terminalStatus: 'issued' })],
     lbsUnits: [unit({ id: 'a', status: 'issued', jobId: 'j1' })],
     unitInstallations: installs,
     jobAssignments: [{ id: 'ja1', jobId: 'j1', memberId: 'tm1', isLead: true, assignedBy: 'u1', assignedAt: '2026-09-01T00:00:00.000Z' }],
@@ -2077,14 +2079,14 @@ describe('ยอดงานในมือช่าง (2026-09-22)', () => {
     expect(s.awaitingClose).toBe(0)
   })
 
-  it('3 ก้อนรวมกันต้องเท่ากับจำนวนงานในมือเสมอ (ไม่มีใบไหนตกหล่นหรือถูกนับซ้ำ)', () => {
+  it('4 ก้อนรวมกันต้องเท่ากับจำนวนงานในมือเสมอ (ไม่มีใบไหนตกหล่นหรือถูกนับซ้ำ)', () => {
     for (const installs of [
       [],
       [{ id: 'ui1', unitId: 'a', jobId: 'j1', outcome: 'installed' as const, installedDate: '2026-09-17', performedBy: 'u1', performedAt: '2026-09-17T09:00:00.000Z' }],
       [{ id: 'ui1', unitId: 'a', jobId: 'j1', outcome: 'blocked' as const, reason: 'x', performedBy: 'u1', performedAt: '2026-09-17T09:00:00.000Z' }],
     ]) {
       const s = memberSchedule(base(installs), 'tm1')
-      expect(s.pendingInstall + s.awaitingClose + s.blockedJobs).toBe(s.active.length)
+      expect(s.pendingInstall + s.awaitingClose + s.blockedJobs + s.awaitingIssueRest).toBe(s.active.length)
     }
   })
 })
@@ -2137,5 +2139,77 @@ describe('Standard Drawing หลายไฟล์ (0078)', () => {
     const many = Array.from({ length: MAX_STD_DRAWING_FILES + 1 }, (_, i) => ({ url: `u${i}`, name: `${i}.pdf` }))
     expect(() => createStdDrawing(db({ users: [pm] }), pm, { title: 'x', files: many })).toThrow(/ไม่เกิน/)
     expect(() => createStdDrawing(db({ users: [pm] }), pm, { title: 'x', files: [{ url: '', name: 'a.pdf' }] })).toThrow()
+  })
+})
+
+// =============================================================================
+// ป้ายสถานะต้องไม่ขัดกับป้ายกำหนดส่ง (2026-09-24 · ผู้ใช้จับได้จากหน้า Jobs)
+//
+// 🔴 เคส 1: ใบ Issued ที่ติดตั้งครบแล้ว — กำหนดส่งเขียน "ติดตั้งครบ รอปิดงาน"
+//          แต่คอลัมน์สถานะยังเขียน "Issued (รอติดตั้ง)"
+// 🔴 เคส 2: ใบ Partially Issued ที่ติดตั้ง LBS ครบแล้วแต่วัสดุยังค้างเบิก — ป้ายเขียน "รอปิดงาน"
+//          + ปุ่ม 🏁 ปิดงานกดได้ ทั้งที่ closeJobInstall บังคับ terminalStatus = 'issued' ⇒ กดแล้ว error
+// =============================================================================
+describe('สถานะ vs กำหนดส่ง — ติดตั้งครบแล้ว (2026-09-24)', () => {
+  const actor = { id: 'u1', email: 'p@x.co', password: '', fullName: 'โปรเจกต์', department: 'project' as const, isActive: true }
+  const installed = [{
+    id: 'ui1', unitId: 'a', jobId: 'j1', outcome: 'installed' as const, installedDate: '2026-09-17',
+    performedBy: 'u1', performedAt: '2026-09-17T09:00:00.000Z',
+  }]
+  const make = (over: Partial<Job>, extra: Partial<DB> = {}) => db({
+    users: [actor],
+    jobs: [job({ requiredDate: '2026-09-18', openedBy: 'u1', lbsQtyRequired: 1, ...over })],
+    lbsUnits: [unit({ id: 'a', status: 'issued', jobId: 'j1' })],
+    unitInstallations: installed,
+    ...extra,
+  })
+  // วัสดุ 1 รายการที่รับของแล้ว แต่ยังไม่ได้ส่งต่อให้ Service
+  const pendingAcc = { accessoryRequests: [req({ status: 'received', qtyRequested: 2, qtyReceived: 2 })] }
+
+  it('🔴 เคส 1: Issued + ติดตั้งครบ → คอลัมน์สถานะเขียน "ติดตั้งครบ รอปิดงาน" ไม่ใช่ "รอติดตั้ง"', () => {
+    const d = make({ terminalStatus: 'issued' })
+    expect(jobDelivery(d, d.jobs[0], '2026-09-24').state).toBe('awaiting_close')
+    expect(jobStatusPhase(d, d.jobs[0])).toBe('ติดตั้งครบ รอปิดงาน')
+    expect(jobInstallSummary(d, 'j1').canClose).toBe(true)
+  })
+
+  it('Issued แต่ยังไม่มีผลติดตั้ง → ยัง "รอติดตั้ง" เหมือนเดิม', () => {
+    const d = make({ terminalStatus: 'issued' }, { unitInstallations: [] })
+    expect(jobStatusPhase(d, d.jobs[0])).toBe('รอติดตั้ง')
+  })
+
+  it('🔴 เคส 2: Partially Issued + ติดตั้ง LBS ครบ → ห้ามขึ้น "รอปิดงาน" และปิดงานไม่ได้', () => {
+    const d = make({ terminalStatus: null }, pendingAcc)
+    expect(deriveJobStatus(d, d.jobs[0])).toBe('partially_issued')
+    const s = jobInstallSummary(d, 'j1')
+    expect(s.unitsDone).toBe(true)
+    expect(s.canClose).toBe(false)                 // ปุ่ม 🏁 ปิดงานต้อง disabled
+    expect(s.pendingAccessories).toBe(1)
+    const dl = jobDelivery(d, d.jobs[0], '2026-09-24')
+    expect(dl.state).toBe('awaiting_issue_rest')
+    expect(dl.label).not.toContain('รอปิดงาน')
+    expect(dl.nextStep).toContain('วัสดุที่ค้าง 1 รายการ')
+    expect(jobStatusPhase(d, d.jobs[0])).toBe('ติดตั้งครบ · ค้างเบิกของ')
+    // และปิดจริงก็ต้องไม่ได้ (กติกาเดิม — ป้ายต้องตรงกับกติกานี้)
+    expect(() => closeJobInstall(d, actor, { jobId: 'j1', hasIssues: false })).toThrow(/Issued/)
+  })
+
+  it('LBS ยังไม่ครบ Scope → nextStep บอกให้ดึง/เบิก LBS ที่ขาด', () => {
+    const d = make({ terminalStatus: null, lbsQtyRequired: 2 })
+    const dl = jobDelivery(d, d.jobs[0], '2026-09-24')
+    expect(dl.state).toBe('awaiting_issue_rest')
+    expect(dl.nextStep).toContain('LBS อีก 1 เครื่อง')
+  })
+
+  it('ช่าง: ใบที่รอ Project เบิกของ ไม่ถูกนับเป็น "รอติดตั้ง" หรือ "รอปิดงาน"', () => {
+    const d = make({ terminalStatus: null }, {
+      ...pendingAcc,
+      teamMembers: [{ id: 'tm1', firstName: 'ก', lastName: 'ข', phone: '0', position: 'Tech', isActive: true, createdAt: '2026-08-01T00:00:00.000Z' }],
+      jobAssignments: [{ id: 'ja1', jobId: 'j1', memberId: 'tm1', isLead: true, assignedBy: 'u1', assignedAt: '2026-09-01T00:00:00.000Z' }],
+    })
+    const s = memberSchedule(d, 'tm1')
+    expect(s.awaitingIssueRest).toBe(1)
+    expect(s.pendingInstall).toBe(0)
+    expect(s.awaitingClose).toBe(0)
   })
 })

@@ -106,6 +106,11 @@ export default function ServicePage() {
       : s.waiting > 0 ? `ยังมี ${s.waiting} เครื่องที่ Project ยังไม่ได้เบิกให้ — ปิดงานได้เมื่อของออกครบ Scope`
       : s.pending > 0 ? `ต้องได้ข้อสรุปทุกเครื่องก่อน (เหลือ ${s.pending} เครื่อง)`
       : s.installed === 0 ? 'ต้องมีเครื่องที่ติดตั้งสำเร็จอย่างน้อย 1 เครื่อง'
+      // 2026-09-24: ติดตั้งครบแล้วแต่ใบยังเบิกไม่ครบ — ค้างที่ Project ไม่ใช่ที่ช่าง
+      : !s.issueComplete ? 'ติดตั้งครบแล้ว แต่ใบยังเบิกของไม่ครบ'
+          + (s.lbsShort > 0 ? ` (LBS ขาดอีก ${s.lbsShort} เครื่องจาก Scope)` : '')
+          + (s.pendingAccessories > 0 ? ` (วัสดุค้างเบิก ${s.pendingAccessories} รายการ)` : '')
+          + ' — Project ต้องเบิก/โอนคืน/ตัดจำหน่ายให้ครบก่อน จึงปิดงานได้'
       : ''
   // วัสดุที่ยังค้างจัดซื้อ (รวมของที่ซื้อเพิ่มหลังเบิก — 0037) ใช้เตือนตอนปิดงาน
   const outstandingProcurement = (jobId: string) => db.accessoryRequests.filter(r =>
@@ -434,7 +439,7 @@ export default function ServicePage() {
                     <td style={{ whiteSpace: 'nowrap' }}>
                       {/* ตัวเลขที่ช่างต้องใช้คือ "ของที่ยกไปแล้วติดตั้งไปกี่เครื่อง" (รอบนี้)
                           ส่วน n/ทั้งใบ เป็นภาพรวมที่ใช้ตัดสินว่าปิดงานได้หรือยัง — โชว์แยกบรรทัด (0071) */}
-                      <span className={`badge ${s.canClose ? 'green' : s.outInstalled > 0 ? 'blue' : 'neutral'}`}>
+                      <span className={`badge ${s.unitsDone ? 'green' : s.outInstalled > 0 ? 'blue' : 'neutral'}`}>
                         {s.outInstalled}/{s.outTotal} เครื่อง
                       </span>
                       {s.waiting > 0 && <div className="muted" style={{ fontSize: 11 }}>ทั้งใบ {s.installed}/{s.total}</div>}

@@ -28,6 +28,11 @@
 
 > ✅ **(2026-09-23) `0078` Standard Drawing แนบ PDF หลายไฟล์ — รัน SQL บน production แล้ว (ผู้ใช้ยืนยัน) และ push ขึ้น `main` แล้ว** · commit `9617f15` (0078) + `5dd47bc` (LINE: แสดง error จริง + นับโควตาต่อสมาชิกกลุ่ม · ไม่มี SQL)
 >
+> ✅ **(2026-09-24) แก้ป้ายสถานะ Jobs ขัดกับกำหนดส่ง — frontend อย่างเดียว ไม่มี SQL · push ขึ้น `main` แล้ว**
+> (1) ใบ Issued ที่ติดตั้งครบ คอลัมน์สถานะเคยขึ้น "Issued (รอติดตั้ง)" → ตอนนี้ขึ้นช่วงย่อยจาก `jobStatusPhase()`
+> (2) ใบ Partially Issued ที่ติดตั้ง LBS ครบแต่วัสดุค้างเบิก เคยขึ้น "รอปิดงาน" + ปุ่ม 🏁 ปิดงานกดได้แล้ว error
+>     → state ใหม่ `awaiting_issue_rest` ("ติดตั้งครบ · รอเบิกของที่เหลือ") · `jobInstallSummary.canClose` = `unitsDone && terminalStatus === issued`
+>
 > ✅ **ไม่มี SQL / frontend ค้าง (2026-09-19)** — 0070–0077 รันบน production แล้วทุกไฟล์
 > และ push ขึ้น `main` ครบ · ล่าสุด **`8691850`** (0077 Project แก้งบประมาณหลังใบล็อกได้)
 >

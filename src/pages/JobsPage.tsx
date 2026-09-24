@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { deriveJobStatus, jobAllocatedQty, jobDelivery, todayIso, parseLatLng, DUE_WARN_DAYS } from '../data/logic'
+import { deriveJobStatus, jobStatusPhase, jobAllocatedQty, jobDelivery, todayIso, parseLatLng, DUE_WARN_DAYS } from '../data/logic'
 import { BudgetFields, CoordInput, DeliveryBadge, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormToApi, sitesToApi, type CostForm, type InstallSite } from '../ui/components'
 import { fmtDate, JOB_STATUS_LABEL } from '../ui/format'
 import type { JobStatus } from '../types'
@@ -164,7 +164,7 @@ export default function JobsPage() {
                       {allocated}/{job.lbsQtyRequired}
                       <div className="progress"><div style={{ width: `${Math.min(100, (allocated / job.lbsQtyRequired) * 100)}%` }} /></div>
                     </td>
-                    <td><JobStatusBadge status={status} /></td>
+                    <td><JobStatusBadge status={status} phase={jobStatusPhase(db, job)} /></td>
                   </tr>
                 )
               })}

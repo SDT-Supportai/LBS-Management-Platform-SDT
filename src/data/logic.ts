@@ -403,7 +403,7 @@ export const DUE_WARN_DAYS = 30
 //   ห้ามใช้คำว่า "แผน" ลอย ๆ ในป้ายสถานะเด็ดขาด — มันชี้ได้ทั้ง 2 อัน
 //
 // ลำดับตัดสิน (บนสุดชนะ) — เรียงตาม "สิ่งที่ต้องลงมือก่อน" ไม่ใช่ความรุนแรงของวันที่:
-//   ปิดแล้ว → ติดปัญหาหน้างาน → รอปิดงาน → [เลยวันนัด → กำลังติดตั้ง → รอถึงวันนัด] → เลยกำหนดส่ง
+//   ปิดแล้ว → ติดปัญหาหน้างาน → รอปิดงาน → ติดตั้งครบแต่รอเบิกของที่เหลือ → [เลยวันนัด → กำลังติดตั้ง → รอถึงวันนัด] → เลยกำหนดส่ง
 //   → ใกล้กำหนด → ตามกำหนด
 //   🔴 blocked มาก่อนทุกเรื่องวันที่: เครื่องที่ติดตั้งไม่ได้คือของจริงที่ค้าง ส่วนวันที่ยังเลื่อนได้
 //   🔴 awaiting_close มาก่อน late: ทุกเครื่องได้ข้อสรุปแล้ว เหลือแค่กดปิด — ไล่วันที่ตอนนี้ไม่ช่วยอะไร
@@ -414,6 +414,7 @@ export type DeliveryState =
   | 'closed'          // ปิดงาน/ยกเลิกแล้ว — ไม่ต้องเตือนอะไรอีก
   | 'blocked'         // มีเครื่องติดตั้งไม่ได้ และยังไม่ได้ข้อสรุปครบทั้งใบ
   | 'awaiting_close'  // ทุกเครื่องได้ข้อสรุปแล้ว รอ Service กดปิดงาน
+  | 'awaiting_issue_rest' // ติดตั้งครบแล้ว แต่ใบยังเบิกไม่ครบ (วัสดุค้าง/LBS ไม่ครบ Scope) — รอ Project
   | 'visit_overdue'   // ของอยู่กับช่างแล้ว แต่เลยวันนัดติดตั้งสุดท้ายโดยยังไม่ได้ข้อสรุป
   | 'installing'      // อยู่ในช่วงนัดติดตั้ง หรือมีผลยืนยันรายเครื่องแล้ว = เดินอยู่จริง
   | 'awaiting_visit'  // เบิกของแล้ว แต่ยังไม่ถึงวันนัด (หรือยังไม่ได้นัด) — ยังไม่มีใครไปไซต์
@@ -564,6 +565,21 @@ export function jobDelivery(db: DB, job: Job, today = todayIso()): JobDelivery {
       label: `ติดตั้งครบ รอปิดงาน${verdict}`,
       nextStep: `Service กดปิดงานติดตั้ง (สำเร็จ ${inst.installed}${inst.blocked > 0 ? ` · ติดปัญหา ${inst.blocked}` : ''} จาก ${inst.total} เครื่อง)`
         + (delivered && inst.blocked > 0 ? ' · มีเครื่องที่สรุปว่าติดตั้งไม่ได้ — ตอบในช่องสรุปปัญหาตอนปิดงาน' : ''),
+    }
+  }
+  // 2.1) งานหน้าไซต์จบแล้ว แต่ใบยังเบิกไม่ครบ (Partially Issued) — ปิดงานไม่ได้จนกว่า Project จะเคลียร์
+  //      🔴 เดิมตกไปที่ข้อ 2 แล้วขึ้น "รอปิดงาน" ทั้งที่ Service กดปิดไม่ได้ (2026-09-24)
+  if (inst.unitsDone) {
+    const todo = [
+      inst.lbsShort > 0 ? `ดึง/เบิก LBS อีก ${inst.lbsShort} เครื่องให้ครบ Scope` : '',
+      inst.pendingAccessories > 0
+        ? `เบิกวัสดุที่ค้าง ${inst.pendingAccessories} รายการให้ Service (ถ้าไม่ใช้แล้ว ให้โอนคืนคลัง/ตัดจำหน่าย/ยกเลิก)`
+        : '',
+    ].filter(Boolean).join(' · ') || 'เบิกของที่เหลือให้ครบทั้งใบ'
+    return {
+      ...base, state: 'awaiting_issue_rest', tone: 'amber', atRisk: false,
+      label: `ติดตั้งครบ · รอเบิกของที่เหลือ${verdict}`,
+      nextStep: `Project ${todo} — ใบต้องเบิกครบก่อน Service จึงกดปิดงานได้`,
     }
   }
   // 3) ของอยู่กับช่างแล้ว — ต้องแยกอีกชั้นว่า "ถึงคิวออกไซต์หรือยัง"
@@ -2842,15 +2858,49 @@ export function jobInstallSummary(db: DB, jobId: string) {
     else if (s === 'blocked') { blocked++; if (out) outBlocked++ }
   })
   const pending = units.length - installed - blocked
+  const job = db.jobs.find(j => j.id === jobId)
+  // ทุกเครื่องบนใบได้ข้อสรุปแล้ว และติดตั้งสำเร็จอย่างน้อย 1 เครื่อง = "งานหน้าไซต์จบแล้ว"
+  const unitsDone = units.length > 0 && pending === 0 && installed > 0
+  // 🔴 (2026-09-24) งานหน้าไซต์จบ ≠ ปิดงานได้ — closeJobInstall/rpc_close_job_install บังคับ
+  //    terminalStatus = 'issued' (ของออกครบทั้งใบ: LBS ครบ Scope + วัสดุไม่ค้างเบิก)
+  //    เดิม canClose = unitsDone ⇒ ใบ Partially Issued ที่ติดตั้ง LBS ครบแล้วแต่วัสดุยังค้างเบิก
+  //    ขึ้นป้าย "ติดตั้งครบ รอปิดงาน" + ปุ่ม 🏁 ปิดงานกดได้ แล้วกดไปเจอ error (ผู้ใช้จับได้)
+  const issueComplete = job?.terminalStatus === 'issued'
   return {
     total: units.length, installed, blocked, pending,
     // ของที่อยู่กับช่างแล้ว (รอบนี้) — waiting = ยังอยู่คลัง รอ Project เบิกรอบถัดไป
     outTotal, outInstalled, outBlocked,
     outPending: outTotal - outInstalled - outBlocked,
     waiting: units.length - outTotal,
-    // ปิดงานได้เมื่อทุกเครื่องได้ข้อสรุปแล้ว และติดตั้งสำเร็จอย่างน้อย 1 เครื่อง
-    canClose: units.length > 0 && pending === 0 && installed > 0,
+    unitsDone,
+    issueComplete,
+    // ที่ยังค้างก่อนปิดได้ (ฝั่ง Project) — ใช้บอกเหตุผลเมื่อ unitsDone แต่ยังปิดไม่ได้
+    lbsShort: job ? Math.max(0, job.lbsQtyRequired - units.length) : 0,
+    pendingAccessories: jobPendingIssueAccessories(db, jobId).length,
+    canClose: unitsDone && issueComplete,
   }
+}
+
+/**
+ * ป้ายขยายของคอลัมน์ "สถานะ" ให้ตรงกับของจริงหน้างาน (2026-09-24)
+ * 🔴 JobStatus มาจาก terminalStatus/การเบิกเท่านั้น ⇒ ใบที่ช่างติดตั้งครบแล้วยังขึ้น
+ *    "Issued (รอติดตั้ง)" ขัดกับป้ายกำหนดส่งแถวเดียวกันที่เขียนว่า "ติดตั้งครบ รอปิดงาน"
+ *    ⇒ เติมช่วงย่อยจาก jobInstallSummary ตัวเดียวกับที่ jobDelivery ใช้ จะได้ไม่ขัดกันอีก
+ * คืน undefined = ใช้ป้ายเดิมของ JobStatus
+ */
+export function jobStatusPhase(db: DB, job: Job): string | undefined {
+  const status = deriveJobStatus(db, job)
+  if (status !== 'issued' && status !== 'partially_issued') return undefined
+  const s = jobInstallSummary(db, job.id)
+  if (status === 'issued') {
+    if (s.canClose) return 'ติดตั้งครบ รอปิดงาน'
+    if (s.blocked > 0) return `ติดปัญหา ${s.blocked} เครื่อง`
+    if (s.installed > 0) return `ติดตั้งแล้ว ${s.installed}/${s.total}`
+    return 'รอติดตั้ง'
+  }
+  if (s.unitsDone) return 'ติดตั้งครบ · ค้างเบิกของ'
+  if (s.outInstalled > 0) return `ติดตั้งแล้ว ${s.outInstalled}/${s.outTotal}`
+  return undefined
 }
 
 /**
@@ -3116,7 +3166,9 @@ export function memberSchedule(db: DB, memberId: string) {
   const byState = active.map(j => jobDelivery(db, j).state)
   return {
     active,
-    pendingInstall: byState.filter(s => s !== 'awaiting_close' && s !== 'blocked').length,
+    // awaiting_issue_rest = ติดตั้งครบแล้ว รอ Project เบิกของที่เหลือ ⇒ ไม่ใช่ "รอติดตั้ง" ของช่าง
+    pendingInstall: byState.filter(s => s !== 'awaiting_close' && s !== 'blocked' && s !== 'awaiting_issue_rest').length,
+    awaitingIssueRest: byState.filter(s => s === 'awaiting_issue_rest').length,
     awaitingClose: byState.filter(s => s === 'awaiting_close').length,
     blockedJobs: byState.filter(s => s === 'blocked').length,
     doneCount: jobs.filter(j => j.terminalStatus === 'installed').length,
