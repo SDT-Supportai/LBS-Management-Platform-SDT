@@ -61,6 +61,8 @@ export const PERMISSIONS: Record<string, Department[]> = {
   'job.manage': ['project', 'admin'],
   'purchasing.manage': ['purchasing', 'admin'],
   'service.confirm': ['service', 'admin'],
+  // เอกสารรับมอบ/Warranty ย้อนหลัง + แนบเพิ่ม (0079) — Service ปิดงาน · Project ถือเอกสารสัญญา/PAC ที่มาทีหลัง
+  'closeout.manage': ['service', 'project', 'admin'],
   'master.manage': ['admin'],
   // Material Database (0061) — Purchasing เป็นเจ้าของฐานข้อมูลวัสดุ: เพิ่ม/แก้/ลบ Accessory + Import Excel
   // แยกจาก master.manage เพราะ master.manage ยังครอบ "ข้ามขั้นอนุมัติ" (createPR/issueJob/cancelJob) + จัดการผู้ใช้
@@ -120,7 +122,7 @@ const EMPTY_DB: DB = {
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [], approvalComments: [],
   auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
-  jobPaymentFiles: [], jobDueExtensions: [],
+  jobPaymentFiles: [], jobDueExtensions: [], jobWarranties: [], jobCloseoutFiles: [],
   stdDrawings: [], stdPrices: [], stdBoms: [], stdBomLines: [],
 }
 
@@ -163,6 +165,8 @@ function migrateDb(raw: unknown): DB {
     stockMovements: d.stockMovements ?? [],
     jobPayments: d.jobPayments ?? [],
     jobPaymentFiles: d.jobPaymentFiles ?? [],     // 0076 — เอกสารแนบรายงวดเงิน
+    jobWarranties: d.jobWarranties ?? [],         // 0079 — Warranty (Installation + LBS)
+    jobCloseoutFiles: d.jobCloseoutFiles ?? [],   // 0079 — เอกสารรับมอบ / Warranty
     jobDueExtensions: d.jobDueExtensions ?? [],   // 0075 — ประวัติเลื่อนกำหนดส่ง
     stdDrawings: d.stdDrawings ?? [],
     stdPrices: d.stdPrices ?? [],
@@ -235,6 +239,9 @@ export interface StoreActions {
   confirmUnitInstall: (p: Parameters<typeof L.confirmUnitInstall>[2]) => MaybePromise
   blockUnitInstall: (p: Parameters<typeof L.blockUnitInstall>[2]) => MaybePromise
   closeJobInstall: (p: Parameters<typeof L.closeJobInstall>[2]) => MaybePromise
+  setJobCloseout: (p: Parameters<typeof L.setJobCloseout>[2]) => MaybePromise
+  addCloseoutFile: (p: Parameters<typeof L.addCloseoutFile>[2]) => MaybePromise
+  deleteCloseoutFile: (p: Parameters<typeof L.deleteCloseoutFile>[2]) => MaybePromise
   createTeamMember: (p: Parameters<typeof L.createTeamMember>[2]) => MaybePromise
   updateTeamMember: (p: Parameters<typeof L.updateTeamMember>[2]) => MaybePromise
   deleteTeamMember: (p: Parameters<typeof L.deleteTeamMember>[2]) => MaybePromise
@@ -445,6 +452,9 @@ function DemoProvider({ children }: { children: ReactNode }) {
         confirmUnitInstall: run('service.confirm', L.confirmUnitInstall),
         blockUnitInstall: run('service.confirm', L.blockUnitInstall),
         closeJobInstall: run('service.confirm', L.closeJobInstall),
+        setJobCloseout: run('closeout.manage', L.setJobCloseout),
+        addCloseoutFile: run('closeout.manage', L.addCloseoutFile),
+        deleteCloseoutFile: run('closeout.manage', L.deleteCloseoutFile),
         // ทะเบียนทีมช่าง + มอบหมายงาน = ทรัพยากรของ Service เอง (Service + Manage)
         createTeamMember: run('service.confirm', L.createTeamMember),
         updateTeamMember: run('service.confirm', L.updateTeamMember),

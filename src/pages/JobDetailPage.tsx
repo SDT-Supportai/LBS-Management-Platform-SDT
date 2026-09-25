@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
-import { deriveJobStatus, jobStatusPhase, jobIsFieldActive, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, qtyOutToField, parseLatLng, fmtLatLng, PAYMENT_TYPES, jobDelivery, jobDueExtensions, paymentFiles, paymentFileCount, isAllowedDocFile, MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB, todayIso, daysBetweenIso } from '../data/logic'
+import { ACCEPTANCE_TYPES, jobWarranties, deriveJobStatus, jobStatusPhase, jobIsFieldActive, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, qtyOutToField, parseLatLng, fmtLatLng, PAYMENT_TYPES, jobDelivery, jobDueExtensions, paymentFiles, paymentFileCount, isAllowedDocFile, MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB, todayIso, daysBetweenIso } from '../data/logic'
 import { BudgetFields, CoordInput, DeliveryBadge, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useToast, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, sitesToApi, sitesFromJob, readAsDataUrl, type CostForm, type InstallSite } from '../ui/components'
 import { uploadPaymentDoc, signedPaymentDocUrl, removePaymentDocs } from '../data/remote'
 import { supabase } from '../lib/supabase'
@@ -788,6 +788,30 @@ export default function JobDetailPage() {
             {job.closeHasIssues === false && (
               <div style={{ marginTop: 6, color: 'var(--green)' }}>✅ Service ยืนยันว่าไม่มีปัญหาหน้างาน</div>
             )}
+            {/* เอกสารรับมอบ + Warranty (0079) — ตัวเต็ม/แก้ไข/แนบเพิ่มอยู่ที่ Service (Warranty) */}
+            {(() => {
+              const ws = jobWarranties(db, job.id)
+              const inst = ws.find(w => w.kind === 'installation')
+              const lbs = ws.filter(w => w.kind === 'lbs')
+              if (!job.acceptanceType || !inst) {
+                return (
+                  <div style={{ marginTop: 6 }}>
+                    <span className="badge amber">ยังไม่มีเอกสารรับมอบ / Warranty</span>{' '}
+                    <Link to="/warranty">บันทึกย้อนหลังที่ Service (Warranty) →</Link>
+                  </div>
+                )
+              }
+              const lastEnd = lbs.map(w => w.endDate).sort().pop()
+              return (
+                <div style={{ marginTop: 6 }}>
+                  📄 รับมอบ <span className="badge blue">{ACCEPTANCE_TYPES.find(t => t.value === job.acceptanceType)?.label}</span>
+                  {job.acceptanceDocNo && <span className="mono"> {job.acceptanceDocNo}</span>} ({fmtDate(job.acceptanceDate)})
+                  {' · '}🛡️ Warranty ติดตั้ง {fmtDate(inst.startDate)} – {fmtDate(inst.endDate)}
+                  {lbs.length > 0 && <> · LBS {lbs.length} เครื่อง ถึง {fmtDate(lastEnd)}</>}
+                  {' · '}<Link to="/warranty">ดู/แก้ไข →</Link>
+                </div>
+              )
+            })()}
             <div className="muted">
               เบิกเมื่อ {fmtDateTime(job.issuedAt)}
               {job.installStartDate && <> · นัดติดตั้ง {fmtDate(job.installStartDate)} – {fmtDate(job.installEndDate)} ที่ {job.issueLocation || '-'}</>}

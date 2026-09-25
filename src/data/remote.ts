@@ -4,9 +4,10 @@ import type {
   AccessoryRequest, PurchaseRequisition, PurchaseOrder, AuditLog, AppNotification,
   Department, ApprovalRequest, ApprovalComment, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit, UnitInstallation,
   TeamMember, JobAssignment, StockMovement, JobPayment, PaymentType,
-  StdDrawing, StdDrawingFile, StdPrice, StdBom, StdBomLine, LbsUnitFile, JobPaymentFile, JobDueExtension,
+  StdDrawing, StdDrawingFile, StdPrice, StdBom, StdBomLine, LbsUnitFile, JobWarranty, JobCloseoutFile, JobPaymentFile, JobDueExtension,
   PublicShareLink, PublicStockView,
 } from '../types'
+import type { CloseoutInput, CloseoutFileInput } from './logic'
 
 // ---------------------------------------------------------------
 // Supabase adapter: โหลดข้อมูลทั้งชุดเป็น DB shape เดียวกับ demo mode
@@ -70,6 +71,22 @@ function mapPaymentFile(r: Row): JobPaymentFile {
     mimeType: r.mime_type ?? '', sizeBytes: r.size_bytes != null ? Number(r.size_bytes) : 0,
     note: r.note ?? undefined,
     uploadedBy: r.uploaded_by ?? '', uploadedAt: r.uploaded_at,
+  }
+}
+// 0079 — Warranty (Installation ระดับ Job · LBS ระดับเครื่อง) + ไฟล์เอกสารรับมอบ/Warranty
+function mapWarranty(r: Row): JobWarranty {
+  return {
+    id: r.id, jobId: r.job_id, kind: r.kind, unitId: r.unit_id ?? undefined,
+    startDate: r.start_date, endDate: r.end_date,
+    createdBy: r.created_by ?? undefined, createdAt: r.created_at,
+  }
+}
+function mapCloseoutFile(r: Row): JobCloseoutFile {
+  return {
+    id: r.id, jobId: r.job_id, kind: r.kind, docType: r.doc_type ?? undefined,
+    fileName: r.file_name, filePath: r.file_path,
+    mimeType: r.mime_type ?? '', sizeBytes: r.size_bytes != null ? Number(r.size_bytes) : 0,
+    uploadedBy: r.uploaded_by ?? undefined, uploadedAt: r.uploaded_at,
   }
 }
 // 0075 — ประวัติการเลื่อนกำหนดส่ง · แถวล่าสุดคือกำหนดที่มีผล (jobs.required_date ไม่เคยถูกแก้)
@@ -152,6 +169,9 @@ function mapJob(r: Row): Job {
     closeHasIssues: r.close_has_issues ?? undefined,
     closeIssueDetail: r.close_issue_detail ?? undefined,
     closeIssueFileUrl: r.close_issue_file_url ?? undefined,
+    acceptanceType: r.acceptance_type ?? undefined,           // 0079
+    acceptanceDocNo: r.acceptance_doc_no ?? undefined,
+    acceptanceDate: r.acceptance_date ?? undefined,
     reopenCount: r.reopen_count ?? undefined,
     installConfirmedBy: r.install_confirmed_by ?? undefined,
     installCheckinLat: r.install_checkin_lat != null ? Number(r.install_checkin_lat) : undefined,
@@ -308,6 +328,17 @@ async function q(sb: SupabaseClient, table: string, order?: { col: string; asc?:
   return data as Row[]
 }
 
+/**
+ * ตารางของฟีเจอร์ใหม่ที่อาจยังไม่ได้รัน SQL — ไม่มีตาราง = คืน [] แทนที่จะทำทั้งแอปโหลดไม่ขึ้น
+ * (q() ปกติ throw ⇒ ถ้าเผลอ push ก่อนรัน SQL ทุกหน้าจะว่างเปล่า) · error อื่นยัง throw ตามเดิม
+ */
+async function qOptional(sb: SupabaseClient, table: string, order?: { col: string; asc?: boolean; limit?: number }) {
+  try { return await q(sb, table, order) } catch (e) {
+    if (/does not exist|schema cache|PGRST205/i.test(String(e))) return [] as Row[]
+    throw e
+  }
+}
+
 // =============================================================================
 // เอกสารแนบ — Storage (0074 รายเครื่อง · 0076 รายงวดเงิน)
 //
@@ -363,8 +394,32 @@ export const signedPaymentDocUrl = (sb: SupabaseClient, filePath: string) =>
 export const removePaymentDocs = (sb: SupabaseClient, filePaths: string[]) =>
   removeDoc(sb, PAYMENT_DOCS_BUCKET, filePaths)
 
+// 0079 — เอกสารรับมอบ / Warranty (เฟส 2–3 S.O./S.R. จะใช้ bucket นี้ต่อ)
+export const SERVICE_DOCS_BUCKET = 'service-docs'
+export const uploadServiceDoc = (sb: SupabaseClient, jobId: string, file: File) =>
+  uploadDoc(sb, SERVICE_DOCS_BUCKET, `job/${jobId}`, file)
+export const signedServiceDocUrl = (sb: SupabaseClient, filePath: string) =>
+  signedDocUrl(sb, SERVICE_DOCS_BUCKET, filePath)
+export const removeServiceDocs = (sb: SupabaseClient, filePaths: string[]) =>
+  removeDoc(sb, SERVICE_DOCS_BUCKET, filePaths)
+
+// CloseoutInput (logic.ts) → พารามิเตอร์ของ app_save_job_closeout (0079) — key ต้องตรงกับที่ SQL อ่าน
+function closeoutParams(c: CloseoutInput | undefined) {
+  return {
+    p_acceptance_type: c?.acceptanceType ?? null,
+    p_acceptance_doc_no: c?.acceptanceDocNo ?? null,
+    p_acceptance_date: c?.acceptanceDate || null,
+    p_inst_warranty_start: c?.installationWarranty?.start || null,
+    p_inst_warranty_end: c?.installationWarranty?.end || null,
+    p_lbs_warranties: (c?.lbsWarranties ?? []).map(w => ({ unit_id: w.unitId, start: w.start, end: w.end })),
+    p_files: (c?.files ?? []).map(closeoutFileParam),
+  }
+}
+const closeoutFileParam = (f: CloseoutFileInput) =>
+  ({ kind: f.kind, doc_type: f.docType ?? null, name: f.fileName, path: f.filePath, mime: f.mimeType, size: f.sizeBytes })
+
 export async function loadAll(sb: SupabaseClient): Promise<DB> {
-  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, approvalComments, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, prices, boms, bomLines, shareLinks, unitFiles, paymentFiles, dueExts] =
+  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, approvalComments, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, prices, boms, bomLines, shareLinks, unitFiles, paymentFiles, dueExts, warranties, closeoutFiles] =
     await Promise.all([
       q(sb, 'profiles'),
       q(sb, 'items', { col: 'code', limit: 10000 }),
@@ -398,6 +453,8 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       q(sb, 'lbs_unit_files', { col: 'uploaded_at', asc: false }),      // 0074 — เอกสารแนบรายเครื่อง
       q(sb, 'job_payment_files', { col: 'uploaded_at', asc: false }),   // 0076 — เอกสารแนบรายงวดเงิน
       q(sb, 'job_due_extensions', { col: 'created_at' }),               // 0075 — ประวัติเลื่อนกำหนดส่ง
+      qOptional(sb, 'job_warranties', { col: 'start_date' }),              // 0079 — Warranty
+      qOptional(sb, 'job_closeout_files', { col: 'uploaded_at', asc: false }), // 0079 — เอกสารรับมอบ
     ])
 
   const readsByNotif = new Map<string, string[]>()
@@ -445,6 +502,8 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     stockMovements: movements.map(mapStockMovement),
     jobPayments: payments.map(mapJobPayment),
     jobPaymentFiles: paymentFiles.map(mapPaymentFile),
+    jobWarranties: warranties.map(mapWarranty),
+    jobCloseoutFiles: closeoutFiles.map(mapCloseoutFile),
     // เรียง เก่า→ใหม่ ให้ตรงกับ demo (logic.ts ต่อท้าย array) — jobDueExtension ใช้ลำดับ append
     // เป็นตัวตัดสินที่ 2 เมื่อ createdAt เท่ากัน กลับด้านที่นี่แล้ว "ล่าสุด" จะชี้ผิดตัว
     jobDueExtensions: dueExts.map(mapDueExtension),
@@ -678,13 +737,21 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_confirm_unit_install', { p_unit_id: p.unitId, p_installed_date: p.installedDate, p_lat: p.checkinLat ?? null, p_lng: p.checkinLng ?? null, p_photo_url: p.photoUrl ?? null, p_member_id: p.installedByMemberId ?? null, p_note: p.note ?? null }),
     blockUnitInstall: (p: { unitId: string; reason: string }) =>
       rpc(sb, 'rpc_block_unit_install', { p_unit_id: p.unitId, p_reason: p.reason }),
-    closeJobInstall: (p: { jobId: string; note?: string; hasIssues?: boolean; issueDetail?: string; issueFileUrl?: string }) =>
+    closeJobInstall: (p: { jobId: string; note?: string; hasIssues?: boolean; issueDetail?: string; issueFileUrl?: string; closeout?: CloseoutInput }) =>
       rpc(sb, 'rpc_close_job_install', {
         p_job_id: p.jobId, p_note: p.note ?? null,
         p_has_issues: p.hasIssues ?? null,
         p_issue_detail: p.issueDetail ?? null,
         p_issue_file_url: p.issueFileUrl ?? null,
+        ...closeoutParams(p.closeout),                       // 0079 — เอกสารรับมอบ + Warranty
       }),
+    // 0079 — บันทึกย้อนหลัง/แก้ไข · แนบเพิ่ม · ลบไฟล์ (ใบที่ปิดแล้ว)
+    setJobCloseout: (p: { jobId: string } & CloseoutInput) =>
+      rpc(sb, 'rpc_set_job_closeout', { p_job_id: p.jobId, ...closeoutParams(p) }),
+    addCloseoutFile: (p: { jobId: string } & CloseoutFileInput) =>
+      rpc(sb, 'rpc_add_closeout_file', { p_job_id: p.jobId, p_file: closeoutFileParam(p) }),
+    deleteCloseoutFile: (p: { fileId: string }) =>
+      rpc(sb, 'rpc_delete_closeout_file', { p_file_id: p.fileId }),
     // ทีมช่าง + มอบหมายงาน (0036)
     createTeamMember: (p: { firstName: string; lastName: string; phone: string; position: string; userId?: string }) =>
       rpc(sb, 'rpc_create_team_member', { p_first_name: p.firstName, p_last_name: p.lastName, p_phone: p.phone, p_position: p.position, p_user_id: p.userId ?? null }),

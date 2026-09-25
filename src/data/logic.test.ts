@@ -22,6 +22,7 @@ import {
   addJobPayment, addPaymentFile, deletePaymentFile, paymentFiles, paymentFileCount, deleteJobPayment,
   updateJobBudget,
   createStdDrawing, updateStdDrawing, stdDrawingFiles, MAX_STD_DRAWING_FILES, jobStatusPhase,
+  setJobCloseout, addCloseoutFile, deleteCloseoutFile, warrantyEndFor, warrantyStatus, addMonthsIso, type CloseoutInput,
 } from './logic'
 
 // =============================================================================
@@ -52,7 +53,7 @@ const EMPTY: DB = {
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [], approvalComments: [],
   auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
-  jobPaymentFiles: [], jobDueExtensions: [],
+  jobPaymentFiles: [], jobDueExtensions: [], jobWarranties: [], jobCloseoutFiles: [],
   stdDrawings: [], stdPrices: [], stdBoms: [], stdBomLines: [],
 }
 
@@ -2211,5 +2212,178 @@ describe('สถานะ vs กำหนดส่ง — ติดตั้ง�
     expect(s.awaitingIssueRest).toBe(1)
     expect(s.pendingInstall).toBe(0)
     expect(s.awaitingClose).toBe(0)
+  })
+})
+
+// =============================================================================
+// ปิดงาน: เอกสารรับมอบ + Warranty (0079 · 2026-09-25)
+//
+// มติผู้ใช้: (1) ต้องมีไฟล์เอกสารรับมอบ PAC/AC/COD/Handover ตอนปิด · (2) Warranty ทั้ง 2 แบบคู่กัน
+//   installation (ระดับ Job) + lbs (ทุกเครื่องที่ติดตั้งสำเร็จ · default เริ่ม = วันติดตั้งจริง)
+// =============================================================================
+describe('ปิดงาน: เอกสารรับมอบ + Warranty (0079)', () => {
+  const svc = { id: 'u2', email: 's@x.co', password: '', fullName: 'Service', department: 'service' as const, isActive: true }
+  const file = (kind: 'acceptance' | 'warranty_installation' | 'warranty_lbs', name = `${kind}.pdf`) =>
+    ({ kind, docType: kind === 'acceptance' ? ('HANDOVER' as const) : undefined, fileName: name, filePath: `data:${name}`, mimeType: 'application/pdf', sizeBytes: 1000 })
+  const allFiles = [file('acceptance'), file('warranty_installation'), file('warranty_lbs')]
+  // 2 เครื่องบนใบ: a ติดตั้งสำเร็จ 2026-09-10 · b ติดตั้งไม่ได้ → Warranty LBS ต้องมีแค่ a
+  const base = (over: Partial<Job> = {}) => db({
+    users: [svc],
+    jobs: [job({ terminalStatus: 'issued', ...over })],
+    lbsUnits: [
+      unit({ id: 'a', status: 'issued', jobId: 'j1' }),
+      unit({ id: 'b', serialLvb: 'LVB-002', serialOm: 'OM-002', status: 'issued', jobId: 'j1' }),
+    ],
+    unitInstallations: [
+      { id: 'ui1', unitId: 'a', jobId: 'j1', outcome: 'installed', installedDate: '2026-09-10', performedBy: 'u2', performedAt: '2026-09-10T09:00:00.000Z' },
+      { id: 'ui2', unitId: 'b', jobId: 'j1', outcome: 'blocked', reason: 'ฐานไม่เสร็จ', performedBy: 'u2', performedAt: '2026-09-10T10:00:00.000Z' },
+    ],
+  })
+  const closeout = (over: Partial<CloseoutInput> = {}): CloseoutInput => ({
+    acceptanceType: 'HANDOVER', acceptanceDocNo: 'HO-001', acceptanceDate: '2026-09-12',
+    installationWarranty: { start: '2026-09-12', end: '2027-09-11' },
+    lbsWarranties: [{ unitId: 'a', start: '2026-09-10', end: '2028-09-09' }],
+    files: allFiles,
+    ...over,
+  })
+  const close = (d: DB, c: CloseoutInput) => closeJobInstall(d, svc, { jobId: 'j1', hasIssues: false, closeout: c })
+
+  it('ครบทุกอย่าง → ปิดงานได้ + บันทึก Warranty ทั้ง 2 แบบ', () => {
+    const d = close(base(), closeout())
+    expect(d.jobs[0].terminalStatus).toBe('installed')
+    expect(d.jobs[0].acceptanceType).toBe('HANDOVER')
+    expect(d.jobWarranties.map(w => w.kind).sort()).toEqual(['installation', 'lbs'])
+    expect(d.jobWarranties.find(w => w.kind === 'lbs')?.unitId).toBe('a')
+    expect(d.jobCloseoutFiles).toHaveLength(3)
+    expect(d.auditLogs[0].detail).toContain('รับมอบ HANDOVER HO-001')
+  })
+
+  it('🔴 ไม่เลือกประเภทเอกสารรับมอบ / ไม่มีไฟล์รับมอบ → ปิดไม่ได้ และใบยังเป็น Issued', () => {
+    const d0 = base()
+    expect(() => close(d0, closeout({ acceptanceType: undefined }))).toThrow(/เอกสารรับมอบ 1 ประเภท/)
+    expect(() => close(d0, closeout({ files: [file('warranty_installation'), file('warranty_lbs')] })))
+      .toThrow(/ไฟล์เอกสารรับมอบ/)
+    expect(d0.jobs[0].terminalStatus).toBe('issued')
+  })
+
+  it('ไม่มีไฟล์ Warranty แบบใดแบบหนึ่ง → ปิดไม่ได้', () => {
+    expect(() => close(base(), closeout({ files: [file('acceptance'), file('warranty_lbs')] }))).toThrow(/Warranty งานติดตั้ง/)
+    expect(() => close(base(), closeout({ files: [file('acceptance'), file('warranty_installation')] }))).toThrow(/ตัวเครื่อง/)
+  })
+
+  it('🔴 Warranty LBS ต้องครบทุกเครื่องที่ติดตั้งสำเร็จ — และห้ามใส่เครื่องที่ติดตั้งไม่ได้', () => {
+    expect(() => close(base(), closeout({ lbsWarranties: [] }))).toThrow(/ครบทุกเครื่อง/)
+    expect(() => close(base(), closeout({
+      lbsWarranties: [{ unitId: 'a', start: '2026-09-10', end: '2028-09-09' }, { unitId: 'b', start: '2026-09-10', end: '2028-09-09' }],
+    }))).toThrow(/ไม่ได้ติดตั้งสำเร็จ/)
+  })
+
+  it('วันสิ้นสุดก่อนวันเริ่ม → ปฏิเสธ', () => {
+    expect(() => close(base(), closeout({ installationWarranty: { start: '2026-09-12', end: '2026-09-01' } }))).toThrow(/วันสิ้นสุด/)
+    expect(() => close(base(), closeout({ lbsWarranties: [{ unitId: 'a', start: '2026-09-10', end: '2026-09-01' }] }))).toThrow(/วันสิ้นสุด/)
+  })
+
+  it('warrantyEndFor: 12 เดือนจาก 1 ม.ค. = 31 ธ.ค. · 31 ม.ค. + 1 เดือนไม่ล้นเดือน', () => {
+    expect(warrantyEndFor('2026-01-01', 12)).toBe('2026-12-31')
+    expect(warrantyEndFor('2026-09-10', 24)).toBe('2028-09-09')
+    expect(addMonthsIso('2026-01-31', 1)).toBe('2026-02-28')
+  })
+
+  it('warrantyStatus: ยังไม่เริ่ม / ในประกัน / ใกล้หมด ≤ 90 วัน / หมดแล้ว', () => {
+    const w = { startDate: '2026-01-01', endDate: '2026-12-31' }
+    expect(warrantyStatus(w, '2025-12-31').state).toBe('not_started')
+    expect(warrantyStatus(w, '2026-03-01').state).toBe('active')
+    expect(warrantyStatus(w, '2026-11-01').state).toBe('expiring')
+    expect(warrantyStatus(w, '2027-01-05')).toEqual({ state: 'expired', daysLeft: -5 })
+  })
+
+  it('บันทึกย้อนหลัง: ใบที่ปิดก่อน 0079 ใช้ setJobCloseout ได้ · ใบที่ยังไม่ปิดใช้ไม่ได้', () => {
+    const closedOld = base({ terminalStatus: 'installed' })
+    const d = setJobCloseout(closedOld, svc, { jobId: 'j1', ...closeout() })
+    expect(d.jobWarranties).toHaveLength(2)
+    expect(d.auditLogs[0].action).toBe('backfill_job_closeout')
+    expect(() => setJobCloseout(base(), svc, { jobId: 'j1', ...closeout() })).toThrow(/ยังไม่ได้ปิดงาน/)
+  })
+
+  it('แก้ไข = บันทึกทับ Warranty ทั้งชุด · ไฟล์เดิมนับรวม ไม่ต้องแนบซ้ำ', () => {
+    const d1 = close(base(), closeout())
+    const d2 = setJobCloseout(d1, svc, { jobId: 'j1', ...closeout({ files: [], installationWarranty: { start: '2026-09-12', end: '2028-09-11' } }) })
+    expect(d2.jobWarranties).toHaveLength(2)                       // ไม่ซ้ำ
+    expect(d2.jobWarranties.find(w => w.kind === 'installation')?.endDate).toBe('2028-09-11')
+    expect(d2.jobCloseoutFiles).toHaveLength(3)
+    expect(d2.auditLogs[0].action).toBe('update_job_closeout')
+  })
+
+  it('ลบไฟล์สุดท้ายของประเภทนั้นไม่ได้ · แนบเพิ่มแล้วลบตัวเก่าได้', () => {
+    const d1 = close(base(), closeout())
+    const acc = d1.jobCloseoutFiles.find(f => f.kind === 'acceptance')!
+    expect(() => deleteCloseoutFile(d1, svc, { fileId: acc.id })).toThrow(/ไฟล์สุดท้าย/)
+    const d2 = addCloseoutFile(d1, svc, { jobId: 'j1', ...file('acceptance', 'HO-v2.pdf') })
+    const d3 = deleteCloseoutFile(d2, svc, { fileId: acc.id })
+    expect(d3.jobCloseoutFiles.filter(f => f.kind === 'acceptance').map(f => f.fileName)).toEqual(['HO-v2.pdf'])
+  })
+})
+
+// =============================================================================
+// รอบตรวจบั๊ก 0079 (2026-09-25) — 4 จุดที่เจอจากการ review
+// =============================================================================
+describe('0079 review fixes', () => {
+  const svc = { id: 'u2', email: 's@x.co', password: '', fullName: 'Service', department: 'service' as const, isActive: true }
+  const pdf = (kind: 'acceptance' | 'warranty_installation' | 'warranty_lbs', docType?: 'PAC' | 'AC' | 'COD' | 'HANDOVER', name = `${kind}.pdf`) =>
+    ({ kind, docType, fileName: name, filePath: `data:${name}`, mimeType: 'application/pdf', sizeBytes: 1000 })
+  const inst = (unitId: string, jobId = 'j1', date = '2026-09-10') =>
+    ({ id: `ui-${unitId}-${jobId}`, unitId, jobId, outcome: 'installed' as const, installedDate: date, performedBy: 'u2', performedAt: `${date}T09:00:00.000Z` })
+  const base = (over: Partial<DB> = {}) => db({
+    users: [svc],
+    jobs: [job({ terminalStatus: 'issued', lbsQtyRequired: 1 })],
+    lbsUnits: [unit({ id: 'a', status: 'issued', jobId: 'j1' })],
+    unitInstallations: [inst('a')],
+    ...over,
+  })
+  const c = (over: Partial<CloseoutInput> = {}): CloseoutInput => ({
+    acceptanceType: 'HANDOVER', acceptanceDate: '2026-09-12',
+    installationWarranty: { start: '2026-09-12', end: '2027-09-11' },
+    lbsWarranties: [{ unitId: 'a', start: '2026-09-10', end: '2027-09-09' }],
+    files: [pdf('acceptance', 'HANDOVER'), pdf('warranty_installation'), pdf('warranty_lbs')],
+    ...over,
+  })
+  const close = (d: DB, x: CloseoutInput) => closeJobInstall(d, svc, { jobId: 'j1', hasIssues: false, closeout: x })
+
+  it('🔴 ไฟล์รับมอบต้องระบุประเภท', () => {
+    expect(() => close(base(), c({ files: [pdf('acceptance'), pdf('warranty_installation'), pdf('warranty_lbs')] })))
+      .toThrow(/ต้องระบุประเภท/)
+  })
+
+  it('🔴 เลือก PAC แต่มีแค่ไฟล์ Handover → ปิดไม่ได้ (ต้องมีไฟล์ประเภทที่เลือก)', () => {
+    expect(() => close(base(), c({ acceptanceType: 'PAC' }))).toThrow(/ประเภท PAC/)
+  })
+
+  it('แนบ PAC ตามมาหลังปิดด้วย Handover — ไฟล์เก็บประเภทของตัวเอง ใบยังปิดด้วย Handover', () => {
+    const d1 = close(base(), c())
+    const d2 = addCloseoutFile(d1, svc, { jobId: 'j1', ...pdf('acceptance', 'PAC', 'PAC.pdf') })
+    expect(d2.jobCloseoutFiles.filter(f => f.kind === 'acceptance').map(f => f.docType).sort()).toEqual(['HANDOVER', 'PAC'])
+    expect(d2.jobs[0].acceptanceType).toBe('HANDOVER')
+    // ไฟล์ Handover เป็นตัวเดียวของประเภทที่ใช้ปิดงาน → ลบไม่ได้ แม้มีไฟล์รับมอบอื่น (PAC) อยู่
+    const ho = d2.jobCloseoutFiles.find(f => f.docType === 'HANDOVER')!
+    expect(() => deleteCloseoutFile(d2, svc, { fileId: ho.id })).toThrow(/ตัวสุดท้ายที่ใช้ปิดงาน/)
+    // เปลี่ยนประเภทที่ใช้ปิดเป็น PAC แล้ว → ลบ Handover ได้
+    const d3 = setJobCloseout(d2, svc, { jobId: 'j1', ...c({ acceptanceType: 'PAC', files: [] }) })
+    expect(deleteCloseoutFile(d3, svc, { fileId: ho.id }).jobCloseoutFiles.some(f => f.id === ho.id)).toBe(false)
+  })
+
+  it('🔴 Warranty LBS ค้างของเครื่องเดียวกันจาก Job อื่น ไม่ทำให้ปิดงานไม่ได้ และถูกแทนที่', () => {
+    const stale = { id: 'w-old', jobId: 'j-old', kind: 'lbs' as const, unitId: 'a', startDate: '2025-01-01', endDate: '2026-01-01', createdAt: '' }
+    const d = close(base({ jobWarranties: [stale] }), c())
+    const lbs = d.jobWarranties.filter(w => w.kind === 'lbs' && w.unitId === 'a')
+    expect(lbs).toHaveLength(1)
+    expect(lbs[0].jobId).toBe('j1')
+  })
+
+  it('🔴 ใบเก่าที่ไม่มีผลติดตั้งรายเครื่อง บันทึกย้อนหลังได้โดยไม่ต้องมี Warranty LBS', () => {
+    const legacy = base({ jobs: [job({ terminalStatus: 'installed', lbsQtyRequired: 1 })], unitInstallations: [] })
+    const d = setJobCloseout(legacy, svc, {
+      jobId: 'j1', ...c({ lbsWarranties: [], files: [pdf('acceptance', 'HANDOVER'), pdf('warranty_installation')] }),
+    })
+    expect(d.jobWarranties.map(w => w.kind)).toEqual(['installation'])
   })
 })

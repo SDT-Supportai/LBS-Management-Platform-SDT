@@ -156,6 +156,10 @@ export interface Job {
   closeHasIssues?: boolean    // true = มีปัญหา · false = ไม่มีปัญหา
   closeIssueDetail?: string   // รายละเอียดปัญหา (บังคับเมื่อ closeHasIssues = true)
   closeIssueFileUrl?: string  // ไฟล์แนบประกอบ (ถ้ามี)
+  // เอกสารรับมอบที่ใช้ปิดงาน (0079) — ไฟล์อยู่ใน jobCloseoutFiles kind=acceptance
+  acceptanceType?: AcceptanceType
+  acceptanceDocNo?: string
+  acceptanceDate?: string     // YYYY-MM-DD
   reopenCount?: number        // จำนวนครั้งที่เปิดงานใหม่หลังปิด (0041) — เปิดบ่อย = สัญญาณปัญหากระบวนการ
   installConfirmedBy?: string
   // Check-in หน้างานตอนยืนยันติดตั้ง (บังคับ — 0019)
@@ -444,6 +448,43 @@ export interface JobPayment {
 }
 
 /**
+ * ปิดงานติดตั้ง: เอกสารรับมอบ + Warranty (0079)
+ *   PAC = Provisional Acceptance Certificate · AC = Acceptance Certificate
+ *   COD = Commercial Operation Date · HANDOVER = ใบส่งมอบงาน
+ */
+export type AcceptanceType = 'PAC' | 'AC' | 'COD' | 'HANDOVER'
+/**
+ * Warranty — บันทึกทั้ง 2 แบบคู่กัน (มติผู้ใช้ 2026-09-25)
+ *   installation = ประกันงานติดตั้ง ระดับ Job (unitId ว่าง)
+ *   lbs          = ประกันตัวเครื่อง ระดับเครื่อง (unitId) · default วันเริ่ม = วันที่ติดตั้งจริงของเครื่อง
+ */
+export type WarrantyKind = 'installation' | 'lbs'
+export interface JobWarranty {
+  id: string
+  jobId: string
+  kind: WarrantyKind
+  unitId?: string
+  startDate: string            // YYYY-MM-DD
+  endDate: string
+  createdBy?: string
+  createdAt: string
+}
+export type CloseoutFileKind = 'acceptance' | 'warranty_installation' | 'warranty_lbs'
+/** LIVE = path ใน private bucket `service-docs` (ขอ signed URL ก่อนเปิด) · demo = data URL */
+export interface JobCloseoutFile {
+  id: string
+  jobId: string
+  kind: CloseoutFileKind
+  docType?: AcceptanceType     // kind=acceptance เท่านั้น — PAC ที่มาทีหลังต้องแยกจาก Handover ที่ใช้ปิดงาน
+  fileName: string
+  filePath: string
+  mimeType: string
+  sizeBytes: number
+  uploadedBy?: string
+  uploadedAt: string
+}
+
+/**
  * เอกสารแนบรายงวดเงิน (0076) — ใบแจ้งหนี้ · ใบเสร็จ/ใบกำกับภาษี · PAC · สำเนาโอนเงิน
  * `filePath` เก็บคนละอย่างใน 2 โหมด เหมือน LbsUnitFile (0074):
  *   LIVE = path ใน private bucket `payment-docs` ⇒ ขอ signed URL ก่อนเปิด
@@ -618,6 +659,8 @@ export interface DB {
   stockMovements: StockMovement[]
   jobPayments: JobPayment[]
   jobPaymentFiles: JobPaymentFile[]
+  jobWarranties: JobWarranty[]           // 0079
+  jobCloseoutFiles: JobCloseoutFile[]     // 0079
   jobDueExtensions: JobDueExtension[]
   stdDrawings: StdDrawing[]
   stdPrices: StdPrice[]

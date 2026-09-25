@@ -16,13 +16,14 @@ import JobDetailPage from './pages/JobDetailPage'
 import PurchasingPage from './pages/PurchasingPage'
 import ServicePage from './pages/ServicePage'
 import ServiceSchedulingPage from './pages/ServiceSchedulingPage'
+import WarrantyPage from './pages/WarrantyPage'
 import AuditPage from './pages/AuditPage'
 import NotificationsPage from './pages/NotificationsPage'
 import MasterDataPage from './pages/MasterDataPage'
 import StandardsPage from './pages/StandardsPage'
 import DevSettingsPage from './pages/DevSettingsPage'
 import ApprovalsPage from './pages/ApprovalsPage'
-import { deriveJobStatus, jobIsFieldActive, unreadNotifications, serviceIssues } from './data/logic'
+import { deriveJobStatus, jobIsFieldActive, unreadNotifications, serviceIssues, warrantyStatus } from './data/logic'
 
 // Logo จริง (/logo.jpg) + fallback ⚡ ถ้ายังไม่มีไฟล์
 function BrandLogo() {
@@ -41,6 +42,9 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   // 0071: badge ต้องนับงานที่เบิกบางส่วนด้วย — ของอยู่กับช่างแล้ว งานรออยู่จริง
   //   ถ้านับแต่ใบที่ครบ ตัวเลขบนเมนูจะน้อยกว่าจำนวนแถวในหน้า Service ที่เปิดเข้าไปเห็น
   const awaitingInstall = db.jobs.filter(j => jobIsFieldActive(db, j)).length
+  // 0079 — เครื่องที่ Warranty LBS เหลือ ≤ 90 วัน (ของใบที่ปิดงานแล้ว) — เตือน Service เตรียมรับแจ้งซ่อม/ต่อประกัน
+  const warrantyExpiring = db.jobWarranties.filter(w => w.kind === 'lbs' && warrantyStatus(w).state === 'expiring'
+    && db.jobs.some(j => j.id === w.jobId && j.terminalStatus === 'installed')).length
   const pendingIds = new Set(db.approvalRequests.filter(r => r.status === 'pending').map(r => r.id))
   const pendingApprovals = pendingIds.size
   // ความเห็นผู้บริหาร (0050) ที่แปะอยู่บนคำขอซึ่งยังไม่ตัดสิน — Division ควรเห็นก่อนกดอนุมัติ
@@ -95,6 +99,9 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
         // ปัญหาค้างสำคัญกว่าจำนวนงานรอติดตั้ง → โชว์ก่อนถ้ามี
         badge: openServiceIssues > 0 ? { text: `⚠️ ${openServiceIssues} Issues`, cls: 'red' }
           : awaitingInstall > 0 ? { text: `${awaitingInstall} Awaiting Install`, cls: 'blue' } : undefined },
+      // 0079 — ต่อจาก Site Installation: รับงานที่ปิดแล้ว → ติดตามประกัน → แจ้งซ่อม
+      { to: '/warranty', icon: '🛡️', label: 'Service (Warranty)',
+        badge: warrantyExpiring > 0 ? { text: `${warrantyExpiring} ใกล้หมดประกัน`, cls: 'amber' } : undefined },
     ] },
     // ทะเบียนทีมช่างยังอยู่ใน ServicePage — เฟส 2 จะย้ายมาที่ /scheduling แล้วแยก 2 เมนูจริง
     { mod: 'Workforce & Scheduling', icon: '👷', items: [
@@ -331,6 +338,7 @@ export default function App() {
               <Route path="/jobs/:jobId" element={<JobDetailPage />} />
               <Route path="/purchasing" element={<PurchasingPage />} />
               <Route path="/service" element={<ServicePage />} />
+              <Route path="/warranty" element={<WarrantyPage />} />
               <Route path="/scheduling" element={<ServiceSchedulingPage />} />
               <Route path="/approvals" element={<ApprovalsPage />} />
               <Route path="/notifications" element={<NotificationsPage />} />

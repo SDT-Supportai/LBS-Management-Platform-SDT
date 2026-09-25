@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { deriveJobStatus, jobDelivery, jobInstallSummary, jobIsFieldActive, qtyOutToField, effectiveQty, unitInstallState, jobTeam, memberFullName, serviceIssues } from '../data/logic'
+import { closeoutFiles, deriveJobStatus, jobDelivery, jobInstallSummary, jobIsFieldActive, qtyOutToField, effectiveQty, unitInstallState, jobTeam, memberFullName, serviceIssues } from '../data/logic'
 import type { ServiceIssueKind } from '../data/logic'
 
 const ISSUE_KIND: Record<ServiceIssueKind, { label: string; cls: string }> = {
@@ -10,6 +10,7 @@ const ISSUE_KIND: Record<ServiceIssueKind, { label: string; cls: string }> = {
   unit_blocked: { label: 'เครื่องติดตั้งไม่ได้', cls: 'red' },
 }
 import { DeliveryBadge, Modal, useToast, useTryAction } from '../ui/components'
+import { CloseoutForm, initCloseoutDraft, closeoutMissing, buildCloseoutInput, type CloseoutDraft } from '../ui/CloseoutForm'
 import { fmtDate, fmtDateTime } from '../ui/format'
 import { supabase } from '../lib/supabase'
 
@@ -45,6 +46,7 @@ export default function ServicePage() {
   const [issueDetail, setIssueDetail] = useState('')
   // dataUrl เก็บทุกชนิดไฟล์ (โหมด demo ใช้เป็น URL) · isImage ใช้แค่ตัดสินว่าจะโชว์ preview
   const [issueFile, setIssueFile] = useState<{ file: File; dataUrl: string; isImage: boolean } | null>(null)
+  const [closeDraft, setCloseDraft] = useState<CloseoutDraft | null>(null)   // 0079 — เอกสารรับมอบ + Warranty
   const [closing, setClosing] = useState(false)
   // มอบหมายทีม (เฟส C)
   const [assignFor, setAssignFor] = useState<string | null>(null)
@@ -233,19 +235,25 @@ export default function ServicePage() {
 
   // เปิดโมดัลปิดงาน — เคลียร์คำตอบเรื่องปัญหาทุกครั้ง ห้ามค้างจากงานก่อน
   const openClose = (jobId: string) => {
-    setCloseNote(''); setHasIssues(null); setIssueDetail(''); setIssueFile(null); setCloseFor(jobId)
+    setCloseNote(''); setHasIssues(null); setIssueDetail(''); setIssueFile(null)
+    const job = db.jobs.find(j => j.id === jobId)
+    setCloseDraft(job ? initCloseoutDraft(db, job) : null)
+    setCloseFor(jobId)
   }
 
   const submitClose = async () => {
-    if (!closeFor || hasIssues === null) return
+    if (!closeFor || hasIssues === null || !closeDraft) return
     setClosing(true)
     try {
       const issueFileUrl = hasIssues ? await resolveIssueFileUrl(closeFor) : undefined
+      // อัปโหลดเอกสารรับมอบ/Warranty ก่อน แล้วส่ง path ไปกับ RPC (RPC พัง = ไฟล์ค้างเป็นขยะ ไม่ใช่ข้อมูลรั่ว)
+      const closeout = await buildCloseoutInput(closeDraft, closeFor)
       const ok = await tryAction(() => act.closeJobInstall({
         jobId: closeFor, note: closeNote,
         hasIssues, issueDetail: hasIssues ? issueDetail : undefined, issueFileUrl,
+        closeout,
       }), hasIssues ? 'ปิดงานแล้ว — บันทึกปัญหาและแจ้ง Project' : 'ปิดงานติดตั้งแล้ว — แจ้ง Project อัตโนมัติ')
-      if (ok) { setCloseFor(null); setUnitJobId(null); setIssueFile(null); setHasIssues(null); setIssueDetail('') }
+      if (ok) { setCloseFor(null); setUnitJobId(null); setIssueFile(null); setHasIssues(null); setIssueDetail(''); setCloseDraft(null) }
     } catch (e) {
       show(e instanceof Error ? e.message : String(e), true)
     }
@@ -721,15 +729,23 @@ export default function ServicePage() {
       {/* ปิดงานติดตั้ง */}
       {closeJob && (() => {
         const s = jobInstallSummary(db, closeJob.id)
+        // ทุกข้อที่ยังขาด — ปุ่มปิดงานกดได้เมื่อรายการนี้ว่าง (ตัวตัดสินจริงคือ RPC)
+        const missing = [
+          ...(closeDraft ? closeoutMissing(closeDraft, closeoutFiles(db, closeJob.id)) : ['ฟอร์มเอกสารรับมอบ']),
+          ...(hasIssues === null ? ['ระบุว่างานนี้มีปัญหาหรือไม่'] : []),
+          ...(hasIssues && !issueDetail.trim() ? ['รายละเอียดปัญหา'] : []),
+        ]
         return (
-          <Modal title={`ปิดงานติดตั้ง — ${closeJob.jobNo}`} onClose={() => setCloseFor(null)}
+          <Modal title={`ปิดงานติดตั้ง — ${closeJob.jobNo}`} size="xl" onClose={() => { if (!closing) setCloseFor(null) }}
             footer={<>
+              {missing.length > 0 && (
+                <div className="closeout-missing">ยังขาด {missing.length} รายการ: {missing.join(' · ')}</div>
+              )}
               <button onClick={() => setCloseFor(null)} disabled={closing}>ยกเลิก</button>
               <button className="success" onClick={submitClose}
-                disabled={closing || hasIssues === null || (hasIssues && !issueDetail.trim())}
-                title={hasIssues === null ? 'ต้องระบุว่างานนี้มีปัญหาหรือไม่ก่อน'
-                  : hasIssues && !issueDetail.trim() ? 'กรอกรายละเอียดปัญหาก่อน' : ''}>
-                {closing ? 'กำลังปิดงาน...' : 'ยืนยันปิดงาน'}
+                disabled={closing || missing.length > 0}
+                title={missing.length ? `ยังขาด: ${missing.join(' · ')}` : ''}>
+                {closing ? 'กำลังอัปโหลดเอกสารและปิดงาน...' : 'ยืนยันปิดงาน'}
               </button>
             </>}>
             <p style={{ marginBottom: 12 }}>
@@ -753,7 +769,14 @@ export default function ServicePage() {
                 </div>
               </div>
             )}
-            {/* บังคับสรุปปัญหาก่อนปิดงาน (0040) */}
+            {/* ①② เอกสารรับมอบ + Warranty (0079) — บังคับทั้งหมด */}
+            {closeDraft && (
+              <CloseoutForm db={db} job={closeJob} draft={closeDraft} onChange={setCloseDraft}
+                onError={m => show(m, true)} disabled={closing} />
+            )}
+
+            {/* ③ บังคับสรุปปัญหาก่อนปิดงาน (0040) */}
+            <h4 style={{ margin: '14px 0 8px', fontSize: 14 }}>③ สรุปงาน</h4>
             <div className="field">
               <span>งานนี้มีปัญหาหรือไม่ ? *</span>
               <div style={{ display: 'flex', gap: 18, alignItems: 'center', paddingTop: 4 }}>

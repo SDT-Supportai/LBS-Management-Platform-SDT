@@ -5,6 +5,7 @@ import type {
   SiteVisit, SiteVisitOutcome, UnitInstallOutcome, TeamMember, JobAssignment,
   StockMovementType, PaymentType, EpicorTxnType,
   PublicShareLink, PublicStockView, StdDrawing, StdDrawingFile,
+  AcceptanceType, CloseoutFileKind, JobWarranty,
 } from '../types'
 
 // ---------------------------------------------------------------
@@ -2992,9 +2993,201 @@ export function blockUnitInstall(db: DB, actor: User, p: { unitId: string; reaso
 
 // ปิดงานติดตั้ง (ขั้นตอนแยก ต้องกดยืนยัน) → Job = installed (terminal)
 // วันติดตั้งของ Job = วันล่าสุดที่ติดตั้งสำเร็จ
+// =============================================================================
+// ปิดงาน: เอกสารรับมอบ + Warranty (sync 0079 · app_save_job_closeout)
+//
+// 🔴 มติผู้ใช้ 2026-09-25: ต้องมีไฟล์เอกสารรับมอบ **ตอนปิดเท่านั้น** · Warranty บันทึกทั้ง 2 แบบคู่กัน
+//    installation (ระดับ Job) + lbs (ทุกเครื่องที่ติดตั้งสำเร็จ · default วันเริ่ม = วันติดตั้งจริง)
+//    ทุกประเภทต้องมีไฟล์อย่างน้อย 1 ไฟล์ (นับรวมไฟล์ที่แนบไว้ก่อนแล้ว)
+// =============================================================================
+export const ACCEPTANCE_TYPES: { value: AcceptanceType; label: string; hint: string }[] = [
+  { value: 'PAC', label: 'PAC', hint: 'Provisional Acceptance Certificate — ใบรับมอบงานชั่วคราว' },
+  { value: 'AC', label: 'AC', hint: 'Acceptance Certificate — ใบรับมอบงาน' },
+  { value: 'COD', label: 'COD', hint: 'Commercial Operation Date — วันเริ่มใช้งานเชิงพาณิชย์' },
+  { value: 'HANDOVER', label: 'Handover', hint: 'ใบส่งมอบงาน / Handover Certificate' },
+]
+export const CLOSEOUT_FILE_LABEL: Record<CloseoutFileKind, string> = {
+  acceptance: 'เอกสารรับมอบ',
+  warranty_installation: 'Warranty งานติดตั้ง',
+  warranty_lbs: 'Warranty ตัวเครื่อง (LBS)',
+}
+export const WARRANTY_MONTH_PRESETS = [12, 18, 24, 36, 60]
+export const WARRANTY_EXPIRING_DAYS = 90
+
+export interface CloseoutFileInput {
+  kind: CloseoutFileKind; fileName: string; filePath: string; mimeType: string; sizeBytes: number
+  /** บังคับเมื่อ kind = acceptance (0079 doc_type) */
+  docType?: AcceptanceType
+}
+export interface CloseoutInput {
+  acceptanceType?: AcceptanceType
+  acceptanceDocNo?: string
+  acceptanceDate?: string
+  installationWarranty?: { start: string; end: string }
+  lbsWarranties?: { unitId: string; start: string; end: string }[]
+  /** ไฟล์ **ใหม่** ที่เพิ่งอัปโหลด — ไฟล์เดิมของ Job คงไว้ */
+  files?: CloseoutFileInput[]
+}
+
+/** บวกเดือนบน YYYY-MM-DD · วันเกินสิ้นเดือนปัดลงวันสุดท้ายของเดือน (31 ม.ค. + 1 = 28/29 ก.พ.) */
+export function addMonthsIso(iso: string, months: number): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso)
+  if (!m) return ''
+  const y = Number(m[1]), mo = Number(m[2]) - 1 + months, d = Number(m[3])
+  const last = new Date(Date.UTC(y, mo + 1, 0)).getUTCDate()
+  return new Date(Date.UTC(y, mo, Math.min(d, last))).toISOString().slice(0, 10)
+}
+/** วันสิ้นสุดประกัน = เริ่ม + N เดือน − 1 วัน (ประกัน 12 เดือนจาก 1 ม.ค. สิ้นสุด 31 ธ.ค.) */
+export function warrantyEndFor(start: string, months: number): string {
+  return start ? addDaysIso(addMonthsIso(start, months), -1) : ''
+}
+
+export type WarrantyState = 'not_started' | 'active' | 'expiring' | 'expired'
+export function warrantyStatus(w: Pick<JobWarranty, 'startDate' | 'endDate'>, today = todayIso()) {
+  const daysLeft = daysBetweenIso(today, w.endDate)
+  const state: WarrantyState = w.startDate > today ? 'not_started'
+    : daysLeft < 0 ? 'expired'
+    : daysLeft <= WARRANTY_EXPIRING_DAYS ? 'expiring'
+    : 'active'
+  return { state, daysLeft }
+}
+
+export const jobWarranties = (db: DB, jobId: string) => db.jobWarranties.filter(w => w.jobId === jobId)
+export const closeoutFiles = (db: DB, jobId: string, kind?: CloseoutFileKind) =>
+  db.jobCloseoutFiles.filter(f => f.jobId === jobId && (!kind || f.kind === kind))
+    .sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))
+
+/** เครื่องที่ติดตั้งสำเร็จของ Job + วันติดตั้งจริง — ต้องมี Warranty LBS ครบทุกเครื่องนี้ */
+export function jobInstalledUnits(db: DB, jobId: string) {
+  return db.lbsUnits
+    .filter(u => u.jobId === jobId && unitInstallState(db, u.id) === 'installed')
+    .map(u => ({ unit: u, installedDate: unitInstallDate(db, u.id) ?? '' }))
+}
+
+function assertCloseoutFile(f: CloseoutFileInput) {
+  if (!(f.kind in CLOSEOUT_FILE_LABEL)) throw new Error(`ประเภทไฟล์แนบไม่ถูกต้อง: ${f.kind}`)
+  if (f.kind === 'acceptance' && !ACCEPTANCE_TYPES.some(t => t.value === f.docType))
+    throw new Error('ไฟล์เอกสารรับมอบต้องระบุประเภท (PAC / AC / COD / Handover)')
+  const name = f.fileName.trim()
+  if (!name) throw new Error('ไม่พบชื่อไฟล์')
+  if (!f.filePath.trim()) throw new Error(`${name}: อัปโหลดไม่สำเร็จ — ไม่ได้ที่อยู่ไฟล์กลับมา`)
+  if (!isAllowedDocFile(f.mimeType)) throw new Error(`${name}: รับเฉพาะไฟล์ PDF และรูปภาพ`)
+  if (f.sizeBytes <= 0) throw new Error(`${name}: ไฟล์ว่าง`)
+  if (f.sizeBytes > MAX_DOC_FILE_MB * 1024 * 1024) throw new Error(`${name}: ไฟล์ใหญ่เกิน ${MAX_DOC_FILE_MB} MB`)
+}
+
+/** ตรวจ + บันทึก (ทับทั้งชุด) — กติกาเดียวกับ app_save_job_closeout · คืน DB + ข้อความต่อท้าย audit */
+function applyCloseout(db: DB, actor: User, job: Job, c: CloseoutInput): { db: DB; txt: string } {
+  const accType = c.acceptanceType
+  if (!accType || !ACCEPTANCE_TYPES.some(t => t.value === accType))
+    throw new Error('กรุณาเลือกเอกสารรับมอบ 1 ประเภท (PAC / AC / COD / Handover)')
+  if (!c.acceptanceDate) throw new Error('กรุณาระบุวันที่ของเอกสารรับมอบ')
+  const iw = c.installationWarranty
+  if (!iw?.start || !iw?.end) throw new Error('กรุณาระบุวันเริ่ม–วันสิ้นสุด Warranty งานติดตั้ง (Installation)')
+  if (iw.end < iw.start) throw new Error('Warranty งานติดตั้ง: วันสิ้นสุดต้องไม่ก่อนวันเริ่ม')
+
+  const installed = jobInstalledUnits(db, job.id)
+  const lbs = c.lbsWarranties ?? []
+  if (new Set(lbs.map(w => w.unitId)).size !== lbs.length) throw new Error('Warranty LBS มีเครื่องซ้ำกัน')
+  for (const w of lbs) {
+    const u = installed.find(x => x.unit.id === w.unitId)
+    if (!u) throw new Error(`Warranty LBS: เครื่องนี้ไม่ได้ติดตั้งสำเร็จใน ${job.jobNo}`)
+    if (!w.start || !w.end) throw new Error('Warranty LBS: กรุณาระบุวันเริ่ม–วันสิ้นสุดให้ครบทุกเครื่อง')
+    if (w.end < w.start) throw new Error(`Warranty LBS ${u.unit.serialLvb}: วันสิ้นสุดต้องไม่ก่อนวันเริ่ม`)
+  }
+  if (lbs.length !== installed.length)
+    throw new Error(`Warranty LBS ต้องครบทุกเครื่องที่ติดตั้งสำเร็จ (${lbs.length} จาก ${installed.length} เครื่อง)`)
+
+  const newFiles = c.files ?? []
+  newFiles.forEach(assertCloseoutFile)
+  const allFiles = [
+    ...db.jobCloseoutFiles,
+    ...newFiles.map(f => ({
+      id: uid(), jobId: job.id, kind: f.kind, docType: f.kind === 'acceptance' ? f.docType : undefined,
+      fileName: f.fileName.trim(), filePath: f.filePath,
+      mimeType: f.mimeType, sizeBytes: f.sizeBytes, uploadedBy: actor.id, uploadedAt: now(),
+    })),
+  ]
+  const mine = allFiles.filter(f => f.jobId === job.id)
+  // 🔴 ไฟล์รับมอบต้องเป็นประเภทเดียวกับที่เลือก — เลือก PAC แต่มีแค่ไฟล์ Handover เดิม = ไม่มีหลักฐาน PAC
+  if (!mine.some(f => f.kind === 'acceptance' && f.docType === accType))
+    throw new Error(`ต้องแนบไฟล์เอกสารรับมอบประเภท ${accType}`)
+  if (!mine.some(f => f.kind === 'warranty_installation'))
+    throw new Error('ต้องแนบไฟล์ Warranty งานติดตั้ง (Installation)')
+  // ใบที่ไม่มีผลติดตั้งรายเครื่อง (flow เก่าก่อน 0035) ไม่มี Warranty LBS ให้แนบไฟล์
+  if (installed.length > 0 && !mine.some(f => f.kind === 'warranty_lbs'))
+    throw new Error('ต้องแนบไฟล์ Warranty ตัวเครื่อง (LBS)')
+
+  const docNo = c.acceptanceDocNo?.trim() || undefined
+  const next: DB = {
+    ...db,
+    jobs: db.jobs.map(j => j.id === job.id
+      ? { ...j, acceptanceType: accType, acceptanceDocNo: docNo, acceptanceDate: c.acceptanceDate } : j),
+    jobWarranties: [
+      // บันทึกทับทั้งชุด + ล้าง Warranty LBS ของเครื่องเดียวกันที่ค้างจาก Job อื่น (กติกาเดียวกับ SQL — กันชน unique)
+      ...db.jobWarranties.filter(w => w.jobId !== job.id && !(w.kind === 'lbs' && lbs.some(x => x.unitId === w.unitId))),
+      { id: uid(), jobId: job.id, kind: 'installation', startDate: iw.start, endDate: iw.end, createdBy: actor.id, createdAt: now() },
+      ...lbs.map(w => ({
+        id: uid(), jobId: job.id, kind: 'lbs' as const, unitId: w.unitId,
+        startDate: w.start, endDate: w.end, createdBy: actor.id, createdAt: now(),
+      })),
+    ],
+    jobCloseoutFiles: allFiles,
+  }
+  const starts = lbs.map(w => w.start).sort(), ends = lbs.map(w => w.end).sort()
+  const txt = ` · รับมอบ ${accType}${docNo ? ` ${docNo}` : ''} (${c.acceptanceDate})` +
+    ` · Warranty ติดตั้ง ${iw.start}→${iw.end}` +
+    ` · Warranty LBS ${lbs.length} เครื่อง${lbs.length ? ` ${starts[0]}→${ends[ends.length - 1]}` : ''}`
+  return { db: next, txt }
+}
+
+/** บันทึกย้อนหลัง / แก้ไขเอกสารรับมอบ + Warranty ของใบที่ปิดแล้ว (sync rpc_set_job_closeout) */
+export function setJobCloseout(db: DB, actor: User, p: { jobId: string } & CloseoutInput): DB {
+  const job = db.jobs.find(j => j.id === p.jobId)
+  if (!job) throw new Error('ไม่พบ Job')
+  if (job.terminalStatus !== 'installed')
+    throw new Error(`${job.jobNo} ยังไม่ได้ปิดงานติดตั้ง — บันทึกเอกสารรับมอบ/Warranty ที่ขั้นตอนปิดงาน`)
+  const had = !!job.acceptanceType
+  const r = applyCloseout(db, actor, job, p)
+  return audit(r.db, actor, 'job', p.jobId, had ? 'update_job_closeout' : 'backfill_job_closeout',
+    `${job.jobNo}${had ? ' แก้เอกสารรับมอบ/Warranty' : ' บันทึกเอกสารรับมอบ/Warranty ย้อนหลัง'}${r.txt}`)
+}
+
+/** แนบเพิ่ม (เช่น PAC ที่มาทีหลัง) — ใบที่ปิดแล้วเท่านั้น (sync rpc_add_closeout_file) */
+export function addCloseoutFile(db: DB, actor: User, p: { jobId: string } & CloseoutFileInput): DB {
+  const job = db.jobs.find(j => j.id === p.jobId)
+  if (!job) throw new Error('ไม่พบ Job')
+  if (job.terminalStatus !== 'installed') throw new Error(`${job.jobNo} ยังไม่ได้ปิดงานติดตั้ง`)
+  assertCloseoutFile(p)
+  const next: DB = {
+    ...db,
+    jobCloseoutFiles: [...db.jobCloseoutFiles, {
+      id: uid(), jobId: p.jobId, kind: p.kind, docType: p.kind === 'acceptance' ? p.docType : undefined,
+      fileName: p.fileName.trim(), filePath: p.filePath,
+      mimeType: p.mimeType, sizeBytes: p.sizeBytes, uploadedBy: actor.id, uploadedAt: now(),
+    }],
+  }
+  return audit(next, actor, 'job', p.jobId, 'add_closeout_file', `${job.jobNo} แนบเอกสาร ${p.kind}${p.docType ? ` ${p.docType}` : ''} "${p.fileName.trim()}"`)
+}
+
+/** ห้ามลบไฟล์สุดท้ายของประเภทนั้น — ใบที่ปิดแล้วต้องมีหลักฐานเสมอ (sync rpc_delete_closeout_file) */
+export function deleteCloseoutFile(db: DB, actor: User, p: { fileId: string }): DB {
+  const f = db.jobCloseoutFiles.find(x => x.id === p.fileId)
+  if (!f) throw new Error('ไม่พบเอกสารแนบ')
+  if (!db.jobCloseoutFiles.some(x => x.jobId === f.jobId && x.kind === f.kind && x.id !== f.id))
+    throw new Error(`"${f.fileName}" เป็นไฟล์สุดท้ายของประเภทนี้ — แนบไฟล์ใหม่ก่อนแล้วค่อยลบไฟล์เดิม`)
+  const job = db.jobs.find(j => j.id === f.jobId)
+  // ไฟล์รับมอบประเภทที่ใช้ปิดงานต้องเหลือ ≥ 1 (ปิดด้วย Handover แต่ลบ Handover ตัวสุดท้ายไม่ได้)
+  if (f.kind === 'acceptance' && f.docType === job?.acceptanceType
+      && !db.jobCloseoutFiles.some(x => x.jobId === f.jobId && x.kind === 'acceptance' && x.docType === f.docType && x.id !== f.id))
+    throw new Error(`"${f.fileName}" เป็นไฟล์ ${f.docType} ตัวสุดท้ายที่ใช้ปิดงาน — แนบไฟล์ใหม่ก่อน หรือเปลี่ยนประเภทเอกสารรับมอบที่ "แก้ไข"`)
+  const next: DB = { ...db, jobCloseoutFiles: db.jobCloseoutFiles.filter(x => x.id !== p.fileId) }
+  return audit(next, actor, 'job', f.jobId, 'delete_closeout_file', `${job?.jobNo ?? ''} ลบเอกสาร ${f.kind} "${f.fileName}"`)
+}
+
 export function closeJobInstall(
   db: DB, actor: User,
-  p: { jobId: string; note?: string; hasIssues?: boolean; issueDetail?: string; issueFileUrl?: string },
+  p: { jobId: string; note?: string; hasIssues?: boolean; issueDetail?: string; issueFileUrl?: string; closeout?: CloseoutInput },
 ): DB {
   const job = db.jobs.find(j => j.id === p.jobId)
   if (!job) throw new Error('ไม่พบ Job')
@@ -3010,6 +3203,8 @@ export function closeJobInstall(
     throw new Error('กรุณาระบุว่างานนี้มีปัญหาหรือไม่ ก่อนปิดงาน')
   if (p.hasIssues && !p.issueDetail?.trim())
     throw new Error('เลือก "มีปัญหา" แล้ว ต้องกรอกรายละเอียดปัญหา')
+  // เอกสารรับมอบ + Warranty (0079) — throw ตรงนี้ = ใบยังไม่ปิด (เหมือน rollback ฝั่ง SQL)
+  const closeout = applyCloseout(db, actor, job, p.closeout ?? {})
 
   const lastDate = db.unitInstallations
     .filter(r => r.jobId === p.jobId && r.outcome === 'installed' && r.installedDate)
@@ -3018,8 +3213,8 @@ export function closeJobInstall(
     .pop()!
 
   let next: DB = {
-    ...db,
-    jobs: db.jobs.map(j => j.id === p.jobId
+    ...closeout.db,
+    jobs: closeout.db.jobs.map(j => j.id === p.jobId
       ? {
           ...j, terminalStatus: 'installed' as const,
           installedAt: lastDate, installNote: p.note, installConfirmedBy: actor.id,
@@ -3033,11 +3228,11 @@ export function closeJobInstall(
   const issueTxt = p.hasIssues ? ` · ⚠️ มีปัญหา: ${p.issueDetail!.trim()}` : ' · ไม่มีปัญหา'
   next = notify(next, {
     type: 'job_installed', dept: 'project', jobId: p.jobId,
-    message: `🏁 ${job.jobNo} ปิดงานติดตั้ง ${s.installed}/${s.total} เครื่อง${blockedTxt} · ${lastDate}${issueTxt} · โดย ${actor.fullName}`,
+    message: `🏁 ${job.jobNo} ปิดงานติดตั้ง ${s.installed}/${s.total} เครื่อง${blockedTxt} · ${lastDate} · รับมอบ ${p.closeout?.acceptanceType}${issueTxt} · โดย ${actor.fullName}`,
   })
   return audit(next, actor, 'job', p.jobId, 'close_job_install',
-    `${job.jobNo} ปิดงานติดตั้ง ${s.installed}/${s.total} เครื่อง${blockedTxt} วันล่าสุด ${lastDate}${issueTxt}` +
-    `${p.issueFileUrl ? ' (มีไฟล์แนบ)' : ''}${p.note ? ` — ${p.note}` : ''}`)
+    `${job.jobNo} ปิดงานติดตั้ง ${s.installed}/${s.total} เครื่อง${blockedTxt} วันล่าสุด ${lastDate}${issueTxt}${closeout.txt}` +
+    `${p.issueFileUrl ? ' (มีไฟล์แนบปัญหา)' : ''}${p.note ? ` — ${p.note}` : ''}`)
 }
 
 // เปิดงานใหม่หลังปิดผิด (0041) — installed → issued
