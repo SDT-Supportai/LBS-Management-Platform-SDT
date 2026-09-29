@@ -63,6 +63,10 @@ export const PERMISSIONS: Record<string, Department[]> = {
   'service.confirm': ['service', 'admin'],
   // เอกสารรับมอบ/Warranty ย้อนหลัง + แนบเพิ่ม (0079) — Service ปิดงาน · Project ถือเอกสารสัญญา/PAC ที่มาทีหลัง
   'closeout.manage': ['service', 'project', 'admin'],
+  // 0080 — ปิดงานติดตั้ง: Project ทุกคน + Service + Manage (มติผู้ใช้ 2026-09-29)
+  'job.closeInstall': ['service', 'project', 'admin'],
+  // 0080 — ตรวจรับของที่ Job ขอคืนเข้าคลัง (รับเข้าคลัง / ตีกลับ Job) — Purchasing ถือคลังตัวจริง
+  'stockReturn.receive': ['purchasing', 'admin'],
   'master.manage': ['admin'],
   // Material Database (0061) — Purchasing เป็นเจ้าของฐานข้อมูลวัสดุ: เพิ่ม/แก้/ลบ Accessory + Import Excel
   // แยกจาก master.manage เพราะ master.manage ยังครอบ "ข้ามขั้นอนุมัติ" (createPR/issueJob/cancelJob) + จัดการผู้ใช้
@@ -122,7 +126,7 @@ const EMPTY_DB: DB = {
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [], approvalComments: [],
   auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
-  jobPaymentFiles: [], jobDueExtensions: [], jobWarranties: [], jobCloseoutFiles: [],
+  jobPaymentFiles: [], jobDueExtensions: [], jobWarranties: [], jobCloseoutFiles: [], stockReturns: [],
   stdDrawings: [], stdPrices: [], stdBoms: [], stdBomLines: [],
 }
 
@@ -167,6 +171,7 @@ function migrateDb(raw: unknown): DB {
     jobPaymentFiles: d.jobPaymentFiles ?? [],     // 0076 — เอกสารแนบรายงวดเงิน
     jobWarranties: d.jobWarranties ?? [],         // 0079 — Warranty (Installation + LBS)
     jobCloseoutFiles: d.jobCloseoutFiles ?? [],   // 0079 — เอกสารรับมอบ / Warranty
+    stockReturns: d.stockReturns ?? [],           // 0080 — คำขอคืนเข้าคลัง
     jobDueExtensions: d.jobDueExtensions ?? [],   // 0075 — ประวัติเลื่อนกำหนดส่ง
     stdDrawings: d.stdDrawings ?? [],
     stdPrices: d.stdPrices ?? [],
@@ -221,7 +226,6 @@ export interface StoreActions {
   updateAccessoryRequestQty: (p: Parameters<typeof L.updateAccessoryRequestQty>[2]) => MaybePromise
   updateAccessoryRequestPrice: (p: Parameters<typeof L.updateAccessoryRequestPrice>[2]) => MaybePromise
   updatePoLinePrice: (p: Parameters<typeof L.updatePoLinePrice>[2]) => MaybePromise
-  returnAccessory: (p: Parameters<typeof L.returnAccessory>[2]) => MaybePromise
   cancelAccessoryRequest: (p: Parameters<typeof L.cancelAccessoryRequest>[2]) => MaybePromise
   deleteAccessoryRequest: (p: Parameters<typeof L.deleteAccessoryRequest>[2]) => MaybePromise
   createPR: (p: Parameters<typeof L.createPR>[2]) => MaybePromise
@@ -260,7 +264,13 @@ export interface StoreActions {
   setStockLot: (p: Parameters<typeof L.setStockLot>[2]) => MaybePromise
   markEpicorIssued: (p: Parameters<typeof L.markEpicorIssued>[2]) => MaybePromise
   undoEpicorIssued: (p: Parameters<typeof L.undoEpicorIssued>[2]) => MaybePromise
-  transferJobMaterialToStock: (p: Parameters<typeof L.transferJobMaterialToStock>[2]) => MaybePromise
+  // 0080 — คืน/โอนเข้าคลังต้องผ่าน Purchasing ตรวจรับ · ย้อนการโอน · ตรวจนับคลัง
+  requestStockReturn: (p: Parameters<typeof L.requestStockReturn>[2]) => MaybePromise
+  cancelStockReturn: (p: Parameters<typeof L.cancelStockReturn>[2]) => MaybePromise
+  receiveStockReturn: (p: Parameters<typeof L.receiveStockReturn>[2]) => MaybePromise
+  rejectStockReturn: (p: Parameters<typeof L.rejectStockReturn>[2]) => MaybePromise
+  reverseStockMovement: (p: Parameters<typeof L.reverseStockMovement>[2]) => MaybePromise
+  importStockCount: (p: Parameters<typeof L.importStockCount>[2]) => MaybePromise
   /** 0069 — คืน **token ตัวเต็ม** ครั้งเดียวตอนสร้าง (LIVE เก็บแต่ hash · เปิดดูซ้ำภายหลังไม่ได้) */
   createShareLink: (p: Parameters<typeof L.createShareLink>[2]) => Promise<string> | string
   revokeShareLink: (p: Parameters<typeof L.revokeShareLink>[2]) => MaybePromise
@@ -430,7 +440,6 @@ function DemoProvider({ children }: { children: ReactNode }) {
         updateAccessoryRequestQty: run('job.manage', L.updateAccessoryRequestQty),
         updateAccessoryRequestPrice: run('job.manage', L.updateAccessoryRequestPrice),
         updatePoLinePrice: run('purchasing.manage', L.updatePoLinePrice),
-        returnAccessory: run('job.manage', L.returnAccessory),
         cancelAccessoryRequest: run('job.manage', L.cancelAccessoryRequest),
         deleteAccessoryRequest: run('accessory.cleanup', L.deleteAccessoryRequest),
         // 3 action นี้ต้องผ่านการอนุมัติจาก Division — เรียกตรงได้เฉพาะ admin (ข้ามขั้นอนุมัติ)
@@ -451,7 +460,7 @@ function DemoProvider({ children }: { children: ReactNode }) {
         logSiteVisit: run('service.confirm', L.logSiteVisit),
         confirmUnitInstall: run('service.confirm', L.confirmUnitInstall),
         blockUnitInstall: run('service.confirm', L.blockUnitInstall),
-        closeJobInstall: run('service.confirm', L.closeJobInstall),
+        closeJobInstall: run('job.closeInstall', L.closeJobInstall),   // 0080: Project ทุกคน + Service + Manage
         setJobCloseout: run('closeout.manage', L.setJobCloseout),
         addCloseoutFile: run('closeout.manage', L.addCloseoutFile),
         deleteCloseoutFile: run('closeout.manage', L.deleteCloseoutFile),
@@ -478,7 +487,12 @@ function DemoProvider({ children }: { children: ReactNode }) {
         markEpicorIssued: run('epicor.issue', L.markEpicorIssued),
         undoEpicorIssued: run('epicor.issue', L.undoEpicorIssued),
         // โอนวัสดุเหลือจาก Job เข้าคลังคงเหลือ — Project เป็นเจ้าของวัสดุใน Job
-        transferJobMaterialToStock: run('job.manage', L.transferJobMaterialToStock),
+        requestStockReturn: run('job.manage', L.requestStockReturn),
+        cancelStockReturn: run('job.manage', L.cancelStockReturn),
+        receiveStockReturn: run('stockReturn.receive', L.receiveStockReturn),
+        rejectStockReturn: run('stockReturn.receive', L.rejectStockReturn),
+        reverseStockMovement: run('job.manage', L.reverseStockMovement),
+        importStockCount: run('accessoryStock.manage', L.importStockCount),
         // คืน token ให้หน้าจอโชว์ทันที — โหมด demo เก็บ token ตรง ๆ ในแถวอยู่แล้ว
         createShareLink: (p: Parameters<typeof L.createShareLink>[2]) => {
           const actor = requirePerm('stock.manage')

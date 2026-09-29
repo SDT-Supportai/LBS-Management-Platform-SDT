@@ -199,6 +199,7 @@ export type StockMovementType =
   | 'return_from_job'  // คืนของที่เบิกไปกลับคลัง
   | 'transfer_from_job'// โอนวัสดุเหลือจาก Job เข้าคลัง (ของที่ซื้อผ่าน PO ก็โอนได้)
   | 'job_cancelled'    // Job ถูกยกเลิก แล้วนำของเข้าคลัง
+  | 'reverse_to_job'   // ย้อนการคืน/โอนเข้าคลังที่ทำผิด — ของออกจากคลังกลับไปเป็นของ Job (0080)
 
 export interface StockMovement {
   id: string
@@ -212,6 +213,7 @@ export interface StockMovement {
   note?: string
   // Lot No. ของรายการนี้ (0055) — ขาเข้า = ล็อตที่กรอก · ขาออก = ล็อตที่อยู่ในคลังขณะนั้น
   lotNo?: string
+  reversalOf?: string          // 0080 — แถวนี้ย้อนแถวไหน (1 แถวย้อนได้ครั้งเดียว)
   performedBy: string
   performedAt: string
 }
@@ -657,6 +659,7 @@ export interface DB {
   teamMembers: TeamMember[]
   jobAssignments: JobAssignment[]
   stockMovements: StockMovement[]
+  stockReturns: StockReturnRequest[]      // 0080 — คำขอคืนเข้าคลัง รอ Purchasing ตรวจรับ
   jobPayments: JobPayment[]
   jobPaymentFiles: JobPaymentFile[]
   jobWarranties: JobWarranty[]           // 0079
@@ -672,4 +675,31 @@ export interface AppSettings {
   lineEnabled: boolean
   lineEndpoint: string     // เช่น /.netlify/functions/line-notify
   lineGroupNote: string    // บันทึกช่วยจำว่าผูกกับกลุ่มไหน (ค่า group id จริงอยู่ฝั่ง server env)
+}
+
+/**
+ * คำขอคืนของเข้าคลังคงเหลือ (0080) — ต้องผ่าน Purchasing ตรวจรับก่อนยอดคลังจะเพิ่ม
+ *   return       = คืนของที่เบิกจากคลังคงเหลือ (ส่วนที่ยังค้างที่ Job)
+ *   transfer     = โอนของที่ซื้อผ่าน PO (ส่วนที่ยังค้างที่ Job)
+ *   field_return = ช่างคืนของเหลือจากหน้างาน (ส่วนที่เบิกออกหน้างานแล้ว)
+ * pending = จองไว้ — เบิก/ตัดจำหน่ายส่วนนี้ไม่ได้ · received = รับจริง receivedQty (ส่วนต่างตีกลับ Job)
+ */
+export type StockReturnKind = 'return' | 'transfer' | 'field_return'
+export type StockReturnStatus = 'pending' | 'received' | 'rejected' | 'cancelled'
+export interface StockReturnRequest {
+  id: string
+  requestId: string
+  jobId: string
+  itemId: string
+  kind: StockReturnKind
+  qty: number
+  unitCost?: number
+  note?: string
+  status: StockReturnStatus
+  receivedQty?: number
+  decisionNote?: string
+  requestedBy?: string
+  requestedAt: string
+  decidedBy?: string
+  decidedAt?: string
 }

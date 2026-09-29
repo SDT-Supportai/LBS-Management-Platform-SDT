@@ -45,6 +45,7 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   // 0079 — เครื่องที่ Warranty LBS เหลือ ≤ 90 วัน (ของใบที่ปิดงานแล้ว) — เตือน Service เตรียมรับแจ้งซ่อม/ต่อประกัน
   const warrantyExpiring = db.jobWarranties.filter(w => w.kind === 'lbs' && warrantyStatus(w).state === 'expiring'
     && db.jobs.some(j => j.id === w.jobId && j.terminalStatus === 'installed')).length
+  const pendingReturnCount = db.stockReturns.filter(s => s.status === 'pending').length
   const pendingIds = new Set(db.approvalRequests.filter(r => r.status === 'pending').map(r => r.id))
   const pendingApprovals = pendingIds.size
   // ความเห็นผู้บริหาร (0050) ที่แปะอยู่บนคำขอซึ่งยังไม่ตัดสิน — Division ควรเห็นก่อนกดอนุมัติ
@@ -118,7 +119,9 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
           : undefined },
     ] },
     { mod: 'Master Data', icon: '📚', items: [
-      { to: '/master', icon: '🗄️', label: 'Material Master' },
+      // 0080 — ของที่ Job ขอคืนเข้าคลัง รอ Purchasing ตรวจรับ
+      { to: '/master', icon: '🗄️', label: 'Material Master',
+        badge: pendingReturnCount > 0 ? { text: `${pendingReturnCount} รอรับเข้าคลัง`, cls: 'amber' } : undefined },
       { to: '/standards', icon: '📐', label: 'Standards Library' },
     ] },
     // Administration เฉพาะ Manage (admin) — เดิมคือ Dev Settings

@@ -4,7 +4,8 @@ import type {
   AccessoryRequest, PurchaseRequisition, PurchaseOrder, AuditLog, AppNotification,
   Department, ApprovalRequest, ApprovalComment, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit, UnitInstallation,
   TeamMember, JobAssignment, StockMovement, JobPayment, PaymentType,
-  StdDrawing, StdDrawingFile, StdPrice, StdBom, StdBomLine, LbsUnitFile, JobWarranty, JobCloseoutFile, JobPaymentFile, JobDueExtension,
+  StdDrawing, StdDrawingFile, StdPrice, StdBom, StdBomLine, LbsUnitFile, JobWarranty, JobCloseoutFile,
+  StockReturnRequest, StockReturnKind, JobPaymentFile, JobDueExtension,
   PublicShareLink, PublicStockView,
 } from '../types'
 import type { CloseoutInput, CloseoutFileInput } from './logic'
@@ -295,8 +296,20 @@ function mapStockMovement(r: Row): StockMovement {
     unitCost: r.unit_cost != null ? Number(r.unit_cost) : undefined,
     balanceAfter: Number(r.balance_after), type: r.movement_type,
     refJobId: r.ref_job_id ?? undefined, refRequestId: r.ref_request_id ?? undefined,
-    note: r.note ?? undefined, lotNo: r.lot_no ?? undefined,
+    note: r.note ?? undefined, lotNo: r.lot_no ?? undefined, reversalOf: r.reversal_of ?? undefined,
     performedBy: r.performed_by ?? '', performedAt: r.performed_at,
+  }
+}
+// 0080 — คำขอคืนเข้าคลัง (NUMERIC มาเป็น string → Number)
+function mapStockReturn(r: Row): StockReturnRequest {
+  return {
+    id: r.id, requestId: r.request_id, jobId: r.job_id, itemId: r.item_id, kind: r.kind,
+    qty: Number(r.qty), unitCost: r.unit_cost != null ? Number(r.unit_cost) : undefined,
+    note: r.note ?? undefined, status: r.status,
+    receivedQty: r.received_qty != null ? Number(r.received_qty) : undefined,
+    decisionNote: r.decision_note ?? undefined,
+    requestedBy: r.requested_by ?? undefined, requestedAt: r.requested_at,
+    decidedBy: r.decided_by ?? undefined, decidedAt: r.decided_at ?? undefined,
   }
 }
 function mapTeamMember(r: Row): TeamMember {
@@ -419,7 +432,7 @@ const closeoutFileParam = (f: CloseoutFileInput) =>
   ({ kind: f.kind, doc_type: f.docType ?? null, name: f.fileName, path: f.filePath, mime: f.mimeType, size: f.sizeBytes })
 
 export async function loadAll(sb: SupabaseClient): Promise<DB> {
-  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, approvalComments, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, prices, boms, bomLines, shareLinks, unitFiles, paymentFiles, dueExts, warranties, closeoutFiles] =
+  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, approvalComments, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, prices, boms, bomLines, shareLinks, unitFiles, paymentFiles, dueExts, warranties, closeoutFiles, stockReturns] =
     await Promise.all([
       q(sb, 'profiles'),
       q(sb, 'items', { col: 'code', limit: 10000 }),
@@ -455,6 +468,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       q(sb, 'job_due_extensions', { col: 'created_at' }),               // 0075 — ประวัติเลื่อนกำหนดส่ง
       qOptional(sb, 'job_warranties', { col: 'start_date' }),              // 0079 — Warranty
       qOptional(sb, 'job_closeout_files', { col: 'uploaded_at', asc: false }), // 0079 — เอกสารรับมอบ
+      qOptional(sb, 'stock_return_requests', { col: 'requested_at', asc: false, limit: 2000 }), // 0080
     ])
 
   const readsByNotif = new Map<string, string[]>()
@@ -504,6 +518,7 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     jobPaymentFiles: paymentFiles.map(mapPaymentFile),
     jobWarranties: warranties.map(mapWarranty),
     jobCloseoutFiles: closeoutFiles.map(mapCloseoutFile),
+    stockReturns: stockReturns.map(mapStockReturn),
     // เรียง เก่า→ใหม่ ให้ตรงกับ demo (logic.ts ต่อท้าย array) — jobDueExtension ใช้ลำดับ append
     // เป็นตัวตัดสินที่ 2 เมื่อ createdAt เท่ากัน กลับด้านที่นี่แล้ว "ล่าสุด" จะชี้ผิดตัว
     jobDueExtensions: dueExts.map(mapDueExtension),
@@ -648,7 +663,6 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_update_accessory_request_price', { p_request_id: p.requestId, p_unit_price: p.unitPrice ?? null }),
     updatePoLinePrice: (p: { requestId: string; unitPrice?: number }) =>
       rpc(sb, 'rpc_update_po_line_price', { p_request_id: p.requestId, p_unit_price: p.unitPrice ?? null }),
-    returnAccessory: (p: { requestId: string }) => rpc(sb, 'rpc_return_accessory', { p_request_id: p.requestId }),
     // ลิงก์สาธารณะดูคลัง LBS (0069) — createShareLink ถูก override ใน StoreContext
     // เพราะต้อง **คืนค่า token** ที่ server สุ่มให้ (rpc() ตัวกลางทิ้ง data ทุกครั้ง)
     revokeShareLink: (p: { linkId: string }) =>
@@ -658,8 +672,21 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_write_off_job_material', {
         p_request_id: p.requestId, p_qty: p.qty, p_reason: p.reason,
       }),
-    transferJobMaterialToStock: (p: { requestId: string; qty: number; note?: string }) =>
-      rpc(sb, 'rpc_transfer_job_material_to_stock', { p_request_id: p.requestId, p_qty: p.qty, p_note: p.note ?? null }),
+    // 0080 — คืน/โอนเข้าคลังผ่าน Purchasing ตรวจรับ · ย้อนการโอน · ตรวจนับคลัง
+    requestStockReturn: (p: { requestId: string; kind: StockReturnKind; qty: number; note?: string }) =>
+      rpc(sb, 'rpc_request_stock_return', { p_request_id: p.requestId, p_kind: p.kind, p_qty: p.qty, p_note: p.note ?? null }),
+    cancelStockReturn: (p: { id: string }) => rpc(sb, 'rpc_cancel_stock_return', { p_id: p.id }),
+    receiveStockReturn: (p: { id: string; receivedQty: number; note?: string }) =>
+      rpc(sb, 'rpc_receive_stock_return', { p_id: p.id, p_received_qty: p.receivedQty, p_note: p.note ?? null }),
+    rejectStockReturn: (p: { id: string; reason: string }) =>
+      rpc(sb, 'rpc_reject_stock_return', { p_id: p.id, p_reason: p.reason }),
+    reverseStockMovement: (p: { movementId: string; destination: 'field' | 'job'; reason: string }) =>
+      rpc(sb, 'rpc_reverse_stock_movement', { p_movement_id: p.movementId, p_destination: p.destination, p_reason: p.reason }),
+    importStockCount: (p: { rows: { itemId: string; qty?: number; unitCost?: number }[]; reason: string }) =>
+      rpc(sb, 'rpc_import_stock_count', {
+        p_rows: p.rows.map(r => ({ item_id: r.itemId, qty: r.qty ?? null, unit_cost: r.unitCost ?? null })),
+        p_reason: p.reason,
+      }),
     // Payment ต่อ Job (0044) — Project เจ้าของงาน + Manage
     // ⚠️ ตัวจริงถูกแทนที่ที่ StoreContext ด้วย addJobPaymentRemote (ต้องคืน id ให้โมดัลผูกไฟล์ต่อ)
     //    คงไว้ที่นี่เพื่อให้ act มีคีย์ครบตอน Object.fromEntries — อย่าลบ

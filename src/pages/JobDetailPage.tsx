@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
-import { ACCEPTANCE_TYPES, jobWarranties, deriveJobStatus, jobStatusPhase, jobIsFieldActive, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, qtyOutToField, parseLatLng, fmtLatLng, PAYMENT_TYPES, jobDelivery, jobDueExtensions, paymentFiles, paymentFileCount, isAllowedDocFile, MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB, todayIso, daysBetweenIso } from '../data/logic'
+import { ACCEPTANCE_TYPES, jobWarranties, qtyIssuable, qtyFieldReturnable, reversibleMovements, stockReturnsOf, STOCK_RETURN_LABEL, deriveJobStatus, jobStatusPhase, jobIsFieldActive, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, qtyOutToField, parseLatLng, fmtLatLng, PAYMENT_TYPES, jobDelivery, jobDueExtensions, paymentFiles, paymentFileCount, isAllowedDocFile, MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB, todayIso, daysBetweenIso } from '../data/logic'
 import { BudgetFields, CoordInput, DeliveryBadge, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useToast, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, sitesToApi, sitesFromJob, readAsDataUrl, type CostForm, type InstallSite } from '../ui/components'
 import { uploadPaymentDoc, signedPaymentDocUrl, removePaymentDocs } from '../data/remote'
 import { supabase } from '../lib/supabase'
@@ -245,7 +245,7 @@ export default function JobDetailPage() {
   const setQty = (id: string, v: string) => setIssueQty(prev => ({ ...prev, [id]: v }))
   /** ค่าที่กรอกอยู่ + ผลตรวจของบรรทัดนั้น — ใช้ทั้งตอน render และตอนกดยืนยัน */
   const qtyState = (r: AccessoryRequest) => {
-    const max = qtyPendingIssue(r)
+    const max = qtyIssuable(db, r)   // 0080: หักส่วนที่จองรอ Purchasing ตรวจรับ
     const raw = issueQty[r.id] ?? String(max)
     const n = Number(raw)
     const err = raw.trim() === '' ? 'กรอกจำนวน'
@@ -258,7 +258,7 @@ export default function JobDetailPage() {
   const openIssueModal = () => {
     setPickedUnits(new Set(plan.lbsShort === 0 ? plan.lbsReady.map(u => u.id) : []))
     setPickedReqs(new Set(plan.accReady.map(r => r.id)))
-    setIssueQty(Object.fromEntries(plan.accReady.map(r => [r.id, String(qtyPendingIssue(r))])))
+    setIssueQty(Object.fromEntries(plan.accReady.map(r => [r.id, String(qtyIssuable(db, r))])))
     setIssueForm({
       startDate: job.installStartDate || job.requiredDate || '',
       endDate: job.installEndDate || job.requiredDate || '',
@@ -1342,6 +1342,24 @@ export default function JobDetailPage() {
                       {active && qtyWrittenOff(r) > 0 && (
                         <div className="muted" title={r.writeOffReason || undefined}>✂️ ตัดจำหน่าย {qtyWrittenOff(r)}</div>
                       )}
+                      {/* 0080 — คำขอคืนที่รอ Purchasing ตรวจรับ (ของยังนับอยู่ที่เดิม แต่จองไว้แล้ว) */}
+                      {stockReturnsOf(db, r.id).filter(s => s.status === 'pending').map(s => (
+                        <div key={s.id} style={{ fontSize: 11, marginTop: 2 }}>
+                          <span className="badge amber" title={s.note || undefined}>
+                            ⏳ {STOCK_RETURN_LABEL[s.kind]} {s.qty} · รอ Purchasing ตรวจรับ
+                          </span>
+                          {canManage && (
+                            <button className="link-btn" style={{ marginLeft: 4, fontSize: 11 }}
+                              onClick={async () => {
+                                if (await askConfirm({
+                                  title: `ยกเลิกคำขอ${STOCK_RETURN_LABEL[s.kind]} — ${item.name}`,
+                                  description: <>ยกเลิกคำขอ {s.qty} {item.uom} ที่ยังรอ Purchasing ตรวจรับ · ของกลับไปอยู่ที่เดิม</>,
+                                  confirmLabel: 'ยกเลิกคำขอ',
+                                })) tryAction(() => act.cancelStockReturn({ id: s.id }), 'ยกเลิกคำขอแล้ว')
+                              }}>ยกเลิก</button>
+                          )}
+                        </div>
+                      ))}
                     </td>
                     <td style={{ textAlign: 'right' }}>{active ? qtyIssuedToService(r) : '-'}</td>
                     <td style={{ textAlign: 'right' }}>
@@ -1442,50 +1460,98 @@ export default function JobDetailPage() {
                           tryAction(() => act.updateAccessoryRequestPrice({ requestId: r.id, unitPrice: v.price === '' ? undefined : Number(v.price) }), 'แก้ราคาแล้ว')
                         }}>แก้ราคา</button>
                       )}{' '}
-                      {canManage && !procureLocked && r.source === 'central_stock' && r.status === 'issued' && (
-                        <button className="small" onClick={() => tryAction(() => act.returnAccessory({ requestId: r.id }), 'คืน Accessory กลับคลังคงเหลือแล้ว')}>คืนคลัง</button>
-                      )}{' '}
-                      {/* โอนวัสดุเหลือเข้าคลังคงเหลือ ให้ Job อื่นเบิกต่อ — ต้นทุนตัดออกจาก Job นี้ตามของ (S1)
-                          ⚠️ 0067: **ไม่ใช้ procureLocked แล้ว** — ของเหลือมักรู้ตอนช่างกลับจากหน้างาน
-                          ซึ่งเป็นตอนที่ Job เป็น installed ไปแล้ว (มติผู้ใช้ 2026-09-11)
-                          ปิดเฉพาะ cancelled ซึ่งคืนของเข้าคลังตอนยกเลิกอยู่แล้ว — ตรงกับ guard ฝั่ง RPC เป๊ะ */}
-                      {canManage && job.terminalStatus !== 'cancelled'
-                        && (r.status === 'issued' || r.status === 'received') && effectiveQty(r) > 0 && (
-                        <button className="small" title="โอนของที่เหลือเข้าคลังคงเหลือ — ต้นทุนจะถูกตัดออกจาก Job นี้ตามจำนวนที่โอน"
+                      {/* 0080 — คืน/โอนเข้าคลัง = คำขอ รอ Purchasing ตรวจรับ (ยอดคลัง/ต้นทุนขยับตอนรับจริง)
+                          🔴 ขึ้นเฉพาะตอนมีของค้างที่ Job จริง (หักส่วนที่จองรออยู่) — เดิมขึ้นแม้ของออกหน้างานหมดแล้ว
+                          และ "คืนคลัง" เดิมคืนทั้งบรรทัดรวมของหน้างาน โดยไม่มี popup ยืนยัน */}
+                      {canManage && job.terminalStatus !== 'cancelled' && qtyIssuable(db, r) > 0
+                        && ((r.source === 'central_stock' && r.status === 'issued') || r.status === 'received') && (
+                        <button className="small" title="ขอคืนของที่ค้างอยู่ที่ Job เข้าคลังคงเหลือ — Purchasing ต้องตรวจรับก่อน"
                           onClick={async () => {
-                            const remain = effectiveQty(r)     // เพดาน = ของที่ Job ถือตามบัญชี
-                            const atJob = qtyPendingIssue(r)   // ส่วนที่ยังไม่ออกหน้างาน
-                            const out = qtyIssuedToService(r)
+                            const kind = r.source === 'central_stock' && r.status === 'issued' ? 'return' as const : 'transfer' as const
+                            const avail = qtyIssuable(db, r)
                             const v = await askPrompt({
-                              title: `โอนเข้าคลังคงเหลือ — ${item.name}`,
+                              title: `${STOCK_RETURN_LABEL[kind]} — ${item.name}`,
                               description: <>
-                                Job นี้ถืออยู่ <b>{remain} {item.uom}</b>
-                                {out > 0 && <> — ค้างที่ Job <b>{atJob}</b> · เบิกออกหน้างานแล้ว <b>{out}</b></>} ·
-                                ของที่โอนจะให้ Job อื่นเบิกต่อได้ และ<b>ต้นทุนถูกตัดออกจาก Job นี้ตามจำนวนที่โอน</b>
-                                {out > 0 && <><br />โอนเกิน {atJob} {item.uom} = นับว่า<b>ช่างส่งของที่เบิกไปแล้วคืนกลับคลัง</b> (บันทึกไว้ใน Audit)</>}
+                                ค้างอยู่ที่ Job <b>{avail} {item.uom}</b> (ยังไม่ออกหน้างาน) ·
+                                คำขอนี้จะ<b>รอ Purchasing ตรวจรับ</b> — ยอดคลังเพิ่มและต้นทุน Job ลด<b>ตอนรับของจริง</b>เท่านั้น
+                                <br />ระหว่างรอ ของส่วนนี้ถูกจองไว้ เบิกให้ Service / ตัดจำหน่ายไม่ได้ · ยกเลิกคำขอเองได้จนกว่า Purchasing จะรับ
                               </>,
                               fields: [
-                                { key: 'qty', label: 'จำนวนที่จะโอน', type: 'number', min: 0, required: true,
-                                  suffix: item.uom, value: String(atJob > 0 ? atJob : remain),
-                                  hint: out > 0 ? `ค้างที่ Job ${atJob} · รวมของที่ออกหน้างานแล้วโอนได้ถึง ${remain}` : undefined,
-                                  validate: v => Number(v) > remain ? `โอนได้ไม่เกิน ${remain} ${item.uom}` : Number(v) <= 0 ? 'ต้องมากกว่า 0' : undefined },
-                                { key: 'note', label: 'เหตุผล/หมายเหตุ', value: 'วัสดุเหลือจากหน้างาน' },
+                                { key: 'qty', label: 'จำนวน', type: 'number', min: 0, required: true, suffix: item.uom, value: String(avail),
+                                  validate: x => Number(x) > avail ? `ได้ไม่เกิน ${avail} ${item.uom}` : Number(x) <= 0 ? 'ต้องมากกว่า 0' : undefined },
+                                { key: 'note', label: 'เหตุผล/หมายเหตุ', value: 'วัสดุเหลือ ไม่ได้ใช้กับงานนี้' },
                               ],
-                              confirmLabel: 'โอนเข้าคลัง',
+                              confirmLabel: `ส่งคำขอ${STOCK_RETURN_LABEL[kind]}`,
                             })
                             if (!v) return
-                            tryAction(() => act.transferJobMaterialToStock({ requestId: r.id, qty: Number(v.qty), note: v.note || undefined }),
-                              `โอน ${item.name} ${Number(v.qty)} ${item.uom} เข้าคลังคงเหลือแล้ว`)
-                          }}>📦 โอนเข้าคลัง</button>
+                            tryAction(() => act.requestStockReturn({ requestId: r.id, kind, qty: Number(v.qty), note: v.note || undefined }),
+                              `ส่งคำขอ${STOCK_RETURN_LABEL[kind]} ${item.name} ${Number(v.qty)} ${item.uom} แล้ว — รอ Purchasing ตรวจรับ`)
+                          }}>{r.source === 'central_stock' && r.status === 'issued' ? '↩ คืนคลัง' : '📦 โอนเข้าคลัง'}</button>
+                      )}{' '}
+                      {/* 📥 ช่างคืนของเหลือจากหน้างาน (มติ 2026-09-29) — แทน "โอนเกินของค้าง" แบบเงียบของ 0067 */}
+                      {canManage && job.terminalStatus !== 'cancelled' && qtyFieldReturnable(db, r) > 0 && (
+                        <button className="small" title="ช่างนำของที่เบิกออกหน้างานแล้วแต่ไม่ได้ใช้ กลับมาคืน — Purchasing ต้องตรวจรับก่อน"
+                          onClick={async () => {
+                            const avail = qtyFieldReturnable(db, r)
+                            const v = await askPrompt({
+                              title: `📥 ช่างคืนของเหลือ — ${item.name}`,
+                              description: <>
+                                เบิกออกหน้างานแล้ว <b>{avail} {item.uom}</b> (หักที่แจ้งคืนรอตรวจรับอยู่) ·
+                                ใช้เมื่อ<b>ช่างนำของเหลือกลับมาจริง</b> — Purchasing จะนับของและ "รับเข้าคลัง" (รับบางส่วนได้) หรือ "ตีกลับ Job"
+                              </>,
+                              fields: [
+                                { key: 'qty', label: 'จำนวนที่ช่างคืน', type: 'number', min: 0, required: true, suffix: item.uom, value: '',
+                                  validate: x => Number(x) > avail ? `ได้ไม่เกิน ${avail} ${item.uom}` : Number(x) <= 0 ? 'ต้องมากกว่า 0' : undefined },
+                                { key: 'note', label: 'รายละเอียด', type: 'textarea', required: true,
+                                  placeholder: 'เช่น เหลือจากจุดติดตั้งที่ 2 · ช่างนำกลับวันที่ ... · สภาพของ' },
+                              ],
+                              confirmLabel: 'ส่งคำขอคืน',
+                            })
+                            if (!v) return
+                            tryAction(() => act.requestStockReturn({ requestId: r.id, kind: 'field_return', qty: Number(v.qty), note: v.note }),
+                              `แจ้งช่างคืน ${item.name} ${Number(v.qty)} ${item.uom} แล้ว — รอ Purchasing ตรวจรับ`)
+                          }}>📥 ช่างคืนของเหลือ</button>
+                      )}{' '}
+                      {/* ↩️ ย้อนการคืน/โอนที่เข้าคลังไปแล้ว (Project เจ้าของงาน + Manage) — แก้ของที่กดผิด */}
+                      {canManage && job.terminalStatus !== 'cancelled' && reversibleMovements(db, r.id).length > 0 && (
+                        <button className="small" title="ย้อนรายการคืน/โอนเข้าคลังที่ทำไปแล้ว — ของออกจากคลังกลับมาเป็นของ Job"
+                          onClick={async () => {
+                            const moves = reversibleMovements(db, r.id)
+                            const fieldOnly = !!job.terminalStatus
+                            const v = await askPrompt({
+                              title: `↩️ ย้อนการคืน/โอนเข้าคลัง — ${item.name}`,
+                              description: <>
+                                ใช้แก้รายการที่<b>กดคืน/โอนเข้าคลังผิด</b> (เช่น ของจริงอยู่หน้างานแล้ว) — ของจะ<b>ออกจากคลังคงเหลือ</b>
+                                และ<b>ต้นทุนกลับเข้างานนี้</b> · ย้อนได้ก็ต่อเมื่อคลังยังมีของพอ (ยังไม่ถูกเบิกไปใช้ Job อื่น) · บันทึกใน Audit และแจ้ง Purchasing
+                              </>,
+                              fields: [
+                                { key: 'move', label: 'รายการที่จะย้อน', type: 'select', required: true, value: moves[0].id,
+                                  options: moves.map(m => ({ value: m.id,
+                                    label: `${fmtDateTime(m.performedAt)} · ${m.type === 'return_from_job' ? 'คืนคลัง' : 'โอนเข้าคลัง'} ${m.qty} ${item.uom}` })) },
+                                { key: 'dest', label: 'ของอยู่ที่ไหนจริง', type: 'select', required: true, value: 'field',
+                                  options: [
+                                    { value: 'field', label: 'ออกหน้างานแล้ว (อยู่กับช่าง / ติดตั้งไปแล้ว)' },
+                                    ...(fieldOnly ? [] : [{ value: 'job', label: 'ยังค้างอยู่ที่ Job (ยังไม่ออกหน้างาน)' }]),
+                                  ],
+                                  hint: fieldOnly ? 'ใบนี้เบิกครบ/ปิดงานแล้ว — ของที่ย้อนต้องกลับไปเป็นของที่ออกหน้างาน' : undefined },
+                                { key: 'reason', label: 'เหตุผลที่ย้อน', type: 'textarea', required: true,
+                                  placeholder: 'เช่น กดโอนผิด ของติดตั้งไปแล้วที่หน้างาน' },
+                              ],
+                              confirmLabel: 'ย้อนรายการ',
+                            })
+                            if (!v) return
+                            tryAction(() => act.reverseStockMovement({ movementId: v.move, destination: v.dest as 'field' | 'job', reason: v.reason }),
+                              'ย้อนรายการแล้ว — ของออกจากคลังกลับมาเป็นของ Job')
+                          }}>↩️ ย้อนการโอน</button>
                       )}{' '}
                       {/* ✂️ ตัดจำหน่ายของเหลือ (0068) — ปิดบรรทัดโดยไม่เอาของเข้าคลัง
                           ขึ้นเฉพาะตอนยังมีของค้างอยู่ที่ Job จริง (ของที่ออกหน้างานแล้วถือว่าใช้ไปกับงานแล้ว)
                           ⚠️ ต้นทุนยังอยู่กับ Job — ต่างจากโอนคืนคลังที่ตัดต้นทุนออก จึงเขียนกำกับในโมดัลให้ชัด */}
                       {canManage && job.terminalStatus !== 'cancelled'
-                        && (r.status === 'issued' || r.status === 'received') && qtyPendingIssue(r) > 0 && (
+                        && (r.status === 'issued' || r.status === 'received') && qtyIssuable(db, r) > 0 && (
                         <button className="small" title="ตัดของเหลือออกจาก Job โดยไม่เอาเข้าคลัง — ใช้กับเศษที่ไม่คุ้มจะโอนคืน"
                           onClick={async () => {
-                            const atJob = qtyPendingIssue(r)
+                            const atJob = qtyIssuable(db, r)   // 0080: หักส่วนที่จองรอตรวจรับ
                             const v = await askPrompt({
                               title: `ตัดจำหน่ายของเหลือ — ${item.name}`,
                               description: <>

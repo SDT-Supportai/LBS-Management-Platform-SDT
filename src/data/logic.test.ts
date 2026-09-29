@@ -11,7 +11,8 @@ import {
   ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX,
   addDaysIso, daysBetweenIso, nextNo,
   markEpicorIssued, undoEpicorIssued, LINE_PUSH_TYPES, drawLbs,
-  qtyPendingIssue, qtyIssuedToService, accSettled, transferJobMaterialToStock, writeOffJobMaterial,
+  qtyPendingIssue, qtyIssuedToService, accSettled, requestStockReturn, receiveStockReturn, rejectStockReturn, cancelStockReturn,
+  reverseStockMovement, importStockCount, qtyIssuable, qtyFieldReturnable, reversibleMovements, writeOffJobMaterial,
   createShareLink, revokeShareLink, publicStockView, touchShareLink, newShareToken,
   adjustPoLine, confirmUnitInstall, blockUnitInstall, assignJobTeam, logSiteVisit, closeJobInstall,
   jobInstallSummary, jobHasIssuedUnits, jobIsFieldActive, unitInstallState, jobTeam, qtyOutToField,
@@ -53,7 +54,7 @@ const EMPTY: DB = {
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [], approvalComments: [],
   auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
-  jobPaymentFiles: [], jobDueExtensions: [], jobWarranties: [], jobCloseoutFiles: [],
+  jobPaymentFiles: [], jobDueExtensions: [], jobWarranties: [], jobCloseoutFiles: [], stockReturns: [],
   stdDrawings: [], stdPrices: [], stdBoms: [], stdBomLines: [],
 }
 
@@ -78,6 +79,25 @@ const unit = (over: Partial<LbsUnit> = {}): LbsUnit => ({
 })
 
 const db = (over: Partial<DB> = {}): DB => ({ ...EMPTY, ...over })
+
+/**
+ * 0080 — คืนเข้าคลังต้องผ่าน 2 ขั้น (ขอคืน → Purchasing ตรวจรับ) · helper นี้ย่อ 2 ขั้นให้เทสต์เดิม
+ * ของ 0067/0068/0072 ยังตรวจกติกาเดิมได้ (เพดาน · ปิดใบเมื่อชิ้นสุดท้ายออก)
+ * ส่วนที่เกินของค้างที่ Job = ช่างคืนของเหลือจากหน้างาน (field_return) แทน "โอนเกิน" แบบเดิม
+ */
+function returnViaApproval(d: DB, actor: DB['users'][number], p: { requestId: string; qty: number }): DB {
+  const r = d.accessoryRequests.find(x => x.id === p.requestId)!
+  const atJob = qtyIssuable(d, r)
+  const kind = r.source === 'central_stock' ? 'return' as const : 'transfer' as const
+  const fromJob = Math.min(p.qty, atJob)
+  const fromSite = p.qty - fromJob
+  let next = d
+  if (fromJob > 0 || fromSite === 0) next = requestStockReturn(next, actor, { requestId: p.requestId, kind, qty: p.qty > atJob && fromSite === 0 ? p.qty : fromJob })
+  if (fromSite > 0) next = requestStockReturn(next, actor, { requestId: p.requestId, kind: 'field_return', qty: fromSite, note: 'ช่างคืน' })
+  for (const s of next.stockReturns.filter(x => x.status === 'pending' && x.requestId === p.requestId))
+    next = receiveStockReturn(next, actor, { id: s.id, receivedQty: s.qty })
+  return next
+}
 
 // =============================================================================
 describe('ลิงก์สาธารณะดูคลัง LBS (0069) — กันข้อมูลหลุด', () => {
@@ -591,7 +611,7 @@ describe('เบิกแยกส่วน — เดินสถานะจ�
   it('โอนของที่ค้างที่ Job เข้าคลัง = รายการจบ + ต้นทุนถูกตัดออก', () => {
     const d0 = { ...base(), accessoryRequests: [req({ id: 'r1', qtyRequested: 10, unitPrice: 100, status: 'received' })] }
     const d1 = issueJobAccessory(d0, actor, { jobId: 'j1', requestIds: ['r1'], qtys: { r1: 4 }, ...plan })
-    const d2 = transferJobMaterialToStock(d1, actor, { requestId: 'r1', qty: 6 })
+    const d2 = returnViaApproval(d1, actor, { requestId: 'r1', qty: 6 })
     const r = d2.accessoryRequests[0]
     expect(r.qtyTransferred).toBe(6)
     expect(qtyIssuedToService(r)).toBe(4)      // ของที่ออกหน้างานแล้วไม่ถูกแตะ
@@ -604,18 +624,18 @@ describe('เบิกแยกส่วน — เดินสถานะจ�
   it('โอนเกินของที่ค้าง = ดึงของที่เบิกออกหน้างานแล้วกลับคืน (หัก qtyIssuedToService)', () => {
     const d0 = { ...base(), accessoryRequests: [req({ id: 'r1', qtyRequested: 10, unitPrice: 100, status: 'received' })] }
     const d1 = issueJobAccessory(d0, actor, { jobId: 'j1', requestIds: ['r1'], qtys: { r1: 8 }, ...plan })
-    const d2 = transferJobMaterialToStock(d1, actor, { requestId: 'r1', qty: 5 })   // ค้างที่ Job 2 → เกิน 3
+    const d2 = returnViaApproval(d1, actor, { requestId: 'r1', qty: 5 })   // ค้างที่ Job 2 → เกิน 3
     const r = d2.accessoryRequests[0]
     expect(r.qtyTransferred).toBe(5)
     expect(qtyIssuedToService(r)).toBe(5)      // 8 − 3 ที่ช่างส่งคืน
     expect(qtyPendingIssue(r)).toBe(0)         // บัญชี 3 ช่องยังรวมได้ 10 เสมอ
     expect(effectiveQty(r)).toBe(5)
-    expect(d2.auditLogs.some(a => /ส่งคืนกลับคลัง/.test(a.detail))).toBe(true)
+    expect(d2.auditLogs.some(a => /ช่างคืนของเหลือ/.test(a.detail))).toBe(true)
   })
 
   it('โอนคืนเกินจำนวนที่ Job ถือตามบัญชีไม่ได้', () => {
     const d0 = { ...base(), accessoryRequests: [req({ id: 'r1', qtyRequested: 10, unitPrice: 100, status: 'received' })] }
-    expect(() => transferJobMaterialToStock(d0, actor, { requestId: 'r1', qty: 11 })).toThrow(/ไม่เกิน 10/)
+    expect(() => requestStockReturn(d0, actor, { requestId: 'r1', kind: 'transfer', qty: 11 })).toThrow(/ไม่เกิน 10/)
   })
 
   // ---- ✂️ ตัดจำหน่ายของเหลือ (0068) ----
@@ -648,8 +668,8 @@ describe('เบิกแยกส่วน — เดินสถานะจ�
   it('ตัดจำหน่ายแล้วโอนคืนคลังเกินของที่มีจริงไม่ได้ (เพดานหัก qtyWrittenOff)', () => {
     const d0 = { ...base(), accessoryRequests: [req({ id: 'r1', qtyRequested: 10, unitPrice: 100, status: 'received' })] }
     const d1 = writeOffJobMaterial(d0, actor, { requestId: 'r1', qty: 4, reason: 'ของเสียหายหน้างาน' })
-    expect(() => transferJobMaterialToStock(d1, actor, { requestId: 'r1', qty: 7 })).toThrow(/ไม่เกิน 6/)
-    const d2 = transferJobMaterialToStock(d1, actor, { requestId: 'r1', qty: 6 })
+    expect(() => requestStockReturn(d1, actor, { requestId: 'r1', kind: 'transfer', qty: 7 })).toThrow(/ไม่เกิน 6/)
+    const d2 = returnViaApproval(d1, actor, { requestId: 'r1', qty: 6 })
     expect(accSettled(d2.accessoryRequests[0])).toBe(true)
     expect(effectiveQty(d2.accessoryRequests[0])).toBe(4)   // เหลือต้นทุนเฉพาะส่วนที่ตัดจำหน่าย
   })
@@ -659,7 +679,7 @@ describe('เบิกแยกส่วน — เดินสถานะจ�
   it('โอนคืนคลังเป็นชิ้นสุดท้าย → ปิดใบเป็น Issued เอง', () => {
     const d0 = issueJobLbs(base(), actor, { jobId: 'j1', ...plan })       // LBS ออกครบแล้ว
     expect(d0.jobs[0].terminalStatus).toBeNull()                          // ยังมีวัสดุค้าง
-    const d1 = transferJobMaterialToStock(d0, actor, { requestId: 'r1', qty: 1 })
+    const d1 = returnViaApproval(d0, actor, { requestId: 'r1', qty: 1 })
     expect(d1.jobs[0].terminalStatus).toBe('issued')
   })
 
@@ -1412,7 +1432,7 @@ describe('ปิดใบเงียบ — ประกาศให้ Service
   const announce = (d: DB) => d.notifications.filter(n => n.type === 'job_ready_to_install')
 
   it('โอนคืนคลังเป็นชิ้นสุดท้าย → ปิดใบ + แจ้ง Service', () => {
-    const d = transferJobMaterialToStock(ready(), actor, { requestId: 'r1', qty: 1 })
+    const d = returnViaApproval(ready(), actor, { requestId: 'r1', qty: 1 })
     expect(d.jobs[0].terminalStatus).toBe('issued')
     const n = announce(d)
     expect(n).toHaveLength(1)
@@ -1438,7 +1458,7 @@ describe('ปิดใบเงียบ — ประกาศให้ Service
   it('ยังปิดใบไม่ได้ = ต้องไม่ยิงข้อความปลอก', () => {
     // เหลือวัสดุ 2 หน่วย โอนคืนแค่ 1 → บรรทัดยังไม่จบ ใบยังไม่ปิด
     const d0 = { ...ready(), accessoryRequests: [req({ id: 'r1', status: 'received', poId: 'po1', qtyRequested: 2 })] }
-    const d = transferJobMaterialToStock(d0, actor, { requestId: 'r1', qty: 1 })
+    const d = returnViaApproval(d0, actor, { requestId: 'r1', qty: 1 })
     expect(d.jobs[0].terminalStatus).toBeNull()
     expect(announce(d)).toHaveLength(0)
   })
@@ -2385,5 +2405,141 @@ describe('0079 review fixes', () => {
       jobId: 'j1', ...c({ lbsWarranties: [], files: [pdf('acceptance', 'HANDOVER'), pdf('warranty_installation')] }),
     })
     expect(d.jobWarranties.map(w => w.kind)).toEqual(['installation'])
+  })
+})
+
+// =============================================================================
+// คืน/โอนเข้าคลังผ่าน Purchasing ตรวจรับ + ย้อนการโอน + ตรวจนับคลัง (0080 · 2026-09-29)
+//
+// 🔴 บั๊กที่ผู้ใช้เจอจากของจริง: "คืนคลัง" คืนทั้งบรรทัดรวมของที่ออกหน้างานแล้ว · ปุ่มโผล่ทั้งที่
+//    ไม่มีของค้างที่ Job · กดผิดแล้วย้อนไม่ได้ · ของเข้าคลังโดยไม่มีคนนับ
+// =============================================================================
+describe('คืนเข้าคลังผ่าน Purchasing (0080)', () => {
+  const pm = { id: 'u1', email: 'p@x.co', password: '', fullName: 'Project', department: 'project' as const, isActive: true }
+  const buyer = { id: 'u3', email: 'b@x.co', password: '', fullName: 'Purchasing', department: 'purchasing' as const, isActive: true }
+  const item = { id: 'i1', code: 'ACC-1', name: 'ฟิวส์', itemType: 'accessory' as const, uom: 'ea', stockableCentrally: true }
+  // บรรทัดจากคลังคงเหลือ 10 ชิ้น @100 · ออกหน้างาน 6 · ค้างที่ Job 4
+  const base = (over: Partial<AccessoryRequest> = {}, dbOver: Partial<DB> = {}) => db({
+    users: [pm, buyer], items: [item],
+    jobs: [job({ openedBy: 'u1' })],
+    accessoryRequests: [req({ id: 'r1', source: 'central_stock', status: 'issued', prId: null, poId: undefined,
+      qtyRequested: 10, unitPrice: 100, qtyIssuedToService: 6, ...over })],
+    accessoryStock: [{ itemId: 'i1', qtyOnHand: 5, avgUnitCost: 100 }],
+    ...dbOver,
+  })
+  const r1 = (d: DB) => d.accessoryRequests.find(r => r.id === 'r1')!
+  const onHand = (d: DB) => d.accessoryStock.find(s => s.itemId === 'i1')?.qtyOnHand ?? 0
+  const lastReturn = (d: DB) => d.stockReturns[d.stockReturns.length - 1]
+
+  it('🔴 ขอคืนคลัง = จองไว้เท่านั้น — ยอดคลัง/ต้นทุน Job ยังไม่ขยับ · แจ้ง Purchasing', () => {
+    const d = requestStockReturn(base(), pm, { requestId: 'r1', kind: 'return', qty: 4 })
+    expect(onHand(d)).toBe(5)
+    expect(r1(d).qtyTransferred ?? 0).toBe(0)
+    expect(qtyIssuable(d, r1(d))).toBe(0)                        // จองหมดแล้ว เบิก/ขอซ้ำไม่ได้
+    expect(qtyPendingIssue(r1(d))).toBe(4)                        // แต่ยังนับว่าค้างที่ Job (บรรทัดไม่จบ)
+    expect(d.notifications.some(n => n.type === 'stock_return_requested' && n.dept === 'purchasing')).toBe(true)
+    expect(() => writeOffJobMaterial(d, pm, { requestId: 'r1', qty: 1, reason: 'x' })).toThrow(/ไม่เกิน 0/)
+    expect(() => requestStockReturn(d, pm, { requestId: 'r1', kind: 'return', qty: 1 })).toThrow(/ไม่เกิน 0/)
+  })
+
+  it('🔴 คืนคลังเกินของที่ค้างที่ Job ไม่ได้ (บั๊กเดิมคืนทั้งบรรทัดรวมของหน้างาน)', () => {
+    expect(() => requestStockReturn(base(), pm, { requestId: 'r1', kind: 'return', qty: 5 })).toThrow(/ไม่เกิน 4/)
+    const allOut = base({ qtyIssuedToService: 10 })
+    expect(qtyIssuable(allOut, r1(allOut))).toBe(0)               // ปุ่มคืน/โอนต้องไม่ขึ้น
+    expect(() => requestStockReturn(allOut, pm, { requestId: 'r1', kind: 'return', qty: 1 })).toThrow(/ไม่เกิน 0/)
+  })
+
+  it('Purchasing รับบางส่วน → คลังเพิ่มตามจริง · ส่วนที่ขาดกลับไปค้างที่ Job · แจ้ง Project', () => {
+    const d1 = requestStockReturn(base(), pm, { requestId: 'r1', kind: 'return', qty: 4 })
+    const d2 = receiveStockReturn(d1, buyer, { id: lastReturn(d1).id, receivedQty: 3, note: 'ขาด 1' })
+    expect(onHand(d2)).toBe(8)
+    expect(r1(d2).qtyTransferred).toBe(3)
+    expect(qtyPendingIssue(r1(d2))).toBe(1)                       // 1 ชิ้นที่ขาดยังอยู่ที่ Job
+    expect(qtyIssuable(d2, r1(d2))).toBe(1)                       // และปลดจองแล้ว
+    expect(lastReturn(d2)).toMatchObject({ status: 'received', receivedQty: 3 })
+    expect(d2.stockMovements.some(m => m.type === 'return_from_job' && m.qty === 3)).toBe(true)
+    expect(d2.notifications.some(n => n.type === 'stock_return_received' && /ขาด 1/.test(n.message))).toBe(true)
+  })
+
+  it('ตีกลับ Job / ยกเลิกคำขอ = ไม่มีอะไรขยับ ของกลับไปเบิกได้', () => {
+    const d1 = requestStockReturn(base(), pm, { requestId: 'r1', kind: 'return', qty: 4 })
+    expect(() => rejectStockReturn(d1, buyer, { id: lastReturn(d1).id, reason: ' ' })).toThrow(/เหตุผล/)
+    const d2 = rejectStockReturn(d1, buyer, { id: lastReturn(d1).id, reason: 'ไม่ได้รับของจริง' })
+    expect(onHand(d2)).toBe(5)
+    expect(qtyIssuable(d2, r1(d2))).toBe(4)
+    expect(() => receiveStockReturn(d2, buyer, { id: lastReturn(d2).id, receivedQty: 1 })).toThrow(/ดำเนินการไปแล้ว/)
+    const c1 = requestStockReturn(base(), pm, { requestId: 'r1', kind: 'return', qty: 2 })
+    const c2 = cancelStockReturn(c1, pm, { id: lastReturn(c1).id })
+    expect(qtyIssuable(c2, r1(c2))).toBe(4)
+    expect(lastReturn(c2).status).toBe('cancelled')
+  })
+
+  it('📥 ช่างคืนของเหลือ — เฉพาะของที่ออกหน้างานแล้ว · รับแล้วยอดหน้างานลด', () => {
+    expect(qtyFieldReturnable(base(), r1(base()))).toBe(6)
+    expect(() => requestStockReturn(base(), pm, { requestId: 'r1', kind: 'field_return', qty: 2 })).toThrow(/รายละเอียด/)
+    expect(() => requestStockReturn(base(), pm, { requestId: 'r1', kind: 'field_return', qty: 7, note: 'x' })).toThrow(/ไม่เกิน 6/)
+    const d1 = requestStockReturn(base(), pm, { requestId: 'r1', kind: 'field_return', qty: 2, note: 'เหลือจากจุดที่ 2' })
+    expect(qtyIssuable(d1, r1(d1))).toBe(4)                       // ไม่กระทบของค้างที่ Job
+    const d2 = receiveStockReturn(d1, buyer, { id: lastReturn(d1).id, receivedQty: 2 })
+    expect(qtyIssuedToService(r1(d2))).toBe(4)
+    expect(r1(d2).qtyTransferred).toBe(2)
+    expect(onHand(d2)).toBe(7)
+  })
+
+  it('🔴 คำขอที่รออยู่ทำให้ใบยังไม่พลิกเป็น Issued · รับเข้าคลังชิ้นสุดท้ายแล้วถึงปิดใบ', () => {
+    const d0 = base({}, {
+      jobs: [job({ openedBy: 'u1', lbsQtyRequired: 1 })],
+      lbsUnits: [unit({ id: 'a', status: 'issued', jobId: 'j1' })],
+    })
+    const d1 = requestStockReturn(d0, pm, { requestId: 'r1', kind: 'return', qty: 4 })
+    expect(d1.jobs[0].terminalStatus).toBeNull()
+    const d2 = receiveStockReturn(d1, buyer, { id: lastReturn(d1).id, receivedQty: 4 })
+    expect(d2.jobs[0].terminalStatus).toBe('issued')
+  })
+
+  it('↩️ ย้อนการโอนที่เข้าคลังไปแล้ว → ของออกจากคลัง · กลับเป็นของหน้างาน · ย้อนซ้ำไม่ได้', () => {
+    const d1 = requestStockReturn(base(), pm, { requestId: 'r1', kind: 'return', qty: 4 })
+    const d2 = receiveStockReturn(d1, buyer, { id: lastReturn(d1).id, receivedQty: 4 })
+    const mv = reversibleMovements(d2, 'r1')
+    expect(mv).toHaveLength(1)
+    const d3 = reverseStockMovement(d2, pm, { movementId: mv[0].id, destination: 'field', reason: 'ของติดตั้งไปแล้ว' })
+    expect(onHand(d3)).toBe(5)
+    expect(r1(d3).qtyTransferred).toBe(0)
+    expect(qtyIssuedToService(r1(d3))).toBe(10)
+    expect(reversibleMovements(d3, 'r1')).toHaveLength(0)
+    expect(() => reverseStockMovement(d3, pm, { movementId: mv[0].id, destination: 'field', reason: 'x' })).toThrow(/ย้อนไปแล้ว/)
+    expect(d3.stockMovements.some(m => m.type === 'reverse_to_job' && m.reversalOf === mv[0].id)).toBe(true)
+  })
+
+  it('ย้อนไม่ได้ถ้าของในคลังถูกเบิกไปใช้แล้ว · ใบที่เบิกครบห้ามย้อนกลับไปค้างที่ Job', () => {
+    const d1 = requestStockReturn(base(), pm, { requestId: 'r1', kind: 'return', qty: 4 })
+    const d2 = receiveStockReturn(d1, buyer, { id: lastReturn(d1).id, receivedQty: 4 })
+    const mv = reversibleMovements(d2, 'r1')[0]
+    const drained = { ...d2, accessoryStock: [{ itemId: 'i1', qtyOnHand: 2, avgUnitCost: 100 }] }
+    expect(() => reverseStockMovement(drained, pm, { movementId: mv.id, destination: 'field', reason: 'x' })).toThrow(/น้อยกว่าที่จะย้อน/)
+    const closed = { ...d2, jobs: d2.jobs.map(j => ({ ...j, terminalStatus: 'installed' as const })) }
+    expect(() => reverseStockMovement(closed, pm, { movementId: mv.id, destination: 'job', reason: 'x' })).toThrow(/ออกหน้างานแล้ว/)
+  })
+
+  it('ย้อนรายการ "คืนทั้งบรรทัด" แบบเก่า (status returned) → กลับเป็น issued ยอดเดิมครบ', () => {
+    const legacy = base({ status: 'returned' }, {
+      accessoryStock: [{ itemId: 'i1', qtyOnHand: 12, avgUnitCost: 100 }],
+      stockMovements: [{ id: 'm-old', itemId: 'i1', qty: 10, unitCost: 100, balanceAfter: 12, type: 'return_from_job',
+        refJobId: 'j1', refRequestId: 'r1', performedBy: 'u1', performedAt: '2026-09-20T00:00:00.000Z' }],
+    })
+    const d = reverseStockMovement(legacy, pm, { movementId: 'm-old', destination: 'field', reason: 'คืนผิดทั้งบรรทัด' })
+    expect(r1(d).status).toBe('issued')
+    expect(qtyIssuedToService(r1(d))).toBe(6)
+    expect(onHand(d)).toBe(2)
+  })
+
+  it('ตรวจนับคลัง: ตั้งยอด + ต้นทุนใหม่ · ลง ledger แบบ import_adjust · ไม่มีอะไรเปลี่ยน = error', () => {
+    const d = importStockCount(base(), buyer, { reason: 'นับประจำเดือน', rows: [{ itemId: 'i1', qty: 3, unitCost: 120 }] })
+    expect(onHand(d)).toBe(3)
+    expect(d.accessoryStock[0].avgUnitCost).toBe(120)
+    expect(d.stockMovements.some(m => m.type === 'import_adjust' && m.qty === -2)).toBe(true)
+    expect(d.auditLogs[0].action).toBe('import_stock_count')
+    expect(() => importStockCount(base(), buyer, { reason: 'x', rows: [{ itemId: 'i1', qty: 5, unitCost: 100 }] })).toThrow(/ไม่มีรายการที่เปลี่ยน/)
+    expect(() => importStockCount(base(), buyer, { reason: ' ', rows: [{ itemId: 'i1', qty: 1 }] })).toThrow(/เหตุผล/)
   })
 })

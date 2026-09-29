@@ -8,6 +8,19 @@ import {
   guideSheet, saveReport, stampMeta, summarySheet,
 } from '../ui/xlsxReport'
 import type { Item, StockMovementType } from '../types'
+import { Link } from 'react-router-dom'
+import { pendingStockReturns, STOCK_RETURN_LABEL, todayIso } from '../data/logic'
+
+// 0080 — ไฟล์ตรวจนับคลังคงเหลือ (หัวคอลัมน์ใช้ทั้งตอน Export และ Import)
+const COUNT_COLS = {
+  code: 'รหัสระบบ', epicor: 'รหัส Epicor', name: 'ชื่ออุปกรณ์', uom: 'หน่วย', lot: 'Lot No.',
+  sysQty: 'คงเหลือในระบบ', sysCost: 'ต้นทุนถัวเฉลี่ยในระบบ',
+  newQty: 'ยอดนับจริง', newCost: 'ต้นทุน/หน่วยใหม่', note: 'หมายเหตุ',
+} as const
+interface CountPreview {
+  rows: { item: Item; curQty: number; curCost: number; qty?: number; cost?: number }[]
+  errors: string[]
+}
 
 const MOVEMENT_LABEL: Record<StockMovementType, string> = {
   initial: 'ยอดตั้งต้น',
@@ -17,6 +30,7 @@ const MOVEMENT_LABEL: Record<StockMovementType, string> = {
   return_from_job: 'คืนจาก Job',
   transfer_from_job: 'โอนจาก Job',
   job_cancelled: 'Job ถูกยกเลิก',
+  reverse_to_job: 'ย้อนการคืน/โอน (กลับไปที่ Job)',
 }
 
 // ---------------- Excel import/export (Accessory Catalog) ----------------
@@ -165,6 +179,86 @@ export default function MasterDataPage() {
   // คลังคงเหลือ = วัสดุที่ตั้งให้เก็บสต็อก หรือมีของค้างอยู่จริง (S2)
   const stockItemsAll = accessoriesAll.filter(i => i.stockableCentrally || stockQty(i.id) > 0)
   const stockTotalValue = stockItemsAll.reduce((s, i) => s + stockQty(i.id) * stockCost(i.id), 0)
+
+  // ---------------- 0080: รอตรวจรับเข้าคลัง + ตรวจนับคลัง (Export/Import) ----------------
+  const canReceive = can(user, 'stockReturn.receive')
+  const pendingReturns = pendingStockReturns(db)
+  const countFileRef = useRef<HTMLInputElement>(null)
+  const [countPreview, setCountPreview] = useState<CountPreview | null>(null)
+  const [countReason, setCountReason] = useState('')
+  const [countSaving, setCountSaving] = useState(false)
+
+  // ไฟล์ตรวจนับ: ยอด/ต้นทุนในระบบ + ช่องว่าง "ยอดนับจริง" / "ต้นทุน/หน่วยใหม่" ให้กรอกแล้ว Import กลับ
+  const exportCount = async () => {
+    const XLSX = await import('xlsx')
+    const list = term ? stockItems : stockItemsAll
+    const rows = list.map(i => ({
+      [COUNT_COLS.code]: i.code, [COUNT_COLS.epicor]: i.epicorCode ?? '', [COUNT_COLS.name]: i.name, [COUNT_COLS.uom]: i.uom,
+      [COUNT_COLS.lot]: stockLot(i.id) ?? '', [COUNT_COLS.sysQty]: stockQty(i.id),
+      [COUNT_COLS.sysCost]: Math.round(stockCost(i.id) * 100) / 100,
+      [COUNT_COLS.newQty]: '', [COUNT_COLS.newCost]: '', [COUNT_COLS.note]: '',
+    }))
+    const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ [COUNT_COLS.code]: '' }])
+    ws['!cols'] = [{ wch: 14 }, { wch: 18 }, { wch: 36 }, { wch: 8 }, { wch: 14 }, { wch: 14 }, { wch: 18 }, { wch: 14 }, { wch: 18 }, { wch: 24 }]
+    const guide = XLSX.utils.aoa_to_sheet([
+      ['วิธีใช้ไฟล์ตรวจนับคลังคงเหลือ'],
+      [`1) กรอก "${COUNT_COLS.newQty}" = ยอดที่นับได้จริง (ไม่ใช่ยอดที่จะบวกเพิ่ม) · เว้นว่าง = ไม่แตะยอด`],
+      [`2) กรอก "${COUNT_COLS.newCost}" เฉพาะรายการที่ต้องการแก้ต้นทุนถัวเฉลี่ย · เว้นว่าง = คงต้นทุนเดิม`],
+      ['3) ห้ามแก้ "รหัสระบบ" — ใช้จับคู่กับวัสดุในระบบ (ไม่มี ใช้รหัส Epicor แทน)'],
+      ['4) กด ⬆ Import ตรวจนับ ที่พาเนลคลังคงเหลือ → ตรวจส่วนต่างใน preview → ใส่เหตุผลแล้วยืนยัน'],
+      ['⚠️ ยอดคลังในระบบอาจเปลี่ยนระหว่างนับ (มีการเบิก/รับคืน) — preview เทียบกับยอด ณ ตอน Import เสมอ'],
+    ])
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'ตรวจนับคลัง')
+    XLSX.utils.book_append_sheet(wb, guide, 'วิธีใช้')
+    XLSX.writeFile(wb, `ตรวจนับคลังคงเหลือ-${todayIso()}.xlsx`)
+  }
+
+  const onPickCountFile = async (file: File) => {
+    try {
+      const XLSX = await import('xlsx')
+      const wb = XLSX.read(await file.arrayBuffer())
+      const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[wb.SheetNames[0]], { defval: '' })
+      const rows: CountPreview['rows'] = []
+      const errors: string[] = []
+      raw.forEach((row, idx) => {
+        const no = `แถว ${idx + 2}`
+        const code = cell(row, [COUNT_COLS.code, 'code'])
+        const ep = cell(row, [COUNT_COLS.epicor, 'epicor'])
+        const qStr = cell(row, [COUNT_COLS.newQty, 'counted_qty', 'qty'])
+        const cStr = cell(row, [COUNT_COLS.newCost, 'unit_cost', 'cost'])
+        if (!qStr && !cStr) return                                   // ไม่ได้กรอกอะไร = ไม่แตะ
+        const item = (code && db.items.find(i => i.code === code)) || (ep && db.items.find(i => i.epicorCode === ep)) || undefined
+        if (!item) return void errors.push(`${no}: ไม่พบวัสดุ "${code || ep || '-'}" ในระบบ`)
+        const qty = qStr === '' ? undefined : Number(qStr)
+        const cost = cStr === '' ? undefined : Number(cStr)
+        if (qty !== undefined && (!Number.isFinite(qty) || qty < 0)) return void errors.push(`${no} ${item.name}: ยอดนับ "${qStr}" ต้องเป็นตัวเลขไม่ติดลบ`)
+        if (cost !== undefined && (!Number.isFinite(cost) || cost < 0)) return void errors.push(`${no} ${item.name}: ต้นทุน "${cStr}" ต้องเป็นตัวเลขไม่ติดลบ`)
+        if (rows.some(r => r.item.id === item.id)) return void errors.push(`${no} ${item.name}: มีซ้ำในไฟล์`)
+        const curQty = stockQty(item.id), curCost = stockCost(item.id)
+        const qtyChanged = qty !== undefined && qty !== curQty
+        const costChanged = cost !== undefined && Math.abs(cost - curCost) > 0.004 && (qty ?? curQty) > 0
+        if (!qtyChanged && !costChanged) return
+        rows.push({ item, curQty, curCost, qty: qtyChanged ? qty : undefined, cost: costChanged ? cost : undefined })
+      })
+      if (rows.length === 0 && errors.length === 0) return show('ไม่มีรายการที่ต่างจากระบบ — ยอดและต้นทุนตรงกันทั้งหมด')
+      setCountReason('')
+      setCountPreview({ rows, errors })
+    } catch {
+      show('อ่านไฟล์ไม่ได้ — ต้องเป็นไฟล์ Excel (.xlsx) ที่ Export จากปุ่ม "⬇ Export ตรวจนับ"', true)
+    }
+  }
+
+  const runCountImport = async () => {
+    if (!countPreview) return
+    setCountSaving(true)
+    const ok = await tryAction(() => act.importStockCount({
+      reason: countReason,
+      rows: countPreview.rows.map(r => ({ itemId: r.item.id, qty: r.qty, unitCost: r.cost })),
+    }), `ปรับคลังตามผลตรวจนับแล้ว ${countPreview.rows.length} รายการ`)
+    setCountSaving(false)
+    if (ok) setCountPreview(null)
+  }
 
   /**
    * ค้นหาวัสดุ (2026-09-09) — ชื่ออุปกรณ์ / รหัส Epicor / Lot No.
@@ -655,6 +749,82 @@ export default function MasterDataPage() {
         )}
       </div>
 
+      {/* ---------------- 0080: รอตรวจรับเข้าคลัง (คำขอคืน/โอน/ช่างคืน จาก Job) ---------------- */}
+      {pendingReturns.length > 0 && (
+        <div className="panel">
+          <div className="panel-head">
+            <h3>📥 รอตรวจรับเข้าคลัง ({pendingReturns.length})
+              <span className="muted" style={{ fontWeight: 400 }}> · ของที่ Job ขอคืน — ยอดคลังยังไม่เพิ่มจนกว่า Purchasing จะนับของและรับเข้า</span>
+            </h3>
+          </div>
+          <div className="table-scroll">
+            <table>
+              <thead><tr>
+                <th>ขอเมื่อ</th><th>Job</th><th>วัสดุ</th><th>ประเภท</th>
+                <th style={{ textAlign: 'right' }}>จำนวนแจ้งคืน</th><th style={{ textAlign: 'right' }}>ต้นทุน/หน่วย</th>
+                <th>ผู้ขอ</th><th>หมายเหตุ</th><th></th>
+              </tr></thead>
+              <tbody>
+                {pendingReturns.map(s => {
+                  const it = db.items.find(i => i.id === s.itemId)
+                  const jb = db.jobs.find(j => j.id === s.jobId)
+                  const uom = it?.uom ?? ''
+                  return (
+                    <tr key={s.id}>
+                      <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(s.requestedAt)}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        {jb ? <Link to={`/jobs/${jb.id}`}><b>{jb.jobNo}</b></Link> : '-'}
+                        {jb?.terminalStatus === 'cancelled' && <div><span className="badge red">Job ยกเลิกแล้ว</span></div>}
+                      </td>
+                      <td>{it?.name ?? '-'}<div className="muted mono" style={{ fontSize: 11 }}>{it?.epicorCode ?? it?.code}</div></td>
+                      <td><span className={`badge ${s.kind === 'field_return' ? 'blue' : 'neutral'}`}>{STOCK_RETURN_LABEL[s.kind]}</span></td>
+                      <td style={{ textAlign: 'right' }}><b>{s.qty}</b> {uom}</td>
+                      <td style={{ textAlign: 'right' }}>{fmtBaht(s.unitCost)}</td>
+                      <td className="muted">{db.users.find(u => u.id === s.requestedBy)?.fullName ?? '-'}</td>
+                      <td className="muted" style={{ maxWidth: 240 }}>{s.note || '-'}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        {canReceive ? <>
+                          <button className="small success" onClick={async () => {
+                            const v = await askPrompt({
+                              title: `รับเข้าคลัง — ${it?.name ?? ''}`,
+                              description: <>
+                                {jb?.jobNo} แจ้ง{STOCK_RETURN_LABEL[s.kind]} <b>{s.qty} {uom}</b> · นับของที่ได้รับจริงแล้วกรอกจำนวน ·
+                                <b>รับไม่ครบได้</b> — ส่วนที่ขาดจะตีกลับ Job อัตโนมัติ (ยังค้างที่เดิม) และแจ้ง Project
+                                <br />ยอดคลังเพิ่ม + ต้นทุน Job ลดตามจำนวนที่รับจริง
+                              </>,
+                              fields: [
+                                { key: 'qty', label: 'จำนวนที่รับเข้าคลังจริง', type: 'number', min: 0, required: true, suffix: uom, value: String(s.qty),
+                                  validate: x => Number(x) > s.qty ? `ได้ไม่เกิน ${s.qty} ${uom}` : Number(x) <= 0 ? 'ต้องมากกว่า 0 — ถ้าไม่ได้รับเลยให้กด "ตีกลับ Job"' : undefined },
+                                { key: 'note', label: 'หมายเหตุการตรวจรับ', placeholder: 'เช่น สภาพดี / ขาด 2 ชิ้น ช่างยังไม่ได้ส่ง' },
+                              ],
+                              confirmLabel: 'รับเข้าคลัง',
+                            })
+                            if (!v) return
+                            tryAction(() => act.receiveStockReturn({ id: s.id, receivedQty: Number(v.qty), note: v.note || undefined }),
+                              `รับ ${it?.name ?? ''} ${Number(v.qty)} ${uom} เข้าคลังแล้ว`)
+                          }}>✅ รับเข้าคลัง</button>{' '}
+                          <button className="small danger" onClick={async () => {
+                            const v = await askPrompt({
+                              title: `ตีกลับ Job — ${it?.name ?? ''}`,
+                              description: <>ไม่รับของเข้าคลัง · ของกลับไปอยู่ที่เดิมของ {jb?.jobNo} (ไม่มีอะไรขยับ) และแจ้ง Project พร้อมเหตุผล</>,
+                              fields: [{ key: 'reason', label: 'เหตุผลที่ตีกลับ', type: 'textarea', required: true,
+                                placeholder: 'เช่น ไม่ได้รับของจริง / ของเสียหายใช้ไม่ได้ / ผิดรายการ' }],
+                              confirmLabel: 'ตีกลับ Job',
+                            })
+                            if (!v) return
+                            tryAction(() => act.rejectStockReturn({ id: s.id, reason: v.reason }), 'ตีกลับคำขอแล้ว — แจ้ง Project')
+                          }}>↩️ ตีกลับ Job</button>
+                        </> : <span className="badge amber">รอ Purchasing ตรวจรับ</span>}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* ---------------- คลังคงเหลือ (แยกจากฐานข้อมูลวัสดุ — S2) ---------------- */}
       <div className="panel">
         <div className="panel-head">
@@ -671,6 +841,14 @@ export default function MasterDataPage() {
             <button className="small" onClick={() => setShowStock(v => !v)}>
               {stockOpen ? 'ซ่อนรายการ' : `แสดงรายการ (${stockItemsAll.length})`}
             </button>
+            {(canStock || canReport) && (
+              <button className="small" onClick={exportCount} title="ไฟล์ตรวจนับ — ยอด/ต้นทุนในระบบ + ช่องกรอกยอดนับจริง">⬇ Export ตรวจนับ</button>
+            )}
+            {canStock && <>
+              <button className="small" onClick={() => countFileRef.current?.click()} title="นำเข้าผลตรวจนับ (ยอด + ต้นทุน/หน่วย) — ดู preview ก่อนยืนยัน">⬆ Import ตรวจนับ</button>
+              <input ref={countFileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }}
+                onChange={e => { const fl = e.target.files?.[0]; if (fl) onPickCountFile(fl); e.target.value = '' }} />
+            </>}
           </div>
         </div>
         {/* จังหวะตัดยอด — คำถามที่ถูกถามซ้ำ ๆ จึงเขียนไว้ตรงนี้เลย ไม่ให้ต้องเดาหรือไปไล่ ledger
@@ -680,7 +858,8 @@ export default function MasterDataPage() {
             ⏱️ <b>ยอดคงเหลือตัดตอน Job ดึงของออกจากคลัง</b> — กด “เพิ่มวัสดุ → เบิกจากคลังคงเหลือ”
             ที่หน้า Job แล้วยอดลด<b>ทันที</b> พร้อมลงรายการในประวัติการเคลื่อนไหว ·
             ขั้น <b>“เบิกให้ Service”</b> เป็นการส่งของที่ Job ถืออยู่แล้วออกไปหน้างาน <b>ไม่แตะยอดคลังอีก</b> ·
-            ของที่ใช้ไม่หมดต้องกด <b>“📦 โอนเข้าคลัง”</b> ที่หน้า Job ยอดจึงจะกลับเข้ามา
+            ของที่ใช้ไม่หมด Project กด <b>“คืนคลัง / 📦 โอนเข้าคลัง / 📥 ช่างคืนของเหลือ”</b> ที่หน้า Job →
+            <b>Purchasing นับของแล้วกด “รับเข้าคลัง”</b> ยอดจึงจะกลับเข้ามา (ดูพาเนล “รอตรวจรับเข้าคลัง” ด้านบน)
           </div>
         </div>
         {stockOpen && <div className="table-scroll">
@@ -949,6 +1128,70 @@ export default function MasterDataPage() {
         </Modal>
       )}
 
+      {/* ---------------- 0080: preview ผลตรวจนับก่อนยืนยัน ---------------- */}
+      {countPreview && (() => {
+        const valueDiff = countPreview.rows.reduce((s, r) =>
+          s + (r.qty ?? r.curQty) * (r.cost ?? r.curCost) - r.curQty * r.curCost, 0)
+        return (
+          <Modal title={`Import ตรวจนับคลัง — ${countPreview.rows.length} รายการที่ต่างจากระบบ`} size="xl"
+            onClose={() => { if (!countSaving) setCountPreview(null) }}
+            footer={<>
+              <button disabled={countSaving} onClick={() => setCountPreview(null)}>ยกเลิก</button>
+              <button className="primary" disabled={countSaving || !countReason.trim() || countPreview.rows.length === 0}
+                title={!countReason.trim() ? 'ระบุเหตุผล/รอบการตรวจนับก่อน' : ''}
+                onClick={runCountImport}>
+                {countSaving ? 'กำลังบันทึก…' : `ยืนยันปรับคลัง ${countPreview.rows.length} รายการ`}
+              </button>
+            </>}>
+            {countPreview.errors.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <b style={{ color: 'var(--danger)' }}>ข้ามแถวที่อ่านไม่ได้ {countPreview.errors.length} แถว</b>
+                <ul className="muted" style={{ margin: '6px 0 0 18px' }}>
+                  {countPreview.errors.slice(0, 15).map((e, i) => <li key={i}>{e}</li>)}
+                  {countPreview.errors.length > 15 && <li>… และอีก {countPreview.errors.length - 15} แถว</li>}
+                </ul>
+              </div>
+            )}
+            <div className="muted" style={{ marginBottom: 8 }}>
+              เทียบกับยอด<b>ในระบบ ณ ตอนนี้</b> · ยอดนับ = ยอดที่ต้องการให้เป็น (ลงบัญชีเดินสะพัดเป็น "ปรับยอดจาก Excel") ·
+              ต้นทุนใหม่แทนต้นทุนถัวเฉลี่ยเดิม (มีผลกับการเบิกเข้า Job ครั้งถัดไป — ไม่ย้อนแก้ Job ที่เบิกไปแล้ว)
+            </div>
+            <div className="table-scroll">
+              <table>
+                <thead><tr>
+                  <th>วัสดุ</th>
+                  <th style={{ textAlign: 'right' }}>ยอดในระบบ</th><th style={{ textAlign: 'right' }}>ยอดนับจริง</th><th style={{ textAlign: 'right' }}>ส่วนต่าง</th>
+                  <th style={{ textAlign: 'right' }}>ต้นทุนเดิม</th><th style={{ textAlign: 'right' }}>ต้นทุนใหม่</th>
+                </tr></thead>
+                <tbody>
+                  {countPreview.rows.map(r => {
+                    const d = r.qty !== undefined ? r.qty - r.curQty : 0
+                    return (
+                      <tr key={r.item.id}>
+                        <td>{r.item.name}<div className="muted mono" style={{ fontSize: 11 }}>{r.item.epicorCode ?? r.item.code}</div></td>
+                        <td style={{ textAlign: 'right' }}>{r.curQty} {r.item.uom}</td>
+                        <td style={{ textAlign: 'right' }}>{r.qty !== undefined ? <b>{r.qty} {r.item.uom}</b> : <span className="muted">ไม่แตะ</span>}</td>
+                        <td style={{ textAlign: 'right', color: d < 0 ? 'var(--danger)' : d > 0 ? 'var(--green, #16a34a)' : undefined }}>
+                          {d === 0 ? '-' : `${d > 0 ? '+' : ''}${d}`}
+                        </td>
+                        <td style={{ textAlign: 'right' }}>{fmtBaht(r.curCost)}</td>
+                        <td style={{ textAlign: 'right' }}>{r.cost !== undefined ? <b>{fmtBaht(r.cost)}</b> : <span className="muted">ไม่แตะ</span>}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ margin: '10px 0' }}>
+              มูลค่าคลังเปลี่ยน <b style={{ color: valueDiff < 0 ? 'var(--danger)' : undefined }}>{valueDiff >= 0 ? '+' : ''}{fmtBaht(valueDiff)}</b>
+            </div>
+            <label className="field"><span>เหตุผล / รอบการตรวจนับ * (ลง Audit Log ทุกรายการ)</span>
+              <input value={countReason} onChange={e => setCountReason(e.target.value)}
+                placeholder="เช่น ตรวจนับประจำเดือน ก.ย. 2569 · นับโดย ..." />
+            </label>
+          </Modal>
+        )
+      })()}
       {promptEl}
       {confirmEl}
     </>

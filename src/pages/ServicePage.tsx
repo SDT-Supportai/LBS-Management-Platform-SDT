@@ -28,6 +28,8 @@ export default function ServicePage() {
   const tryAction = useTryAction()
   const { show } = useToast()
   const canConfirm = can(user, 'service.confirm')
+  // 0080 — ปิดงานติดตั้ง: Project ทุกคน + Service + Manage (มติผู้ใช้ 2026-09-29) · ปุ่มอื่นของช่างยังเป็นของ Service
+  const canCloseJob = can(user, 'job.closeInstall')
   // หลักฐานต่อเครื่อง (เฟส B) — วันที่ / GPS / รูป
   const [installedDate, setInstalledDate] = useState('')
   const [note, setNote] = useState('')
@@ -467,14 +469,16 @@ export default function ServicePage() {
                             onClick={() => { setStep(null); setUnitJobId(j.id) }}>
                             🔧 ยืนยันรายเครื่อง
                           </button>
-                          <button className="small success" style={{ marginRight: 6 }}
-                            disabled={!s.canClose} title={closeBlockedReason(s)}
-                            onClick={() => { openClose(j.id) }}>
-                            🏁 ปิดงาน
-                          </button>
-                          <button className="small" onClick={() => openVisit(j.id)}>เลื่อน/ติดปัญหา</button>
                         </>
                       )}
+                      {canCloseJob && (
+                        <button className="small success" style={{ marginRight: 6 }}
+                          disabled={!s.canClose} title={closeBlockedReason(s)}
+                          onClick={() => { openClose(j.id) }}>
+                          🏁 ปิดงาน
+                        </button>
+                      )}
+                      {canConfirm && <button className="small" onClick={() => openVisit(j.id)}>เลื่อน/ติดปัญหา</button>}
                     </td>
                   </tr>
                 )
