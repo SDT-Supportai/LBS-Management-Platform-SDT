@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import {
-  stockSummary, unitInstallDate, unitCustomerInfo, unitFiles, unitFileCount, isAllowedDocFile,
+  stockSummary, unitInstallDate, unitCustomerInfo, unitFiles, unitFileCount, isAllowedDocFile, contractMoveSource,
   MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB,
   unitEta, unitEtaIsAuto, unitFlowState, unitLeadDays, addDaysIso,
   ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX,
@@ -244,9 +244,6 @@ export default function StocksPage() {
   const [editStatus, setEditStatus] = useState<'open' | 'closed'>('open')
   const [editPlan, setEditPlan] = useState<PlanForm | null>(null)
   const [filesFor, setFilesFor] = useState<string | null>(null)   // 0074 — โมดัลเอกสารแนบรายเครื่อง
-  // 0081 — ย้าย Contract No. ไปเครื่องใหม่พร้อมเอกสารแนบ
-  const [moveFrom, setMoveFrom] = useState<{ unitId: string; toUnitId: string; fileIds: string[]; search: string; reason: string } | null>(null)
-  const [moving, setMoving] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [costStock, setCostStock] = useState<string | null>(null)          // ดูต้นทุนรายเครื่อง (กดจากป้ายมูลค่าคลัง)
   const [fobStock, setFobStock] = useState<string | null>(null)            // ตั้ง FOB date ทั้งคลัง
@@ -1117,12 +1114,6 @@ export default function StocksPage() {
                                 onClick={() => setFilesFor(u.id)}>
                                 📎{unitFileCount(db, u.id) > 0 ? ` ${unitFileCount(db, u.id)}` : ''}
                               </button>
-                              {u.contractNo && u.status !== 'issued' && (
-                                <button className="small" style={{ marginRight: 6 }} title="ย้าย Contract No. ไปเครื่องอื่น พร้อมเอกสารแนบ"
-                                  onClick={() => setMoveFrom({ unitId: u.id, toUnitId: '', fileIds: unitFiles(db, u.id).map(x => x.id), search: '', reason: '' })}>
-                                  🔀 ย้าย Contract
-                                </button>
-                              )}
                               {u.status === 'issued'
                                 ? <span className="muted" title="เบิกให้ Service แล้ว — allocation ถูกล็อก แก้ข้อมูลรายเครื่องไม่ได้">🔒</span>
                                 : <button className="small" onClick={() => setEditPlan({
@@ -1385,81 +1376,6 @@ export default function StocksPage() {
       {/* ---------------- เอกสารแนบรายเครื่อง (0074) ----------------
           แยกโมดัลจาก "แก้ข้อมูล" เพราะการอัปโหลดเกิดผลทันทีทีละไฟล์ ส่วนฟอร์มแก้ข้อมูลบันทึกทีเดียว
           ปนกันแล้วผู้ใช้จะไม่รู้ว่ากด "ยกเลิก" แล้วไฟล์ที่เพิ่งอัปโหลดหายด้วยหรือไม่ */}
-      {/* ---------- 0081: ย้าย Contract No. ไปเครื่องใหม่ พร้อมเอกสารแนบ ---------- */}
-      {moveFrom && (() => {
-        const from = db.lbsUnits.find(x => x.id === moveFrom.unitId)
-        if (!from) return null
-        const files = unitFiles(db, from.id)
-        const q = moveFrom.search.trim().toLowerCase()
-        // ปลายทาง: ยังไม่มีสัญญา · ยังไม่เบิกให้ Service · ไม่ใช่เครื่องเดิม
-        const candidates = db.lbsUnits
-          .filter(x => x.id !== from.id && !x.contractNo && x.status !== 'issued')
-          .filter(x => !q || x.serialLvb.toLowerCase().includes(q) || x.serialOm.toLowerCase().includes(q))
-          .sort((a, b) => a.serialLvb.localeCompare(b.serialLvb))
-        const target = db.lbsUnits.find(x => x.id === moveFrom.toUnitId)
-        const stockOf = (sid: string) => db.projectStocks.find(s => s.id === sid)?.stockNo ?? '-'
-        const toggle = (id: string) => setMoveFrom({
-          ...moveFrom,
-          fileIds: moveFrom.fileIds.includes(id) ? moveFrom.fileIds.filter(x => x !== id) : [...moveFrom.fileIds, id],
-        })
-        return (
-          <Modal size="wide" title={`🔀 ย้าย Contract ${from.contractNo} — จาก ${from.serialLvb}`}
-            onClose={() => { if (!moving) setMoveFrom(null) }}
-            footer={<>
-              <button disabled={moving} onClick={() => setMoveFrom(null)}>ยกเลิก</button>
-              <button className="primary" disabled={moving || !target || !moveFrom.reason.trim()}
-                title={!target ? 'เลือกเครื่องปลายทางก่อน' : !moveFrom.reason.trim() ? 'ระบุเหตุผลก่อน' : ''}
-                onClick={async () => {
-                  setMoving(true)
-                  const ok = await tryAction(() => act.moveUnitContract({
-                    fromUnitId: from.id, toUnitId: moveFrom.toUnitId, fileIds: moveFrom.fileIds, reason: moveFrom.reason,
-                  }), `ย้าย Contract ${from.contractNo} ไป ${target?.serialLvb} แล้ว (เอกสาร ${moveFrom.fileIds.length} ไฟล์)`)
-                  setMoving(false)
-                  if (ok) setMoveFrom(null)
-                }}>{moving ? 'กำลังย้าย…' : 'ย้าย Contract'}</button>
-            </>}>
-            <p className="muted" style={{ marginTop: 0 }}>
-              ย้ายเลขสัญญาพร้อมข้อมูลที่ผูกกับสัญญา (Customer · Contact · Location · Plan PO receipt · Plan Delivery)
-              และเอกสารแนบที่เลือกไปเครื่องใหม่ในครั้งเดียว · เครื่องเดิมจะกลับเป็น<b>ยังไม่มีสัญญา</b> · บันทึกใน Audit ทั้ง 2 เครื่อง
-            </p>
-            <div className="row">
-              <label className="field"><span>ค้นหาเครื่องปลายทาง (Serial LVB / OM)</span>
-                <input value={moveFrom.search} placeholder="เช่น C115203"
-                  onChange={e => setMoveFrom({ ...moveFrom, search: e.target.value })} />
-              </label>
-              <label className="field"><span>เครื่องปลายทาง * <span className="muted">(ยังไม่มีสัญญา · ยังไม่เบิก)</span></span>
-                <select value={moveFrom.toUnitId} onChange={e => setMoveFrom({ ...moveFrom, toUnitId: e.target.value })}>
-                  <option value="">— เลือก ({candidates.length} เครื่อง) —</option>
-                  {candidates.slice(0, 300).map(x => (
-                    <option key={x.id} value={x.id}>{x.serialLvb} / {x.serialOm} · {stockOf(x.projectStockId)}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            {target && (target.planCustomerName || target.planInstallLocation) && (
-              <div className="muted" style={{ color: 'var(--amber, #d97706)', marginBottom: 8 }}>
-                ⚠️ {target.serialLvb} มีข้อมูลแผนอยู่แล้ว ({[target.planCustomerName, target.planInstallLocation].filter(Boolean).join(' · ')}) — จะถูกแทนด้วยข้อมูลของสัญญานี้
-              </div>
-            )}
-            <div className="field">
-              <span>เอกสารแนบที่จะย้ายไปด้วย ({moveFrom.fileIds.length}/{files.length})</span>
-              {files.length === 0 && <div className="muted">เครื่องนี้ไม่มีเอกสารแนบ</div>}
-              {files.map(fl => (
-                <label key={fl.id} style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', fontSize: 13 }}>
-                  <input type="checkbox" style={{ width: 'auto' }} checked={moveFrom.fileIds.includes(fl.id)} onChange={() => toggle(fl.id)} />
-                  <span>{fl.mimeType === 'application/pdf' ? '📄' : '🖼️'} {fl.fileName}</span>
-                  <span className="muted">{fmtDateTime(fl.uploadedAt)}</span>
-                </label>
-              ))}
-              {files.length > 0 && <div className="muted" style={{ fontSize: 12 }}>ไฟล์ที่ไม่ติ๊ก (เช่น รูปสภาพเครื่องเดิม) จะอยู่กับ {from.serialLvb} ต่อ</div>}
-            </div>
-            <label className="field"><span>เหตุผลที่ย้าย *</span>
-              <input value={moveFrom.reason} placeholder="เช่น ลูกค้าขอเปลี่ยนเครื่อง / เครื่องเดิมเสียหายจากการขนส่ง"
-                onChange={e => setMoveFrom({ ...moveFrom, reason: e.target.value })} />
-            </label>
-          </Modal>
-        )
-      })()}
       {filesFor && (() => {
         const u = db.lbsUnits.find(x => x.id === filesFor)
         if (!u) return null
@@ -1642,6 +1558,21 @@ export default function StocksPage() {
                 onChange={e => setEditPlan({ ...editPlan, contractNo: e.target.value })} placeholder="เช่น CT-2026-001" />
             </label>
           </div>
+          {/* 0082 — บอกล่วงหน้าว่าเลขสัญญานี้ย้ายมาจากเครื่องไหน และเอกสารแนบจะตามมากี่ไฟล์ */}
+          {(() => {
+            const cur = db.lbsUnits.find(x => x.id === editPlan.id)
+            const no = editPlan.contractNo.trim()
+            const src = no && no !== cur?.contractNo ? contractMoveSource(db, editPlan.id, no) : undefined
+            if (!src) return null
+            return (
+              <div style={{ margin: '-4px 0 10px', fontSize: 12, color: src.held && src.unit.status === 'issued' ? 'var(--danger)' : 'var(--primary)' }}>
+                {src.held && src.unit.status === 'issued'
+                  ? <>⚠️ Contract No. นี้อยู่กับ <b className="mono">{src.unit.serialLvb}</b> ซึ่งเบิกให้ Service แล้ว — ย้ายไม่ได้</>
+                  : <>📎 ย้าย Contract มาจาก <b className="mono">{src.unit.serialLvb}</b> — เอกสารแนบ <b>{src.fileCount}</b> ไฟล์จะย้ายตามมาอัตโนมัติ
+                      {src.held && <> · เครื่องเดิมจะถูกถอดเลขสัญญาและข้อมูลลูกค้าออก</>}</>}
+              </div>
+            )
+          })()}
           <div className="row">
             {/* ป้าย "(แผน)" หายทันทีที่พิมพ์เลขสัญญา — สื่อกติกาในขณะที่คนกำลังกรอก ไม่ต้องรอบันทึก */}
             <label className="field"><span>Customer{planLabel}{contractNeedsInfo ? ' *' : ''}</span>

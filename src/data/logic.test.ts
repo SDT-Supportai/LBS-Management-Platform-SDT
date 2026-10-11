@@ -13,7 +13,7 @@ import {
   markEpicorIssued, undoEpicorIssued, LINE_PUSH_TYPES, drawLbs,
   qtyPendingIssue, qtyIssuedToService, accSettled, requestStockReturn, receiveStockReturn, rejectStockReturn, cancelStockReturn,
   reverseStockMovement, importStockCount, qtyIssuable, qtyFieldReturnable, reversibleMovements,
-  moveUnitContract, writeOffJobMaterial,
+  contractMoveSource, writeOffJobMaterial,
   createShareLink, revokeShareLink, publicStockView, touchShareLink, newShareToken,
   adjustPoLine, confirmUnitInstall, blockUnitInstall, assignJobTeam, logSiteVisit, closeJobInstall,
   jobInstallSummary, jobHasIssuedUnits, jobIsFieldActive, unitInstallState, jobTeam, qtyOutToField,
@@ -2546,41 +2546,55 @@ describe('คืนเข้าคลังผ่าน Purchasing (0080)', () =
 })
 
 // =============================================================================
-// ย้าย Contract No. ไปเครื่องใหม่พร้อมเอกสารแนบ (0081 · 2026-10-11)
+// ย้าย Contract No. ผ่าน "แก้ข้อมูล" → เอกสารแนบย้ายตามอัตโนมัติ (0082 · 2026-10-11)
 // =============================================================================
-describe('ย้าย Contract No. (0081)', () => {
+describe('ย้าย Contract → เอกสารแนบตามอัตโนมัติ (0082)', () => {
   const sales = { id: 'u5', email: 's@x.co', password: '', fullName: 'Division', department: 'sales' as const, isActive: true }
   const file = (id: string, unitId: string, name: string) =>
     ({ id, unitId, fileName: name, filePath: `data:${name}`, mimeType: 'application/pdf', sizeBytes: 100, uploadedBy: 'u5', uploadedAt: '2026-10-01T00:00:00.000Z' })
   const base = () => db({
     users: [sales],
+    projectStocks: [],
     lbsUnits: [
-      unit({ id: 'a', status: 'in_stock', jobId: null, contractNo: 'P069', planCustomerName: 'บริษัท A', planInstallLocation: 'ชลบุรี',
-        planContactPhone: '062', planPoDate: '2026-09-15', planDeliveryDate: '2027-03-20' }),
+      unit({ id: 'a', status: 'in_stock', jobId: null, contractNo: 'P069', planCustomerName: 'บริษัท A', planInstallLocation: 'ชลบุรี' }),
       unit({ id: 'b', serialLvb: 'LVB-002', serialOm: 'OM-002', status: 'in_stock', jobId: null }),
     ],
-    lbsUnitFiles: [file('f1', 'a', 'สัญญา.pdf'), file('f2', 'a', 'รูปสภาพเครื่อง.pdf')],
+    lbsUnitFiles: [file('f1', 'a', 'สัญญา.pdf'), file('f2', 'a', 'ใบส่งของ.pdf')],
   })
   const u = (d: DB, id: string) => d.lbsUnits.find(x => x.id === id)!
+  const setContract = (d: DB, id: string, no: string, cust = 'บริษัท A', loc = 'ชลบุรี') =>
+    updateUnitPlan(d, sales, { unitId: id, contractNo: no, planCustomerName: no ? cust : undefined, planInstallLocation: no ? loc : undefined })
 
-  it('ย้ายเลขสัญญา + ข้อมูลลูกค้า + เฉพาะไฟล์ที่เลือก · เครื่องเดิมกลับเป็นยังไม่มีสัญญา', () => {
-    const d = moveUnitContract(base(), sales, { fromUnitId: 'a', toUnitId: 'b', fileIds: ['f1'], reason: 'ลูกค้าขอเปลี่ยนเครื่อง' })
-    expect(u(d, 'b')).toMatchObject({ contractNo: 'P069', planCustomerName: 'บริษัท A', planInstallLocation: 'ชลบุรี', planPoDate: '2026-09-15' })
+  it('(ก) พิมพ์เลขสัญญาใส่เครื่องใหม่ขณะเครื่องเดิมยังถือ → ย้ายสัญญา + เอกสารแนบทั้งหมด · เครื่องเดิมถูกถอด', () => {
+    expect(contractMoveSource(base(), 'b', 'P069')).toMatchObject({ held: true, fileCount: 2 })
+    const d = setContract(base(), 'b', 'P069')
+    expect(u(d, 'b').contractNo).toBe('P069')
     expect(u(d, 'a').contractNo).toBeUndefined()
     expect(u(d, 'a').planCustomerName).toBeUndefined()
-    expect(d.lbsUnitFiles.find(f => f.id === 'f1')!.unitId).toBe('b')
-    expect(d.lbsUnitFiles.find(f => f.id === 'f2')!.unitId).toBe('a')      // ไม่ได้เลือก = อยู่ที่เดิม
-    expect(d.auditLogs.filter(a => a.action === 'move_unit_contract')).toHaveLength(2)
+    expect(d.lbsUnitFiles.every(f => f.unitId === 'b')).toBe(true)
+    expect(d.auditLogs.some(a => a.action === 'move_unit_contract')).toBe(true)
   })
 
-  it('ปลายทางมีสัญญาอยู่แล้ว / เครื่องที่เบิกแล้ว / ไม่มีเหตุผล / ไฟล์ของเครื่องอื่น → ปฏิเสธ', () => {
-    const withC = { ...base(), lbsUnits: base().lbsUnits.map(x => x.id === 'b' ? { ...x, contractNo: 'X1', planCustomerName: 'c', planInstallLocation: 'l' } : x) }
-    expect(() => moveUnitContract(withC, sales, { fromUnitId: 'a', toUnitId: 'b', fileIds: [], reason: 'x' })).toThrow(/อยู่แล้ว/)
-    const issued = { ...base(), lbsUnits: base().lbsUnits.map(x => x.id === 'b' ? { ...x, status: 'issued' as const } : x) }
-    expect(() => moveUnitContract(issued, sales, { fromUnitId: 'a', toUnitId: 'b', fileIds: [], reason: 'x' })).toThrow(/เบิก/)
-    expect(() => moveUnitContract(base(), sales, { fromUnitId: 'a', toUnitId: 'b', fileIds: [], reason: ' ' })).toThrow(/เหตุผล/)
-    const foreign = { ...base(), lbsUnitFiles: [...base().lbsUnitFiles, file('f9', 'b', 'x.pdf')] }
-    expect(() => moveUnitContract(foreign, sales, { fromUnitId: 'a', toUnitId: 'b', fileIds: ['f9'], reason: 'x' })).toThrow(/ไม่ใช่เอกสาร/)
-    expect(() => moveUnitContract(base(), sales, { fromUnitId: 'b', toUnitId: 'a', fileIds: [], reason: 'x' })).toThrow(/ยังไม่มี Contract/)
+  it('(ข) ลบเลขสัญญาออกจากเครื่องเดิมก่อน แล้วค่อยใส่เครื่องใหม่ → เอกสารแนบยังตามมา', () => {
+    const d1 = setContract(base(), 'a', '')
+    expect(u(d1, 'a').lastContractNo).toBe('P069')
+    expect(d1.lbsUnitFiles.every(f => f.unitId === 'a')).toBe(true)         // ยังไม่ย้ายจนกว่าจะมีเครื่องรับ
+    expect(contractMoveSource(d1, 'b', 'P069')).toMatchObject({ held: false, fileCount: 2 })
+    const d2 = setContract(d1, 'b', 'P069')
+    expect(d2.lbsUnitFiles.every(f => f.unitId === 'b')).toBe(true)
+    expect(u(d2, 'a').lastContractNo).toBeUndefined()                       // ใช้แล้ว ไม่ดึงซ้ำ
+  })
+
+  it('เลขสัญญาใหม่ที่ไม่เคยมีที่ไหน / แก้ข้อมูลอื่นโดยเลขเดิม → ไม่ย้ายอะไร', () => {
+    const d1 = setContract(base(), 'b', 'NEW-1', 'ลูกค้า B', 'ระยอง')
+    expect(d1.lbsUnitFiles.every(f => f.unitId === 'a')).toBe(true)
+    expect(u(d1, 'a').contractNo).toBe('P069')
+    const d2 = setContract(base(), 'a', 'P069', 'บริษัท A (แก้ชื่อ)')
+    expect(d2.lbsUnitFiles.every(f => f.unitId === 'a')).toBe(true)
+  })
+
+  it('เครื่องเดิมที่ถือสัญญาอยู่ถูกเบิกให้ Service แล้ว → ย้ายไม่ได้', () => {
+    const d0 = { ...base(), lbsUnits: base().lbsUnits.map(x => x.id === 'a' ? { ...x, status: 'issued' as const } : x) }
+    expect(() => setContract(d0, 'b', 'P069')).toThrow(/เบิกให้ Service แล้ว/)
   })
 })
