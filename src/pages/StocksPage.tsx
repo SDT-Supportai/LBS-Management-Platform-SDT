@@ -1061,8 +1061,13 @@ export default function StocksPage() {
                           <td className="mono">{u.serialLvb}</td>
                           <td className="mono">{u.serialOm}</td>
                           <td style={{ textAlign: 'right' }}>{fmtBaht(u.unitCost)}</td>
-                          <td className="mono">
-                            {u.contractNo || '-'}
+                          {/* มีเลขสัญญาแล้ว = โชว์อิโมจิแทนเลขยาว ๆ (ผู้ใช้ขอ 2026-10-11) — เลขเต็มอยู่ใน tooltip
+                              · ไฟล์ Excel / ฟอร์มแก้ไขยังเป็นเลขเต็มเหมือนเดิม */}
+                          <td style={{ textAlign: 'center' }}>
+                            {u.contractNo
+                              ? <span title={`Contract No. ${u.contractNo}`} aria-label={`Contract No. ${u.contractNo}`}
+                                  style={{ fontSize: 18, cursor: 'help' }}>📄</span>
+                              : <span className="muted">-</span>}
                             {/* ผูก Job แล้ว เลขสัญญาเป็นข้อมูลอ้างอิง — Job ยังเป็นแหล่งความจริงของลูกค้า/สถานที่ */}
                             {u.contractNo && job && <div className="muted" style={{ fontSize: 11 }}>Ref.</div>}
                           </td>
