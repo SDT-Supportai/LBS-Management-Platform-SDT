@@ -93,6 +93,12 @@ const rowsToUnits = (rows: UnitRow[]) =>
 
 // Excel: เซลล์วันที่อ่านมาเป็น Date (อ่านด้วย cellDates) หรือเป็นข้อความ YYYY-MM-DD จากไฟล์ Export
 // คืน '' ถ้าอ่านไม่ได้ → ถือว่าไม่ได้กรอก (คงค่าเดิม) ไม่ใช่ error
+/** ต้นทุนหน่วยล้านบาท เช่น 1,805,867.84 → "1.81 M฿" (ตาราง Project Stock · 2026-10-11) */
+function fmtMBaht(n?: number): string {
+  if (n === undefined || n === null || !Number.isFinite(n)) return '-'
+  return `${(n / 1_000_000).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} M฿`
+}
+
 function toIsoDate(v: unknown): string {
   if (v instanceof Date && !Number.isNaN(v.getTime())) {
     const p = (n: number) => String(n).padStart(2, '0')
@@ -238,6 +244,9 @@ export default function StocksPage() {
   const [editStatus, setEditStatus] = useState<'open' | 'closed'>('open')
   const [editPlan, setEditPlan] = useState<PlanForm | null>(null)
   const [filesFor, setFilesFor] = useState<string | null>(null)   // 0074 — โมดัลเอกสารแนบรายเครื่อง
+  // 0081 — ย้าย Contract No. ไปเครื่องใหม่พร้อมเอกสารแนบ
+  const [moveFrom, setMoveFrom] = useState<{ unitId: string; toUnitId: string; fileIds: string[]; search: string; reason: string } | null>(null)
+  const [moving, setMoving] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [costStock, setCostStock] = useState<string | null>(null)          // ดูต้นทุนรายเครื่อง (กดจากป้ายมูลค่าคลัง)
   const [fobStock, setFobStock] = useState<string | null>(null)            // ตั้ง FOB date ทั้งคลัง
@@ -1038,7 +1047,7 @@ export default function StocksPage() {
                 {/* grid = ตีเส้นตารางบางๆ ทุกช่อง (อ่านตารางกว้างง่ายขึ้น)
                     Status = flow เดียวจบทั้งชีวิตเครื่อง (0052) — ไม่มีคอลัมน์ "สถานะเครื่อง" แยกแล้ว */}
                 <table className="grid">
-                  <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>Cost/Set</th><th>Contract No.</th><th>Customer</th><th>Contact Number</th><th>Location / Site</th><th>Plan PO receipt</th><th>Job No.</th><th>FOB date</th><th>ETA to WH</th><th>Status</th><th>Plan Delivery</th><th>Actual Delivery</th>{canManage && <th></th>}</tr></thead>
+                  <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>Cost/Set (M฿)</th><th>Contract No.</th><th>Customer</th><th>Contact Number</th><th>Location / Site</th><th>Plan PO receipt</th><th>Job No.</th><th>FOB date</th><th>ETA to WH</th><th>Status</th><th>Plan Delivery</th><th>Actual Delivery</th>{canManage && <th></th>}</tr></thead>
                   <tbody>
                     {units.map(u => {
                       // 0073: ลำดับความจริง 3 ชั้น — Job ชนะ (0014) → สัญญา → แผน · helper เดียวใช้ทุกที่
@@ -1060,14 +1069,13 @@ export default function StocksPage() {
                         <tr key={u.id}>
                           <td className="mono">{u.serialLvb}</td>
                           <td className="mono">{u.serialOm}</td>
-                          <td style={{ textAlign: 'right' }}>{fmtBaht(u.unitCost)}</td>
-                          {/* มีเลขสัญญาแล้ว = โชว์อิโมจิแทนเลขยาว ๆ (ผู้ใช้ขอ 2026-10-11) — เลขเต็มอยู่ใน tooltip
-                              · ไฟล์ Excel / ฟอร์มแก้ไขยังเป็นเลขเต็มเหมือนเดิม */}
-                          <td style={{ textAlign: 'center' }}>
-                            {u.contractNo
-                              ? <span title={`Contract No. ${u.contractNo}`} aria-label={`Contract No. ${u.contractNo}`}
-                                  style={{ fontSize: 18, cursor: 'help' }}>📄</span>
-                              : <span className="muted">-</span>}
+                          {/* หน่วยล้านบาท (ผู้ใช้ขอ 2026-10-11) — ยอดเต็มอยู่ใน tooltip · Excel ยังเป็นบาทเต็ม */}
+                          <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }} title={u.unitCost !== undefined ? fmtBaht(u.unitCost) : undefined}>
+                            {fmtMBaht(u.unitCost)}
+                          </td>
+                          {/* ผู้ใช้ขอกลับมาใช้เลขสัญญาแทนอิโมจิ (2026-10-11) */}
+                          <td className="mono">
+                            {u.contractNo || '-'}
                             {/* ผูก Job แล้ว เลขสัญญาเป็นข้อมูลอ้างอิง — Job ยังเป็นแหล่งความจริงของลูกค้า/สถานที่ */}
                             {u.contractNo && job && <div className="muted" style={{ fontSize: 11 }}>Ref.</div>}
                           </td>
@@ -1094,12 +1102,9 @@ export default function StocksPage() {
                           </td>
                           <td>{u.jobId ? <Link to={`/jobs/${u.jobId}`}>{jobNo(u.jobId)}</Link> : '-'}</td>
                           <td>{fmtDate(u.fobDate)}</td>
-                          <td>
+                          {/* ไม่แสดงป้ายระยะขนส่ง (+N วัน) แล้ว (ผู้ใช้ขอ 2026-10-11) — ที่มาของวันที่ยังดูได้จาก tooltip */}
+                          <td title={eta && etaAuto ? `คำนวณอัตโนมัติ = FOB + ${unitLeadDays(u)} วัน` : undefined}>
                             {eta ? fmtDate(eta) : '-'}
-                            {eta && etaAuto && (
-                              <span className="badge neutral" style={{ marginLeft: 6 }}
-                                title={`คำนวณอัตโนมัติ = FOB + ${unitLeadDays(u)} วัน`}>+{unitLeadDays(u)} วัน</span>
-                            )}
                           </td>
                           <td><span className={`badge ${flow.cls}`} title={flow.hint}>{flow.label}</span></td>
                           <td>{fmtDate(u.planDeliveryDate)}</td>
@@ -1112,6 +1117,12 @@ export default function StocksPage() {
                                 onClick={() => setFilesFor(u.id)}>
                                 📎{unitFileCount(db, u.id) > 0 ? ` ${unitFileCount(db, u.id)}` : ''}
                               </button>
+                              {u.contractNo && u.status !== 'issued' && (
+                                <button className="small" style={{ marginRight: 6 }} title="ย้าย Contract No. ไปเครื่องอื่น พร้อมเอกสารแนบ"
+                                  onClick={() => setMoveFrom({ unitId: u.id, toUnitId: '', fileIds: unitFiles(db, u.id).map(x => x.id), search: '', reason: '' })}>
+                                  🔀 ย้าย Contract
+                                </button>
+                              )}
                               {u.status === 'issued'
                                 ? <span className="muted" title="เบิกให้ Service แล้ว — allocation ถูกล็อก แก้ข้อมูลรายเครื่องไม่ได้">🔒</span>
                                 : <button className="small" onClick={() => setEditPlan({
@@ -1374,6 +1385,81 @@ export default function StocksPage() {
       {/* ---------------- เอกสารแนบรายเครื่อง (0074) ----------------
           แยกโมดัลจาก "แก้ข้อมูล" เพราะการอัปโหลดเกิดผลทันทีทีละไฟล์ ส่วนฟอร์มแก้ข้อมูลบันทึกทีเดียว
           ปนกันแล้วผู้ใช้จะไม่รู้ว่ากด "ยกเลิก" แล้วไฟล์ที่เพิ่งอัปโหลดหายด้วยหรือไม่ */}
+      {/* ---------- 0081: ย้าย Contract No. ไปเครื่องใหม่ พร้อมเอกสารแนบ ---------- */}
+      {moveFrom && (() => {
+        const from = db.lbsUnits.find(x => x.id === moveFrom.unitId)
+        if (!from) return null
+        const files = unitFiles(db, from.id)
+        const q = moveFrom.search.trim().toLowerCase()
+        // ปลายทาง: ยังไม่มีสัญญา · ยังไม่เบิกให้ Service · ไม่ใช่เครื่องเดิม
+        const candidates = db.lbsUnits
+          .filter(x => x.id !== from.id && !x.contractNo && x.status !== 'issued')
+          .filter(x => !q || x.serialLvb.toLowerCase().includes(q) || x.serialOm.toLowerCase().includes(q))
+          .sort((a, b) => a.serialLvb.localeCompare(b.serialLvb))
+        const target = db.lbsUnits.find(x => x.id === moveFrom.toUnitId)
+        const stockOf = (sid: string) => db.projectStocks.find(s => s.id === sid)?.stockNo ?? '-'
+        const toggle = (id: string) => setMoveFrom({
+          ...moveFrom,
+          fileIds: moveFrom.fileIds.includes(id) ? moveFrom.fileIds.filter(x => x !== id) : [...moveFrom.fileIds, id],
+        })
+        return (
+          <Modal size="wide" title={`🔀 ย้าย Contract ${from.contractNo} — จาก ${from.serialLvb}`}
+            onClose={() => { if (!moving) setMoveFrom(null) }}
+            footer={<>
+              <button disabled={moving} onClick={() => setMoveFrom(null)}>ยกเลิก</button>
+              <button className="primary" disabled={moving || !target || !moveFrom.reason.trim()}
+                title={!target ? 'เลือกเครื่องปลายทางก่อน' : !moveFrom.reason.trim() ? 'ระบุเหตุผลก่อน' : ''}
+                onClick={async () => {
+                  setMoving(true)
+                  const ok = await tryAction(() => act.moveUnitContract({
+                    fromUnitId: from.id, toUnitId: moveFrom.toUnitId, fileIds: moveFrom.fileIds, reason: moveFrom.reason,
+                  }), `ย้าย Contract ${from.contractNo} ไป ${target?.serialLvb} แล้ว (เอกสาร ${moveFrom.fileIds.length} ไฟล์)`)
+                  setMoving(false)
+                  if (ok) setMoveFrom(null)
+                }}>{moving ? 'กำลังย้าย…' : 'ย้าย Contract'}</button>
+            </>}>
+            <p className="muted" style={{ marginTop: 0 }}>
+              ย้ายเลขสัญญาพร้อมข้อมูลที่ผูกกับสัญญา (Customer · Contact · Location · Plan PO receipt · Plan Delivery)
+              และเอกสารแนบที่เลือกไปเครื่องใหม่ในครั้งเดียว · เครื่องเดิมจะกลับเป็น<b>ยังไม่มีสัญญา</b> · บันทึกใน Audit ทั้ง 2 เครื่อง
+            </p>
+            <div className="row">
+              <label className="field"><span>ค้นหาเครื่องปลายทาง (Serial LVB / OM)</span>
+                <input value={moveFrom.search} placeholder="เช่น C115203"
+                  onChange={e => setMoveFrom({ ...moveFrom, search: e.target.value })} />
+              </label>
+              <label className="field"><span>เครื่องปลายทาง * <span className="muted">(ยังไม่มีสัญญา · ยังไม่เบิก)</span></span>
+                <select value={moveFrom.toUnitId} onChange={e => setMoveFrom({ ...moveFrom, toUnitId: e.target.value })}>
+                  <option value="">— เลือก ({candidates.length} เครื่อง) —</option>
+                  {candidates.slice(0, 300).map(x => (
+                    <option key={x.id} value={x.id}>{x.serialLvb} / {x.serialOm} · {stockOf(x.projectStockId)}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {target && (target.planCustomerName || target.planInstallLocation) && (
+              <div className="muted" style={{ color: 'var(--amber, #d97706)', marginBottom: 8 }}>
+                ⚠️ {target.serialLvb} มีข้อมูลแผนอยู่แล้ว ({[target.planCustomerName, target.planInstallLocation].filter(Boolean).join(' · ')}) — จะถูกแทนด้วยข้อมูลของสัญญานี้
+              </div>
+            )}
+            <div className="field">
+              <span>เอกสารแนบที่จะย้ายไปด้วย ({moveFrom.fileIds.length}/{files.length})</span>
+              {files.length === 0 && <div className="muted">เครื่องนี้ไม่มีเอกสารแนบ</div>}
+              {files.map(fl => (
+                <label key={fl.id} style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', fontSize: 13 }}>
+                  <input type="checkbox" style={{ width: 'auto' }} checked={moveFrom.fileIds.includes(fl.id)} onChange={() => toggle(fl.id)} />
+                  <span>{fl.mimeType === 'application/pdf' ? '📄' : '🖼️'} {fl.fileName}</span>
+                  <span className="muted">{fmtDateTime(fl.uploadedAt)}</span>
+                </label>
+              ))}
+              {files.length > 0 && <div className="muted" style={{ fontSize: 12 }}>ไฟล์ที่ไม่ติ๊ก (เช่น รูปสภาพเครื่องเดิม) จะอยู่กับ {from.serialLvb} ต่อ</div>}
+            </div>
+            <label className="field"><span>เหตุผลที่ย้าย *</span>
+              <input value={moveFrom.reason} placeholder="เช่น ลูกค้าขอเปลี่ยนเครื่อง / เครื่องเดิมเสียหายจากการขนส่ง"
+                onChange={e => setMoveFrom({ ...moveFrom, reason: e.target.value })} />
+            </label>
+          </Modal>
+        )
+      })()}
       {filesFor && (() => {
         const u = db.lbsUnits.find(x => x.id === filesFor)
         if (!u) return null

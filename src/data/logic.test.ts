@@ -12,7 +12,8 @@ import {
   addDaysIso, daysBetweenIso, nextNo,
   markEpicorIssued, undoEpicorIssued, LINE_PUSH_TYPES, drawLbs,
   qtyPendingIssue, qtyIssuedToService, accSettled, requestStockReturn, receiveStockReturn, rejectStockReturn, cancelStockReturn,
-  reverseStockMovement, importStockCount, qtyIssuable, qtyFieldReturnable, reversibleMovements, writeOffJobMaterial,
+  reverseStockMovement, importStockCount, qtyIssuable, qtyFieldReturnable, reversibleMovements,
+  moveUnitContract, writeOffJobMaterial,
   createShareLink, revokeShareLink, publicStockView, touchShareLink, newShareToken,
   adjustPoLine, confirmUnitInstall, blockUnitInstall, assignJobTeam, logSiteVisit, closeJobInstall,
   jobInstallSummary, jobHasIssuedUnits, jobIsFieldActive, unitInstallState, jobTeam, qtyOutToField,
@@ -2541,5 +2542,45 @@ describe('คืนเข้าคลังผ่าน Purchasing (0080)', () =
     expect(d.auditLogs[0].action).toBe('import_stock_count')
     expect(() => importStockCount(base(), buyer, { reason: 'x', rows: [{ itemId: 'i1', qty: 5, unitCost: 100 }] })).toThrow(/ไม่มีรายการที่เปลี่ยน/)
     expect(() => importStockCount(base(), buyer, { reason: ' ', rows: [{ itemId: 'i1', qty: 1 }] })).toThrow(/เหตุผล/)
+  })
+})
+
+// =============================================================================
+// ย้าย Contract No. ไปเครื่องใหม่พร้อมเอกสารแนบ (0081 · 2026-10-11)
+// =============================================================================
+describe('ย้าย Contract No. (0081)', () => {
+  const sales = { id: 'u5', email: 's@x.co', password: '', fullName: 'Division', department: 'sales' as const, isActive: true }
+  const file = (id: string, unitId: string, name: string) =>
+    ({ id, unitId, fileName: name, filePath: `data:${name}`, mimeType: 'application/pdf', sizeBytes: 100, uploadedBy: 'u5', uploadedAt: '2026-10-01T00:00:00.000Z' })
+  const base = () => db({
+    users: [sales],
+    lbsUnits: [
+      unit({ id: 'a', status: 'in_stock', jobId: null, contractNo: 'P069', planCustomerName: 'บริษัท A', planInstallLocation: 'ชลบุรี',
+        planContactPhone: '062', planPoDate: '2026-09-15', planDeliveryDate: '2027-03-20' }),
+      unit({ id: 'b', serialLvb: 'LVB-002', serialOm: 'OM-002', status: 'in_stock', jobId: null }),
+    ],
+    lbsUnitFiles: [file('f1', 'a', 'สัญญา.pdf'), file('f2', 'a', 'รูปสภาพเครื่อง.pdf')],
+  })
+  const u = (d: DB, id: string) => d.lbsUnits.find(x => x.id === id)!
+
+  it('ย้ายเลขสัญญา + ข้อมูลลูกค้า + เฉพาะไฟล์ที่เลือก · เครื่องเดิมกลับเป็นยังไม่มีสัญญา', () => {
+    const d = moveUnitContract(base(), sales, { fromUnitId: 'a', toUnitId: 'b', fileIds: ['f1'], reason: 'ลูกค้าขอเปลี่ยนเครื่อง' })
+    expect(u(d, 'b')).toMatchObject({ contractNo: 'P069', planCustomerName: 'บริษัท A', planInstallLocation: 'ชลบุรี', planPoDate: '2026-09-15' })
+    expect(u(d, 'a').contractNo).toBeUndefined()
+    expect(u(d, 'a').planCustomerName).toBeUndefined()
+    expect(d.lbsUnitFiles.find(f => f.id === 'f1')!.unitId).toBe('b')
+    expect(d.lbsUnitFiles.find(f => f.id === 'f2')!.unitId).toBe('a')      // ไม่ได้เลือก = อยู่ที่เดิม
+    expect(d.auditLogs.filter(a => a.action === 'move_unit_contract')).toHaveLength(2)
+  })
+
+  it('ปลายทางมีสัญญาอยู่แล้ว / เครื่องที่เบิกแล้ว / ไม่มีเหตุผล / ไฟล์ของเครื่องอื่น → ปฏิเสธ', () => {
+    const withC = { ...base(), lbsUnits: base().lbsUnits.map(x => x.id === 'b' ? { ...x, contractNo: 'X1', planCustomerName: 'c', planInstallLocation: 'l' } : x) }
+    expect(() => moveUnitContract(withC, sales, { fromUnitId: 'a', toUnitId: 'b', fileIds: [], reason: 'x' })).toThrow(/อยู่แล้ว/)
+    const issued = { ...base(), lbsUnits: base().lbsUnits.map(x => x.id === 'b' ? { ...x, status: 'issued' as const } : x) }
+    expect(() => moveUnitContract(issued, sales, { fromUnitId: 'a', toUnitId: 'b', fileIds: [], reason: 'x' })).toThrow(/เบิก/)
+    expect(() => moveUnitContract(base(), sales, { fromUnitId: 'a', toUnitId: 'b', fileIds: [], reason: ' ' })).toThrow(/เหตุผล/)
+    const foreign = { ...base(), lbsUnitFiles: [...base().lbsUnitFiles, file('f9', 'b', 'x.pdf')] }
+    expect(() => moveUnitContract(foreign, sales, { fromUnitId: 'a', toUnitId: 'b', fileIds: ['f9'], reason: 'x' })).toThrow(/ไม่ใช่เอกสาร/)
+    expect(() => moveUnitContract(base(), sales, { fromUnitId: 'b', toUnitId: 'a', fileIds: [], reason: 'x' })).toThrow(/ยังไม่มี Contract/)
   })
 })

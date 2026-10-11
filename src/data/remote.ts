@@ -636,6 +636,9 @@ export function remoteActions(sb: SupabaseClient) {
         p_mime_type: p.mimeType, p_size_bytes: p.sizeBytes, p_note: p.note || null,
       }),
     deleteUnitFile: (p: { fileId: string }) => rpc(sb, 'rpc_delete_unit_file', { p_file_id: p.fileId }),
+    // 0081 — ย้าย Contract No. ไปเครื่องใหม่พร้อมเอกสารแนบที่เลือก
+    moveUnitContract: (p: { fromUnitId: string; toUnitId: string; fileIds: string[]; reason: string }) =>
+      rpc(sb, 'rpc_move_unit_contract', { p_from_unit_id: p.fromUnitId, p_to_unit_id: p.toUnitId, p_file_ids: p.fileIds, p_reason: p.reason }),
     // ตั้ง FOB date + ระยะขนส่ง ทั้งคลังในครั้งเดียว (0049)
     setStockFob: (p: { stockId: string; fobDate: string; leadDays?: number; overwrite: boolean }) =>
       rpc(sb, 'rpc_set_stock_fob', {

@@ -867,6 +867,52 @@ export function deleteUnitFile(db: DB, actor: User, p: { fileId: string }): DB {
 }
 
 /**
+ * ย้าย Contract No. ไปเครื่องใหม่พร้อมเอกสารแนบที่เลือก (sync 0081 rpc_move_unit_contract)
+ * ย้ายข้อมูลที่ผูกกับสัญญาไปด้วย (ลูกค้า · ติดต่อ · สถานที่ · Plan PO receipt · Plan Delivery)
+ * เครื่องต้นทางกลับเป็น "ยังไม่มีสัญญา" — ล้างข้อมูลลูกค้าทิ้ง ไม่งั้นค้างเป็นของลูกค้ารายอื่น
+ */
+export function moveUnitContract(
+  db: DB, actor: User,
+  p: { fromUnitId: string; toUnitId: string; fileIds: string[]; reason: string },
+): DB {
+  const reason = p.reason?.trim()
+  if (!reason) throw new Error('กรุณาระบุเหตุผลที่ย้าย Contract')
+  if (!p.toUnitId || p.fromUnitId === p.toUnitId) throw new Error('กรุณาเลือกเครื่องปลายทางที่ไม่ใช่เครื่องเดิม')
+  const a = db.lbsUnits.find(u => u.id === p.fromUnitId)
+  const b = db.lbsUnits.find(u => u.id === p.toUnitId)
+  if (!a || !b) throw new Error('ไม่พบเครื่อง LBS')
+  if (!a.contractNo) throw new Error(`Serial ${a.serialLvb} ยังไม่มี Contract No. ให้ย้าย`)
+  if (b.contractNo) throw new Error(`Serial ${b.serialLvb} มี Contract No. ${b.contractNo} อยู่แล้ว — ย้ายทับไม่ได้`)
+  if (a.status === 'issued' || b.status === 'issued')
+    throw new Error('เครื่องที่เบิกให้ Service แล้วย้าย Contract ไม่ได้ (allocation ถูกล็อก)')
+  const ids = new Set(p.fileIds)
+  const moving = db.lbsUnitFiles.filter(f => ids.has(f.id))
+  if (moving.length !== ids.size || moving.some(f => f.unitId !== a.id))
+    throw new Error(`มีไฟล์ที่ไม่ใช่เอกสารของ Serial ${a.serialLvb}`)
+
+  let next: DB = {
+    ...db,
+    lbsUnits: db.lbsUnits.map(u =>
+      u.id === b.id ? {
+        ...u, contractNo: a.contractNo,
+        planCustomerName: a.planCustomerName, planContactPhone: a.planContactPhone,
+        planInstallLocation: a.planInstallLocation, planPoDate: a.planPoDate, planDeliveryDate: a.planDeliveryDate,
+      }
+      : u.id === a.id ? {
+        ...u, contractNo: undefined, planCustomerName: undefined, planContactPhone: undefined,
+        planInstallLocation: undefined, planPoDate: undefined, planDeliveryDate: undefined,
+      }
+      : u),
+    lbsUnitFiles: db.lbsUnitFiles.map(f => ids.has(f.id) ? { ...f, unitId: b.id } : f),
+  }
+  const names = moving.map(f => f.fileName).join(', ')
+  next = audit(next, actor, 'lbs_unit', b.id, 'move_unit_contract',
+    `รับ Contract ${a.contractNo} ย้ายมาจาก ${a.serialLvb} → ${b.serialLvb} · เอกสารแนบ ${moving.length} ไฟล์${names ? ` (${names})` : ''} — ${reason}`)
+  return audit(next, actor, 'lbs_unit', a.id, 'move_unit_contract',
+    `ย้าย Contract ${a.contractNo} ออกไปที่ ${b.serialLvb} (ล้างข้อมูลลูกค้าของเครื่องนี้) — ${reason}`)
+}
+
+/**
  * 0073 — มีเลขสัญญาต้องมีลูกค้า + สถานที่ครบ (ยกเว้นเครื่องที่ผูก Job แล้ว ซึ่งใช้ข้อมูลจาก Job)
  * คืนค่าเดิมกลับไปเพื่อให้เรียกคร่อมตอนประกอบแถวได้เลย · กติกาเดียวกับ CHECK
  * `lbs_units_contract_needs_info_ck` ฝั่ง DB — ที่นี่มีไว้ให้ error อ่านรู้เรื่องและบอกว่าเครื่องไหน
