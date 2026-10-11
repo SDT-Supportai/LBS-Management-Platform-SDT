@@ -1084,7 +1084,14 @@ export default function StocksPage() {
                           </td>
                           <td>{phone ?? '-'}{planned && phone && <span className="badge neutral" style={{ marginLeft: 6 }}>แผน</span>}</td>
                           <td>{loc || '-'}{planned && loc && <span className="badge neutral" style={{ marginLeft: 6 }}>แผน</span>}</td>
-                          <td>{fmtDate(u.planPoDate)}</td>
+                          {/* มีเลขสัญญาแล้ว = ได้ PO จริงแล้ว วัน "แผน" ไม่มีความหมายอีก → อิโมจิแทน (ผู้ใช้ขอ 2026-10-11)
+                              วันแผนเดิมยังอยู่ใน tooltip · Excel / ฟอร์มแก้ข้อมูลยังเป็นวันที่เต็ม */}
+                          <td style={u.contractNo ? { textAlign: 'center' } : undefined}>
+                            {u.contractNo
+                              ? <span title={`ได้ PO แล้ว (Contract No. ${u.contractNo})${u.planPoDate ? ` · แผนเดิม ${fmtDate(u.planPoDate)}` : ''}`}
+                                  aria-label="ได้ PO แล้ว" style={{ fontSize: 18, cursor: 'help' }}>✅</span>
+                              : fmtDate(u.planPoDate)}
+                          </td>
                           <td>{u.jobId ? <Link to={`/jobs/${u.jobId}`}>{jobNo(u.jobId)}</Link> : '-'}</td>
                           <td>{fmtDate(u.fobDate)}</td>
                           <td>
