@@ -1127,12 +1127,45 @@ describe('โควตา LINE — allowlist (0066)', () => {
     const before = db({
       jobs: [job({ id: 'j1', jobNo: 'JOB-001', lbsQtyRequired: 1 })],
       projectStocks: [{ id: 's1', stockNo: 'ST-1', itemId: 'i-lbs', status: 'open' as const, createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' }],
-      lbsUnits: [unit({ id: 'a', status: 'in_stock', projectStockId: 's1' })],
+      lbsUnits: [unit({ id: 'a', status: 'in_stock', projectStockId: 's1', contractNo: 'CT-1' })],
     })
     const d = drawLbs(before, actor, { jobId: 'j1', stockId: 's1', unitIds: ['a'] })
     const n = d.notifications.find(x => x.type === 'lbs_drawn')
     expect(n).toBeTruthy()               // ยังบันทึกอยู่
     expect(n!.lineStatus).toBe('off')    // แต่ไม่ส่ง LINE
+  })
+})
+
+// =============================================================================
+// ดึง LBS เข้า Job ได้เฉพาะเครื่องที่มี Contract No. (0084)
+//   LIVE บังคับที่ trigger trg_draw_requires_contract · demo บังคับใน drawLbs
+// =============================================================================
+describe('ดึง LBS ต้องมี Contract No. (0084)', () => {
+  const actor = { id: 'u1', email: 'a@x.co', password: '', fullName: 'สมชาย', department: 'admin' as const, isActive: true }
+  const base = (units: LbsUnit[]) => db({
+    jobs: [job({ id: 'j1', jobNo: 'JOB-001', lbsQtyRequired: 3 })],
+    projectStocks: [{ id: 's1', stockNo: 'ST-1', itemId: 'i-lbs', status: 'open' as const, createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' }],
+    lbsUnits: units,
+  })
+
+  it('เครื่องที่มีสัญญาดึงได้', () => {
+    const d = drawLbs(base([unit({ id: 'a', status: 'in_stock', projectStockId: 's1', contractNo: 'CT-1' })]),
+      actor, { jobId: 'j1', stockId: 's1', unitIds: ['a'] })
+    expect(d.lbsUnits[0]).toMatchObject({ status: 'allocated', jobId: 'j1' })
+  })
+
+  it('มีเครื่องไม่มีสัญญาปนมา = ปฏิเสธทั้งชุด และบอก Serial ที่ติด', () => {
+    const before = base([
+      unit({ id: 'a', serialLvb: 'LVB-A', status: 'in_stock', projectStockId: 's1', contractNo: 'CT-1' }),
+      unit({ id: 'b', serialLvb: 'LVB-B', status: 'in_stock', projectStockId: 's1' }),
+    ])
+    expect(() => drawLbs(before, actor, { jobId: 'j1', stockId: 's1', unitIds: ['a', 'b'] }))
+      .toThrow(/Contract No\..*LVB-B/)
+  })
+
+  it('เลขสัญญาเป็นช่องว่างล้วนถือว่าไม่มีสัญญา', () => {
+    const before = base([unit({ id: 'a', status: 'in_stock', projectStockId: 's1', contractNo: '   ' })])
+    expect(() => drawLbs(before, actor, { jobId: 'j1', stockId: 's1', unitIds: ['a'] })).toThrow(/Contract No\./)
   })
 })
 // =============================================================================

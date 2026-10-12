@@ -108,6 +108,18 @@ export function buildSeedDb(): DB {
   const stock1 = db.projectStocks[0].id
   const stock2 = db.projectStocks[1].id
   const unitsOf = (stockId: string) => db.lbsUnits.filter(u => u.projectStockId === stockId && u.status === 'in_stock')
+  // 0084: ดึงเข้า Job ได้เฉพาะเครื่องที่มี Contract No. — ใส่เลขสัญญาให้ n เครื่องแรกที่ว่างในคลัง
+  const sign = (stockId: string, n: number, customer: string) => {
+    const ids = unitsOf(stockId).slice(0, n).map(u => u.id)
+    db = { ...db, lbsUnits: db.lbsUnits.map(u => ids.includes(u.id)
+      ? { ...u, contractNo: `CT-${u.serialLvb}`, planCustomerName: customer } : u) }
+    return ids
+  }
+  // ⚠️ ต้องแยก sign ออกมาก่อน — ถ้าเขียน L.drawLbs(db, .., sign(..)) JS จะประเมิน db (ตัวเก่า) ก่อน sign
+  const drawSigned = (jobId: string, stockId: string, n: number, customer: string) => {
+    const unitIds = sign(stockId, n, customer)
+    db = L.drawLbs(db, project, { jobId, stockId, unitIds })
+  }
 
   // JOB-0001: PEA เชียงใหม่ — ดึงแล้ว 3/4 → Allocated
   db = L.createJob(db, project, {
@@ -129,7 +141,7 @@ export function buildSeedDb(): DB {
     },
   })
   const job1 = db.jobs[0].id
-  db = L.drawLbs(db, project, { jobId: job1, stockId: stock1, unitIds: unitsOf(stock1).slice(0, 3).map(u => u.id) })
+  drawSigned(job1, stock1, 3, 'PEA เชียงใหม่')
 
   // JOB-0002: กฟภ.ขอนแก่น — LBS ครบ แต่รอ Accessory จาก PO → Procuring Accessory
   db = L.createJob(db, project, {
@@ -145,8 +157,8 @@ export function buildSeedDb(): DB {
     },
   })
   const job2 = db.jobs[1].id
-  db = L.drawLbs(db, project, { jobId: job2, stockId: stock1, unitIds: unitsOf(stock1).slice(0, 3).map(u => u.id) })
-  db = L.drawLbs(db, project, { jobId: job2, stockId: stock2, unitIds: unitsOf(stock2).slice(0, 2).map(u => u.id) })
+  drawSigned(job2, stock1, 3, 'PEA ขอนแก่น')
+  drawSigned(job2, stock2, 2, 'PEA ขอนแก่น')
   db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-ct', qty: 5, source: 'central_stock', unitPrice: 85000, phaseBudget: 'raw_mat' })
   db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-relay', qty: 5, source: 'purchasing', unitPrice: 120000, phaseBudget: 'raw_mat' })
   db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-cable', qty: 3, source: 'purchasing', unitPrice: 15000, phaseBudget: 'outsourcing' })
@@ -166,7 +178,7 @@ export function buildSeedDb(): DB {
     },
   })
   const job3 = db.jobs[2].id
-  db = L.drawLbs(db, project, { jobId: job3, stockId: stock1, unitIds: unitsOf(stock1).slice(0, 2).map(u => u.id) })
+  drawSigned(job3, stock1, 2, 'EGAT บางปะกง')
   db = L.addAccessoryRequest(db, project, { jobId: job3, itemId: 'i-bracket', qty: 2, source: 'central_stock', unitPrice: 32000, phaseBudget: 'raw_mat' })
 
   // JOB-0004: อมตะซิตี้ — เบิกให้ Service แล้ว → Issued/Installed
@@ -182,12 +194,14 @@ export function buildSeedDb(): DB {
     },
   })
   const job4 = db.jobs[3].id
-  db = L.drawLbs(db, project, { jobId: job4, stockId: stock2, unitIds: unitsOf(stock2).slice(0, 1).map(u => u.id) })
+  drawSigned(job4, stock2, 1, 'นิคมอุตสาหกรรมอมตะซิตี้')
   db = L.addAccessoryRequest(db, project, { jobId: job4, itemId: 'i-ct', qty: 1, source: 'central_stock', unitPrice: 85000, phaseBudget: 'raw_mat' })
   db = L.issueJob(db, project, {
     jobId: job4, startDate: '2026-07-05', endDate: '2026-07-06',
     location: 'อมตะซิตี้ จ.ระยอง', note: 'ทีม Service A นัดติดตั้ง 5 ก.ค. 2026',
   })
+  // เครื่องติดสัญญาที่ยังอยู่คลัง — ให้ popup "ดึง LBS เข้า Job" ของ JOB-0001 (ขาดอีก 1) มีให้เลือก
+  sign(stock1, 2, 'PEA เชียงใหม่')
 
   // ---- Check-in ราย Serial ของ JOB-0004 (2026-08-23) ----
   // ใส่ไว้เพื่อให้หน้า Map Tracking มีหมุดให้ดูในโหมด demo — ไม่งั้นแผนที่ว่างเปล่าทุกครั้งที่รีเซ็ต

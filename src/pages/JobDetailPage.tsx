@@ -81,31 +81,22 @@ function PlanCoordCell({ lat, lng }: { lat?: number; lng?: number }) {
   )
 }
 
-function SerialPicker({ units, selected, toggle, showEta }: {
+// ใช้ตอนคืน LBS · ตอนดึงเข้า Job ใช้ตาราง (ต้องโชว์ Contract No. / Customer / ETA)
+function SerialPicker({ units, selected, toggle }: {
   units: LbsUnit[]
   selected: Set<string>
   toggle: (id: string) => void
-  /** โชว์ ETA ของเครื่องที่ยังไม่เข้าคลัง (0049) — ใช้ตอนดึงเข้า Job · ไม่ต้องใช้ตอนคืน */
-  showEta?: boolean
 }) {
   return (
     <div className="serial-grid">
-      {units.map(u => {
-        const pending = showEta && unitStockState(u) === 'pending'
-        return (
-          <div key={u.id} className={`serial-pick${selected.has(u.id) ? ' selected' : ''}`} onClick={() => toggle(u.id)}>
-            <span className="pick-main">
-              <input type="checkbox" readOnly checked={selected.has(u.id)} />
-              <span className="mono">{u.serialLvb}</span>
-            </span>
-            {pending && (
-              <span className="pick-eta" title="ของยังไม่เข้าคลัง (Status = Pending) — ดึงจองล่วงหน้าได้">
-                ⚠️ ETA {fmtDate(unitEta(u))}
-              </span>
-            )}
-          </div>
-        )
-      })}
+      {units.map(u => (
+        <div key={u.id} className={`serial-pick${selected.has(u.id) ? ' selected' : ''}`} onClick={() => toggle(u.id)}>
+          <span className="pick-main">
+            <input type="checkbox" readOnly checked={selected.has(u.id)} />
+            <span className="mono">{u.serialLvb}</span>
+          </span>
+        </div>
+      ))}
       {units.length === 0 && <div className="muted">ไม่มีเครื่องให้เลือก</div>}
     </div>
   )
@@ -214,7 +205,12 @@ export default function JobDetailPage() {
   const openModal = (m: typeof modal) => { setPicked(new Set()); setModal(m) }
   const close = () => setModal(null)
 
-  const drawableUnits = db.lbsUnits.filter(u => u.projectStockId === drawStock && u.status === 'in_stock')
+  // ดึงเข้า Job ได้เฉพาะเครื่องที่มี Contract No. แล้ว (ผู้ใช้ขอ 2026-10-12) — เครื่องที่ยังไม่มีสัญญาคือ "ของแผน"
+  //   DB บังคับด้วย trigger trg_draw_requires_contract (0084) · demo บังคับใน drawLbs
+  const contractDrawable = (stockId: string) =>
+    db.lbsUnits.filter(u => u.projectStockId === stockId && u.status === 'in_stock' && !!u.contractNo?.trim())
+  const drawableUnits = contractDrawable(drawStock)
+  const drawNoContract = db.lbsUnits.filter(u => u.projectStockId === drawStock && u.status === 'in_stock').length - drawableUnits.length
   const returnableUnits = db.lbsUnits.filter(u => u.jobId === jobId && u.status === 'allocated')
   // cap ตาม Scope: ดึงรวมได้ไม่เกินจำนวนตอนเปิด Job
   // 0059: นับเครื่องที่เบิกออกไปแล้วด้วย (allocatedUnits = allocated + issued)
@@ -973,7 +969,12 @@ export default function JobDetailPage() {
       {canManage && (!locked || canIssueExtra) && (
         <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
           {!locked && <>
-            <button className="primary" onClick={() => { setDrawStock(db.projectStocks.find(s => s.status === 'open')?.id ?? ''); openModal('draw') }}>+ ดึง LBS เข้า Job</button>
+            <button className="primary" onClick={() => {
+              // เริ่มที่คลังแรกที่มีเครื่องติดสัญญาให้ดึง — ไม่งั้นเปิดมาเจอคลังว่างต้องไล่เลือกเอง
+              const open = db.projectStocks.filter(s => s.status === 'open')
+              setDrawStock((open.find(s => contractDrawable(s.id).length > 0) ?? open[0])?.id ?? '')
+              openModal('draw')
+            }}>+ ดึง LBS เข้า Job</button>
             <button onClick={() => { setReturnTarget(''); openModal('return') }} disabled={returnableUnits.length === 0}>คืน LBS กลับสต็อก</button>
           </>}
           {/* 0059: ปุ่มเดียวเปิด popup ให้เลือกว่ารอบนี้เบิกอะไร — ไม่ใช่เบิกทั้งใบทีเดียวอีกแล้ว
@@ -1654,7 +1655,7 @@ export default function JobDetailPage() {
 
       {/* ---------------- Modals ---------------- */}
       {modal === 'draw' && (
-        <Modal title="ดึง LBS เข้า Job (เลือกรายเครื่อง)" onClose={close}
+        <Modal title="ดึง LBS เข้า Job (เลือกรายเครื่อง)" size="xl" onClose={close}
           footer={<>
             <button onClick={close}>ยกเลิก</button>
             <button className="primary" disabled={picked.size === 0}
@@ -1668,7 +1669,7 @@ export default function JobDetailPage() {
                 const sum = stockSummary(db, s.id)
                 return (
                   <option key={s.id} value={s.id}>
-                    {s.stockNo} — เลือกได้ {sum.available} เครื่อง (On Hand {sum.onHand}
+                    {s.stockNo} — มี Contract No. {contractDrawable(s.id).length} เครื่อง · ว่างทั้งหมด {sum.available} (On Hand {sum.onHand}
                     {sum.pending > 0 ? ` · Pending ${sum.pending}` : ''}
                     {sum.unknown > 0 ? ` · ไม่ระบุ ETA ${sum.unknown}` : ''})
                   </option>
@@ -1689,7 +1690,58 @@ export default function JobDetailPage() {
               ตรวจ ETA ให้ตรงกับกำหนดติดตั้งก่อน
             </div>
           )}
-          <SerialPicker units={drawableUnits} selected={picked} toggle={toggleDraw} showEta />
+          {drawNoContract > 0 && (
+            <div className="muted" style={{ marginBottom: 8 }}>
+              แสดงเฉพาะเครื่องที่มี <b>Contract No.</b> แล้ว — ซ่อน {drawNoContract} เครื่องที่ยังไม่มีสัญญา
+              (กรอกเลขสัญญาที่ LBS Inventory → แก้ข้อมูล)
+            </div>
+          )}
+          <div className="table-scroll">
+            <table className="grid dense">
+              <thead>
+                <tr>
+                  <th style={{ width: 36 }}></th>
+                  <th>Serial No. (LVB)</th>
+                  <th>Serial No. (OM)</th>
+                  <th>Contract No.</th>
+                  <th>Customer</th>
+                  <th>สถานะในคลัง</th>
+                </tr>
+              </thead>
+              <tbody>
+                {drawableUnits.map(u => {
+                  const sel = picked.has(u.id)
+                  const st = unitStockState(u)
+                  // ลูกค้าตามสัญญาไม่ตรงกับ Job → เตือน ไม่บล็อก (Job ชนะเรื่องลูกค้าตาม 0014)
+                  const diff = !!u.planCustomerName?.trim() && !!job.customerName?.trim()
+                    && u.planCustomerName.trim() !== job.customerName.trim()
+                  return (
+                    <tr key={u.id} className="clickable" onClick={() => toggleDraw(u.id)}
+                      style={sel ? { fontWeight: 600 } : undefined}>
+                      <td><input type="checkbox" readOnly checked={sel} /></td>
+                      <td className="mono">{u.serialLvb}</td>
+                      <td className="mono">{u.serialOm}</td>
+                      <td className="mono">{u.contractNo}</td>
+                      <td>
+                        {u.planCustomerName || <span className="muted">—</span>}
+                        {diff && <span title={`ลูกค้าของ Job นี้: ${job.customerName}`} style={{ color: 'var(--amber, #d97706)' }}> ⚠️ ไม่ตรงกับ Job</span>}
+                      </td>
+                      <td>
+                        {st === 'pending'
+                          ? <span className="badge amber" title="ของยังไม่เข้าคลัง (Status = Pending) — ดึงจองล่วงหน้าได้">ETA {fmtDate(unitEta(u))}</span>
+                          : st === 'on_hand'
+                            ? <span className="badge green">On Hand</span>
+                            : <span className="badge neutral" title="ยังไม่มี FOB / ETA to WH">ไม่ระบุ ETA</span>}
+                      </td>
+                    </tr>
+                  )
+                })}
+                {drawableUnits.length === 0 && (
+                  <tr><td colSpan={6}><div className="empty">Stock นี้ไม่มีเครื่องที่มี Contract No. ให้ดึง</div></td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </Modal>
       )}
 

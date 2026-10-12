@@ -1604,6 +1604,10 @@ export function drawLbs(db: DB, actor: User, p: { jobId: string; stockId: string
   const bad = units.find(u => u.projectStockId !== p.stockId || u.status !== 'in_stock')
   if (bad || units.length !== p.unitIds.length)
     throw new Error('มีเครื่องที่ไม่อยู่ในสต็อกนี้หรือถูกดึงไปแล้ว — ห้ามดึงเกินยอดคงเหลือ')
+  // 0084: ดึงได้เฉพาะเครื่องที่มี Contract No. แล้ว (LIVE บังคับที่ trigger trg_draw_requires_contract)
+  const noContract = units.filter(u => !u.contractNo?.trim())
+  if (noContract.length > 0)
+    throw new Error(`ดึงได้เฉพาะเครื่องที่มี Contract No. แล้ว — ${noContract.map(u => u.serialLvb).join(', ')} ยังไม่มีสัญญา (กรอกที่ LBS Inventory → แก้ข้อมูล)`)
 
   let next: DB = {
     ...db,
