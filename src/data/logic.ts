@@ -319,7 +319,8 @@ function audit(db: DB, actor: User, entityType: string, entityId: string, action
 export const LINE_PUSH_TYPES: ReadonlySet<string> = new Set([
   'pr_created',                    // Purchasing ต้องออก PO ต่อ
   'pr_rejected',                   // Project ต้องแก้แล้วส่งใหม่
-  'approval_requested',            // Division ต้องตัดสิน — งานค้างทั้งสายจนกว่าจะกด
+  // 0083 — approval_requested ถอดออกจากกลุ่มแล้ว: ผู้อนุมัติได้การ์ด Flex ในแชท 1:1 อยู่แล้ว
+  //   (line-approval-push.js ไม่อ่านคิวนี้) ประกาศซ้ำในกลุ่มเปลืองโควตาเปล่า ๆ
   'approval_rejected',             // Project ต้องแก้แล้วขอใหม่
   'po_received',                   // เฉพาะ "รับครบ" · รับบางส่วนใช้ type po_received_partial
   'lbs_issued_to_service',         // ทีมช่างต้องเตรียมออกหน้างาน

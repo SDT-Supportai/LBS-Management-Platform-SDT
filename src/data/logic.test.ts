@@ -1108,7 +1108,7 @@ describe('โควตา LINE — allowlist (0066)', () => {
   const actor = { id: 'u1', email: 'a@x.co', password: '', fullName: 'สมชาย', department: 'admin' as const, isActive: true }
 
   it('ตัวที่บล็อกงานคนอื่นอยู่ในลิสต์ครบ', () => {
-    for (const t of ['pr_created', 'approval_requested', 'po_received',
+    for (const t of ['pr_created', 'po_received',
                      'lbs_issued_to_service', 'accessory_issued_to_service', 'job_cancelled'])
       expect(LINE_PUSH_TYPES.has(t)).toBe(true)
   })
@@ -1117,6 +1117,10 @@ describe('โควตา LINE — allowlist (0066)', () => {
     for (const t of ['accessory_issued', 'lbs_drawn', 'po_created', 'approval_approved',
                      'job_installed', 'team_assigned', 'unit_install_blocked', 'po_received_partial'])
       expect(LINE_PUSH_TYPES.has(t)).toBe(false)
+  })
+
+  it('ขออนุมัติไม่เข้ากลุ่ม LINE — ผู้อนุมัติได้การ์ด 1:1 อยู่แล้ว (0083)', () => {
+    expect(LINE_PUSH_TYPES.has('approval_requested')).toBe(false)
   })
 
   it('ชนิดที่ตัดออกยังถูกบันทึก แค่ไม่เข้าคิว LINE', () => {
