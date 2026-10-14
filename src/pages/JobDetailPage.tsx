@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
-import { ACCEPTANCE_TYPES, jobWarranties, qtyIssuable, qtyFieldReturnable, reversibleMovements, stockReturnsOf, STOCK_RETURN_LABEL, deriveJobStatus, jobStatusPhase, jobIsFieldActive, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, qtyOutToField, parseLatLng, fmtLatLng, PAYMENT_TYPES, jobDelivery, jobDueExtensions, paymentFiles, paymentFileCount, isAllowedDocFile, MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB, todayIso, daysBetweenIso } from '../data/logic'
+import { ACCEPTANCE_TYPES, contractOf, jobWarranties, qtyIssuable, qtyFieldReturnable, reversibleMovements, stockReturnsOf, STOCK_RETURN_LABEL, deriveJobStatus, jobStatusPhase, jobIsFieldActive, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, qtyOutToField, parseLatLng, fmtLatLng, PAYMENT_TYPES, jobDelivery, jobDueExtensions, paymentFiles, paymentFileCount, isAllowedDocFile, MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB, todayIso, daysBetweenIso } from '../data/logic'
 import { BudgetFields, CoordInput, DeliveryBadge, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useToast, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, sitesToApi, sitesFromJob, readAsDataUrl, type CostForm, type InstallSite } from '../ui/components'
 import { uploadPaymentDoc, signedPaymentDocUrl, removePaymentDocs } from '../data/remote'
 import { supabase } from '../lib/supabase'
@@ -207,8 +207,10 @@ export default function JobDetailPage() {
 
   // ดึงเข้า Job ได้เฉพาะเครื่องที่มี Contract No. แล้ว (ผู้ใช้ขอ 2026-10-12) — เครื่องที่ยังไม่มีสัญญาคือ "ของแผน"
   //   DB บังคับด้วย trigger trg_draw_requires_contract (0084) · demo บังคับใน drawLbs
+  // 0085: เรียงตามเลขสัญญา — เครื่องของ PO เดียวกันอยู่ติดกัน เลือกครบชุดได้ง่าย
   const contractDrawable = (stockId: string) =>
     db.lbsUnits.filter(u => u.projectStockId === stockId && u.status === 'in_stock' && !!u.contractNo?.trim())
+      .sort((a, b) => a.contractNo!.localeCompare(b.contractNo!) || a.serialLvb.localeCompare(b.serialLvb))
   const drawableUnits = contractDrawable(drawStock)
   const drawNoContract = db.lbsUnits.filter(u => u.projectStockId === drawStock && u.status === 'in_stock').length - drawableUnits.length
   const returnableUnits = db.lbsUnits.filter(u => u.jobId === jobId && u.status === 'allocated')
@@ -1713,8 +1715,9 @@ export default function JobDetailPage() {
                   const sel = picked.has(u.id)
                   const st = unitStockState(u)
                   // ลูกค้าตามสัญญาไม่ตรงกับ Job → เตือน ไม่บล็อก (Job ชนะเรื่องลูกค้าตาม 0014)
-                  const diff = !!u.planCustomerName?.trim() && !!job.customerName?.trim()
-                    && u.planCustomerName.trim() !== job.customerName.trim()
+                  // 0085: ลูกค้ามาจากทะเบียนสัญญา (ไม่มีในทะเบียน = ข้อมูลเก่า ใช้ค่าบนเครื่อง)
+                  const customer = (contractOf(db, u)?.customerName ?? u.planCustomerName)?.trim()
+                  const diff = !!customer && !!job.customerName?.trim() && customer !== job.customerName.trim()
                   return (
                     <tr key={u.id} className="clickable" onClick={() => toggleDraw(u.id)}
                       style={sel ? { fontWeight: 600 } : undefined}>
@@ -1723,7 +1726,7 @@ export default function JobDetailPage() {
                       <td className="mono">{u.serialOm}</td>
                       <td className="mono">{u.contractNo}</td>
                       <td>
-                        {u.planCustomerName || <span className="muted">—</span>}
+                        {customer || <span className="muted">—</span>}
                         {diff && <span title={`ลูกค้าของ Job นี้: ${job.customerName}`} style={{ color: 'var(--amber, #d97706)' }}> ⚠️ ไม่ตรงกับ Job</span>}
                       </td>
                       <td>

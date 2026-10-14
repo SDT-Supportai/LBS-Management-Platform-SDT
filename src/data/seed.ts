@@ -32,7 +32,7 @@ export function buildSeedDb(): DB {
     users: USERS,
     publicShareLinks: [],
     items: ITEMS,
-    projectStocks: [], lbsUnits: [], lbsUnitFiles: [], jobs: [], allocations: [],
+    projectStocks: [], lbsUnits: [], lbsUnitFiles: [], contracts: [], jobs: [], allocations: [],
     // Lot No. (0055) — ตัวอย่างมีทั้งแบบระบุล็อตและไม่ระบุ ให้เห็นทั้ง 2 สถานะในตาราง
     accessoryStock: [
       { itemId: 'i-ct', qtyOnHand: 20, avgUnitCost: 80000, lotNo: 'LOT-CT-2026-01' },
@@ -108,16 +108,28 @@ export function buildSeedDb(): DB {
   const stock1 = db.projectStocks[0].id
   const stock2 = db.projectStocks[1].id
   const unitsOf = (stockId: string) => db.lbsUnits.filter(u => u.projectStockId === stockId && u.status === 'in_stock')
-  // 0084: ดึงเข้า Job ได้เฉพาะเครื่องที่มี Contract No. — ใส่เลขสัญญาให้ n เครื่องแรกที่ว่างในคลัง
-  const sign = (stockId: string, n: number, customer: string) => {
-    const ids = unitsOf(stockId).slice(0, n).map(u => u.id)
-    db = { ...db, lbsUnits: db.lbsUnits.map(u => ids.includes(u.id)
-      ? { ...u, contractNo: `CT-${u.serialLvb}`, planCustomerName: customer } : u) }
-    return ids
+  // ---- ทะเบียนสัญญา (0085) — PO ลูกค้า 1 ใบ = สัญญา 1 ใบ ใช้กับหลายเครื่อง ----
+  // ดึงเข้า Job ได้เฉพาะเครื่องที่ผูกสัญญาแล้ว (0084) ⇒ สร้างสัญญาก่อนเปิด Job
+  const contracts: [string, string, string, number, string][] = [
+    // [Contract No., Customer, สถานที่หลัก, จำนวน set, PO ลูกค้า]
+    ['CT-2026-0101', 'PEA เชียงใหม่', 'สถานีไฟฟ้าสันทราย จ.เชียงใหม่', 4, 'PEA-CM-69/0412'],
+    ['CT-2026-0102', 'PEA ขอนแก่น', 'อ.บ้านไผ่ จ.ขอนแก่น', 5, 'PEA-KK-69/0188'],
+    ['CT-2026-0103', 'EGAT บางปะกง', 'โรงไฟฟ้าบางปะกง จ.ฉะเชิงเทรา', 2, 'EGAT-69-5521'],
+    ['CT-2026-0104', 'นิคมอุตสาหกรรมอมตะซิตี้', 'อมตะซิตี้ จ.ระยอง', 1, 'AMT-PO-2026-077'],
+    // ผูกไปแล้วแค่ 1 จาก 3 — ไว้ลองกด "ผูกเครื่อง" ในโหมด demo
+    ['CT-2026-0105', 'กฟภ. ลำปาง', 'สถานีไฟฟ้าลำปาง 2 จ.ลำปาง', 3, 'PEA-LP-69/0033'],
+  ]
+  for (const [contractNo, customerName, installLocation, qtySets, customerPoNo] of contracts)
+    db = L.saveContract(db, sales, { contractNo, customerName, installLocation, qtySets, customerPoNo, poDate: '2026-06-15' })
+  // ผูกเครื่องว่าง (ยังไม่มีสัญญา) n เครื่องแรกของคลังเข้าสัญญา
+  const sign = (contractNo: string, stockId: string, n: number) => {
+    const unitIds = unitsOf(stockId).filter(u => !u.contractNo).slice(0, n).map(u => u.id)
+    db = L.assignUnitsToContract(db, sales, { contractId: db.contracts.find(c => c.contractNo === contractNo)!.id, unitIds })
+    return unitIds
   }
   // ⚠️ ต้องแยก sign ออกมาก่อน — ถ้าเขียน L.drawLbs(db, .., sign(..)) JS จะประเมิน db (ตัวเก่า) ก่อน sign
-  const drawSigned = (jobId: string, stockId: string, n: number, customer: string) => {
-    const unitIds = sign(stockId, n, customer)
+  const drawSigned = (jobId: string, stockId: string, n: number, contractNo: string) => {
+    const unitIds = sign(contractNo, stockId, n)
     db = L.drawLbs(db, project, { jobId, stockId, unitIds })
   }
 
@@ -141,7 +153,7 @@ export function buildSeedDb(): DB {
     },
   })
   const job1 = db.jobs[0].id
-  drawSigned(job1, stock1, 3, 'PEA เชียงใหม่')
+  drawSigned(job1, stock1, 3, 'CT-2026-0101')
 
   // JOB-0002: กฟภ.ขอนแก่น — LBS ครบ แต่รอ Accessory จาก PO → Procuring Accessory
   db = L.createJob(db, project, {
@@ -157,8 +169,8 @@ export function buildSeedDb(): DB {
     },
   })
   const job2 = db.jobs[1].id
-  drawSigned(job2, stock1, 3, 'PEA ขอนแก่น')
-  drawSigned(job2, stock2, 2, 'PEA ขอนแก่น')
+  drawSigned(job2, stock1, 3, 'CT-2026-0102')
+  drawSigned(job2, stock2, 2, 'CT-2026-0102')
   db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-ct', qty: 5, source: 'central_stock', unitPrice: 85000, phaseBudget: 'raw_mat' })
   db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-relay', qty: 5, source: 'purchasing', unitPrice: 120000, phaseBudget: 'raw_mat' })
   db = L.addAccessoryRequest(db, project, { jobId: job2, itemId: 'i-cable', qty: 3, source: 'purchasing', unitPrice: 15000, phaseBudget: 'outsourcing' })
@@ -178,7 +190,7 @@ export function buildSeedDb(): DB {
     },
   })
   const job3 = db.jobs[2].id
-  drawSigned(job3, stock1, 2, 'EGAT บางปะกง')
+  drawSigned(job3, stock1, 2, 'CT-2026-0103')
   db = L.addAccessoryRequest(db, project, { jobId: job3, itemId: 'i-bracket', qty: 2, source: 'central_stock', unitPrice: 32000, phaseBudget: 'raw_mat' })
 
   // JOB-0004: อมตะซิตี้ — เบิกให้ Service แล้ว → Issued/Installed
@@ -194,14 +206,17 @@ export function buildSeedDb(): DB {
     },
   })
   const job4 = db.jobs[3].id
-  drawSigned(job4, stock2, 1, 'นิคมอุตสาหกรรมอมตะซิตี้')
+  drawSigned(job4, stock2, 1, 'CT-2026-0104')
   db = L.addAccessoryRequest(db, project, { jobId: job4, itemId: 'i-ct', qty: 1, source: 'central_stock', unitPrice: 85000, phaseBudget: 'raw_mat' })
   db = L.issueJob(db, project, {
     jobId: job4, startDate: '2026-07-05', endDate: '2026-07-06',
     location: 'อมตะซิตี้ จ.ระยอง', note: 'ทีม Service A นัดติดตั้ง 5 ก.ค. 2026',
   })
-  // เครื่องติดสัญญาที่ยังอยู่คลัง — ให้ popup "ดึง LBS เข้า Job" ของ JOB-0001 (ขาดอีก 1) มีให้เลือก
-  sign(stock1, 2, 'PEA เชียงใหม่')
+  // เครื่องติดสัญญาที่ยังอยู่คลัง
+  //   CT-2026-0101 ครบ 4/4 แต่ดึงเข้า JOB-0001 ไปแค่ 3 ⇒ popup "ดึง LBS เข้า Job" มีให้เลือก 1 เครื่อง
+  //   CT-2026-0105 ผูก 1/3 ⇒ ทะเบียนสัญญาโชว์ "ยังขาด 2" ไว้ลองกดผูกเครื่อง
+  sign('CT-2026-0101', stock1, 1)
+  sign('CT-2026-0105', stock1, 1)
 
   // ---- Check-in ราย Serial ของ JOB-0004 (2026-08-23) ----
   // ใส่ไว้เพื่อให้หน้า Map Tracking มีหมุดให้ดูในโหมด demo — ไม่งั้นแผนที่ว่างเปล่าทุกครั้งที่รีเซ็ต

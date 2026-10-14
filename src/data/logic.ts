@@ -1,5 +1,5 @@
 import type {
-  DB, Job, JobStatus, User, AccessoryRequest, AccReqStatus, PurchaseOrder, Department, LbsUnit, LbsUnitFile,
+  DB, Job, JobStatus, User, AccessoryRequest, AccReqStatus, PurchaseOrder, Department, LbsUnit, LbsUnitFile, Contract,
   JobPaymentFile, JobDueExtension,
   ApprovalType, ApprovalPayload, BudgetCosts, CostCategoryKey,
   SiteVisit, SiteVisitOutcome, UnitInstallOutcome, TeamMember, JobAssignment,
@@ -867,21 +867,6 @@ export function deleteUnitFile(db: DB, actor: User, p: { fileId: string }): DB {
     `${unit?.serialLvb ?? ''} ลบเอกสารแนบ "${file.fileName}"`)
 }
 
-/**
- * 0073 — มีเลขสัญญาต้องมีลูกค้า + สถานที่ครบ (ยกเว้นเครื่องที่ผูก Job แล้ว ซึ่งใช้ข้อมูลจาก Job)
- * คืนค่าเดิมกลับไปเพื่อให้เรียกคร่อมตอนประกอบแถวได้เลย · กติกาเดียวกับ CHECK
- * `lbs_units_contract_needs_info_ck` ฝั่ง DB — ที่นี่มีไว้ให้ error อ่านรู้เรื่องและบอกว่าเครื่องไหน
- */
-function assertContractInfo(
-  contractNo: string | undefined, jobId: string | null,
-  customer: string | undefined, location: string | undefined, serial: string,
-): string | undefined {
-  if (!contractNo || jobId) return contractNo
-  if (!customer || !location)
-    throw new Error(`${serial}: กรอก Contract No. แล้วต้องมี Customer และ Location / Site ครบ — ข้อมูลชุดนี้จะเลิกเป็น "แผน"`)
-  return contractNo
-}
-
 function normalizeUnits(rows: UnitSerialInput[]): UnitSerialInput[] {
   const t = (s?: string) => { const v = s?.trim(); return v ? v : undefined }
   return rows
@@ -997,6 +982,8 @@ export function importUnitsToStock(
   for (const u of updateUnits) upByKey.set(`${u.lvb}|${u.om}`, u)
   let updatedCount = 0
   let lockedCount = 0
+  // 0085: เลขสัญญาในไฟล์ต้องมีในทะเบียน + ไม่เกินจำนวน set · ตรวจรวมทีเดียวหลังประกอบเสร็จ
+  const touched = new Set<string>()
   let lbsUnits = db.lbsUnits.map(x => {
     if (x.projectStockId !== p.stockId) return x
     const u = upByKey.get(`${x.serialLvb}|${x.serialOm}`)
@@ -1005,6 +992,10 @@ export function importUnitsToStock(
       || u.leadDays !== undefined || u.planPoReceipt || u.planDelivery
     if (!hasAny) return x
     if (x.status === 'issued') { lockedCount++; return x }
+    // ห้ามสลับสัญญาตรง ๆ ผ่านไฟล์ — ต้องถอดออกจากสัญญาเดิมก่อน (กติกาเดียวกับ trg_unit_contract_guard)
+    if (u.contractNo && x.contractNo && u.contractNo !== x.contractNo)
+      throw new Error(`${x.serialLvb} อยู่ในสัญญา ${x.contractNo} แล้ว — ถอดออกจากสัญญาเดิมที่ทะเบียนสัญญาก่อน แล้วค่อย Import เลข ${u.contractNo}`)
+    if (u.contractNo && u.contractNo !== x.contractNo) touched.add(u.contractNo)
     updatedCount++
     return {
       ...x,
@@ -1016,9 +1007,7 @@ export function importUnitsToStock(
       planPoReceiptDate: u.fob ? undefined : (u.planPoReceipt ?? x.planPoReceiptDate),
       planDeliveryDate: u.planDelivery ?? x.planDeliveryDate,
       // 0073: Contract No. เป็นข้อเท็จจริงฝั่งสัญญา ไม่ถูก Job ทับ ⇒ เขียนได้เสมอ ต่างจาก 3 ช่องล่าง
-      contractNo: assertContractInfo(u.contractNo ?? x.contractNo, x.jobId,
-        x.jobId ? undefined : (u.customer ?? x.planCustomerName),
-        x.jobId ? undefined : (u.location ?? x.planInstallLocation), x.serialLvb),
+      contractNo: u.contractNo ?? x.contractNo,
       planCustomerName: x.jobId ? x.planCustomerName : (u.customer ?? x.planCustomerName),
       planContactPhone: x.jobId ? x.planContactPhone : (u.phone ?? x.planContactPhone),
       planInstallLocation: x.jobId ? x.planInstallLocation : (u.location ?? x.planInstallLocation),
@@ -1034,14 +1023,16 @@ export function importUnitsToStock(
     ...newUnits.map(u => ({
       id: uid(), serialLvb: u.lvb, serialOm: u.om, projectStockId: p.stockId,
       status: 'in_stock' as const, jobId: null, unitCost: u.cost,
-      // เครื่องใหม่ยังไม่มี Job แน่นอน ⇒ มีเลขสัญญาต้องมีลูกค้า+สถานที่ครบ (CHECK ฝั่ง DB คุมซ้ำอีกชั้น)
-      contractNo: assertContractInfo(u.contractNo, null, u.customer, u.location, u.lvb),
+      // 0085: ลูกค้ามาจากทะเบียนสัญญา ไม่บังคับกรอกซ้ำในไฟล์
+      contractNo: u.contractNo,
       planCustomerName: u.customer, planContactPhone: u.phone, planInstallLocation: u.location,
       planPoDate: u.planPo,
       fobDate: u.fob, etaLeadDays: leadDaysToStore(u.leadDays),
       planPoReceiptDate: u.fob ? undefined : u.planPoReceipt, planDeliveryDate: u.planDelivery,
     })),
   ]
+  for (const u of newUnits) if (u.contractNo) touched.add(u.contractNo)
+  assertContractCapacity(db, lbsUnits, touched)
   let next: DB = { ...db, lbsUnits }
   if (newUnits.length > 0) next = notify(next, {
     type: 'stock_received', dept: 'project',
@@ -1124,30 +1115,179 @@ export function updateUnitInfo(
 export type UnitInfoSource = 'job' | 'contract' | 'plan'
 export function unitCustomerInfo(db: DB, u: LbsUnit) {
   const job = u.jobId ? db.jobs.find(j => j.id === u.jobId) : undefined
+  // 0085: ลูกค้า/ผู้ติดต่อมาจากทะเบียนสัญญา · สถานที่ = รายเครื่อง (ถ้าแก้ทับ) ไม่งั้นสถานที่หลักของสัญญา
+  const contract = contractOf(db, u)
   const source: UnitInfoSource = job ? 'job' : (u.contractNo ? 'contract' : 'plan')
+  const cCustomer = contract ? contract.customerName : u.planCustomerName
+  const cPhone = contract ? contract.contactPhone : u.planContactPhone
+  const cLocation = u.planInstallLocation || contract?.installLocation
   const same = (a?: string, b?: string) => !a || !b || a.trim() === b.trim()
   const mismatch = job && u.contractNo
     ? ([
-        !same(u.planCustomerName, job.customerName) && 'Customer',
-        !same(u.planInstallLocation, job.installLocation) && 'Location / Site',
+        !same(cCustomer, job.customerName) && 'Customer',
+        !same(cLocation, job.installLocation) && 'Location / Site',
       ].filter(Boolean) as string[])
     : []
   return {
-    job, source, mismatch,
-    customer: job?.customerName ?? u.planCustomerName,
-    phone: job?.contactPhone ?? u.planContactPhone,
-    location: job?.installLocation || u.planInstallLocation,
+    job, contract, source, mismatch,
+    customer: job?.customerName ?? cCustomer,
+    phone: job?.contactPhone ?? cPhone,
+    location: job?.installLocation || cLocation,
   }
 }
 
-// แก้ข้อมูลรายเครื่อง: ต้นทุน + เลขสัญญา + ข้อมูลลูกค้า/เบอร์/สถานที่ + Plan PO receipt / Plan Delivery
+// ---------------- ทะเบียนสัญญา (0085) ----------------
+// PO ลูกค้า 1 ใบ = สัญญา 1 ใบ ใช้กับ LBS ได้หลายเครื่องตาม qtySets
+// LIVE: FK lbs_units.contract_no → contracts.contract_no + trigger trg_unit_contract_guard
+//   (ต้องมีในทะเบียน · ไม่เกินจำนวน set · ห้ามสลับสัญญาตรง ๆ) — ทุกทางที่เขียน contract_no ผ่านด่านนี้
+
+export function contractOf(db: DB, u: Pick<LbsUnit, 'contractNo'>): Contract | undefined {
+  return u.contractNo ? db.contracts.find(c => c.contractNo === u.contractNo) : undefined
+}
+export function contractUnits(db: DB, contractNo: string): LbsUnit[] {
+  return db.lbsUnits.filter(u => u.contractNo === contractNo)
+}
+/** ผูกเครื่องเพิ่มได้อีกกี่เครื่อง */
+export function contractRemaining(db: DB, c: Contract): number {
+  return Math.max(0, c.qtySets - contractUnits(db, c.contractNo).length)
+}
+
+/** กติกาเดียวกับ trigger trg_unit_contract_guard — ตรวจหลังประกอบรายการเครื่องชุดใหม่แล้ว */
+function assertContractCapacity(db: DB, units: LbsUnit[], touched: Iterable<string>): void {
+  for (const no of new Set(touched)) {
+    const c = db.contracts.find(x => x.contractNo === no)
+    if (!c) throw new Error(`ไม่พบ Contract No. ${no} ในทะเบียนสัญญา — สร้างสัญญาที่ Project Stock → 📄 ทะเบียนสัญญา ก่อน`)
+    const n = units.filter(u => u.contractNo === no).length
+    if (n > c.qtySets)
+      throw new Error(`สัญญา ${no} ซื้อ ${c.qtySets} set — ผูกได้ไม่เกิน ${c.qtySets} เครื่อง (จะกลายเป็น ${n}) · ถ้าลูกค้าซื้อเพิ่ม ให้แก้จำนวน set ในสัญญาก่อน`)
+  }
+}
+
+/** เครื่องที่ล็อกแล้ว (เบิกให้ Service / Job ปิดไปแล้ว) — แก้แถวไม่ได้ตาม trg_block_issued_edit */
+function unitLocked(db: DB, u: LbsUnit): boolean {
+  if (u.status === 'issued') return true
+  const j = u.jobId ? db.jobs.find(x => x.id === u.jobId) : undefined
+  return j?.terminalStatus === 'issued' || j?.terminalStatus === 'installed'
+}
+
+export interface ContractInput {
+  id?: string                  // ว่าง = สร้างใหม่
+  contractNo: string
+  customerName: string
+  contactPhone?: string
+  installLocation: string
+  customerPoNo?: string
+  poDate?: string
+  qtySets: number
+  note?: string
+}
+
+export function saveContract(db: DB, actor: User, p: ContractInput): DB {
+  const clean = (s?: string) => { const t = s?.trim(); return t ? t : undefined }
+  const no = clean(p.contractNo)
+  const customer = clean(p.customerName)
+  const location = clean(p.installLocation)
+  if (!no) throw new Error('กรุณาระบุ Contract No.')
+  if (!customer) throw new Error('กรุณาระบุ Customer')
+  if (!location) throw new Error('กรุณาระบุสถานที่ติดตั้งหลัก (Location / Site)')
+  if (!Number.isInteger(p.qtySets) || p.qtySets < 1) throw new Error('จำนวน set ต้องเป็นจำนวนเต็มตั้งแต่ 1 ขึ้นไป')
+  if (db.contracts.some(c => c.contractNo === no && c.id !== p.id))
+    throw new Error(`Contract No. ${no} มีอยู่ในทะเบียนแล้ว`)
+
+  const old = p.id ? db.contracts.find(c => c.id === p.id) : undefined
+  if (p.id && !old) throw new Error('ไม่พบสัญญา')
+  const units = old ? contractUnits(db, old.contractNo) : []
+  if (p.qtySets < units.length)
+    throw new Error(`สัญญานี้ผูกเครื่องไว้แล้ว ${units.length} เครื่อง — ลดจำนวน set ต่ำกว่านั้นไม่ได้ (ถอดเครื่องออกก่อน)`)
+  const renamed = !!old && old.contractNo !== no
+  if (renamed) {
+    const locked = units.find(u => unitLocked(db, u))
+    if (locked)
+      throw new Error(`เปลี่ยนเลขสัญญาไม่ได้ — ${locked.serialLvb} เบิกให้ Service แล้ว (ข้อมูลเครื่องถูกล็อก)`)
+  }
+
+  const row: Contract = {
+    id: old?.id ?? uid(), contractNo: no, customerName: customer,
+    contactPhone: clean(p.contactPhone), installLocation: location,
+    customerPoNo: clean(p.customerPoNo), poDate: clean(p.poDate),
+    qtySets: p.qtySets, note: clean(p.note),
+    createdBy: old?.createdBy ?? actor.id, createdAt: old?.createdAt ?? now(),
+  }
+  const next: DB = {
+    ...db,
+    contracts: old ? db.contracts.map(c => c.id === old.id ? row : c) : [...db.contracts, row],
+    // เปลี่ยนเลขสัญญา → เครื่องที่ผูกอยู่ตามไปด้วย (LIVE = FK ON UPDATE CASCADE)
+    lbsUnits: renamed ? db.lbsUnits.map(u => u.contractNo === old!.contractNo ? { ...u, contractNo: no } : u) : db.lbsUnits,
+  }
+  return audit(next, actor, 'contract', row.id, old ? 'update_contract' : 'create_contract',
+    `${old ? 'แก้' : 'สร้าง'}สัญญา ${no}${renamed ? ` (เดิม ${old!.contractNo})` : ''} · ${customer} · ${p.qtySets} set` +
+    (row.customerPoNo ? ` · PO ลูกค้า ${row.customerPoNo}` : ''))
+}
+
+export function deleteContract(db: DB, actor: User, p: { contractId: string }): DB {
+  const c = db.contracts.find(x => x.id === p.contractId)
+  if (!c) throw new Error('ไม่พบสัญญา')
+  const n = contractUnits(db, c.contractNo).length
+  if (n > 0) throw new Error(`สัญญา ${c.contractNo} ยังผูกเครื่องอยู่ ${n} เครื่อง — ถอดออกให้หมดก่อนลบ`)
+  const next: DB = { ...db, contracts: db.contracts.filter(x => x.id !== c.id) }
+  return audit(next, actor, 'contract', c.id, 'delete_contract', `ลบสัญญา ${c.contractNo} · ${c.customerName}`)
+}
+
+/**
+ * ผูกเครื่องเข้าสัญญา — ทีละหลายเครื่อง (PO หลาย set)
+ * เครื่องที่ยังไม่ผูก Job: ล้างสถานที่แผนเดิมทิ้ง ให้ใช้สถานที่หลักของสัญญา (แก้ทับรายเครื่องได้ทีหลัง)
+ */
+export function assignUnitsToContract(db: DB, actor: User, p: { contractId: string; unitIds: string[] }): DB {
+  const c = db.contracts.find(x => x.id === p.contractId)
+  if (!c) throw new Error('ไม่พบสัญญา')
+  if (p.unitIds.length === 0) throw new Error('กรุณาเลือกเครื่องที่จะผูกเข้าสัญญา')
+  const picked = p.unitIds.map(id => db.lbsUnits.find(u => u.id === id))
+  if (picked.some(u => !u)) throw new Error('ไม่พบเครื่อง LBS บางเครื่อง')
+  for (const u of picked as LbsUnit[]) {
+    if (unitLocked(db, u)) throw new Error(`${u.serialLvb} เบิกให้ Service แล้ว — ผูกสัญญาไม่ได้`)
+    if (u.contractNo === c.contractNo) throw new Error(`${u.serialLvb} อยู่ในสัญญานี้แล้ว`)
+    if (u.contractNo) throw new Error(`${u.serialLvb} อยู่ในสัญญา ${u.contractNo} แล้ว — ถอดออกจากสัญญาเดิมก่อน`)
+  }
+  const ids = new Set(p.unitIds)
+  const lbsUnits = db.lbsUnits.map(u => !ids.has(u.id) ? u : {
+    ...u, contractNo: c.contractNo,
+    planInstallLocation: u.jobId ? u.planInstallLocation : undefined,
+  })
+  assertContractCapacity(db, lbsUnits, [c.contractNo])
+  const serials = (picked as LbsUnit[]).map(u => u.serialLvb)
+  return audit({ ...db, lbsUnits }, actor, 'contract', c.id, 'assign_units',
+    `ผูก ${serials.length} เครื่องเข้าสัญญา ${c.contractNo} (${serials.join(', ')}) · ` +
+    `รวม ${contractUnits({ ...db, lbsUnits }, c.contractNo).length}/${c.qtySets} set`)
+}
+
+/** ถอดเครื่องออกจากสัญญา — เฉพาะเครื่องที่ยังอยู่ในคลัง (ไม่งั้น Job จะถือเครื่องที่ไม่มีสัญญา ขัด 0084) */
+export function unassignUnitContract(db: DB, actor: User, p: { unitId: string }): DB {
+  const u = db.lbsUnits.find(x => x.id === p.unitId)
+  if (!u) throw new Error('ไม่พบเครื่อง LBS')
+  if (!u.contractNo) throw new Error(`${u.serialLvb} ไม่ได้ผูกสัญญาอยู่`)
+  if (u.status !== 'in_stock') {
+    const jobNo = db.jobs.find(j => j.id === u.jobId)?.jobNo ?? '-'
+    throw new Error(u.status === 'issued'
+      ? `${u.serialLvb} เบิกให้ Service แล้ว — ถอดสัญญาไม่ได้`
+      : `${u.serialLvb} ถูกดึงเข้า ${jobNo} แล้ว — คืนเข้าคลังก่อนถอดสัญญา`)
+  }
+  const c = contractOf(db, u)
+  const next: DB = { ...db, lbsUnits: db.lbsUnits.map(x => x.id === u.id ? { ...x, contractNo: undefined } : x) }
+  return audit(next, actor, 'contract', c?.id ?? u.id, 'unassign_unit',
+    `ถอด ${u.serialLvb} ออกจากสัญญา ${u.contractNo}`)
+}
+
+// แก้ข้อมูลรายเครื่อง: ต้นทุน + ข้อมูลลูกค้า/เบอร์/สถานที่ + Plan PO receipt / Plan Delivery
 // (sync 0043) ฟอร์มส่งค่าครบทุกช่อง → ค่าว่าง = ล้างค่า ไม่ใช่ "ไม่เปลี่ยน"
 // แก้ได้เฉพาะเครื่องที่ยังไม่ถูกเบิก — LIVE มี trigger trg_block_issued_edit บล็อกอยู่แล้ว
+// 0085: **ไม่แตะเลขสัญญาแล้ว** — ผูก/ถอดผ่าน assignUnitsToContract / unassignUnitContract เท่านั้น
+//   (เลิกการ "พิมพ์เลขแล้วระบบเดาว่าย้าย" ของ 0082 — PO หลาย set ต้องใส่เลขเดียวกันหลายเครื่องได้)
+//   เครื่องที่มีสัญญา: Customer/Contact อ่านจากสัญญา ช่องของเครื่องเป็นแค่ค่าแผนเดิมที่เก็บไว้
+//   · Location ที่กรอก = แก้ทับสถานที่หลักของสัญญาเฉพาะเครื่องนี้ (ว่าง = ใช้ของสัญญา)
 export function updateUnitPlan(
   db: DB, actor: User,
   p: {
     unitId: string; unitCost?: number
-    contractNo?: string
     planCustomerName?: string; planContactPhone?: string; planInstallLocation?: string
     planPoDate?: string
     fobDate?: string; etaLeadDays?: number; planPoReceiptDate?: string; planDeliveryDate?: string
@@ -1159,50 +1299,14 @@ export function updateUnitPlan(
     throw new Error(`Serial ${unit.serialLvb} ถูกเบิกให้ Service แล้ว — แก้ข้อมูลรายเครื่องไม่ได้ (allocation ถูกล็อก)`)
   if (p.unitCost !== undefined && p.unitCost < 0) throw new Error('ต้นทุน/เครื่องต้องไม่ติดลบ')
   const clean = (s?: string) => { const t = s?.trim(); return t ? t : undefined }
-  // 0073: กรอกเลขสัญญาแล้ว = ประกาศว่าข้อมูลลูกค้าชุดนี้ "ตกลงแล้ว" ไม่ใช่แผน
-  //   ถ้าปล่อยให้ว่างได้ ป้าย "แผน" จะหายไปจากช่องที่ไม่มีข้อมูล = แย่กว่าเดิม
-  //   เบอร์ติดต่อไม่บังคับ — ตอนเซ็นสัญญามักยังไม่รู้ว่าใครเป็นผู้ประสานงานหน้างาน
-  // ⚠️ บังคับเฉพาะเครื่องที่ **ยังไม่ผูก Job** — ผูกแล้วข้อมูลลูกค้า/สถานที่มาจาก Job
-  //    และเลขสัญญาเป็นแค่ Ref. (มติ 2026-09-16) · บังคับต่อไปจะกรอกเลขสัญญาให้เครื่องที่มี Job ไม่ได้
-  //    กติกาเดียวกันถูกล็อกไว้ที่ CHECK lbs_units_contract_needs_info_ck ฝั่ง DB ด้วย
-  const contractNo = clean(p.contractNo)
-  if (contractNo && !unit.jobId) {
-    const missing = [
-      !clean(p.planCustomerName) && 'Customer',
-      !clean(p.planInstallLocation) && 'Location / Site',
-    ].filter(Boolean)
-    if (missing.length > 0)
-      throw new Error(`กรอก Contract No. แล้วต้องระบุ ${missing.join(' และ ')} ด้วย — ข้อมูลชุดนี้จะเลิกเป็น "แผน"`)
-  }
+  const contractNo = unit.contractNo
   const lead = leadDaysToStore(normalizeLeadDays(p.etaLeadDays))
   const stock = db.projectStocks.find(s => s.id === unit.projectStockId)
-
-  // 0082: เลขสัญญานี้ย้ายมาจากเครื่องอื่น → เอกสารแนบทั้งหมดของเครื่องเดิมตามมาด้วย
-  const src = contractNo && contractNo !== unit.contractNo ? contractMoveSource(db, unit.id, contractNo) : undefined
-  if (src?.held && src.unit.status === 'issued')
-    throw new Error(`Contract No. ${contractNo} อยู่กับ Serial ${src.unit.serialLvb} ซึ่งเบิกให้ Service แล้ว — ย้ายสัญญาออกไม่ได้`)
-  let base: DB = db
-  if (src) {
-    base = {
-      ...db,
-      lbsUnits: db.lbsUnits.map(u => u.id !== src.unit.id ? u : src.held
-        ? { ...u, contractNo: undefined, planCustomerName: undefined, planContactPhone: undefined,
-            planInstallLocation: undefined, planPoDate: undefined, planDeliveryDate: undefined, lastContractNo: undefined }
-        : u.status === 'issued' ? u : { ...u, lastContractNo: undefined }),
-      lbsUnitFiles: db.lbsUnitFiles.map(f => f.unitId === src.unit.id ? { ...f, unitId: unit.id } : f),
-    }
-    base = audit(base, actor, 'lbs_unit', src.unit.id, 'move_unit_contract',
-      `Contract ${contractNo} ย้ายไปที่ ${unit.serialLvb} · เอกสารแนบ ${src.fileCount} ไฟล์ย้ายตามไป` +
-      (src.held ? ' (ถอดเลขสัญญา + ข้อมูลลูกค้าออกจากเครื่องนี้)' : ''))
-  }
   const next: DB = {
-    ...base,
-    lbsUnits: base.lbsUnits.map(u => u.id === p.unitId ? {
+    ...db,
+    lbsUnits: db.lbsUnits.map(u => u.id === p.unitId ? {
       ...u,
       unitCost: p.unitCost,
-      contractNo,
-      // 0082: ถอด/เปลี่ยนเลขสัญญา → จำเลขเดิม ให้เครื่องที่รับเลขนี้ไปทีหลังดึงเอกสารแนบตามได้
-      lastContractNo: unit.contractNo && unit.contractNo !== contractNo ? unit.contractNo : u.lastContractNo,
       planCustomerName: clean(p.planCustomerName),
       planContactPhone: clean(p.planContactPhone),
       planInstallLocation: clean(p.planInstallLocation),
@@ -1220,29 +1324,12 @@ export function updateUnitPlan(
   return audit(next, actor, 'lbs_unit', p.unitId, 'update_unit_plan',
     `${stock?.stockNo ?? ''} · ${unit.serialLvb}/${unit.serialOm} → ต้นทุน ${p.unitCost ?? '-'} ฿` +
     ` · Contract No. ${contractNo ?? '-'}` +
-    ` · Customer${contractNo ? '' : '(แผน)'} ${clean(p.planCustomerName) ?? '-'}` +
+    (contractNo
+      ? ` · Customer (ตามสัญญา) ${contractOf(db, unit)?.customerName ?? '-'}`
+      : ` · Customer(แผน) ${clean(p.planCustomerName) ?? '-'}`) +
     ` · Plan PO receipt ${clean(p.planPoDate) ?? '-'}` +
     ` · FOB ${clean(p.fobDate) ?? '-'} +${lead ?? ETA_LEAD_DAYS} วัน · ETA to WH ${eta ?? '-'}` +
-    ` · Plan Delivery ${clean(p.planDeliveryDate) ?? '-'}` +
-    (src ? ` · ย้าย Contract มาจาก ${src.unit.serialLvb} (เอกสารแนบตามมา ${src.fileCount} ไฟล์)` : ''))
-}
-
-/**
- * เครื่องต้นทางของเลขสัญญาที่กำลังจะใส่ให้ unitId (sync 0082 rpc_update_unit_plan)
- *   held = true  → เครื่องอื่นยังถือเลขนี้อยู่ (จะถูกถอดเลข + ข้อมูลลูกค้าออก)
- *   held = false → เครื่องที่เพิ่งถอดเลขนี้ออก (last_contract_no) ยังไม่มีสัญญาใบใหม่
- * ใช้ทั้งตอนบันทึก และให้ฟอร์ม "แก้ข้อมูล" บอกล่วงหน้าว่าจะย้ายเอกสารจากเครื่องไหนกี่ไฟล์
- */
-export function contractMoveSource(db: DB, unitId: string, contractNo: string) {
-  const no = contractNo.trim()
-  if (!no) return undefined
-  // ตัวท้ายสุดของ array = แถวที่ถูกสร้าง/แก้ล่าสุดในเดโม (LIVE ใช้ ORDER BY updated_at DESC)
-  const held = db.lbsUnits.filter(u => u.id !== unitId && u.contractNo === no).pop()
-  const released = held ? undefined
-    : db.lbsUnits.filter(u => u.id !== unitId && !u.contractNo && u.lastContractNo === no).pop()
-  const unit = held ?? released
-  if (!unit) return undefined
-  return { unit, held: !!held, fileCount: db.lbsUnitFiles.filter(f => f.unitId === unit.id).length }
+    ` · Plan Delivery ${clean(p.planDeliveryDate) ?? '-'}`)
 }
 
 // ตั้ง FOB date ให้ทั้งคลังในครั้งเดียว (0049) — ล็อตหนึ่ง PO มักลงเรือพร้อมกัน

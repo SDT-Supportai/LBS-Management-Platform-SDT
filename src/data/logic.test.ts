@@ -13,7 +13,7 @@ import {
   markEpicorIssued, undoEpicorIssued, LINE_PUSH_TYPES, drawLbs,
   qtyPendingIssue, qtyIssuedToService, accSettled, requestStockReturn, receiveStockReturn, rejectStockReturn, cancelStockReturn,
   reverseStockMovement, importStockCount, qtyIssuable, qtyFieldReturnable, reversibleMovements,
-  contractMoveSource, writeOffJobMaterial,
+  writeOffJobMaterial, saveContract, deleteContract, assignUnitsToContract, unassignUnitContract,
   createShareLink, revokeShareLink, publicStockView, touchShareLink, newShareToken,
   adjustPoLine, confirmUnitInstall, blockUnitInstall, assignJobTeam, logSiteVisit, closeJobInstall,
   jobInstallSummary, jobHasIssuedUnits, jobIsFieldActive, unitInstallState, jobTeam, qtyOutToField,
@@ -51,7 +51,7 @@ import {
 // ---------- fixture ----------
 const EMPTY: DB = {
   users: [], publicShareLinks: [],
-  items: [], projectStocks: [], lbsUnits: [], lbsUnitFiles: [], jobs: [], allocations: [],
+  items: [], projectStocks: [], lbsUnits: [], lbsUnitFiles: [], contracts: [], jobs: [], allocations: [],
   accessoryStock: [], accessoryRequests: [], prs: [], pos: [], approvalRequests: [], approvalComments: [],
   auditLogs: [], notifications: [], siteVisits: [], unitInstallations: [],
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
@@ -1511,98 +1511,153 @@ describe('ปิดใบเงียบ — ประกาศให้ Service
 })
 
 // =============================================================================
-// Contract No. รายเครื่อง (0073)
+// ทะเบียนสัญญา (0085) — แทน "Contract No. รายเครื่อง" (0073) และ "ย้ายสัญญาด้วยการพิมพ์" (0082)
 //
-// 0014 ตัดข้อมูลลูกค้าออกจาก lbs_units แล้วให้ Job เป็น source of truth เดียว · 0043 คืนมาเป็น
-// "ข้อมูลแผน" ⇒ มี 2 สถานะ · 0073 แทรกสถานะกลาง "ตกลงตามสัญญาแล้ว"
+// ต้นเรื่อง: ลูกค้าออก PO ซื้อหลาย set ⇒ ต้องใส่เลขสัญญาเดียวกันให้หลายเครื่อง
+//   แต่ 0082 ถือว่าพิมพ์เลขที่เครื่องอื่นถืออยู่ = ย้ายสัญญา → เครื่องแรกเสียสัญญา + ลูกค้า + เอกสารแนบ
 //
 // กฎที่ต้องไม่หลุด:
-//   1) ลำดับความจริง Job > สัญญา > แผน — Job ชนะเสมอ (0014 ไม่เปลี่ยน)
-//   2) ผูก Job แล้วเลขสัญญาเป็น Ref. · ถ้า 2 ฝั่งไม่ตรงต้องมีธงให้เห็น ไม่ใช่กลืนเงียบ
-//   3) มีเลขสัญญาต้องมี Customer + Location ครบ — **ยกเว้นเครื่องที่ผูก Job แล้ว**
-//      (ไม่ยกเว้นจะกรอกเลขสัญญาให้เครื่องที่มี Job ไม่ได้เลย ซึ่งเป็นเคสที่เจอบ่อยสุด)
+//   1) สัญญา 1 ใบผูกได้หลายเครื่อง แต่ไม่เกิน qtySets · ต้องมีในทะเบียนก่อน (ทุกทาง รวม Import)
+//   2) Customer/Contact มาจากสัญญา · Location = รายเครื่องถ้าแก้ทับ ไม่งั้นของสัญญา · Job ยังชนะ (0014)
+//   3) แก้ข้อมูลรายเครื่อง (updateUnitPlan) ต้องไม่แตะเลขสัญญา/เอกสารแนบของเครื่องอื่นอีกต่อไป
+//   4) ห้ามสลับสัญญา A → B ตรง ๆ · ถอดได้เฉพาะเครื่องที่อยู่ในคลัง (Job ต้องไม่ถือเครื่องไร้สัญญา — 0084)
 // =============================================================================
-describe('Contract No. รายเครื่อง (0073)', () => {
-  const actor = { id: 'u1', email: 'd@x.co', password: '', fullName: 'สมชาย', department: 'sales' as const, isActive: true }
-  const base = (over: Partial<DB> = {}) => db({
-    users: [actor],
-    projectStocks: [{ id: 's1', stockNo: 'ST-1', itemId: 'i-lbs', status: 'open' as const, createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' }],
-    lbsUnits: [unit({ id: 'a', projectStockId: 's1' })],
-    ...over,
-  })
-  const plan = { planCustomerName: 'PEA เชียงใหม่', planInstallLocation: 'สถานีสันทราย' }
+describe('ทะเบียนสัญญา (0085)', () => {
+  const sales = { id: 'u1', email: 'd@x.co', password: '', fullName: 'Division', department: 'sales' as const, isActive: true }
+  const stock = { id: 's1', stockNo: 'ST-1', itemId: 'i-lbs', status: 'open' as const, createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' }
+  const four = () => ['a', 'b', 'c', 'd'].map((id, i) =>
+    unit({ id, serialLvb: `LVB-${i + 1}`, serialOm: `OM-${i + 1}`, projectStockId: 's1', planInstallLocation: 'แผนเดิม' }))
+  const base = (over: Partial<DB> = {}) => db({ users: [sales], projectStocks: [stock], lbsUnits: four(), ...over })
+  const ct = { contractNo: 'CT-2026-0101', customerName: 'PEA เชียงใหม่', installLocation: 'สถานีสันทราย', qtySets: 3, customerPoNo: 'PO-6901' }
+  const withContract = (d = base(), qtySets = 3) => saveContract(d, sales, { ...ct, qtySets })
+  const cid = (d: DB) => d.contracts[0].id
+  const u = (d: DB, id: string) => d.lbsUnits.find(x => x.id === id)!
 
   it('ยังไม่มีทั้งสัญญาและ Job = ข้อมูลแผน', () => {
-    const d = updateUnitPlan(base(), actor, { unitId: 'a', ...plan })
-    expect(unitCustomerInfo(d, d.lbsUnits[0]).source).toBe('plan')
+    const d = updateUnitPlan(base(), sales, { unitId: 'a', planCustomerName: 'PEA', planInstallLocation: 'สถานี' })
+    expect(unitCustomerInfo(d, u(d, 'a')).source).toBe('plan')
   })
 
-  it('กรอกเลขสัญญาแล้ว = เลิกเป็นแผน', () => {
-    const d = updateUnitPlan(base(), actor, { unitId: 'a', contractNo: ' CT-2026-001 ', ...plan })
-    expect(d.lbsUnits[0].contractNo).toBe('CT-2026-001')     // trim ให้
-    expect(unitCustomerInfo(d, d.lbsUnits[0]).source).toBe('contract')
+  it('PO 3 set: สร้างสัญญาครั้งเดียว แล้วผูก 3 เครื่องพร้อมกัน — ทุกเครื่องเห็นลูกค้าเดียวกัน', () => {
+    const d0 = withContract()
+    const d = assignUnitsToContract(d0, sales, { contractId: cid(d0), unitIds: ['a', 'b', 'c'] })
+    for (const id of ['a', 'b', 'c']) {
+      expect(u(d, id).contractNo).toBe('CT-2026-0101')
+      const info = unitCustomerInfo(d, u(d, id))
+      expect(info.source).toBe('contract')
+      expect(info.customer).toBe('PEA เชียงใหม่')
+      expect(info.location).toBe('สถานีสันทราย')       // สถานที่แผนเดิมถูกล้าง → ใช้ของสัญญา
+    }
+    expect(u(d, 'd').contractNo).toBeUndefined()
   })
 
-  it('มีเลขสัญญาแต่ไม่มี Customer/Location = ไม่ให้บันทึก', () => {
-    expect(() => updateUnitPlan(base(), actor, { unitId: 'a', contractNo: 'CT-1', planCustomerName: 'PEA' }))
-      .toThrow(/Location \/ Site/)
-    expect(() => updateUnitPlan(base(), actor, { unitId: 'a', contractNo: 'CT-1', planInstallLocation: 'สถานี' }))
-      .toThrow(/Customer/)
+  it('ผูกเกินจำนวน set = ไม่ให้ และไม่มีเครื่องไหนถูกผูกไปครึ่งทาง', () => {
+    const d0 = withContract(base(), 2)
+    expect(() => assignUnitsToContract(d0, sales, { contractId: cid(d0), unitIds: ['a', 'b', 'c'] })).toThrow(/2 set/)
+    const d1 = assignUnitsToContract(d0, sales, { contractId: cid(d0), unitIds: ['a', 'b'] })
+    expect(() => assignUnitsToContract(d1, sales, { contractId: cid(d1), unitIds: ['c'] })).toThrow(/2 set/)
   })
 
-  it('ผูก Job แล้ว: Job ชนะ · เลขสัญญาเป็น Ref. · กรอกได้โดยไม่ต้องมีข้อมูลแผน', () => {
-    const d0 = base({
-      jobs: [job({ customerName: 'EGAT บางปะกง', contactPhone: '02-111-2222', installLocation: 'โรงไฟฟ้าบางปะกง' })],
-      lbsUnits: [unit({ id: 'a', projectStockId: 's1', status: 'allocated', jobId: 'j1' })],
-    })
-    // ไม่ส่งข้อมูลแผนมาเลย แต่กรอกเลขสัญญาได้ — เพราะข้อมูลจริงมาจาก Job
-    const d = updateUnitPlan(d0, actor, { unitId: 'a', contractNo: 'CT-2026-009' })
-    const info = unitCustomerInfo(d, d.lbsUnits[0])
+  it('เครื่องที่อยู่สัญญาอื่นแล้ว = ต้องถอดก่อน (ห้ามสลับสัญญาตรง ๆ)', () => {
+    let d = withContract()
+    d = saveContract(d, sales, { ...ct, contractNo: 'CT-OTHER', qtySets: 1 })
+    d = assignUnitsToContract(d, sales, { contractId: d.contracts[1].id, unitIds: ['a'] })
+    expect(() => assignUnitsToContract(d, sales, { contractId: cid(d), unitIds: ['a'] })).toThrow(/ถอดออกจากสัญญาเดิมก่อน/)
+  })
+
+  it('บันทึกสัญญา: ช่องบังคับ · เลขซ้ำ · ลดจำนวน set ต่ำกว่าที่ผูกไว้ไม่ได้', () => {
+    expect(() => saveContract(base(), sales, { ...ct, customerName: ' ' })).toThrow(/Customer/)
+    expect(() => saveContract(base(), sales, { ...ct, installLocation: '' })).toThrow(/สถานที่/)
+    expect(() => saveContract(base(), sales, { ...ct, qtySets: 0 })).toThrow(/จำนวน set/)
+    expect(() => saveContract(withContract(), sales, ct)).toThrow(/มีอยู่ในทะเบียนแล้ว/)
+    const dc = withContract()
+    const d = assignUnitsToContract(dc, sales, { contractId: cid(dc), unitIds: ['a', 'b'] })
+    expect(() => saveContract(d, sales, { ...ct, id: cid(d), qtySets: 1 })).toThrow(/2 เครื่อง/)
+  })
+
+  it('แก้ชื่อลูกค้า/เปลี่ยนเลขสัญญาที่เดียว → ทุกเครื่องในสัญญาตาม', () => {
+    let d = withContract()
+    d = assignUnitsToContract(d, sales, { contractId: cid(d), unitIds: ['a', 'b'] })
+    d = saveContract(d, sales, { ...ct, id: cid(d), contractNo: 'CT-2026-0101/R1', customerName: 'กฟภ. เชียงใหม่' })
+    expect(u(d, 'a').contractNo).toBe('CT-2026-0101/R1')
+    expect(u(d, 'b').contractNo).toBe('CT-2026-0101/R1')
+    expect(unitCustomerInfo(d, u(d, 'b')).customer).toBe('กฟภ. เชียงใหม่')
+  })
+
+  it('เปลี่ยนเลขสัญญาไม่ได้ถ้ามีเครื่องเบิกให้ Service แล้ว (ข้อมูลเครื่องถูกล็อก)', () => {
+    let d = withContract()
+    d = assignUnitsToContract(d, sales, { contractId: cid(d), unitIds: ['a'] })
+    d = { ...d, lbsUnits: d.lbsUnits.map(x => x.id === 'a' ? { ...x, status: 'issued' as const } : x) }
+    expect(() => saveContract(d, sales, { ...ct, id: cid(d), contractNo: 'CT-NEW' })).toThrow(/เบิกให้ Service แล้ว/)
+    // แก้ข้อมูลอื่นที่ไม่ใช่เลขสัญญายังได้
+    expect(() => saveContract(d, sales, { ...ct, id: cid(d), customerName: 'ชื่อใหม่' })).not.toThrow()
+  })
+
+  it('🐛 0082 regression: แก้ข้อมูลเครื่องหนึ่ง ต้องไม่ถอดสัญญา/ย้ายเอกสารแนบของอีกเครื่องในสัญญาเดียวกัน', () => {
+    let d = withContract()
+    d = assignUnitsToContract(d, sales, { contractId: cid(d), unitIds: ['a', 'b'] })
+    d = { ...d, lbsUnitFiles: [{ id: 'f1', unitId: 'a', fileName: 'สัญญา.pdf', filePath: 'x', mimeType: 'application/pdf', sizeBytes: 1, uploadedBy: 'u1', uploadedAt: '2026-10-01T00:00:00.000Z' }] }
+    d = updateUnitPlan(d, sales, { unitId: 'b', unitCost: 900000 })
+    expect(u(d, 'a').contractNo).toBe('CT-2026-0101')
+    expect(u(d, 'b').contractNo).toBe('CT-2026-0101')
+    expect(d.lbsUnitFiles[0].unitId).toBe('a')
+  })
+
+  it('สถานที่รายเครื่องแก้ทับสถานที่หลักของสัญญาได้ (PO เดียวกันคนละสถานี)', () => {
+    let d = withContract()
+    d = assignUnitsToContract(d, sales, { contractId: cid(d), unitIds: ['a', 'b'] })
+    d = updateUnitPlan(d, sales, { unitId: 'b', planInstallLocation: 'สถานีแม่ริม' })
+    expect(unitCustomerInfo(d, u(d, 'a')).location).toBe('สถานีสันทราย')
+    expect(unitCustomerInfo(d, u(d, 'b')).location).toBe('สถานีแม่ริม')
+  })
+
+  it('ถอดออกจากสัญญา: ได้เฉพาะเครื่องในคลัง · อยู่ใน Job แล้วต้องคืนก่อน', () => {
+    let d = withContract(base({ jobs: [job({ id: 'j1', jobNo: 'JOB-001' })] }))
+    d = assignUnitsToContract(d, sales, { contractId: cid(d), unitIds: ['a', 'b'] })
+    d = { ...d, lbsUnits: d.lbsUnits.map(x => x.id === 'b' ? { ...x, status: 'allocated' as const, jobId: 'j1' } : x) }
+    d = unassignUnitContract(d, sales, { unitId: 'a' })
+    expect(u(d, 'a').contractNo).toBeUndefined()
+    expect(() => unassignUnitContract(d, sales, { unitId: 'b' })).toThrow(/JOB-001.*คืนเข้าคลังก่อน/)
+  })
+
+  it('ลบสัญญา: ยังผูกเครื่องอยู่ = ไม่ให้ · ว่างแล้วลบได้', () => {
+    let d = withContract()
+    d = assignUnitsToContract(d, sales, { contractId: cid(d), unitIds: ['a'] })
+    expect(() => deleteContract(d, sales, { contractId: cid(d) })).toThrow(/ถอดออกให้หมดก่อนลบ/)
+    d = unassignUnitContract(d, sales, { unitId: 'a' })
+    expect(deleteContract(d, sales, { contractId: cid(d) }).contracts).toHaveLength(0)
+  })
+
+  it('ผูก Job แล้ว: Job ชนะ · ลูกค้าของสัญญาไม่ตรงกับ Job → ขึ้นธง (ไม่บล็อก)', () => {
+    let d = withContract(base({ jobs: [job({ customerName: 'EGAT บางปะกง', installLocation: 'สถานีสันทราย' })] }))
+    d = assignUnitsToContract(d, sales, { contractId: cid(d), unitIds: ['a'] })
+    d = { ...d, lbsUnits: d.lbsUnits.map(x => x.id === 'a' ? { ...x, status: 'allocated' as const, jobId: 'j1' } : x) }
+    const info = unitCustomerInfo(d, u(d, 'a'))
     expect(info.source).toBe('job')
-    expect(info.customer).toBe('EGAT บางปะกง')              // Job ชนะ ไม่ใช่ค่าจากสัญญา
-    expect(info.location).toBe('โรงไฟฟ้าบางปะกง')
-    expect(d.lbsUnits[0].contractNo).toBe('CT-2026-009')     // เลขสัญญายังอยู่เป็น Ref.
+    expect(info.customer).toBe('EGAT บางปะกง')
+    expect(info.mismatch).toEqual(['Customer'])                 // สถานที่ตรง จึงไม่ติดธง
   })
 
-  it('ผูก Job แล้วข้อมูลฝั่งสัญญาไม่ตรงกับ Job → ขึ้นธงเตือน (ไม่บล็อก)', () => {
-    const d = base({
-      jobs: [job({ customerName: 'EGAT บางปะกง', installLocation: 'โรงไฟฟ้าบางปะกง' })],
-      lbsUnits: [unit({
-        id: 'a', projectStockId: 's1', status: 'allocated', jobId: 'j1',
-        contractNo: 'CT-9', planCustomerName: 'PEA เชียงใหม่', planInstallLocation: 'โรงไฟฟ้าบางปะกง',
-      })],
-    })
-    const info = unitCustomerInfo(d, d.lbsUnits[0])
-    expect(info.mismatch).toEqual(['Customer'])              // สถานที่ตรง จึงไม่ติดธง
-    expect(info.customer).toBe('EGAT บางปะกง')               // ระบบยังใช้ค่าจาก Job
-  })
-
-  it('ไม่มีเลขสัญญา = ไม่เทียบ ไม่ขึ้นธง แม้ข้อมูลแผนจะต่างจาก Job', () => {
-    const d = base({
-      jobs: [job({ customerName: 'EGAT', installLocation: 'บางปะกง' })],
-      lbsUnits: [unit({ id: 'a', projectStockId: 's1', status: 'allocated', jobId: 'j1', planCustomerName: 'PEA' })],
-    })
-    expect(unitCustomerInfo(d, d.lbsUnits[0]).mismatch).toEqual([])
-  })
-
-  it('Import Excel: เลขสัญญาเขียนได้แม้เครื่องผูก Job แล้ว (ต่างจาก Customer/Location ที่ถูกข้าม)', () => {
-    const d0 = base({
-      jobs: [job({ customerName: 'EGAT', installLocation: 'บางปะกง' })],
-      lbsUnits: [unit({ id: 'a', serialLvb: 'LVB-1', serialOm: 'OM-1', projectStockId: 's1', status: 'allocated', jobId: 'j1' })],
-    })
-    const d = importUnitsToStock(d0, actor, {
+  it('Import Excel: เลขต้องมีในทะเบียน · ไม่เกิน set · ห้ามสลับสัญญา · เครื่องใน Job ใส่เลขได้', () => {
+    const d0 = withContract(base({ jobs: [job()] }), 2)
+    expect(() => importUnitsToStock(d0, sales, {
+      stockId: 's1', newUnits: [{ lvb: 'LVB-9', om: 'OM-9', contractNo: 'CT-NOPE' }], updateUnits: [],
+    })).toThrow(/ไม่พบ Contract No\. CT-NOPE/)
+    expect(() => importUnitsToStock(d0, sales, {
       stockId: 's1', newUnits: [],
-      updateUnits: [{ lvb: 'LVB-1', om: 'OM-1', contractNo: 'CT-777', customer: 'ลูกค้าอื่น' }],
+      updateUnits: ['1', '2', '3'].map(n => ({ lvb: `LVB-${n}`, om: `OM-${n}`, contractNo: 'CT-2026-0101' })),
+    })).toThrow(/2 set/)
+    // เครื่องที่ผูก Job แล้วใส่เลขสัญญาได้ (คนละชั้นกับ Job) — ลูกค้าในไฟล์ถูกข้ามตาม 0014
+    const dj = { ...d0, lbsUnits: d0.lbsUnits.map(x => x.id === 'a' ? { ...x, status: 'allocated' as const, jobId: 'j1' } : x) }
+    const d1 = importUnitsToStock(dj, sales, {
+      stockId: 's1', newUnits: [], updateUnits: [{ lvb: 'LVB-1', om: 'OM-1', contractNo: 'CT-2026-0101', customer: 'ลูกค้าอื่น' }],
     })
-    expect(d.lbsUnits[0].contractNo).toBe('CT-777')          // เลขสัญญาเข้า
-    expect(d.lbsUnits[0].planCustomerName).toBeUndefined()   // ช่องของ Job ถูกข้ามตาม 0014
-  })
-
-  it('Import Excel: เครื่องใหม่ที่มีเลขสัญญาแต่ข้อมูลไม่ครบ = ไม่ให้เข้า', () => {
-    expect(() => importUnitsToStock(base(), actor, {
-      stockId: 's1', newUnits: [{ lvb: 'LVB-9', om: 'OM-9', contractNo: 'CT-1', customer: 'PEA' }],
-      updateUnits: [],
-    })).toThrow(/Contract No./)
+    expect(u(d1, 'a').contractNo).toBe('CT-2026-0101')
+    expect(u(d1, 'a').planCustomerName).toBeUndefined()
+    const d2 = saveContract(d1, sales, { ...ct, contractNo: 'CT-B', qtySets: 1 })
+    expect(() => importUnitsToStock(d2, sales, {
+      stockId: 's1', newUnits: [], updateUnits: [{ lvb: 'LVB-1', om: 'OM-1', contractNo: 'CT-B' }],
+    })).toThrow(/ถอดออกจากสัญญาเดิม/)
   })
 })
 
@@ -2582,56 +2637,3 @@ describe('คืนเข้าคลังผ่าน Purchasing (0080)', () =
   })
 })
 
-// =============================================================================
-// ย้าย Contract No. ผ่าน "แก้ข้อมูล" → เอกสารแนบย้ายตามอัตโนมัติ (0082 · 2026-10-11)
-// =============================================================================
-describe('ย้าย Contract → เอกสารแนบตามอัตโนมัติ (0082)', () => {
-  const sales = { id: 'u5', email: 's@x.co', password: '', fullName: 'Division', department: 'sales' as const, isActive: true }
-  const file = (id: string, unitId: string, name: string) =>
-    ({ id, unitId, fileName: name, filePath: `data:${name}`, mimeType: 'application/pdf', sizeBytes: 100, uploadedBy: 'u5', uploadedAt: '2026-10-01T00:00:00.000Z' })
-  const base = () => db({
-    users: [sales],
-    projectStocks: [],
-    lbsUnits: [
-      unit({ id: 'a', status: 'in_stock', jobId: null, contractNo: 'P069', planCustomerName: 'บริษัท A', planInstallLocation: 'ชลบุรี' }),
-      unit({ id: 'b', serialLvb: 'LVB-002', serialOm: 'OM-002', status: 'in_stock', jobId: null }),
-    ],
-    lbsUnitFiles: [file('f1', 'a', 'สัญญา.pdf'), file('f2', 'a', 'ใบส่งของ.pdf')],
-  })
-  const u = (d: DB, id: string) => d.lbsUnits.find(x => x.id === id)!
-  const setContract = (d: DB, id: string, no: string, cust = 'บริษัท A', loc = 'ชลบุรี') =>
-    updateUnitPlan(d, sales, { unitId: id, contractNo: no, planCustomerName: no ? cust : undefined, planInstallLocation: no ? loc : undefined })
-
-  it('(ก) พิมพ์เลขสัญญาใส่เครื่องใหม่ขณะเครื่องเดิมยังถือ → ย้ายสัญญา + เอกสารแนบทั้งหมด · เครื่องเดิมถูกถอด', () => {
-    expect(contractMoveSource(base(), 'b', 'P069')).toMatchObject({ held: true, fileCount: 2 })
-    const d = setContract(base(), 'b', 'P069')
-    expect(u(d, 'b').contractNo).toBe('P069')
-    expect(u(d, 'a').contractNo).toBeUndefined()
-    expect(u(d, 'a').planCustomerName).toBeUndefined()
-    expect(d.lbsUnitFiles.every(f => f.unitId === 'b')).toBe(true)
-    expect(d.auditLogs.some(a => a.action === 'move_unit_contract')).toBe(true)
-  })
-
-  it('(ข) ลบเลขสัญญาออกจากเครื่องเดิมก่อน แล้วค่อยใส่เครื่องใหม่ → เอกสารแนบยังตามมา', () => {
-    const d1 = setContract(base(), 'a', '')
-    expect(u(d1, 'a').lastContractNo).toBe('P069')
-    expect(d1.lbsUnitFiles.every(f => f.unitId === 'a')).toBe(true)         // ยังไม่ย้ายจนกว่าจะมีเครื่องรับ
-    expect(contractMoveSource(d1, 'b', 'P069')).toMatchObject({ held: false, fileCount: 2 })
-    const d2 = setContract(d1, 'b', 'P069')
-    expect(d2.lbsUnitFiles.every(f => f.unitId === 'b')).toBe(true)
-    expect(u(d2, 'a').lastContractNo).toBeUndefined()                       // ใช้แล้ว ไม่ดึงซ้ำ
-  })
-
-  it('เลขสัญญาใหม่ที่ไม่เคยมีที่ไหน / แก้ข้อมูลอื่นโดยเลขเดิม → ไม่ย้ายอะไร', () => {
-    const d1 = setContract(base(), 'b', 'NEW-1', 'ลูกค้า B', 'ระยอง')
-    expect(d1.lbsUnitFiles.every(f => f.unitId === 'a')).toBe(true)
-    expect(u(d1, 'a').contractNo).toBe('P069')
-    const d2 = setContract(base(), 'a', 'P069', 'บริษัท A (แก้ชื่อ)')
-    expect(d2.lbsUnitFiles.every(f => f.unitId === 'a')).toBe(true)
-  })
-
-  it('เครื่องเดิมที่ถือสัญญาอยู่ถูกเบิกให้ Service แล้ว → ย้ายไม่ได้', () => {
-    const d0 = { ...base(), lbsUnits: base().lbsUnits.map(x => x.id === 'a' ? { ...x, status: 'issued' as const } : x) }
-    expect(() => setContract(d0, 'b', 'P069')).toThrow(/เบิกให้ Service แล้ว/)
-  })
-})

@@ -49,9 +49,11 @@ export interface LbsUnit {
    * ⚠️ **ผูก Job แล้วตัวนี้เป็นข้อมูลอ้างอิง (Ref.) เท่านั้น** — Job ยังชนะเรื่องลูกค้า/สถานที่
    *    ตาม 0014 (มติ 2026-09-16) · ถ้า 2 ฝั่งไม่ตรงกันให้ขึ้นเตือน ไม่ใช่กลืนเงียบ
    * ⚠️ ห้ามใส่ลงลิงก์สาธารณะ (0069) — เป็นข้อมูลเชิงพาณิชย์
+   * 0085: ต้องเป็นเลขที่อยู่ใน **ทะเบียนสัญญา** (contracts) · ลูกค้า/ผู้ติดต่ออ่านจากสัญญา ไม่ใช่จากเครื่อง
+   *       ผูก/ถอดผ่าน assignUnitsToContract / unassignUnitContract เท่านั้น
    */
   contractNo?: string
-  /** 0082 — เลขสัญญาล่าสุดที่ถูกถอดออกจากเครื่องนี้ (หาเครื่องต้นทางตอนย้ายสัญญา → ย้ายเอกสารแนบตาม) */
+  /** 0082 — เลิกใช้ตั้งแต่ 0085 (ไม่มีการย้ายสัญญาด้วยการพิมพ์เลขแล้ว) · คอลัมน์ยังอยู่เป็นประวัติ */
   lastContractNo?: string
   // ข้อมูลลูกค้า/สถานที่ "จริง" ref จาก Job ที่เครื่องถูกดึงเข้า (single source of truth ตาม 0014)
   // ข้างล่างคือ "ข้อมูลแผน" ที่ Division กรอกได้ก่อนเครื่องถูกผูก Job (0043) — Job ชนะเมื่อผูกแล้ว
@@ -83,6 +85,27 @@ export interface LbsUnit {
  * ที่ไม่ใช้ public bucket แบบ install-photos (0019) เพราะเอกสารสัญญาเป็นข้อมูลเชิงพาณิชย์ + PDPA
  * — public bucket คือใครมี URL ก็เปิดได้โดยไม่ต้อง login
  */
+/**
+ * ทะเบียนสัญญาขาย (0085) — PO ลูกค้า 1 ใบ = สัญญา 1 ใบ ใช้กับ LBS ได้หลายเครื่อง (qtySets)
+ * เครื่องผูกสัญญาผ่าน lbs_units.contract_no (FK → contracts.contract_no · ON UPDATE CASCADE)
+ * ⚠️ ลูกค้า/ผู้ติดต่อ เป็นของสัญญา · สถานที่ = สถานที่หลักของสัญญา แต่รายเครื่องแก้ทับได้
+ *    (PO เดียวกันส่งคนละสถานีได้) · ผูก Job แล้ว Job ยังชนะตาม 0014
+ * ⚠️ ห้ามใส่ลงลิงก์สาธารณะ (0069) — เป็นข้อมูลเชิงพาณิชย์
+ */
+export interface Contract {
+  id: string
+  contractNo: string
+  customerName: string
+  contactPhone?: string
+  installLocation: string      // สถานที่ติดตั้งหลัก
+  customerPoNo?: string        // เลขที่ PO ของลูกค้า
+  poDate?: string              // YYYY-MM-DD
+  qtySets: number              // จำนวน set ตาม PO — ผูกเครื่องเกินนี้ไม่ได้
+  note?: string
+  createdBy: string
+  createdAt: string
+}
+
 export interface LbsUnitFile {
   id: string
   unitId: string
@@ -646,6 +669,7 @@ export interface DB {
   projectStocks: ProjectStock[]
   lbsUnits: LbsUnit[]
   lbsUnitFiles: LbsUnitFile[]
+  contracts: Contract[]
   jobs: Job[]
   allocations: AllocationTxn[]
   accessoryStock: AccessoryStockRow[]
