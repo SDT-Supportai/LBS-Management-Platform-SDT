@@ -5,10 +5,10 @@ import type {
   Department, ApprovalRequest, ApprovalComment, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit, UnitInstallation,
   TeamMember, JobAssignment, StockMovement, JobPayment, PaymentType,
   StdDrawing, StdDrawingFile, StdPrice, StdBom, StdBomLine, LbsUnitFile, JobWarranty, JobCloseoutFile,
-  StockReturnRequest, StockReturnKind, JobPaymentFile, JobDueExtension, Contract,
+  StockReturnRequest, StockReturnKind, JobPaymentFile, JobDueExtension,
   PublicShareLink, PublicStockView,
 } from '../types'
-import type { CloseoutInput, CloseoutFileInput, ContractInput } from './logic'
+import type { CloseoutInput, CloseoutFileInput } from './logic'
 
 // ---------------------------------------------------------------
 // Supabase adapter: โหลดข้อมูลทั้งชุดเป็น DB shape เดียวกับ demo mode
@@ -43,6 +43,7 @@ function mapUnit(r: Row): LbsUnit {
     id: r.id, serialLvb: r.serial_lvb, serialOm: r.serial_om ?? '', projectStockId: r.project_stock_id,
     status: r.status, jobId: r.job_id, unitCost: r.unit_cost != null ? Number(r.unit_cost) : undefined,
     contractNo: r.contract_no ?? undefined, lastContractNo: r.last_contract_no ?? undefined,              // 0073 — เลขที่สัญญาขาย
+    installSiteId: r.install_site_id ?? undefined,                        // 0086 — จุดติดตั้งของเครื่อง (ว่าง = จุดที่ 1)
     // ข้อมูลแผนรายเครื่อง (0043) — Job ชนะเมื่อผูก Job แล้ว
     planCustomerName: r.plan_customer_name ?? undefined,
     planContactPhone: r.plan_contact_phone ?? undefined,
@@ -63,16 +64,6 @@ function mapUnitFile(r: Row): LbsUnitFile {
     mimeType: r.mime_type ?? '', sizeBytes: r.size_bytes != null ? Number(r.size_bytes) : 0,
     note: r.note ?? undefined,
     uploadedBy: r.uploaded_by ?? '', uploadedAt: r.uploaded_at,
-  }
-}
-// 0085 — ทะเบียนสัญญา
-function mapContract(r: Row): Contract {
-  return {
-    id: r.id, contractNo: r.contract_no, customerName: r.customer_name,
-    contactPhone: r.contact_phone ?? undefined, installLocation: r.install_location,
-    customerPoNo: r.customer_po_no ?? undefined, poDate: r.po_date ?? undefined,
-    qtySets: Number(r.qty_sets), note: r.note ?? undefined,
-    createdBy: r.created_by ?? '', createdAt: r.created_at,
   }
 }
 // 0076 — เอกสารแนบรายงวดเงิน · file_path เป็น path ใน private bucket payment-docs ไม่ใช่ URL
@@ -442,7 +433,7 @@ const closeoutFileParam = (f: CloseoutFileInput) =>
   ({ kind: f.kind, doc_type: f.docType ?? null, name: f.fileName, path: f.filePath, mime: f.mimeType, size: f.sizeBytes })
 
 export async function loadAll(sb: SupabaseClient): Promise<DB> {
-  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, approvalComments, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, prices, boms, bomLines, shareLinks, unitFiles, paymentFiles, dueExts, warranties, closeoutFiles, stockReturns, contractRows] =
+  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, approvalComments, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, prices, boms, bomLines, shareLinks, unitFiles, paymentFiles, dueExts, warranties, closeoutFiles, stockReturns] =
     await Promise.all([
       q(sb, 'profiles'),
       q(sb, 'items', { col: 'code', limit: 10000 }),
@@ -479,7 +470,6 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       qOptional(sb, 'job_warranties', { col: 'start_date' }),              // 0079 — Warranty
       qOptional(sb, 'job_closeout_files', { col: 'uploaded_at', asc: false }), // 0079 — เอกสารรับมอบ
       qOptional(sb, 'stock_return_requests', { col: 'requested_at', asc: false, limit: 2000 }), // 0080
-      qOptional(sb, 'contracts', { col: 'contract_no' }),                // 0085 — ทะเบียนสัญญา (ตารางยังไม่มี = [])
     ])
 
   const readsByNotif = new Map<string, string[]>()
@@ -504,7 +494,6 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     projectStocks: stocks.map(mapStock),
     lbsUnits: units.map(mapUnit),
     lbsUnitFiles: unitFiles.map(mapUnitFile),
-    contracts: contractRows.map(mapContract),
     jobs: jobs.map(mapJob),
     allocations: allocs.map(mapAlloc),
     accessoryStock: accStock.map(r => ({
@@ -632,10 +621,10 @@ export function remoteActions(sb: SupabaseClient) {
     updateUnitInfo: (p: { unitId: string; serialLvb: string; serialOm: string }) =>
       rpc(sb, 'rpc_update_unit_info', { p_unit_id: p.unitId, p_serial_lvb: p.serialLvb, p_serial_om: p.serialOm }),
     // 0043/0049 — ฟอร์มส่งครบทุกช่องทุกครั้ง: null = ล้างค่า ไม่ใช่ "ไม่เปลี่ยน"
-    // 0085 — ไม่ส่ง p_contract_no แล้ว (RPC ไม่แตะเลขสัญญา · ผูก/ถอดผ่านทะเบียนสัญญา)
-    updateUnitPlan: (p: { unitId: string; unitCost?: number; planCustomerName?: string; planContactPhone?: string; planInstallLocation?: string; planPoDate?: string; fobDate?: string; etaLeadDays?: number; planPoReceiptDate?: string; planDeliveryDate?: string }) =>
+    // 0087 — ส่ง p_contract_no กลับมา (ยกเลิกทะเบียนสัญญา) · เลขซ้ำกับเครื่องอื่นได้
+    updateUnitPlan: (p: { unitId: string; unitCost?: number; contractNo?: string; planCustomerName?: string; planContactPhone?: string; planInstallLocation?: string; planPoDate?: string; fobDate?: string; etaLeadDays?: number; planPoReceiptDate?: string; planDeliveryDate?: string }) =>
       rpc(sb, 'rpc_update_unit_plan', {
-        p_unit_id: p.unitId, p_unit_cost: p.unitCost ?? null,
+        p_unit_id: p.unitId, p_unit_cost: p.unitCost ?? null, p_contract_no: p.contractNo || null,
         p_customer_name: p.planCustomerName ?? null, p_contact_phone: p.planContactPhone ?? null,
         p_install_location: p.planInstallLocation ?? null,
         p_plan_po_date: p.planPoDate || null,
@@ -649,27 +638,18 @@ export function remoteActions(sb: SupabaseClient) {
         p_mime_type: p.mimeType, p_size_bytes: p.sizeBytes, p_note: p.note || null,
       }),
     deleteUnitFile: (p: { fileId: string }) => rpc(sb, 'rpc_delete_unit_file', { p_file_id: p.fileId }),
-    // 0085 — ทะเบียนสัญญา
-    saveContract: (p: ContractInput) =>
-      rpc(sb, 'rpc_save_contract', {
-        p_id: p.id ?? null, p_contract_no: p.contractNo, p_customer_name: p.customerName,
-        p_contact_phone: p.contactPhone || null, p_install_location: p.installLocation,
-        p_customer_po_no: p.customerPoNo || null, p_po_date: p.poDate || null,
-        p_qty_sets: p.qtySets, p_note: p.note || null,
-      }),
-    deleteContract: (p: { contractId: string }) => rpc(sb, 'rpc_delete_contract', { p_contract_id: p.contractId }),
-    assignUnitsToContract: (p: { contractId: string; unitIds: string[] }) =>
-      rpc(sb, 'rpc_assign_units_to_contract', { p_contract_id: p.contractId, p_unit_ids: p.unitIds }),
-    unassignUnitContract: (p: { unitId: string }) => rpc(sb, 'rpc_unassign_unit_contract', { p_unit_id: p.unitId }),
+    // 0086 — ย้ายเครื่องไปจุดติดตั้งอื่นของ Job · siteId ว่าง = จุดที่ 1
+    assignUnitSite: (p: { jobId: string; unitIds: string[]; siteId?: string }) =>
+      rpc(sb, 'rpc_assign_unit_site', { p_job_id: p.jobId, p_unit_ids: p.unitIds, p_site_id: p.siteId || null }),
     // ตั้ง FOB date + ระยะขนส่ง ทั้งคลังในครั้งเดียว (0049)
     setStockFob: (p: { stockId: string; fobDate: string; leadDays?: number; overwrite: boolean }) =>
       rpc(sb, 'rpc_set_stock_fob', {
         p_stock_id: p.stockId, p_fob_date: p.fobDate,
         p_lead_days: p.leadDays ?? null, p_overwrite: p.overwrite,
       }),
-    createJob: (p: { jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCosts?: BudgetCosts; installSites?: { location: string; requiredDate: string; lat?: number; lng?: number }[]; planLat?: number; planLng?: number }) =>
+    createJob: (p: { jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCosts?: BudgetCosts; installSites?: { id?: string; location: string; requiredDate: string; lat?: number; lng?: number }[]; planLat?: number; planLng?: number }) =>
       rpc(sb, 'rpc_create_job', { p_job_no: p.jobNo, p_customer: p.customerName, p_phone: p.contactPhone ?? null, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_costs: p.budgetCosts ?? null, p_install_sites: p.installSites ?? null, p_plan_lat: p.planLat ?? null, p_plan_lng: p.planLng ?? null }),
-    updateJob: (p: { jobId: string; jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCosts?: BudgetCosts; installSites?: { location: string; requiredDate: string; lat?: number; lng?: number }[]; planLat?: number; planLng?: number }) =>
+    updateJob: (p: { jobId: string; jobNo: string; customerName: string; contactPhone?: string; scope: string; installLocation: string; requiredDate: string; lbsQtyRequired: number; budgetSalePrice?: number; budgetCosts?: BudgetCosts; installSites?: { id?: string; location: string; requiredDate: string; lat?: number; lng?: number }[]; planLat?: number; planLng?: number }) =>
       rpc(sb, 'rpc_update_job', { p_job_id: p.jobId, p_job_no: p.jobNo, p_customer: p.customerName, p_phone: p.contactPhone ?? null, p_scope: p.scope, p_location: p.installLocation, p_required_date: p.requiredDate || null, p_qty: p.lbsQtyRequired, p_sale_price: p.budgetSalePrice ?? null, p_costs: p.budgetCosts ?? null, p_install_sites: p.installSites ?? null, p_plan_lat: p.planLat ?? null, p_plan_lng: p.planLng ?? null }),
     updateJobBudget: (p: { jobId: string; budgetSalePrice?: number; budgetCosts?: BudgetCosts }) =>
       rpc(sb, 'rpc_update_job_budget', { p_job_id: p.jobId, p_sale_price: p.budgetSalePrice ?? null, p_costs: p.budgetCosts ?? null }),

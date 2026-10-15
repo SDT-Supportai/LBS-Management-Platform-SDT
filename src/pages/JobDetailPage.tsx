@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
-import { ACCEPTANCE_TYPES, contractOf, jobWarranties, qtyIssuable, qtyFieldReturnable, reversibleMovements, stockReturnsOf, STOCK_RETURN_LABEL, deriveJobStatus, jobStatusPhase, jobIsFieldActive, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, qtyOutToField, parseLatLng, fmtLatLng, PAYMENT_TYPES, jobDelivery, jobDueExtensions, paymentFiles, paymentFileCount, isAllowedDocFile, MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB, todayIso, daysBetweenIso } from '../data/logic'
+import { ACCEPTANCE_TYPES, jobSites, unitJobSite, unitCustomerInfo, matchJobSite, sameLocation, MAIN_SITE, jobWarranties, qtyIssuable, qtyFieldReturnable, reversibleMovements, stockReturnsOf, STOCK_RETURN_LABEL, deriveJobStatus, jobStatusPhase, jobIsFieldActive, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, qtyOutToField, parseLatLng, fmtLatLng, PAYMENT_TYPES, jobDelivery, jobDueExtensions, paymentFiles, paymentFileCount, isAllowedDocFile, MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB, todayIso, daysBetweenIso } from '../data/logic'
 import { BudgetFields, CoordInput, DeliveryBadge, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useToast, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, sitesToApi, sitesFromJob, readAsDataUrl, type CostForm, type InstallSite } from '../ui/components'
 import { uploadPaymentDoc, signedPaymentDocUrl, removePaymentDocs } from '../data/remote'
 import { supabase } from '../lib/supabase'
@@ -224,6 +224,8 @@ export default function JobDetailPage() {
   const etaBlock = jobEtaBlockReason(db, job.id)
   // 0059: แหล่งความจริงเดียวว่า "อะไรเบิกได้ / อะไรยังไม่ได้" — ใช้ทั้ง popup, ปุ่ม และแผงสรุป
   const plan = jobIssuePlan(db, job.id)
+  // 0086: จุดติดตั้งทั้งหมดของ Job (จุดที่ 1 = ข้อมูลหลัก) — ใช้ทั้งแผงจุดติดตั้ง ตาราง LBS และ popup ดึง
+  const sites = jobSites(job)
   const canIssueAnything = plan.accReady.length > 0 || (plan.lbsShort === 0 && plan.lbsReady.length > 0)
   /**
    * Job ปิดเป็น Issued แล้ว แต่ยังมีวัสดุ "ซื้อเพิ่มหลังเบิก" (0037) ที่รับของครบและรอส่งออกหน้างาน
@@ -687,12 +689,21 @@ export default function JobDetailPage() {
           <div className="panel-head"><h3>จุดติดตั้ง <span className="muted" style={{ fontWeight: 400 }}>· {job.installSites.length + 1} จุด</span></h3></div>
           <div className="table-scroll">
             <table>
-              <thead><tr><th>จุดที่</th><th>สถานที่ติดตั้ง</th><th>วันที่ต้องการติดตั้ง</th><th>พิกัดตามแผน</th></tr></thead>
+              <thead><tr><th>จุดที่</th><th>สถานที่ติดตั้ง</th><th>วันที่ต้องการติดตั้ง</th><th>พิกัดตามแผน</th><th>LBS ที่ไปจุดนี้ (0086)</th></tr></thead>
               <tbody>
-                <tr><td>1</td><td>{job.installLocation || '-'}</td><td>{fmtDate(job.requiredDate)}</td><td><PlanCoordCell lat={job.planLat} lng={job.planLng} /></td></tr>
-                {job.installSites.map((s, i) => (
-                  <tr key={i}><td>{i + 2}</td><td>{s.location || '-'}</td><td>{fmtDate(s.requiredDate)}</td><td><PlanCoordCell lat={s.lat} lng={s.lng} /></td></tr>
-                ))}
+                {sites.map(s => {
+                  const here = allocatedUnits.filter(u => (unitJobSite(db, u)?.id ?? MAIN_SITE) === s.id)
+                  return (
+                    <tr key={s.id}>
+                      <td>{s.no}</td><td>{s.location || '-'}</td><td>{fmtDate(s.requiredDate)}</td>
+                      <td><PlanCoordCell lat={s.lat} lng={s.lng} /></td>
+                      <td>
+                        {here.length === 0 ? <span className="muted">ยังไม่มีเครื่อง</span>
+                          : <><b>{here.length} เครื่อง</b> <span className="muted mono" style={{ fontSize: 12 }}>{here.map(u => u.serialLvb).join(', ')}</span></>}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -1237,17 +1248,41 @@ export default function JobDetailPage() {
         </div>
         <div className="table-scroll">
           <table>
-            <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th>มาจาก Stock</th><th>สถานะ</th><th>เบิกให้ Service</th></tr></thead>
+            <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th>มาจาก Stock</th><th>จุดติดตั้ง</th><th>สถานะ</th><th>เบิกให้ Service</th></tr></thead>
             <tbody>
-              {allocatedUnits.length === 0 && <tr><td colSpan={5}><div className="empty">ยังไม่ได้ดึง LBS — Job อยู่สถานะ Draft</div></td></tr>}
+              {allocatedUnits.length === 0 && <tr><td colSpan={6}><div className="empty">ยังไม่ได้ดึง LBS — Job อยู่สถานะ Draft</div></td></tr>}
               {allocatedUnits.map(u => {
                 // 0059: บอกรายเครื่องว่าเบิกได้หรือยัง — เดิมเห็นแค่ Allocated/Issued แล้วต้องเดาเอง
                 const blocked = plan.lbsBlocked.find(x => x.unit.id === u.id)
+                // 0086: เครื่องนี้ไปจุดไหน · ธงเตือนเมื่อสถานที่ตามสัญญา/รายเครื่องไม่ตรงกับจุดที่เลือก
+                const info = unitCustomerInfo(db, u)
+                const site = info.site ?? sites[0]
+                const ownLoc = u.planInstallLocation
+                const locOff = info.mismatch.includes('Location / Site')
                 return (
                   <tr key={u.id}>
                     <td className="mono">{u.serialLvb}</td>
                     <td className="mono">{u.serialOm}</td>
                     <td>{stockOf(u.projectStockId)?.stockNo}</td>
+                    <td>
+                      {sites.length > 1 && canManage && !locked && u.status === 'allocated'
+                        ? (
+                          <select value={site.id} style={{ minWidth: 200 }}
+                            onChange={e => tryAction(() => act.assignUnitSite({ jobId: job.id, unitIds: [u.id], siteId: e.target.value }),
+                              `ย้าย ${u.serialLvb} ไปจุดที่ ${sites.find(s => s.id === e.target.value)?.no} แล้ว`)}>
+                            {sites.map(s => <option key={s.id} value={s.id}>จุดที่ {s.no} · {s.location || '-'}</option>)}
+                          </select>
+                        )
+                        : <>จุดที่ {site.no} · {site.location || '-'}</>}
+                      <div className="muted" style={{ fontSize: 11 }}>
+                        กำหนด {fmtDate(site.requiredDate)}
+                        {locOff && ownLoc && (
+                          <span style={{ color: 'var(--amber, #d97706)' }} title="สถานที่ตามสัญญา/ที่ตั้งไว้รายเครื่อง ไม่ตรงกับจุดที่เลือก — ตรวจว่าเลือกจุดถูกไหม">
+                            {' '}· ⚠️ สัญญาระบุ {ownLoc}
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td>{u.status === 'allocated' ? <span className="badge blue">Allocated</span> : <span className="badge neutral">Issued</span>}</td>
                     <td>
                       {u.status === 'issued' ? <span className="badge green">✅ เบิกแล้ว</span>
@@ -1707,6 +1742,7 @@ export default function JobDetailPage() {
                   <th>Serial No. (OM)</th>
                   <th>Contract No.</th>
                   <th>Customer</th>
+                  <th>Location → จุดติดตั้ง</th>
                   <th>สถานะในคลัง</th>
                 </tr>
               </thead>
@@ -1715,9 +1751,13 @@ export default function JobDetailPage() {
                   const sel = picked.has(u.id)
                   const st = unitStockState(u)
                   // ลูกค้าตามสัญญาไม่ตรงกับ Job → เตือน ไม่บล็อก (Job ชนะเรื่องลูกค้าตาม 0014)
-                  // 0085: ลูกค้ามาจากทะเบียนสัญญา (ไม่มีในทะเบียน = ข้อมูลเก่า ใช้ค่าบนเครื่อง)
-                  const customer = (contractOf(db, u)?.customerName ?? u.planCustomerName)?.trim()
+                  // ลูกค้าตามสัญญาบนเครื่อง (0073 · รายเครื่อง)
+                  const customer = u.planCustomerName?.trim()
                   const diff = !!customer && !!job.customerName?.trim() && customer !== job.customerName.trim()
+                  // 0086: บอกล่วงหน้าว่าดึงแล้วเครื่องจะไปจุดไหน (กติกาเดียวกับตอนบันทึก) — ไม่ตรงจุดไหน = จุดที่ 1
+                  const ownLoc = u.planInstallLocation
+                  const target = sites.find(s => s.id === (matchJobSite(job, ownLoc) ?? MAIN_SITE)) ?? sites[0]
+                  const noMatch = !!ownLoc && target.id === MAIN_SITE && !sameLocation(ownLoc, job.installLocation)
                   return (
                     <tr key={u.id} className="clickable" onClick={() => toggleDraw(u.id)}
                       style={sel ? { fontWeight: 600 } : undefined}>
@@ -1730,6 +1770,17 @@ export default function JobDetailPage() {
                         {diff && <span title={`ลูกค้าของ Job นี้: ${job.customerName}`} style={{ color: 'var(--amber, #d97706)' }}> ⚠️ ไม่ตรงกับ Job</span>}
                       </td>
                       <td>
+                        {ownLoc || <span className="muted">—</span>}
+                        <div style={{ fontSize: 12 }}>
+                          → <b>จุดที่ {target.no}</b>
+                          {noMatch && (
+                            <span style={{ color: 'var(--amber, #d97706)' }} title="สถานที่ของเครื่องไม่ตรงกับจุดไหนของ Job — จะวางที่จุดที่ 1 ก่อน ย้ายจุดได้หลังดึง">
+                              {' '}⚠️ ไม่ตรงจุดไหน
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td>
                         {st === 'pending'
                           ? <span className="badge amber" title="ของยังไม่เข้าคลัง (Status = Pending) — ดึงจองล่วงหน้าได้">ETA {fmtDate(unitEta(u))}</span>
                           : st === 'on_hand'
@@ -1740,7 +1791,7 @@ export default function JobDetailPage() {
                   )
                 })}
                 {drawableUnits.length === 0 && (
-                  <tr><td colSpan={6}><div className="empty">Stock นี้ไม่มีเครื่องที่มี Contract No. ให้ดึง</div></td></tr>
+                  <tr><td colSpan={7}><div className="empty">Stock นี้ไม่มีเครื่องที่มี Contract No. ให้ดึง</div></td></tr>
                 )}
               </tbody>
             </table>

@@ -2,13 +2,12 @@ import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import {
-  stockSummary, unitInstallDate, unitCustomerInfo, unitFiles, unitFileCount, isAllowedDocFile, contractOf, contractUnits,
+  stockSummary, unitInstallDate, unitCustomerInfo, unitFiles, unitFileCount, isAllowedDocFile, contractPeers, contractCustomerConflicts,
   MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB,
   unitEta, unitEtaIsAuto, unitFlowState, unitLeadDays, addDaysIso,
   ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX,
 } from '../data/logic'
 import { uploadUnitDoc, signedUnitDocUrl, removeUnitDoc } from '../data/remote'
-import ContractsPanel from './ContractsPanel'
 import { supabase } from '../lib/supabase'
 import { Modal, useConfirm, useToast, useTryAction, toBudgetNum, readAsDataUrl } from '../ui/components'
 import { fmtBaht, fmtDate, fmtDateTime, DEPT_LABEL, UNIT_FLOW } from '../ui/format'
@@ -136,8 +135,7 @@ const SHEET_COLS: ColSpec[] = [
     alias: ['ต้นทุน/เครื่อง', 'ต้นทุน', 'cost', 'unit_cost', 'cost/set'] },
   // 0073 — เลขสัญญาเป็นข้อเท็จจริงฝั่งขาย ไม่ถูก Job ทับ จึงเขียนได้เสมอ (ต่างจาก 3 ช่องล่าง)
   { key: 'Contract No.', io: 'in', width: 18, format: 'ข้อความ',
-    note: 'เลขที่สัญญาขาย — ต้องเป็นเลขที่สร้างไว้แล้วใน 📄 ทะเบียนสัญญา และผูกได้ไม่เกินจำนวน set ของสัญญา (0085) · ' +
-      'Customer / Contact ใช้ค่าจากสัญญา · เครื่องที่อยู่ในสัญญาอื่นแล้วต้องถอดที่ทะเบียนสัญญาก่อน · เว้นว่าง = คงเลขเดิม',
+    note: 'เลขที่สัญญาขาย — ใช้เลขเดียวกันหลายเครื่องได้ถ้าลูกค้าซื้อหลาย set (หน้าจอขึ้นเตือนว่าซ้ำ) · กรอกแล้ว Customer / Contact / Location เลิกเป็น "ข้อมูลแผน" · เขียนได้ทุกเครื่อง (รวมที่ดึงเข้า Job แล้ว) · เว้นว่าง = คงเลขเดิม',
     alias: ['contract', 'contract no', 'contract_no', 'เลขที่สัญญา', 'สัญญา'] },
   { key: 'Customer', io: 'in', width: 24, format: 'ข้อความ',
     note: 'เขียนได้เฉพาะเครื่องที่ยังไม่ถูกดึงเข้า Job (เครื่องที่มี Job แล้วใช้ค่าจาก Job) · เป็น "ข้อมูลแผน" จนกว่าจะมี Contract No.',
@@ -236,7 +234,7 @@ export default function StocksPage() {
   // แท็บย่อยของหน้านี้ (2026-08-23) — แยก "คลัง LBS" ออกจาก "วัสดุตาม Job (Ref.PO)"
   //   เดิมเป็นแผงต่อท้ายกัน: ต้องเลื่อนผ่านทุกคลัง (แต่ละคลังมี 30–40 เครื่อง) กว่าจะถึงตารางวัสดุ
   //   ⚠️ ไม่ทำเป็น route แยก — ยังเป็นข้อมูล "คลัง" ชุดเดียวกัน และจะเสีย bookmark /stocks เดิม
-  const [tab, setTab] = useState<'stock' | 'contract' | 'material'>('stock')
+  const [tab, setTab] = useState<'stock' | 'material'>('stock')
   const [openMatJobs, setOpenMatJobs] = useState<Set<string>>(new Set())  // กลุ่ม Job ที่กางอยู่ — เริ่มต้นพับหมด
   const [matSearch, setMatSearch] = useState('')
   const [matPendingOnly, setMatPendingOnly] = useState(false)   // เฉพาะของที่ยังไม่เบิกให้ Service
@@ -866,14 +864,6 @@ export default function StocksPage() {
         <button className={tab === 'stock' ? 'active' : ''} onClick={() => setTab('stock')}>
           📦 คลัง LBS <span className="badge neutral">{db.projectStocks.length}</span>
         </button>
-        {/* 0085 — PO ลูกค้า 1 ใบ ผูกหลายเครื่อง · ตัวเลข = สัญญาที่ยังผูกเครื่องไม่ครบ set */}
-        <button className={tab === 'contract' ? 'active' : ''} onClick={() => setTab('contract')}>
-          📄 ทะเบียนสัญญา <span className="badge neutral">{db.contracts.length}</span>
-          {(() => {
-            const short = db.contracts.filter(c => contractUnits(db, c.contractNo).length < c.qtySets).length
-            return short > 0 ? <span className="badge amber" title="สัญญาที่ยังผูกเครื่องไม่ครบจำนวน set">ขาด {short}</span> : null
-          })()}
-        </button>
         <button className={tab === 'material' ? 'active' : ''} onClick={() => setTab('material')}>
           🧰 วัสดุตาม Job (Ref.PO) <span className="badge neutral">{receivedLines.length}</span>
         </button>
@@ -1081,10 +1071,25 @@ export default function StocksPage() {
                             {fmtMBaht(u.unitCost)}
                           </td>
                           {/* ผู้ใช้ขอกลับมาใช้เลขสัญญาแทนอิโมจิ (2026-10-11) */}
-                          <td className="mono" title={info.contract
-                            ? `${info.contract.customerName} · ผูกแล้ว ${contractUnits(db, info.contract.contractNo).length}/${info.contract.qtySets} set`
-                            : undefined}>
+                          <td className="mono">
                             {u.contractNo || '-'}
+                            {/* 0087: เลขซ้ำ = ปกติถ้าลูกค้าซื้อหลาย set ใน PO เดียว → เตือนเล็ก ๆ ให้เห็น ไม่บล็อก
+                                ลูกค้าในเลขเดียวกันไม่ตรงกัน = น่าจะพิมพ์ผิด/ใส่เลขผิดเครื่อง → ธงแดง */}
+                            {(() => {
+                              const peers = contractPeers(db, u.contractNo, u.id)
+                              if (peers.length === 0) return null
+                              const conflicts = contractCustomerConflicts(db, u)
+                              return (
+                                <span className={`dup-flag${conflicts.length ? ' bad' : ''}`}
+                                  title={conflicts.length
+                                    ? `⚠️ Contract No. เดียวกันแต่ลูกค้าไม่ตรงกัน: ${conflicts.map(p => `${p.serialLvb} = ${p.planCustomerName}`).join(', ')}` +
+                                      ` (เครื่องนี้ ${u.planCustomerName}) — ตรวจว่าพิมพ์ผิดหรือใส่เลขสัญญาผิดเครื่อง`
+                                    : `Contract No. นี้ใช้กับ ${peers.length + 1} เครื่อง: ${[u, ...peers].map(p => p.serialLvb).join(', ')}` +
+                                      ` — ปกติถ้าลูกค้าซื้อหลาย set ใน PO เดียว`}>
+                                  ⚠ ×{peers.length + 1}
+                                </span>
+                              )
+                            })()}
                             {/* ผูก Job แล้ว เลขสัญญาเป็นข้อมูลอ้างอิง — Job ยังเป็นแหล่งความจริงของลูกค้า/สถานที่ */}
                             {u.contractNo && job && <div className="muted" style={{ fontSize: 11 }}>Ref.</div>}
                           </td>
@@ -1156,8 +1161,6 @@ export default function StocksPage() {
       })}
 
       </>}
-
-      {tab === 'contract' && <ContractsPanel />}
 
       {/* ---------------- แท็บ 2: วัสดุตาม Job (Ref.PO) ----------------
           เป็น "รายงานตรวจสอบ" ของ line ที่รับของครบจาก PO ไม่ใช่คลังที่มียอดคงเหลือ
@@ -1492,9 +1495,12 @@ export default function StocksPage() {
         const lead = Number(editPlan.leadDays) || ETA_LEAD_DAYS
         // 0073: มีเลขสัญญาแล้ว 3 ช่องนี้ไม่ใช่ "แผน" อีกต่อไป
         // ผูก Job แล้ว ข้อมูลลูกค้ามาจาก Job ไม่ใช่ทั้งแผนและทั้งสัญญา จึงไม่ติดป้าย
-        // 0085: เลขสัญญาแก้ที่นี่ไม่ได้แล้ว (ผูก/ถอดที่แท็บ 📄 ทะเบียนสัญญา) · Customer/Contact อ่านจากสัญญา
-        const contract = contractOf(db, { contractNo: editPlan.contractNo || undefined })
-        const planLabel = (editPlan.hasJob || contract) ? '' : ' (แผน)'
+        // ป้าย "(แผน)" หายทันทีที่พิมพ์เลขสัญญา — สื่อกติกาในขณะที่คนกำลังกรอก ไม่ต้องรอบันทึก
+        const planLabel = (editPlan.hasJob || editPlan.contractNo.trim()) ? '' : ' (แผน)'
+        const contractNeedsInfo = !editPlan.hasJob && !!editPlan.contractNo.trim()
+        // 0087: เลขสัญญาที่พิมพ์อยู่ซ้ำกับเครื่องไหน (PO หลาย set = ปกติ) — ใช้เตือน + เสนอคัดลอกข้อมูลลูกค้า
+        const peers = contractPeers(db, editPlan.contractNo, editPlan.id)
+        const ref = peers.find(p => p.planCustomerName || p.planInstallLocation)
         const autoEta = editPlan.fobDate ? addDaysIso(editPlan.fobDate, lead) : ''
         return (
         <Modal
@@ -1516,6 +1522,7 @@ export default function StocksPage() {
                   await act.updateUnitPlan({
                     unitId: editPlan.id,
                     unitCost: toBudgetNum(editPlan.cost),
+                    contractNo: editPlan.contractNo,
                     planCustomerName: editPlan.customerName,
                     planContactPhone: editPlan.contactPhone,
                     planInstallLocation: editPlan.installLocation,
@@ -1537,8 +1544,8 @@ export default function StocksPage() {
             {/* 0073: อธิบายลำดับความจริง 3 ชั้นให้เห็นในที่ที่คนกำลังกรอกจริง ๆ
                 ไม่งั้นคนกรอกไม่รู้ว่าทำไมบางทีติดป้าย "แผน" บางทีไม่ติด */}
             <div style={{ marginTop: 6 }}>
-              ลูกค้า/เบอร์/สถานที่ เป็น <b>ข้อมูลแผน</b> จนกว่าเครื่องจะถูกผูกเข้า<b>สัญญา</b> —
-              ผูกแล้ว Customer / Contact ใช้ค่าจากสัญญา ป้าย "แผน" จะหายไป
+              ลูกค้า/เบอร์/สถานที่ เป็น <b>ข้อมูลแผน</b> จนกว่าจะกรอก <b>Contract No.</b> —
+              กรอกแล้วถือว่าตกลงกับลูกค้าแล้ว ป้าย "แผน" จะหายไป · <b>ลูกค้าซื้อหลาย set ใช้ Contract No. เดียวกันได้</b>
               <br />เมื่อเครื่องถูกดึงเข้า Job ตารางจะแสดงค่าจาก <b>Job</b> แทนเสมอ
               (Job เป็นแหล่งข้อมูลจริงตามกติกาเดิม) · <b>Contract No. กลายเป็นข้อมูลอ้างอิง (Ref.)</b>
               และถ้า 2 ฝั่งไม่ตรงกันตารางจะขึ้นเตือนให้ไปตรวจ
@@ -1567,26 +1574,44 @@ export default function StocksPage() {
               <input type="number" min={0} value={editPlan.cost}
                 onChange={e => setEditPlan({ ...editPlan, cost: e.target.value })} />
             </label>
-            {/* 0085 — แสดงอย่างเดียว · ผูก/ถอดที่ทะเบียนสัญญา (เลิกการพิมพ์เลขแล้วระบบเดาว่าย้ายของ 0082) */}
-            <label className="field"><span>Contract No. (ผูก/ถอดที่แท็บ 📄 ทะเบียนสัญญา)</span>
-              <input className="mono" value={contract
-                ? `${contract.contractNo} · ${contractUnits(db, contract.contractNo).length}/${contract.qtySets} set`
-                : editPlan.contractNo || 'ยังไม่ผูกสัญญา'} disabled />
+            {/* 0087: กรอกได้อีกครั้ง · ซ้ำกับเครื่องอื่นได้ (PO หลาย set) — แค่เตือน ไม่บล็อก ไม่ย้ายสัญญา */}
+            <label className="field"><span>Contract No.</span>
+              <input className="mono" value={editPlan.contractNo}
+                onChange={e => setEditPlan({ ...editPlan, contractNo: e.target.value })} placeholder="เช่น CT-2026-001" />
             </label>
           </div>
+          {peers.length > 0 && (
+            <div className="dup-hint">
+              <span className="dup-flag">⚠ ×{peers.length + 1}</span>{' '}
+              Contract No. นี้ใช้กับ <b className="mono">{peers.map(p => p.serialLvb).join(', ')}</b> อยู่แล้ว
+              {' '}— ปกติถ้าลูกค้าซื้อหลาย set ใน PO เดียว
+              {/* ลดการพิมพ์ซ้ำ + กันลูกค้าสะกดไม่ตรงกันในเลขสัญญาเดียวกัน (สาเหตุหลักของธงแดง) */}
+              {ref && (
+                <button type="button" className="small" style={{ marginLeft: 8 }}
+                  title={`Customer: ${ref.planCustomerName ?? '-'} · Contact: ${ref.planContactPhone ?? '-'} · Location: ${ref.planInstallLocation ?? '-'}`}
+                  onClick={() => setEditPlan({
+                    ...editPlan,
+                    customerName: ref.planCustomerName ?? editPlan.customerName,
+                    contactPhone: ref.planContactPhone ?? editPlan.contactPhone,
+                    installLocation: ref.planInstallLocation ?? editPlan.installLocation,
+                  })}>
+                  คัดลอกข้อมูลลูกค้าจาก {ref.serialLvb}
+                </button>
+              )}
+            </div>
+          )}
           <div className="row">
-            {/* มีสัญญา → Customer / Contact เป็นของสัญญา แก้ที่ทะเบียนสัญญาครั้งเดียวมีผลทุกเครื่อง */}
-            <label className="field"><span>Customer{planLabel}{contract ? ' (ตามสัญญา)' : ''}</span>
-              <input value={contract ? contract.customerName : editPlan.customerName} disabled={!!contract}
+            <label className="field"><span>Customer{planLabel}{contractNeedsInfo ? ' *' : ''}</span>
+              <input value={editPlan.customerName}
                 onChange={e => setEditPlan({ ...editPlan, customerName: e.target.value })} placeholder="PEA เชียงใหม่" />
             </label>
-            <label className="field"><span>Contact Number{planLabel}{contract ? ' (ตามสัญญา)' : ''}</span>
-              <input value={contract ? contract.contactPhone ?? '' : editPlan.contactPhone} disabled={!!contract}
+            <label className="field"><span>Contact Number{planLabel}</span>
+              <input value={editPlan.contactPhone}
                 onChange={e => setEditPlan({ ...editPlan, contactPhone: e.target.value })} placeholder="08x-xxx-xxxx" />
             </label>
-            {/* สถานที่แก้ทับรายเครื่องได้ — PO เดียวกันส่งคนละสถานีได้ · ว่าง = ใช้สถานที่หลักของสัญญา */}
-            <label className="field"><span>Location / Site{planLabel}{contract ? ' (ว่าง = ตามสัญญา)' : ''}</span>
-              <input value={editPlan.installLocation} placeholder={contract?.installLocation}
+            {/* PO เดียวกันแต่ละ set ไปคนละสถานีได้ — กรอกรายเครื่อง · ดึงเข้า Job แล้ววางจุดติดตั้งตามนี้ (0086) */}
+            <label className="field"><span>Location / Site{planLabel}{contractNeedsInfo ? ' *' : ''}</span>
+              <input value={editPlan.installLocation}
                 onChange={e => setEditPlan({ ...editPlan, installLocation: e.target.value })} />
             </label>
             <label className="field"><span>Plan PO receipt</span>

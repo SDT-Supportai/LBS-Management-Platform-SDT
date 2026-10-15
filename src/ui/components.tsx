@@ -345,16 +345,16 @@ export function DeliveryBadge({ d }: { d: JobDelivery }) {
 // (useTryAction ที่หน้าเรียกจะโชว์ข้อความให้เอง ไม่ต้องดักซ้ำ)
 export function sitesToApi(sites: InstallSite[]) {
   return sites.map(s => ({
-    location: s.location, requiredDate: s.requiredDate,
+    id: s.id, location: s.location, requiredDate: s.requiredDate,
     ...(parseLatLng(s.coord) ?? {}),
   }))
 }
 
 export function sitesFromJob(
-  sites?: { location: string; requiredDate: string; lat?: number; lng?: number }[],
+  sites?: { id?: string; location: string; requiredDate: string; lat?: number; lng?: number }[],
 ): InstallSite[] {
   return (sites ?? []).map(s => ({
-    location: s.location, requiredDate: s.requiredDate, coord: fmtLatLng(s.lat, s.lng),
+    id: s.id, location: s.location, requiredDate: s.requiredDate, coord: fmtLatLng(s.lat, s.lng),
   }))
 }
 
@@ -384,7 +384,8 @@ export function CoordInput({ value, onChange, placeholder }: {
 // ---------------- จุดติดตั้งเพิ่มเติม (จุดที่ 2+) ----------------
 // coord = ข้อความ "lat, lng" ที่ผู้ใช้วางมาจาก Google Maps (แปลงเป็นเลขตอน submit)
 // เก็บเป็น string ในฟอร์มเพื่อให้พิมพ์ค้างกลางทางได้ ไม่ต้องถูกต้องทุกคีย์
-export interface InstallSite { location: string; requiredDate: string; coord?: string }
+// id = id ถาวรของจุด (0086) — ต้องส่งกลับไปตอนบันทึกเสมอ ไม่งั้นเครื่องที่ผูกจุดนี้ไว้จะหลุดจุด
+export interface InstallSite { id?: string; location: string; requiredDate: string; coord?: string }
 
 /** แก้ไขจุดติดตั้งเพิ่มเติม (จุดที่ 2, 3, …) — โผล่เฉพาะ Job ที่ LBS > 1 · จำกัด ≤ max จุด */
 export function InstallSitesEditor({ sites, onChange, max }: {

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { closeoutFiles, deriveJobStatus, jobDelivery, jobInstallSummary, jobIsFieldActive, qtyOutToField, effectiveQty, unitInstallState, jobTeam, memberFullName, serviceIssues } from '../data/logic'
+import { closeoutFiles, deriveJobStatus, jobDelivery, jobInstallSummary, jobIsFieldActive, qtyOutToField, effectiveQty, unitInstallState, unitJobSite, jobTeam, memberFullName, serviceIssues } from '../data/logic'
 import type { ServiceIssueKind } from '../data/logic'
 
 const ISSUE_KIND: Record<ServiceIssueKind, { label: string; cls: string }> = {
@@ -568,14 +568,20 @@ export default function ServicePage() {
             </p>
             <div className="table-scroll">
               <table>
-                <thead><tr><th>Serial (LVB / OM)</th><th>สถานะ</th><th></th></tr></thead>
+                <thead><tr><th>Serial (LVB / OM)</th><th>จุดติดตั้ง</th><th>สถานะ</th><th></th></tr></thead>
                 <tbody>
                   {unitsOut(unitJob.id).map(u => {
                     const st = unitInstallState(db, u.id)
                     const r = lastInstallRow(u.id)
+                    // 0086: งานหลายจุด — ช่างต้องรู้ว่าเครื่องนี้ไปสถานีไหน กำหนดวันไหน
+                    const site = unitJobSite(db, u)
                     return (
                       <tr key={u.id}>
                         <td className="mono">{u.serialLvb}<div className="muted mono">{u.serialOm}</div></td>
+                        <td>
+                          📍 {site ? `จุดที่ ${site.no} · ${site.location || '-'}` : '-'}
+                          {site?.requiredDate && <div className="muted" style={{ fontSize: 12 }}>กำหนด {fmtDate(site.requiredDate)}</div>}
+                        </td>
                         <td>
                           {st === 'installed' && <span className="badge green">✅ ติดตั้งแล้ว {fmtDate(r?.installedDate)}</span>}
                           {st === 'blocked' && <><span className="badge red">⚠️ ติดตั้งไม่ได้</span><div className="muted">{r?.reason}</div></>}

@@ -573,6 +573,19 @@ input:focus, select:focus, textarea:focus {
 }
 @media (prefers-reduced-motion: reduce) { .busy-bar { animation: none; background-position: 0 0; } }
 
+/* ---------- Contract No. ซ้ำ (0087) ----------
+   ป้ายเล็กต่อท้ายเลขสัญญา — เหลือง = ใช้ร่วมหลายเครื่อง (PO หลาย set ปกติ) · แดง = ลูกค้าในเลขเดียวกันไม่ตรงกัน
+   font ไม่ใช่ mono (อยู่ในเซลล์ .mono) ให้อ่านเป็น "ป้าย" ไม่ใช่ส่วนหนึ่งของเลขสัญญา */
+.dup-flag {
+  display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 99px; vertical-align: 1px;
+  font: 600 10.5px/16px 'IBM Plex Sans Thai', 'Segoe UI', Tahoma, sans-serif; white-space: nowrap; cursor: help;
+  background: var(--amber-soft); color: var(--amber); border: 1px solid var(--amber-line);
+}
+.dup-flag.bad { background: var(--red-soft); color: var(--red); border-color: var(--red-line); }
+/* บรรทัดเตือนใต้ช่อง Contract No. ในฟอร์มแก้ข้อมูล */
+.dup-hint { margin: -4px 0 10px; font-size: 12px; color: var(--amber); }
+.dup-hint .dup-flag { margin-left: 0; }
+
 /* ---------- แบนเนอร์สถานะการเชื่อมต่อ ---------- */
 .conn-banner {
   display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;

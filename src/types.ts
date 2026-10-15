@@ -49,12 +49,18 @@ export interface LbsUnit {
    * ⚠️ **ผูก Job แล้วตัวนี้เป็นข้อมูลอ้างอิง (Ref.) เท่านั้น** — Job ยังชนะเรื่องลูกค้า/สถานที่
    *    ตาม 0014 (มติ 2026-09-16) · ถ้า 2 ฝั่งไม่ตรงกันให้ขึ้นเตือน ไม่ใช่กลืนเงียบ
    * ⚠️ ห้ามใส่ลงลิงก์สาธารณะ (0069) — เป็นข้อมูลเชิงพาณิชย์
-   * 0085: ต้องเป็นเลขที่อยู่ใน **ทะเบียนสัญญา** (contracts) · ลูกค้า/ผู้ติดต่ออ่านจากสัญญา ไม่ใช่จากเครื่อง
-   *       ผูก/ถอดผ่าน assignUnitsToContract / unassignUnitContract เท่านั้น
+   * 0087 (ยกเลิกทะเบียนสัญญาของ 0085): กรอกรายเครื่อง · **ซ้ำกันหลายเครื่องได้** (PO ลูกค้าหลาย set)
+   *   หน้าจอแค่เตือนว่าซ้ำ (contractPeers) ไม่บล็อก · ไม่มีการ "ย้ายสัญญา" อัตโนมัติแบบ 0082 แล้ว
    */
   contractNo?: string
   /** 0082 — เลิกใช้ตั้งแต่ 0085 (ไม่มีการย้ายสัญญาด้วยการพิมพ์เลขแล้ว) · คอลัมน์ยังอยู่เป็นประวัติ */
   lastContractNo?: string
+  /**
+   * 0086 — เครื่องนี้ไปติดตั้งที่จุดไหนของ Job (id ใน job.installSites) · ว่าง = จุดที่ 1 (จุดหลักของ Job)
+   * ตั้งให้อัตโนมัติตอนดึงเข้า Job (ตรงกับ Location รายเครื่อง) · เปลี่ยนได้ที่หน้า Job จนกว่าจะเบิก
+   * มีความหมายเฉพาะตอนผูก Job — คืนเข้าคลังแล้วล้างทิ้ง
+   */
+  installSiteId?: string
   // ข้อมูลลูกค้า/สถานที่ "จริง" ref จาก Job ที่เครื่องถูกดึงเข้า (single source of truth ตาม 0014)
   // ข้างล่างคือ "ข้อมูลแผน" ที่ Division กรอกได้ก่อนเครื่องถูกผูก Job (0043) — Job ชนะเมื่อผูกแล้ว
   // 0073: ถ้ามี contractNo แล้ว 3 ช่องนี้ไม่ใช่ "แผน" อีกต่อไป (ค่ายังเก็บที่เดิม เปลี่ยนแค่ความหมาย)
@@ -85,27 +91,6 @@ export interface LbsUnit {
  * ที่ไม่ใช้ public bucket แบบ install-photos (0019) เพราะเอกสารสัญญาเป็นข้อมูลเชิงพาณิชย์ + PDPA
  * — public bucket คือใครมี URL ก็เปิดได้โดยไม่ต้อง login
  */
-/**
- * ทะเบียนสัญญาขาย (0085) — PO ลูกค้า 1 ใบ = สัญญา 1 ใบ ใช้กับ LBS ได้หลายเครื่อง (qtySets)
- * เครื่องผูกสัญญาผ่าน lbs_units.contract_no (FK → contracts.contract_no · ON UPDATE CASCADE)
- * ⚠️ ลูกค้า/ผู้ติดต่อ เป็นของสัญญา · สถานที่ = สถานที่หลักของสัญญา แต่รายเครื่องแก้ทับได้
- *    (PO เดียวกันส่งคนละสถานีได้) · ผูก Job แล้ว Job ยังชนะตาม 0014
- * ⚠️ ห้ามใส่ลงลิงก์สาธารณะ (0069) — เป็นข้อมูลเชิงพาณิชย์
- */
-export interface Contract {
-  id: string
-  contractNo: string
-  customerName: string
-  contactPhone?: string
-  installLocation: string      // สถานที่ติดตั้งหลัก
-  customerPoNo?: string        // เลขที่ PO ของลูกค้า
-  poDate?: string              // YYYY-MM-DD
-  qtySets: number              // จำนวน set ตาม PO — ผูกเครื่องเกินนี้ไม่ได้
-  note?: string
-  createdBy: string
-  createdAt: string
-}
-
 export interface LbsUnitFile {
   id: string
   unitId: string
@@ -155,7 +140,9 @@ export interface Job {
   planLat?: number
   planLng?: number
   // จุดติดตั้งเพิ่มเติม (จุดที่ 2+) — ใช้ได้เมื่อ Job มี LBS > 1 · ข้อมูลวางแผนอย่างเดียว (ไม่ผูก Serial)
-  installSites?: { location: string; requiredDate: string; lat?: number; lng?: number }[]
+  // 0086: แต่ละจุดมี id ถาวร (uuid) — เครื่องอ้างจุดด้วย id ไม่ใช่ลำดับ (ลบ/สลับจุดแล้วเครื่องไม่หลุดจุด)
+  //   จุดที่ 1 = installLocation/requiredDate/planLat-Lng ของ Job (id = 'main' — ไม่อยู่ใน array นี้)
+  installSites?: { id?: string; location: string; requiredDate: string; lat?: number; lng?: number }[]
   contactPhone?: string        // เบอร์ติดต่อลูกค้า — ตารางรายเครื่องใน Project Stock ref ค่านี้
   // Project Budget (บาท) — กำไร derive = ราคาขาย − ต้นทุน (ไม่เก็บซ้ำ)
   budgetSalePrice?: number
@@ -669,7 +656,6 @@ export interface DB {
   projectStocks: ProjectStock[]
   lbsUnits: LbsUnit[]
   lbsUnitFiles: LbsUnitFile[]
-  contracts: Contract[]
   jobs: Job[]
   allocations: AllocationTxn[]
   accessoryStock: AccessoryStockRow[]
