@@ -149,6 +149,16 @@ export default function ApprovalsPage() {
       const sn = (u?: typeof a) => u ? `${u.serialLvb}/${u.serialOm}` : '?'
       return `สลับ ${sn(a)} (บน Job) ↔ ${sn(b)} (คลัง) · เหตุผล: ${r.payload.reason ?? '-'}`
     }
+    if (r.type === 'revert_install') {
+      // 0090: บอกเครื่อง + วันที่ที่ยืนยันไว้ — ผู้อนุมัติต้องเห็นว่ากำลังยกเลิกผลของเครื่องไหน
+      const units = (r.payload.unitIds ?? []).map(id => {
+        const u = db.lbsUnits.find(x => x.id === id)
+        const row = db.unitInstallations.filter(x => x.unitId === id && x.outcome === 'installed')
+          .sort((a, b) => b.performedAt.localeCompare(a.performedAt))[0]
+        return `${u?.serialLvb ?? '?'}${row?.installedDate ? ` (ติดตั้ง ${fmtDate(row.installedDate)})` : ''}`
+      })
+      return `${units.length} เครื่อง: ${units.join(', ')} → กลับเป็นรอติดตั้ง (หลักฐานเดิมเก็บในประวัติ) · เหตุผล: ${r.payload.reason ?? '-'}`
+    }
     return `เหตุผล: ${r.payload.reason ?? '-'}${r.payload.receivedToCentral ? ' (วัสดุที่รับแล้วคืนเข้าสต็อกกลาง)' : ''}`
   }
 
@@ -159,7 +169,7 @@ export default function ApprovalsPage() {
     <div>
       <div className="page-title">Awaiting Approval</div>
       <div className="page-sub">
-        คำขอจากงานโครงการที่รอ Division พิจารณา — ออก PR · เบิกให้ Service · ยกเลิก Job · สลับ LBS
+        คำขอจากงานโครงการที่รอ Division พิจารณา — ออก PR · เบิกให้ Service · ยกเลิก Job · สลับ LBS · เปิดงานใหม่ · ยกเลิกผลติดตั้ง
         {canDecide ? ' · อนุมัติแล้วระบบดำเนินการให้ทันที' : ' · ติดตามสถานะคำขอของแผนกคุณที่นี่'}
         {isVip && ' · คุณคือผู้บริหาร (VIP): รีวิวคำขอแล้วฝากความเห็นได้ทุกใบ — Division จะได้รับแจ้งทันที (อำนาจอนุมัติยังอยู่ที่ Division)'}
       </div>

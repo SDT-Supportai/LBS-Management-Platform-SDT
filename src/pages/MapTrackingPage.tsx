@@ -94,6 +94,7 @@ export default function MapTrackingPage() {
       if (!cur || r.performedAt > cur.performedAt) latestByUnit.set(r.unitId, r)
     })
     latestByUnit.forEach(r => {
+      if (r.outcome === 'reverted') return                                // 0090: ผลถูกยกเลิก = ไม่มีหมุด
       if (r.checkinLat == null || r.checkinLng == null) return          // blocked ไม่บังคับเช็คอิน
       if (!inThailand(r.checkinLat, r.checkinLng)) return
       const unit = db.lbsUnits.find(u => u.id === r.unitId)

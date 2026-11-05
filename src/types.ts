@@ -326,11 +326,14 @@ export interface PurchaseOrder {
 // issue_job = "เบิก LBS ให้ Service" (0059 · เดิมหมายถึงเบิกทั้งใบ)
 //   Accessory ตาม PO ที่รับของแล้ว = Project เบิกได้เอง ไม่ต้องผ่านอนุมัติ (มติ 2026-08-23)
 //   คงค่า enum เดิมไว้ ไม่ rename เพื่อไม่ต้องแก้ CHECK constraint + ประวัติคำขอเก่า
-export type ApprovalType = 'create_pr' | 'issue_job' | 'cancel_job' | 'swap_lbs' | 'reopen_job'
+// revert_install (0090) = ขอยกเลิกผลติดตั้งที่บันทึกผิด — Service/Project ขอ · Division อนุมัติ
+//   ขอผ่าน requestRevertInstall (rpc_request_revert_install) ไม่ใช่ requestApproval เพราะผู้ขอหลักคือ Service
+export type ApprovalType = 'create_pr' | 'issue_job' | 'cancel_job' | 'swap_lbs' | 'reopen_job' | 'revert_install'
 
 export interface ApprovalPayload {
   requestIds?: string[]            // create_pr
   // issue_job (0059): เครื่องที่ขอเบิกรอบนี้ — ว่าง/undefined = เบิกทุกเครื่องที่พร้อม (คำขอเก่าก่อน 0059)
+  // revert_install (0090): เครื่องที่ขอยกเลิกผลติดตั้ง (บังคับอย่างน้อย 1)
   unitIds?: string[]
   startDate?: string               // issue_job
   endDate?: string
@@ -423,14 +426,18 @@ export interface JobAssignment {
 // เก็บเป็น log (หลายแถวต่อเครื่องได้) → สถานะปัจจุบันของเครื่อง = แถวล่าสุด
 // ทำให้ blocked → ยืนยันใหม่ได้ และเก็บประวัติครบ
 // หมายเหตุ: ไม่เก็บบน lbs_units เพราะ trigger trg_block_issued_edit ล็อก UPDATE ตอน job = issued
-export type UnitInstallOutcome = 'installed' | 'blocked'
+// reverted (0090) = แถว "ยกเลิกผลติดตั้งก่อนหน้า" (Division อนุมัติแล้ว) → เครื่องกลับเป็น "รอติดตั้ง"
+//   แถว installed เดิมยังอยู่เป็นหลักฐาน (ไม่ลบ/ไม่แก้) · reason = เหตุผลที่ขอยกเลิก
+export type UnitInstallOutcome = 'installed' | 'blocked' | 'reverted'
+/** สถานะปัจจุบันของเครื่อง (reverted นับเป็น pending) */
+export type UnitInstallState = 'installed' | 'blocked' | 'pending'
 export interface UnitInstallation {
   id: string
   unitId: string
   jobId: string
   outcome: UnitInstallOutcome
   installedDate?: string       // installed: วันที่ติดตั้งจริง (บังคับ)
-  reason?: string              // blocked: เหตุผลที่ติดตั้งไม่ได้ (บังคับ)
+  reason?: string              // blocked: เหตุผลที่ติดตั้งไม่ได้ · reverted: เหตุผลที่ยกเลิกผล (บังคับทั้งคู่)
   checkinLat?: number          // installed: บังคับ (หลักฐานต่อเครื่อง)
   checkinLng?: number
   photoUrl?: string            // installed: บังคับ
@@ -450,6 +457,8 @@ export interface JobPayment {
   jobId: string
   payType: PaymentType
   seq: number
+  orderNum?: string             // 0088 — Order Num (เลขที่ใบสั่งขายในระบบบัญชี) · กรอกก่อน Invoice No.
+  packId?: string               // 0088 — Pack ID (เลขที่ใบส่งของ / packing slip)
   invoiceNo?: string
   invoiceDate?: string
   percent?: number             // % ของราคาขาย (ว่าง = กรอกยอดเงินตรงๆ)

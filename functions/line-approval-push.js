@@ -13,13 +13,14 @@ import { createClient } from '@supabase/supabase-js'
 //    ป้ายชุดนี้ถูกก็อปไว้ 4 ที่ — ดูรายการครบที่ src/data/logic.ts เหนือ APPROVAL_TYPE_LABEL
 const TYPE_LABEL = {
   create_pr: 'ออก PR', issue_job: 'เบิก LBS ให้ Service', cancel_job: 'ยกเลิก Job',
-  swap_lbs: 'สลับ LBS', reopen_job: 'เปิดงานใหม่',
+  swap_lbs: 'สลับ LBS', reopen_job: 'เปิดงานใหม่', revert_install: 'ยกเลิกผลติดตั้ง',
 }
 
 // ⚠️ ห้าม fallback เป็นข้อความของ type อื่น — ผู้อนุมัติจะกด ✅ ให้เรื่องที่เข้าใจผิด
 //    เคยพลาดจริง: 0041 เพิ่ม reopen_job แต่ไม่ได้แก้ที่นี่ → ไม่มีสาขาแล้วตกลงมาที่ 'ยกเลิก Job'
 //    การ์ดบอกว่า "ยกเลิก Job" แต่กด ✅ แล้วระบบเปิดงานใหม่
-function summarize(type, payload) {
+// serials = Serial LVB ของ unit_ids (ใช้กับ revert_install — ผู้อนุมัติต้องเห็นว่ายกเลิกผลของเครื่องไหน)
+function summarize(type, payload, serials = []) {
   if (type === 'create_pr') return `ออก PR · ${(payload.request_ids ?? []).length} รายการ`
   if (type === 'issue_job') {
     const s = payload.start_date, e = payload.end_date
@@ -32,6 +33,9 @@ function summarize(type, payload) {
   if (type === 'swap_lbs') return `สลับ LBS · เหตุผล: ${payload.reason ?? '-'}`
   if (type === 'reopen_job') return `เปิดงานใหม่ · เหตุผล: ${payload.reason ?? '-'}`
   if (type === 'cancel_job') return `ยกเลิก Job · เหตุผล: ${payload.reason ?? '-'}`
+  // 0090: อนุมัติแล้วเครื่องกลับเป็น "รอติดตั้ง" · หลักฐานเดิมยังอยู่ในประวัติ
+  if (type === 'revert_install')
+    return `ยกเลิกผลติดตั้ง ${(payload.unit_ids ?? []).length} เครื่อง${serials.length ? ` (${serials.join(', ')})` : ''} → กลับเป็นรอติดตั้ง · เหตุผล: ${payload.reason ?? '-'}`
   return `คำขอประเภท "${type}" — การ์ดนี้อธิบายรายละเอียดไม่ได้ กรุณาเปิดตรวจในระบบ`
 }
 
@@ -42,7 +46,7 @@ function summarize(type, payload) {
 //    URL จริงของหน้าคือ /#/approvals ไม่ใช่ /approvals
 //    ถ้าลืม `#`: Cloudflare เสิร์ฟ index.html → hash ว่าง → route ตกไปที่ `*` → เด้งไป Dashboard
 //    (เป็นแบบนั้นมาตั้งแต่ 0033 — ปุ่ม "ตรวจสอบในระบบ" ไม่เคยพาไปหน้าที่รออนุมัติเลย)
-function buildFlex(appUrl, reqId, typeLabel, jobNo, customer, detail, requester, canApprove, jobId) {
+function buildFlex(appUrl, reqId, typeLabel, jobNo, customer, detail, requester, canApprove, jobId, fromLabel = 'Project') {
   const row = (label, val) => ({
     type: 'box', layout: 'baseline', spacing: 'sm',
     contents: [
@@ -57,7 +61,7 @@ function buildFlex(appUrl, reqId, typeLabel, jobNo, customer, detail, requester,
       type: 'bubble',
       header: {
         type: 'box', layout: 'vertical', paddingAll: '14px', backgroundColor: '#2563eb',
-        contents: [{ type: 'text', text: '🔔 คำขออนุมัติจาก Project', weight: 'bold', color: '#ffffff', size: 'sm' }],
+        contents: [{ type: 'text', text: `🔔 คำขออนุมัติจาก ${fromLabel}`, weight: 'bold', color: '#ffffff', size: 'sm' }],
       },
       body: {
         type: 'box', layout: 'vertical', spacing: 'md',
@@ -125,7 +129,8 @@ export async function onRequestPost(context) {
   // (Division เป็นฝ่ายรับการ์ด ไม่ใช่ฝ่ายส่ง จึงไม่อยู่ในรายการนี้)
   const { data: me } = await sb.from('profiles')
     .select('department, is_active').eq('id', caller.user.id).maybeSingle()
-  if (!me?.is_active || !['project', 'admin'].includes(me.department)) {
+  // 0090: Service ขอ "ยกเลิกผลติดตั้ง" ได้ (rpc_request_revert_install) ⇒ ผ่านด่านนี้ได้เฉพาะคำขอ type นั้น (ตรวจซ้ำหลังอ่านคำขอ)
+  if (!me?.is_active || !['project', 'admin', 'service'].includes(me.department)) {
     return Response.json({ ok: false, error: 'แผนกของคุณไม่มีสิทธิ์ส่งการ์ดขออนุมัติ' }, { status: 403 })
   }
 
@@ -134,9 +139,18 @@ export async function onRequestPost(context) {
   const { data: r, error: rErr } = await q.maybeSingle()
   if (rErr) return Response.json({ ok: false, error: rErr.message }, { status: 500 })
   if (!r) return Response.json({ ok: true, skipped: 'ไม่พบคำขอที่รออนุมัติ' })
+  if (me.department === 'service' && r.req_type !== 'revert_install') {
+    return Response.json({ ok: false, error: 'แผนกของคุณไม่มีสิทธิ์ส่งการ์ดขออนุมัติประเภทนี้' }, { status: 403 })
+  }
 
   const { data: job } = await sb.from('jobs').select('job_no, customer_name').eq('id', r.job_id).maybeSingle()
-  const { data: requester } = await sb.from('profiles').select('full_name').eq('id', r.requested_by).maybeSingle()
+  const { data: requester } = await sb.from('profiles').select('full_name, department').eq('id', r.requested_by).maybeSingle()
+  let serials = []
+  if (r.req_type === 'revert_install' && Array.isArray(r.payload?.unit_ids) && r.payload.unit_ids.length) {
+    const { data: us } = await sb.from('lbs_units').select('serial_lvb').in('id', r.payload.unit_ids)
+    serials = (us ?? []).map(u => u.serial_lvb)
+  }
+  const fromLabel = requester?.department === 'service' ? 'Service' : requester?.department === 'admin' ? 'Manage' : 'Project'
 
   // ผู้อนุมัติที่เชื่อม LINE แล้ว (Division/admin, ยัง active)
   const { data: approvers } = await sb.from('profiles').select('line_user_id')
@@ -148,7 +162,7 @@ export async function onRequestPost(context) {
   const known = Object.prototype.hasOwnProperty.call(TYPE_LABEL, r.req_type)
   const typeLabel = known ? TYPE_LABEL[r.req_type] : `คำขอ (${r.req_type})`
   const flex = buildFlex(appUrl, r.id, typeLabel, job?.job_no ?? '-', job?.customer_name ?? '-',
-    summarize(r.req_type, r.payload ?? {}), requester?.full_name ?? '-', known, r.job_id)
+    summarize(r.req_type, r.payload ?? {}, serials), requester?.full_name ?? '-', known, r.job_id, fromLabel)
 
   const results = await Promise.all(recipients.map(to =>
     fetch('https://api.line.me/v2/bot/message/push', {

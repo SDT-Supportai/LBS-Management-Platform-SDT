@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { closeoutFiles, deriveJobStatus, jobDelivery, jobInstallSummary, jobIsFieldActive, qtyOutToField, effectiveQty, unitInstallState, unitJobSite, jobTeam, memberFullName, serviceIssues } from '../data/logic'
+import { closeoutFiles, deriveJobStatus, jobDelivery, jobInstallSummary, jobIsFieldActive, qtyOutToField, effectiveQty, unitInstallState, unitJobSite, pendingRevertRequest, jobTeam, memberFullName, serviceIssues } from '../data/logic'
 import type { ServiceIssueKind } from '../data/logic'
 
 const ISSUE_KIND: Record<ServiceIssueKind, { label: string; cls: string }> = {
@@ -30,6 +30,11 @@ export default function ServicePage() {
   const canConfirm = can(user, 'service.confirm')
   // 0080 — ปิดงานติดตั้ง: Project ทุกคน + Service + Manage (มติผู้ใช้ 2026-09-29) · ปุ่มอื่นของช่างยังเป็นของ Service
   const canCloseJob = can(user, 'job.closeInstall')
+  // 0090 — ขอยกเลิกผลติดตั้งที่บันทึกผิด (Service + Project) → รอ Division พิจารณา
+  const canRequestRevert = can(user, 'install.revertRequest')
+  const [revertFor, setRevertFor] = useState<string | null>(null)        // jobId
+  const [revertIds, setRevertIds] = useState<string[]>([])
+  const [revertReason, setRevertReason] = useState('')
   // หลักฐานต่อเครื่อง (เฟส B) — วันที่ / GPS / รูป
   const [installedDate, setInstalledDate] = useState('')
   const [note, setNote] = useState('')
@@ -116,13 +121,18 @@ export default function ServicePage() {
           + (s.pendingAccessories > 0 ? ` (วัสดุค้างเบิก ${s.pendingAccessories} รายการ)` : '')
           + ' — Project ต้องเบิก/โอนคืน/ตัดจำหน่ายให้ครบก่อน จึงปิดงานได้'
       : ''
+  // 0090: คำขอยกเลิกผลติดตั้งค้างอยู่ = ปิดงานไม่ได้จนกว่า Division ตัดสิน (logic + trigger ก็กันอยู่)
+  const closeReason = (jobId: string, s: ReturnType<typeof jobInstallSummary>) =>
+    pendingRevert(jobId) ? 'มีคำขอยกเลิกผลติดตั้งรอ Division พิจารณา — ปิดงานได้หลัง Division ตัดสินแล้ว' : closeBlockedReason(s)
+  const canCloseNow = (jobId: string, s: ReturnType<typeof jobInstallSummary>) => s.canClose && !pendingRevert(jobId)
   // วัสดุที่ยังค้างจัดซื้อ (รวมของที่ซื้อเพิ่มหลังเบิก — 0037) ใช้เตือนตอนปิดงาน
   const outstandingProcurement = (jobId: string) => db.accessoryRequests.filter(r =>
     r.jobId === jobId && (r.status === 'pending' || r.status === 'pr_sent' || r.status === 'po_ordered'))
   // แถวยืนยันล่าสุดของเครื่อง (ใช้โชว์หลักฐาน/เหตุผล)
+  //   เวลาเท่ากัน = แถวที่ต่อท้ายทีหลังชนะ (ตรงกับ unitInstallState — 0090 reverted ต้องชนะแถวที่มันยกเลิก)
   const lastInstallRow = (unitId: string) =>
-    db.unitInstallations.filter(r => r.unitId === unitId)
-      .sort((a, b) => b.performedAt.localeCompare(a.performedAt))[0]
+    db.unitInstallations.reduce<typeof db.unitInstallations[number] | undefined>(
+      (best, r) => r.unitId === unitId && (!best || r.performedAt >= best.performedAt) ? r : best, undefined)
 
   const unitJob = unitJobId ? db.jobs.find(j => j.id === unitJobId) : null
   const stepUnit = step ? db.lbsUnits.find(u => u.id === step.unitId) : null
@@ -195,6 +205,21 @@ export default function ServicePage() {
     if (ok) setAssignFor(null)
   }
   const openUnitBlock = (unitId: string) => { setBlockReason(''); setStep({ unitId, mode: 'block' }) }
+
+  // 0090 — คำขอยกเลิกผลติดตั้งที่ค้างอยู่ของ Job (มีได้ใบเดียวต่อ Job)
+  const pendingRevert = (jobId: string) => pendingRevertRequest(db, jobId)
+  const openRevert = (jobId: string, unitId: string) => {
+    // ปิด modal รายเครื่องก่อน — ไม่ซ้อน 2 modal (ฟอร์มนี้มีรายการเครื่องให้เลือกในตัวอยู่แล้ว)
+    setUnitJobId(null); setStep(null)
+    setRevertIds([unitId]); setRevertReason(''); setRevertFor(jobId)
+  }
+  const submitRevert = async () => {
+    if (!revertFor) return
+    const ok = await tryAction(
+      () => act.requestRevertInstall({ jobId: revertFor, unitIds: revertIds, reason: revertReason }),
+      `ส่งคำขอยกเลิกผลติดตั้ง ${revertIds.length} เครื่องแล้ว — รอ Division พิจารณา`)
+    if (ok) setRevertFor(null)
+  }
   const backToList = () => { setStep(null); setCoords(null); setPhoto(null) }
 
   const submitUnitConfirm = async () => {
@@ -459,26 +484,50 @@ export default function ServicePage() {
                       <div className="muted">เบิก {fmtDateTime(j.issuedAt ?? j.lbsIssuedAt)}</div>
                     </td>
                     <td style={{ whiteSpace: 'nowrap' }}>
-                      {canConfirm && (
-                        <>
-                          <button className="small" style={{ marginRight: 6 }}
-                            onClick={() => openAssign(j.id)}>
-                            👷 มอบหมายทีม
-                          </button>
-                          <button className="small" style={{ marginRight: 6 }}
-                            onClick={() => { setStep(null); setUnitJobId(j.id) }}>
-                            🔧 ยืนยันรายเครื่อง
-                          </button>
+                      {/* 0089: ติดตั้งครบทุกเครื่องแล้ว = งานหน้าไซต์จบ เหลือขั้นเดียวคือปิดงาน
+                          ซ่อนมอบหมายทีม / เลื่อน-ติดปัญหา (ทำได้ผิดอย่างเดียว — เลื่อนนัดงานที่จบแล้ว ·
+                          ยิง LINE "ติดปัญหา" หา Project) · ปุ่มรายเครื่องเหลือไว้ดูหลักฐานอย่างเดียว
+                          กติกาตัวจริงอยู่ที่ logic.ts + trigger 0089 ฝั่ง SQL — ซ่อนปุ่มอย่างเดียวไม่พอ */}
+                      {(() => {
+                        const done = s.total > 0 && s.installed === s.total
+                        return <>
+                          {done && (
+                            <div style={{ marginBottom: 6, fontSize: 12.5, color: '#15803d', fontWeight: 600 }}>
+                              ✅ ติดตั้งครบทุกเครื่อง — ขั้นต่อไป: ปิดงาน
+                            </div>
+                          )}
+                          {canConfirm && !done && (
+                            <button className="small" style={{ marginRight: 6 }}
+                              onClick={() => openAssign(j.id)}>
+                              👷 มอบหมายทีม
+                            </button>
+                          )}
+                          {/* 0090: Project เปิดดูหลักฐาน + ขอยกเลิกผลได้ (ยืนยัน/ติดตั้งไม่ได้ ยังเป็นของ Service) */}
+                          {(canConfirm || canRequestRevert) && (
+                            <button className="small" style={{ marginRight: 6 }}
+                              onClick={() => { setStep(null); setUnitJobId(j.id) }}>
+                              {done || !canConfirm ? '📋 ดูหลักฐานรายเครื่อง' : '🔧 ยืนยันรายเครื่อง'}
+                            </button>
+                          )}
+                          {pendingRevert(j.id) && (
+                            <span className="badge amber" style={{ marginRight: 6 }}>⏳ ขอยกเลิกผลติดตั้ง — รอ Division พิจารณา</span>
+                          )}
+                          {canCloseJob && (
+                            <button className="small success" style={{ marginRight: 6 }}
+                              disabled={!canCloseNow(j.id, s)} title={closeReason(j.id, s)}
+                              onClick={() => { openClose(j.id) }}>
+                              🏁 ปิดงาน
+                            </button>
+                          )}
+                          {canConfirm && !done && <button className="small" onClick={() => openVisit(j.id)}>เลื่อน/ติดปัญหา</button>}
+                          {/* ติดตั้งครบแต่ปิดไม่ได้ (เช่น วัสดุค้างเบิก) — บอกเหตุผลตรง ๆ ไม่ต้องไปชี้ tooltip */}
+                          {done && canCloseJob && !canCloseNow(j.id, s) && (
+                            <div className="muted" style={{ marginTop: 4, fontSize: 11.5, whiteSpace: 'normal', maxWidth: 360 }}>
+                              {closeReason(j.id, s)}
+                            </div>
+                          )}
                         </>
-                      )}
-                      {canCloseJob && (
-                        <button className="small success" style={{ marginRight: 6 }}
-                          disabled={!s.canClose} title={closeBlockedReason(s)}
-                          onClick={() => { openClose(j.id) }}>
-                          🏁 ปิดงาน
-                        </button>
-                      )}
-                      {canConfirm && <button className="small" onClick={() => openVisit(j.id)}>เลื่อน/ติดปัญหา</button>}
+                      })()}
                     </td>
                   </tr>
                 )
@@ -549,10 +598,11 @@ export default function ServicePage() {
       {unitJob && !step && (() => {
         const s = jobInstallSummary(db, unitJob.id)
         return (
-          <Modal title={`ยืนยันติดตั้งรายเครื่อง — ${unitJob.jobNo}`} onClose={() => setUnitJobId(null)}
+          <Modal title={`${s.total > 0 && s.installed === s.total ? 'หลักฐานติดตั้งรายเครื่อง' : 'ยืนยันติดตั้งรายเครื่อง'} — ${unitJob.jobNo}`}
+            onClose={() => setUnitJobId(null)}
             footer={<>
               <button onClick={() => setUnitJobId(null)}>ปิด</button>
-              <button className="success" disabled={!s.canClose} title={closeBlockedReason(s)}
+              <button className="success" disabled={!canCloseNow(unitJob.id, s)} title={closeReason(unitJob.id, s)}
                 onClick={() => { setUnitJobId(null); openClose(unitJob.id) }}>
                 🏁 ปิดงาน ({s.installed}/{s.total})
               </button>
@@ -573,6 +623,8 @@ export default function ServicePage() {
                   {unitsOut(unitJob.id).map(u => {
                     const st = unitInstallState(db, u.id)
                     const r = lastInstallRow(u.id)
+                    const revertReq = pendingRevert(unitJob.id)
+                    const revertPending = !!revertReq?.payload.unitIds?.includes(u.id)
                     // 0086: งานหลายจุด — ช่างต้องรู้ว่าเครื่องนี้ไปสถานีไหน กำหนดวันไหน
                     const site = unitJobSite(db, u)
                     return (
@@ -586,9 +638,25 @@ export default function ServicePage() {
                           {st === 'installed' && <span className="badge green">✅ ติดตั้งแล้ว {fmtDate(r?.installedDate)}</span>}
                           {st === 'blocked' && <><span className="badge red">⚠️ ติดตั้งไม่ได้</span><div className="muted">{r?.reason}</div></>}
                           {st === 'pending' && <span className="badge neutral">รอติดตั้ง</span>}
+                          {/* 0090: ผลเดิมถูกยกเลิก (Division อนุมัติแล้ว) — บอกช่างว่าทำไมเครื่องนี้กลับมารอติดตั้ง */}
+                          {st === 'pending' && r?.outcome === 'reverted' && (
+                            <div className="muted" style={{ fontSize: 12, maxWidth: 260, whiteSpace: 'normal' }}>
+                              ↩️ ยกเลิกผลเดิมแล้ว: {r.reason}
+                            </div>
+                          )}
+                          {revertPending && (
+                            <div><span className="badge amber" title={revertReq?.payload.reason}>⏳ ขอยกเลิกผล — รอ Division พิจารณา</span></div>
+                          )}
                         </td>
                         <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                          {st !== 'installed' && (
+                          {/* 0090: ยืนยันผิดเครื่อง → ขอยกเลิกผล (ไม่แก้ตรง · ต้องผ่าน Division) */}
+                          {st === 'installed' && canRequestRevert && !revertReq && (
+                            <button className="small" onClick={() => openRevert(unitJob.id, u.id)}
+                              title="ยืนยันผิดเครื่อง/ข้อมูลผิด — ส่งคำขอให้ Division พิจารณา">
+                              ↩️ ขอยกเลิกผลติดตั้ง
+                            </button>
+                          )}
+                          {st !== 'installed' && canConfirm && (
                             <>
                               <button className="small success" style={{ marginRight: 6 }}
                                 onClick={() => openUnitConfirm(u.id)}>
@@ -735,6 +803,46 @@ export default function ServicePage() {
           </label>
         </Modal>
       )}
+
+      {/* 0090 — ขอยกเลิกผลติดตั้งที่บันทึกผิด → รอ Division พิจารณา */}
+      {revertFor && (() => {
+        const rj = db.jobs.find(j => j.id === revertFor)
+        if (!rj) return null
+        const candidates = unitsOf(rj.id).filter(u => unitInstallState(db, u.id) === 'installed')
+        const toggle = (id: string) => setRevertIds(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id])
+        return (
+          <Modal title={`ขอยกเลิกผลติดตั้ง — ${rj.jobNo}`} onClose={() => setRevertFor(null)}
+            footer={<>
+              <button onClick={() => setRevertFor(null)}>ยกเลิก</button>
+              <button className="danger" disabled={revertIds.length === 0 || !revertReason.trim()} onClick={submitRevert}>
+                ส่งคำขอ ({revertIds.length} เครื่อง)
+              </button>
+            </>}>
+            <div className="panel" style={{ marginBottom: 12 }}>
+              <div className="panel-body muted" style={{ fontSize: 13 }}>
+                ใช้เมื่อ <b>บันทึกผลติดตั้งผิด</b> เช่น กดยืนยันผิดเครื่อง · Serial สลับกัน · รูป/GPS ผิดจุด<br />
+                ① คำขอไปรอ Division พิจารณา → ② อนุมัติแล้วเครื่องกลับเป็น <b>"รอติดตั้ง"</b> ยืนยันใหม่พร้อมหลักฐานที่ถูกต้องได้<br />
+                หลักฐานเดิม (วันที่ · GPS · รูป · ช่าง) <b>ไม่ถูกลบ</b> — เก็บไว้ในประวัติพร้อมเหตุผลที่ยกเลิก
+              </div>
+            </div>
+            <label className="field"><span>เครื่องที่จะยกเลิกผล *</span></label>
+            <div style={{ marginBottom: 12 }}>
+              {candidates.map(u => (
+                <label key={u.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '4px 0' }}>
+                  <input type="checkbox" checked={revertIds.includes(u.id)} onChange={() => toggle(u.id)} />
+                  <span className="mono">{u.serialLvb}</span>
+                  <span className="muted mono">{u.serialOm}</span>
+                  <span className="muted">· ติดตั้ง {fmtDate(lastInstallRow(u.id)?.installedDate)}</span>
+                </label>
+              ))}
+            </div>
+            <label className="field"><span>เหตุผล *</span>
+              <textarea rows={3} value={revertReason} onChange={e => setRevertReason(e.target.value)}
+                placeholder="เช่น กดยืนยันผิดเครื่อง — เครื่องที่ติดตั้งจริงคือ C106407 ไม่ใช่ C106406" />
+            </label>
+          </Modal>
+        )
+      })()}
 
       {/* ปิดงานติดตั้ง */}
       {closeJob && (() => {

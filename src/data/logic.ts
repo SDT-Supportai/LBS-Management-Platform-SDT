@@ -2,7 +2,7 @@ import type {
   DB, Job, JobStatus, User, AccessoryRequest, AccReqStatus, PurchaseOrder, Department, LbsUnit, LbsUnitFile,
   JobPaymentFile, JobDueExtension,
   ApprovalType, ApprovalPayload, BudgetCosts, CostCategoryKey,
-  SiteVisit, SiteVisitOutcome, UnitInstallOutcome, TeamMember, JobAssignment,
+  SiteVisit, SiteVisitOutcome, UnitInstallState, TeamMember, JobAssignment,
   StockMovementType, PaymentType, EpicorTxnType,
   PublicShareLink, PublicStockView, StdDrawing, StdDrawingFile,
   AcceptanceType, CloseoutFileKind, JobWarranty, StockReturnKind, StockReturnRequest, StockMovement,
@@ -493,11 +493,9 @@ export function jobDeliveredDate(db: DB, job: Job): string | undefined {
   if (units.length === 0) return undefined
   let last = ''
   for (const u of units) {
-    const rows = db.unitInstallations
-      .filter(r => r.unitId === u.id)
-      .sort((a, b) => b.performedAt.localeCompare(a.performedAt))
-    const latest = rows[0]
+    const latest = latestInstallRow(db, u.id)
     if (!latest) return undefined                       // ยังมีเครื่องที่ไม่ได้ข้อสรุป = ยังส่งไม่เสร็จ
+    if (latest.outcome === 'reverted') return undefined // 0090: ผลถูกยกเลิก = กลับไปรอติดตั้ง
     const d = (latest.outcome === 'installed' ? latest.installedDate : undefined)
       ?? latest.performedAt.slice(0, 10)
     if (d > last) last = d
@@ -1470,6 +1468,7 @@ function paymentAmount(job: Job, percent?: number, amount?: number): number {
 }
 
 export interface PaymentInput {
+  orderNum?: string; packId?: string      // 0088 — กรอกก่อน Invoice No. (ไม่บังคับ)
   invoiceNo?: string; invoiceDate?: string
   percent?: number; amount?: number
   paidAt?: string; note?: string
@@ -1488,6 +1487,7 @@ export function addJobPayment(
     ...db,
     jobPayments: [...db.jobPayments, {
       id: uid(), jobId: p.jobId, payType: p.payType, seq,
+      orderNum: clean(p.orderNum), packId: clean(p.packId),
       invoiceNo: clean(p.invoiceNo), invoiceDate: clean(p.invoiceDate),
       percent: p.percent, amount, baseSalePrice: job.budgetSalePrice,
       paidAt: clean(p.paidAt), note: clean(p.note),
@@ -1495,7 +1495,7 @@ export function addJobPayment(
     }],
   }
   return audit(next, actor, 'job_payment', p.jobId, 'add_job_payment',
-    `${job.jobNo} บันทึกงวด ${p.payType} #${seq} · Invoice ${clean(p.invoiceNo) ?? '-'}` +
+    `${job.jobNo} บันทึกงวด ${p.payType} #${seq} · Order ${clean(p.orderNum) ?? '-'} · Pack ${clean(p.packId) ?? '-'} · Invoice ${clean(p.invoiceNo) ?? '-'}` +
     ` · ${p.percent !== undefined ? `${p.percent}%` : 'ยอดกรอกเอง'} = ${amount} ฿`)
 }
 
@@ -1512,13 +1512,14 @@ export function updateJobPayment(
     ...db,
     jobPayments: db.jobPayments.map(x => x.id === p.paymentId ? {
       ...x,
+      orderNum: clean(p.orderNum), packId: clean(p.packId),
       invoiceNo: clean(p.invoiceNo), invoiceDate: clean(p.invoiceDate),
       percent: p.percent, amount, baseSalePrice: job.budgetSalePrice,
       paidAt: clean(p.paidAt), note: clean(p.note),
     } : x),
   }
   return audit(next, actor, 'job_payment', pm.jobId, 'update_job_payment',
-    `${job.jobNo} แก้งวด ${pm.payType} #${pm.seq} · Invoice ${clean(p.invoiceNo) ?? '-'} · ${pm.amount} → ${amount} ฿` +
+    `${job.jobNo} แก้งวด ${pm.payType} #${pm.seq} · Order ${clean(p.orderNum) ?? '-'} · Pack ${clean(p.packId) ?? '-'} · Invoice ${clean(p.invoiceNo) ?? '-'} · ${pm.amount} → ${amount} ฿` +
     (clean(p.paidAt) ? ` · รับเงิน ${clean(p.paidAt)}` : ' · ยังไม่รับเงิน'))
 }
 
@@ -3072,17 +3073,32 @@ export function confirmInstall(
 // สถานะติดตั้งของแต่ละเครื่อง = แถวล่าสุดใน unitInstallations (ไม่มีแถว = pending)
 // Actual Delivery รายเครื่อง (sync 0043) — วันที่ยืนยันติดตั้งของแถวล่าสุดที่ outcome = installed
 // reopen (0041) คงแถว unit_installations ไว้ → ค่านี้ยังอยู่ ไม่ต้อง backfill
+// 0090: ผลที่ถูกยกเลิก (reverted) ไม่นับ — คืนค่าเฉพาะเครื่องที่สถานะปัจจุบัน = installed
 export function unitInstallDate(db: DB, unitId: string): string | undefined {
-  return db.unitInstallations
-    .filter(r => r.unitId === unitId && r.outcome === 'installed')
-    .sort((a, b) => b.performedAt.localeCompare(a.performedAt))[0]?.installedDate
+  // สถานะปัจจุบัน = installed ⇒ แถวล่าสุดคือแถว installed ที่ยังมีผลอยู่
+  const last = latestInstallRow(db, unitId)
+  return last?.outcome === 'installed' ? last.installedDate : undefined
 }
 
-export function unitInstallState(db: DB, unitId: string): UnitInstallOutcome | 'pending' {
-  const rows = db.unitInstallations
-    .filter(r => r.unitId === unitId)
-    .sort((a, b) => b.performedAt.localeCompare(a.performedAt))
-  return rows[0]?.outcome ?? 'pending'
+/** แถวล่าสุดของเครื่อง — เวลาเท่ากัน (มิลลิวินาทีเดียวกัน) ให้แถวที่ต่อท้ายทีหลังชนะ (log เป็น append-only) */
+function latestInstallRow(db: DB, unitId: string) {
+  let best: DB['unitInstallations'][number] | undefined
+  for (const r of db.unitInstallations)
+    if (r.unitId === unitId && (!best || r.performedAt >= best.performedAt)) best = r
+  return best
+}
+
+export function unitInstallState(db: DB, unitId: string): UnitInstallState {
+  const last = latestInstallRow(db, unitId)?.outcome
+  // 0090: reverted = Division อนุมัติยกเลิกผลเดิมแล้ว → กลับเป็นรอติดตั้ง (ประวัติเดิมยังอยู่)
+  return !last || last === 'reverted' ? 'pending' : last
+}
+
+/** แถว installed นี้ถูกยกเลิกภายหลังหรือยัง (0090) — ใช้ตัดออกจากสถิติ/วันที่ติดตั้ง */
+function installRowReverted(db: DB, r: DB['unitInstallations'][number]): boolean {
+  const at = db.unitInstallations.indexOf(r)
+  return db.unitInstallations.some((x, i) =>
+    x.unitId === r.unitId && x.outcome === 'reverted' && (x.performedAt > r.performedAt || (x.performedAt === r.performedAt && i > at)))
 }
 
 // =============================================================================
@@ -3210,6 +3226,22 @@ function assertJobFieldActive(db: DB, jobId: string, what: string): Job {
   return job
 }
 
+/**
+ * 0089 — ติดตั้งครบทุกเครื่องบนใบแล้ว (รอแค่ปิดงาน) · sync app_job_install_complete ฝั่ง SQL
+ * ⇒ งานหน้าไซต์จบแล้ว: มอบหมายทีม / เลื่อนนัด / ติดปัญหา ไม่มีความหมายอีก — ทำได้ผิดอย่างเดียว
+ *   (เลื่อนนัดแก้วันนัดของงานที่จบไปแล้ว · ติดปัญหายิง LINE หา Project ทั้งที่งานเสร็จ)
+ * นับทุกเครื่องบนใบ (allocated + issued) — ใบที่ยังเบิกไม่ครบยังมีงานหน้าไซต์รอบต่อไป จึงยังไม่นับว่าครบ
+ */
+export function jobInstallComplete(db: DB, jobId: string): boolean {
+  const s = jobInstallSummary(db, jobId)
+  return s.total > 0 && s.installed === s.total
+}
+
+function assertInstallOpen(db: DB, job: Job, what: string): void {
+  if (jobInstallComplete(db, job.id))
+    throw new Error(`${job.jobNo} ติดตั้งครบทุกเครื่องแล้ว — ${what}ไม่ได้ · ขั้นต่อไปคือ 🏁 ปิดงาน`)
+}
+
 // ยืนยันติดตั้งรายเครื่อง — บังคับหลักฐานต่อเครื่อง (วันที่ + GPS + รูป)
 // ไม่ยิง notification ต่อเครื่อง (กัน noise) — แจ้งตอนปิดงาน/ติดปัญหาเท่านั้น
 export function confirmUnitInstall(
@@ -3249,6 +3281,10 @@ export function confirmUnitInstall(
 // เครื่องติดตั้งไม่ได้ (เครื่องเสีย/จุดติดตั้งไม่พร้อม) — แจ้ง Project ทันทีเพื่อหาทางแก้
 export function blockUnitInstall(db: DB, actor: User, p: { unitId: string; reason: string }): DB {
   const { unit, job } = assertUnitIssuedOut(db, p.unitId)
+  // 0089: เครื่องที่ยืนยันติดตั้งแล้ว (มี GPS + รูปเป็นหลักฐาน) ห้ามถูกพลิกเป็น "ติดตั้งไม่ได้"
+  //   หน้าจอซ่อนปุ่มอยู่แล้ว แต่กติกาต้องอยู่ที่นี่ (+ trigger trg_unit_install_guard ฝั่ง SQL)
+  if (unitInstallState(db, p.unitId) === 'installed')
+    throw new Error(`${unit.serialLvb} ยืนยันติดตั้งไปแล้ว — บันทึกว่าติดตั้งไม่ได้ไม่ได้`)
   if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผลที่ติดตั้งไม่ได้')
 
   let next: DB = {
@@ -3468,6 +3504,9 @@ export function closeJobInstall(
   if (!job) throw new Error('ไม่พบ Job')
   if (job.terminalStatus !== 'issued')
     throw new Error(`ปิดงานได้เฉพาะงานที่เบิกแล้ว (Issued) — ${job.jobNo} อยู่สถานะอื่น`)
+  // 0090: ผลติดตั้งกำลังถูกขอยกเลิก — ปิดก่อน Division ตัดสิน = ปิดบนข้อมูลที่อาจผิด + คำขอจะอนุมัติไม่ได้
+  if (pendingRevertRequest(db, p.jobId))
+    throw new Error(`${job.jobNo} มีคำขอยกเลิกผลติดตั้งรอ Division พิจารณา — ปิดงานได้หลัง Division ตัดสินแล้ว`)
   const s = jobInstallSummary(db, p.jobId)
   if (s.total === 0) throw new Error(`${job.jobNo} ไม่มีเครื่องที่เบิกไว้`)
   if (s.pending > 0)
@@ -3482,7 +3521,7 @@ export function closeJobInstall(
   const closeout = applyCloseout(db, actor, job, p.closeout ?? {})
 
   const lastDate = db.unitInstallations
-    .filter(r => r.jobId === p.jobId && r.outcome === 'installed' && r.installedDate)
+    .filter(r => r.jobId === p.jobId && r.outcome === 'installed' && r.installedDate && !installRowReverted(db, r))
     .map(r => r.installedDate!)
     .sort()
     .pop()!
@@ -3643,7 +3682,7 @@ export function memberSchedule(db: DB, memberId: string) {
     blockedJobs: byState.filter(s => s === 'blocked').length,
     doneCount: jobs.filter(j => j.terminalStatus === 'installed').length,
     // จำนวนเครื่องที่ช่างคนนี้ยืนยันติดตั้งเอง (จาก unit_installations)
-    unitsInstalled: db.unitInstallations.filter(r => r.outcome === 'installed' && r.installedByMemberId === memberId).length,
+    unitsInstalled: db.unitInstallations.filter(r => r.outcome === 'installed' && r.installedByMemberId === memberId && !installRowReverted(db, r)).length,
   }
 }
 
@@ -3721,6 +3760,7 @@ export function assignJobTeam(
 ): DB {
   // 0071: มอบหมายทีมได้ตั้งแต่ของออกไปล็อตแรก ไม่ต้องรอใบครบ — ทีมต้องรู้ล่วงหน้าว่าใครไป
   const job = assertJobFieldActive(db, p.jobId, 'มอบหมายทีม')
+  assertInstallOpen(db, job, 'เปลี่ยนทีม')                // 0089
   const ids = [...new Set(p.memberIds)]
   const members = ids.map(id => {
     const m = db.teamMembers.find(x => x.id === id)
@@ -3765,6 +3805,7 @@ export function logSiteVisit(
 ): DB {
   // 0071: ไปหน้างานรอบแรกตั้งแต่ของยังไม่ครบใบก็เกิดขึ้นจริง — ปัญหา/การเลื่อนนัดต้องบันทึกได้ตอนนั้น
   const job = assertJobFieldActive(db, p.jobId, 'บันทึกออกหน้างาน')
+  assertInstallOpen(db, job, 'เลื่อนนัด/บันทึกปัญหาหน้างาน')   // 0089
   if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผล/รายละเอียดหน้างาน')
 
   let newStart = p.newStartDate
@@ -3925,13 +3966,21 @@ export function cancelJob(
 //   ขณะที่หน้าเว็บและตัวคำขอเขียน "เบิก LBS ให้ Service" (เจอตอนไล่ตรวจ 2026-08-28 · แก้ที่ 0062)
 const APPROVAL_TYPE_LABEL: Record<ApprovalType, string> = {
   create_pr: 'ออก PR', issue_job: 'เบิก LBS ให้ Service', cancel_job: 'ยกเลิก Job', swap_lbs: 'สลับ LBS',
-  reopen_job: 'เปิดงานใหม่',
+  reopen_job: 'เปิดงานใหม่', revert_install: 'ยกเลิกผลติดตั้ง',
+}
+
+/** แผนกที่ได้รับแจ้งผลอนุมัติ/ตีกลับ = แผนกเจ้าของเรื่อง (revert_install มาจากหน้างาน → Service) */
+function approvalOwnerDept(type: ApprovalType): Department {
+  return type === 'revert_install' ? 'service' : 'project'
 }
 
 export function requestApproval(
   db: DB, actor: User,
   p: { type: ApprovalType; jobId: string; payload: ApprovalPayload },
 ): DB {
+  // 0090: ขอยกเลิกผลติดตั้งมีทางเข้าของตัวเอง (ผู้ขอหลักคือ Service ไม่ใช่เจ้าของงาน)
+  if (p.type === 'revert_install')
+    return requestRevertInstall(db, actor, { jobId: p.jobId, unitIds: p.payload.unitIds ?? [], reason: p.payload.reason ?? '' })
   // guard ต่างกันตามประเภท: ออก PR ได้แม้เบิกแล้ว (0037) · เปิดงานใหม่ต้องปิดงานแล้ว (0041)
   const job = p.type === 'create_pr'
     ? assertJobProcurable(db, p.jobId, actor)
@@ -4034,6 +4083,8 @@ export function approveRequest(db: DB, actor: User, p: { requestId: string }): D
     })
   } else if (req.type === 'reopen_job') {
     next = reopenJob(next, actor, { jobId: req.jobId, reason: req.payload.reason ?? '' })
+  } else if (req.type === 'revert_install') {
+    next = revertUnitInstall(next, actor, { jobId: req.jobId, unitIds: req.payload.unitIds ?? [], reason: req.payload.reason ?? '' })
   } else {
     next = cancelJob(next, actor, {
       jobId: req.jobId, reason: req.payload.reason ?? '',
@@ -4041,7 +4092,7 @@ export function approveRequest(db: DB, actor: User, p: { requestId: string }): D
     })
   }
   next = notify(next, {
-    type: 'approval_approved', dept: 'project', jobId: req.jobId,
+    type: 'approval_approved', dept: approvalOwnerDept(req.type), jobId: req.jobId,
     message: `✅ อนุมัติ${APPROVAL_TYPE_LABEL[req.type]} · ${job.jobNo} · โดย ${actor.fullName}`,
   })
   return audit(next, actor, 'approval_request', p.requestId, 'approve_request',
@@ -4063,11 +4114,89 @@ export function rejectApprovalRequest(db: DB, actor: User, p: { requestId: strin
         : r),
   }
   next = notify(next, {
-    type: 'approval_rejected', dept: 'project', jobId: req.jobId,
+    type: 'approval_rejected', dept: approvalOwnerDept(req.type), jobId: req.jobId,
     message: `⛔ ตีกลับ${APPROVAL_TYPE_LABEL[req.type]} · ${job.jobNo}: ${p.reason.trim()}`,
   })
   return audit(next, actor, 'approval_request', p.requestId, 'reject_request',
     `ตีกลับคำขอ${APPROVAL_TYPE_LABEL[req.type]} ของ ${job.jobNo} เหตุผล: ${p.reason.trim()}`)
+}
+
+// =============================================================================
+// ขอยกเลิกผลติดตั้งที่บันทึกผิด (sync 0090 · ผู้ใช้สั่ง 2026-11-05)
+//
+// ปัญหา: 0089 ล็อกเครื่องที่ยืนยันติดตั้งแล้ว (ห้ามยืนยันซ้ำ/พลิกเป็นติดตั้งไม่ได้) ⇒ ช่างกดยืนยันผิดเครื่อง
+//   (สแกน Serial สลับกัน · กดผิดแถว · GPS/รูปผิดจุด) ไม่มีทางแก้เลยนอกจากแก้ฐานข้อมูลตรง
+// ทางแก้: Service/Project "ขอยกเลิกผลติดตั้ง" พร้อมเหตุผล → รอ Division พิจารณา → อนุมัติแล้ว
+//   ต่อแถว outcome = 'reverted' (append-only) → เครื่องกลับเป็น "รอติดตั้ง" ยืนยันใหม่ได้
+//   หลักฐานเดิม (วันที่/GPS/รูป/ช่าง) ยังอยู่ครบในประวัติ — ไม่มีการลบหรือแก้แถวเดิม
+// ขอบเขต:
+//   · เฉพาะเครื่องที่สถานะปัจจุบัน = installed บน Job เดียวกัน · ขอหลายเครื่องในคำขอเดียวได้
+//   · Job ที่ปิดงานแล้ว (Installed) ขอไม่ได้ → ต้อง "ขอเปิดงานใหม่" ก่อน (เอกสารรับมอบ/Warranty ผูกกับผลเดิม)
+//   · คำขอค้างได้ 1 ใบต่อ Job (unique index approval_pending_uq เดียวกับคำขอประเภทอื่น)
+// =============================================================================
+function assertRevertableUnits(db: DB, jobId: string, unitIds: string[]): { job: Job; units: LbsUnit[] } {
+  const job = db.jobs.find(j => j.id === jobId)
+  if (!job) throw new Error('ไม่พบ Job')
+  if (job.terminalStatus === 'installed')
+    throw new Error(`${job.jobNo} ปิดงานแล้ว — ต้องขอเปิดงานใหม่ก่อน จึงจะยกเลิกผลติดตั้งได้`)
+  if (job.terminalStatus === 'cancelled') throw new Error(`${job.jobNo} ถูกยกเลิกแล้ว`)
+  const ids = [...new Set(unitIds)]
+  if (ids.length === 0) throw new Error('กรุณาเลือกเครื่องที่จะยกเลิกผลติดตั้ง')
+  const units = ids.map(id => {
+    const u = db.lbsUnits.find(x => x.id === id)
+    if (!u || u.jobId !== jobId) throw new Error(`มีเครื่องที่ไม่ได้อยู่ใน ${job.jobNo}`)
+    if (unitInstallState(db, id) !== 'installed')
+      throw new Error(`${u.serialLvb} ยังไม่ได้ยืนยันติดตั้ง — ไม่มีผลให้ยกเลิก`)
+    return u
+  })
+  return { job, units }
+}
+
+/** คำขอยกเลิกผลติดตั้งที่ค้างอยู่ของ Job (มีได้ใบเดียว) — ระหว่างนี้ปิดงานไม่ได้ */
+export function pendingRevertRequest(db: DB, jobId: string) {
+  return db.approvalRequests.find(r => r.jobId === jobId && r.type === 'revert_install' && r.status === 'pending')
+}
+
+/** Service/Project ขอยกเลิกผลติดตั้ง → รอ Division พิจารณา */
+export function requestRevertInstall(db: DB, actor: User, p: { jobId: string; unitIds: string[]; reason: string }): DB {
+  const { job, units } = assertRevertableUnits(db, p.jobId, p.unitIds)
+  const reason = p.reason.trim()
+  if (!reason) throw new Error('กรุณาระบุเหตุผลที่ขอยกเลิกผลติดตั้ง')
+  if (pendingRevertRequest(db, p.jobId))
+    throw new Error(`${job.jobNo} มีคำขอยกเลิกผลติดตั้งรอ Division พิจารณาอยู่แล้ว`)
+  const reqId = uid()
+  const label = `ยกเลิกผลติดตั้ง (${units.length} เครื่อง)`
+  let next: DB = {
+    ...db,
+    approvalRequests: [...db.approvalRequests, {
+      id: reqId, type: 'revert_install' as const, jobId: p.jobId,
+      payload: { unitIds: units.map(u => u.id), reason },
+      status: 'pending' as const, requestedBy: actor.id, requestedAt: now(),
+    }],
+  }
+  next = notify(next, { type: 'approval_requested', dept: 'sales', jobId: p.jobId, message: `🔔 ${job.jobNo} ขออนุมัติ${label}` })
+  return audit(next, actor, 'approval_request', reqId, 'request_approval',
+    `${job.jobNo} ขออนุมัติ${label}: ${units.map(u => u.serialLvb).join(', ')} · เหตุผล: ${reason}`)
+}
+
+/** execute หลัง Division อนุมัติ — ต่อแถว reverted (ไม่ลบ/ไม่แก้แถวเดิม) */
+export function revertUnitInstall(db: DB, actor: User, p: { jobId: string; unitIds: string[]; reason: string }): DB {
+  const { job, units } = assertRevertableUnits(db, p.jobId, p.unitIds)
+  const reason = p.reason.trim()
+  if (!reason) throw new Error('กรุณาระบุเหตุผลที่ขอยกเลิกผลติดตั้ง')
+  const at = now()
+  let next: DB = {
+    ...db,
+    unitInstallations: [...db.unitInstallations, ...units.map(u => ({
+      id: uid(), unitId: u.id, jobId: p.jobId, outcome: 'reverted' as const,
+      reason, performedBy: actor.id, performedAt: at,
+    }))],
+  }
+  for (const u of units) {
+    next = audit(next, actor, 'lbs_unit', u.id, 'revert_unit_install',
+      `${job.jobNo} ยกเลิกผลติดตั้ง ${u.serialLvb}/${u.serialOm} (เดิมยืนยันวันที่ ${unitInstallDate(db, u.id) ?? '-'}) — ${reason}`)
+  }
+  return next
 }
 
 // ---------------- ความเห็นบนคำขออนุมัติ (sync 0050) ----------------

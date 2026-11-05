@@ -77,6 +77,8 @@ export const PERMISSIONS: Record<string, Department[]> = {
   // ทำเบิก-Epicor (0064) — ธงกระทบยอดกับ ERP · คนที่ตัดใบเบิกใน Epicor จริงคือ Purchasing
   'epicor.issue': ['purchasing', 'admin'],
   'approval.decide': ['sales', 'admin'],   // Division อนุมัติ/ตีกลับคำขอจาก project
+  // 0090 — ขอยกเลิกผลติดตั้งที่บันทึกผิด: Service (คนกดยืนยัน) + Project (เจ้าของงาน) · อนุมัติ = approval.decide
+  'install.revertRequest': ['service', 'project', 'admin'],
   // ความเห็นบนคำขออนุมัติ (0050) — VIP (ผู้บริหาร) ฝากความเห็นให้ Division · Division ตอบกลับได้
   // VIP ไม่มีสิทธิ์อื่นเลย = ดูได้ทุกหน้า แต่แก้ข้อมูลไม่ได้ (ปุ่มทุกปุ่มซ่อนเองผ่าน can())
   'approval.comment': ['vip', 'sales', 'admin'],
@@ -254,6 +256,7 @@ export interface StoreActions {
   cancelJob: (p: Parameters<typeof L.cancelJob>[2]) => MaybePromise
   reopenJob: (p: Parameters<typeof L.reopenJob>[2]) => MaybePromise
   requestApproval: (p: Parameters<typeof L.requestApproval>[2]) => MaybePromise
+  requestRevertInstall: (p: Parameters<typeof L.requestRevertInstall>[2]) => MaybePromise
   approveRequest: (p: Parameters<typeof L.approveRequest>[2]) => MaybePromise
   rejectApprovalRequest: (p: Parameters<typeof L.rejectApprovalRequest>[2]) => MaybePromise
   addApprovalComment: (p: Parameters<typeof L.addApprovalComment>[2]) => MaybePromise
@@ -476,6 +479,8 @@ function DemoProvider({ children }: { children: ReactNode }) {
         // เปิดงานใหม่ตรง = Manage เท่านั้น · Project ใช้ requestApproval type reopen_job (0041)
         reopenJob: run('master.manage', L.reopenJob),
         requestApproval: run('job.manage', L.requestApproval),
+        // 0090 — ขอยกเลิกผลติดตั้งที่บันทึกผิด (Service หน้างาน + Project) → รอ Division พิจารณา
+        requestRevertInstall: run('install.revertRequest', L.requestRevertInstall),
         approveRequest: run('approval.decide', L.approveRequest),
         rejectApprovalRequest: run('approval.decide', L.rejectApprovalRequest),
         addApprovalComment: run('approval.comment', L.addApprovalComment),
@@ -699,9 +704,7 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
     }
 
     // หลังขออนุมัติสำเร็จ → ดันการ์ด Flex (ปุ่มอนุมัติ) เข้าแชท 1:1 ผู้อนุมัติ (best-effort, เฉพาะตอนเปิด LINE)
-    const baseRequestApproval = act.requestApproval
-    act.requestApproval = async (p) => {
-      await baseRequestApproval(p)
+    const pushApprovalCard = async (jobId: string, type: string) => {
       if (!settingsRef.current.lineEnabled) return
       try {
         const { data: { session } } = await sb.auth.getSession()
@@ -709,9 +712,20 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
         await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
-          body: JSON.stringify({ jobId: p.jobId, type: p.type }),
+          body: JSON.stringify({ jobId, type }),
         })
       } catch { /* best-effort — คำขอถูกบันทึกแล้ว, การ์ด LINE พลาดไม่กระทบ flow */ }
+    }
+    const baseRequestApproval = act.requestApproval
+    act.requestApproval = async (p) => {
+      await baseRequestApproval(p)
+      await pushApprovalCard(p.jobId, p.type)
+    }
+    // 0090 — ขอยกเลิกผลติดตั้ง ใช้การ์ดอนุมัติแบบเดียวกัน (line-approval-push รับ Service สำหรับ type นี้)
+    const baseRequestRevert = act.requestRevertInstall
+    act.requestRevertInstall = async (p) => {
+      await baseRequestRevert(p)
+      await pushApprovalCard(p.jobId, 'revert_install')
     }
 
     return {

@@ -22,7 +22,8 @@ import {
   addUnitFile, deleteUnitFile, unitFiles, unitFileCount, isAllowedDocFile,
   MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB,
   jobDelivery, jobEffectiveDue, jobDueExtensions, extendJobDue, deleteJobDueExtension, jobDeliveredDate, memberSchedule,
-  addJobPayment, addPaymentFile, deletePaymentFile, paymentFiles, paymentFileCount, deleteJobPayment,
+  addJobPayment, updateJobPayment, addPaymentFile, deletePaymentFile, paymentFiles, paymentFileCount, deleteJobPayment, jobInstallComplete,
+  requestRevertInstall, revertUnitInstall, requestApproval, approveRequest, rejectApprovalRequest, unitInstallDate,
   updateJobBudget,
   createStdDrawing, updateStdDrawing, stdDrawingFiles, MAX_STD_DRAWING_FILES, jobStatusPhase,
   setJobCloseout, addCloseoutFile, deleteCloseoutFile, warrantyEndFor, warrantyStatus, addMonthsIso, type CloseoutInput,
@@ -2683,5 +2684,163 @@ describe('จุดติดตั้งรายเครื่อง (0086)', 
     expect(matchJobSite(j, undefined)).toBeUndefined()
     expect(matchJobSite(j, 'site a')).toBeUndefined()
     expect(matchJobSite(j, ' SITE B ')).toBe('b')
+  })
+})
+
+// =============================================================================
+// Service: ติดตั้งครบทุกเครื่องแล้ว = ล็อกงานหน้าไซต์ เหลือแค่ปิดงาน (0089)
+//
+// ต้นเรื่อง: ยืนยันติดตั้งครบแล้ว ปุ่มมอบหมายทีม / เลื่อน-ติดปัญหา ยังกดได้ → เลื่อนนัดแก้วันนัดของงานที่จบ ·
+//   ติดปัญหายิง LINE หา Project · RPC ยอมให้พลิกเครื่องที่ติดตั้งแล้วเป็น "ติดตั้งไม่ได้"
+// กฎ: "ครบ" = ทุกเครื่องบนใบ (allocated + issued) ติดตั้งแล้ว — ใบที่ยังเบิกไม่ครบยังทำงานหน้าไซต์ต่อได้
+// =============================================================================
+describe('ติดตั้งครบแล้ว — ล็อกงานหน้าไซต์ (0089)', () => {
+  const svc = { id: 'u2', email: 's@x.co', password: '', fullName: 'ช่าง', department: 'service' as const, isActive: true }
+  const member = { id: 'm1', firstName: 'ช่าง', lastName: 'เอ', phone: '0800000000', position: 'หัวหน้าช่าง', isActive: true, createdAt: '2026-01-01T00:00:00.000Z' }
+  const proof = { installedDate: '2026-09-18', checkinLat: 17.6, checkinLng: 103.1, photoUrl: 'x.jpg' }
+  const one = () => db({
+    users: [svc], teamMembers: [member],
+    jobs: [job({ lbsQtyRequired: 1, terminalStatus: 'issued' })],
+    lbsUnits: [unit({ id: 'a', serialLvb: 'C106406', status: 'issued', jobId: 'j1' })],
+  })
+  const done = () => confirmUnitInstall(one(), svc, { unitId: 'a', ...proof })
+
+  it('ก่อนติดตั้ง: มอบหมายทีม / เลื่อนนัด ทำได้ตามปกติ', () => {
+    expect(jobInstallComplete(one(), 'j1')).toBe(false)
+    expect(() => assignJobTeam(one(), svc, { jobId: 'j1', memberIds: ['m1'] })).not.toThrow()
+    expect(() => logSiteVisit(one(), svc, { jobId: 'j1', outcome: 'rescheduled', reason: 'ฝนตก', newStartDate: '2026-09-20' })).not.toThrow()
+  })
+
+  it('ติดตั้งครบแล้ว: เปลี่ยนทีม / เลื่อนนัด / ติดปัญหา ไม่ได้ — ชี้ไปที่ปิดงาน', () => {
+    const d = done()
+    expect(jobInstallComplete(d, 'j1')).toBe(true)
+    expect(() => assignJobTeam(d, svc, { jobId: 'j1', memberIds: ['m1'] })).toThrow(/ติดตั้งครบทุกเครื่องแล้ว.*ปิดงาน/)
+    expect(() => logSiteVisit(d, svc, { jobId: 'j1', outcome: 'rescheduled', reason: 'x', newStartDate: '2026-10-01' }))
+      .toThrow(/ติดตั้งครบทุกเครื่องแล้ว/)
+    expect(() => logSiteVisit(d, svc, { jobId: 'j1', outcome: 'failed', reason: 'x' })).toThrow(/ติดตั้งครบทุกเครื่องแล้ว/)
+  })
+
+  it('🐛 เครื่องที่ยืนยันติดตั้งแล้ว พลิกเป็น "ติดตั้งไม่ได้" ไม่ได้ · ยืนยันซ้ำไม่ได้', () => {
+    const d = done()
+    expect(() => blockUnitInstall(d, svc, { unitId: 'a', reason: 'x' })).toThrow(/ยืนยันติดตั้งไปแล้ว/)
+    expect(() => confirmUnitInstall(d, svc, { unitId: 'a', ...proof })).toThrow(/ยืนยันติดตั้งไปแล้ว/)
+  })
+
+  it('ปิดงานยังทำได้ (เป็นขั้นต่อไปที่ถูกต้อง)', () => {
+    expect(jobInstallSummary(done(), 'j1').canClose).toBe(true)
+  })
+
+  it('ติดตั้งไม่ได้บางเครื่อง = ยังไม่ครบ ต้องเลื่อนนัด/เข้าใหม่ได้', () => {
+    const d0 = db({
+      users: [svc], teamMembers: [member],
+      jobs: [job({ lbsQtyRequired: 2, terminalStatus: 'issued' })],
+      lbsUnits: [unit({ id: 'a', status: 'issued', jobId: 'j1' }), unit({ id: 'b', serialLvb: 'LVB-B', serialOm: 'OM-B', status: 'issued', jobId: 'j1' })],
+    })
+    let d = confirmUnitInstall(d0, svc, { unitId: 'a', ...proof })
+    d = blockUnitInstall(d, svc, { unitId: 'b', reason: 'ฐานรากไม่พร้อม' })
+    expect(jobInstallComplete(d, 'j1')).toBe(false)
+    expect(() => logSiteVisit(d, svc, { jobId: 'j1', outcome: 'rescheduled', reason: 'เข้าใหม่', newStartDate: '2026-10-01' })).not.toThrow()
+  })
+})
+
+// =============================================================================
+// งวดเงิน: Order Num + Pack ID (0088)
+// =============================================================================
+describe('งวดเงิน — Order Num + Pack ID (0088)', () => {
+  const actor = { id: 'u1', email: 'p@x.co', password: '', fullName: 'โปรเจกต์', department: 'project' as const, isActive: true }
+  const base = () => db({ users: [actor], jobs: [job({ openedBy: 'u1', budgetSalePrice: 4_950_000 })] })
+
+  it('บันทึก/แก้ได้ · trim ให้ · ว่าง = ไม่มีค่า · บันทึกลง Audit', () => {
+    let d = addJobPayment(base(), actor, { jobId: 'j1', payType: 'advance', percent: 15, orderNum: ' 102345 ', packId: '55012', invoiceNo: 'INV-1' })
+    expect(d.jobPayments[0]).toMatchObject({ orderNum: '102345', packId: '55012', invoiceNo: 'INV-1' })
+    expect(d.auditLogs[0].detail).toMatch(/Order 102345 · Pack 55012 · Invoice INV-1/)
+    d = updateJobPayment(d, actor, { paymentId: d.jobPayments[0].id, percent: 15, orderNum: '', packId: '55013' })
+    expect(d.jobPayments[0].orderNum).toBeUndefined()
+    expect(d.jobPayments[0].packId).toBe('55013')
+  })
+})
+
+// =============================================================================
+// ขอยกเลิกผลติดตั้งที่บันทึกผิด → รอ Division พิจารณา (0090)
+//
+// ต้นเรื่อง: 0089 ล็อกเครื่องที่ยืนยันแล้ว ⇒ ช่างกดยืนยันผิดเครื่องแก้ไม่ได้เลยนอกจากแก้ DB ตรง
+// กฎ: ขอพร้อมเหตุผล → Division อนุมัติ → ต่อแถว reverted (หลักฐานเดิมอยู่ครบ) → เครื่องกลับเป็นรอติดตั้ง
+// =============================================================================
+describe('ขอยกเลิกผลติดตั้ง — ผ่าน Division (0090)', () => {
+  const svc = { id: 'u2', email: 's@x.co', password: '', fullName: 'ช่าง', department: 'service' as const, isActive: true }
+  const div = { id: 'u3', email: 'd@x.co', password: '', fullName: 'Division', department: 'sales' as const, isActive: true }
+  const proof = { installedDate: '2026-09-18', checkinLat: 17.6, checkinLng: 103.1, photoUrl: 'x.jpg' }
+  const installed = () => confirmUnitInstall(db({
+    users: [svc, div],
+    jobs: [job({ lbsQtyRequired: 1, terminalStatus: 'issued' })],
+    lbsUnits: [unit({ id: 'a', serialLvb: 'C106406', status: 'issued', jobId: 'j1' })],
+  }), svc, { unitId: 'a', ...proof })
+  const ask = (d: DB) => requestRevertInstall(d, svc, { jobId: 'j1', unitIds: ['a'], reason: 'กดยืนยันผิดเครื่อง' })
+  const lastNote = (d: DB) => d.notifications[d.notifications.length - 1]
+  const closed = (d: DB): DB => ({ ...d, jobs: d.jobs.map(j => ({ ...j, terminalStatus: 'installed' as const })) })
+
+  it('ขอ → ยังไม่เปลี่ยนผล (รอ Division) · อนุมัติ → กลับเป็นรอติดตั้ง · หลักฐานเดิมยังอยู่', () => {
+    let d = ask(installed())
+    const req = d.approvalRequests[0]
+    expect(req).toMatchObject({ type: 'revert_install', status: 'pending', payload: { unitIds: ['a'], reason: 'กดยืนยันผิดเครื่อง' } })
+    expect(unitInstallState(d, 'a')).toBe('installed')
+    expect(lastNote(d)).toMatchObject({ type: 'approval_requested', dept: 'sales' })
+
+    d = approveRequest(d, div, { requestId: req.id })
+    expect(unitInstallState(d, 'a')).toBe('pending')
+    expect(unitInstallDate(d, 'a')).toBeUndefined()
+    expect(jobInstallComplete(d, 'j1')).toBe(false)
+    // append-only: แถว installed เดิม (GPS/รูป) ไม่ถูกลบ + แถว reverted พร้อมเหตุผลและผู้อนุมัติ
+    expect(d.unitInstallations.map(r => r.outcome)).toEqual(['installed', 'reverted'])
+    expect(d.unitInstallations[0]).toMatchObject({ checkinLat: 17.6, photoUrl: 'x.jpg' })
+    expect(d.unitInstallations[1]).toMatchObject({ reason: 'กดยืนยันผิดเครื่อง', performedBy: 'u3' })
+    expect(lastNote(d)).toMatchObject({ type: 'approval_approved', dept: 'service' })
+    expect(d.auditLogs.some(l => l.action === 'revert_unit_install')).toBe(true)
+  })
+
+  it('อนุมัติแล้ว: ยืนยันใหม่ได้ · ทำงานหน้าไซต์ต่อได้ (ล็อก 0089 ปลด)', () => {
+    let d = ask(installed())
+    d = approveRequest(d, div, { requestId: d.approvalRequests[0].id })
+    expect(() => logSiteVisit(d, svc, { jobId: 'j1', outcome: 'rescheduled', reason: 'เข้าใหม่', newStartDate: '2026-10-01' })).not.toThrow()
+    d = confirmUnitInstall(d, svc, { unitId: 'a', ...proof, installedDate: '2026-10-01' })
+    expect(unitInstallState(d, 'a')).toBe('installed')
+    expect(unitInstallDate(d, 'a')).toBe('2026-10-01')
+    expect(jobInstallComplete(d, 'j1')).toBe(true)
+  })
+
+  it('ตีกลับ → ผลเดิมคงอยู่ · แจ้ง Service', () => {
+    let d = ask(installed())
+    d = rejectApprovalRequest(d, div, { requestId: d.approvalRequests[0].id, reason: 'รูปถูกต้องแล้ว' })
+    expect(unitInstallState(d, 'a')).toBe('installed')
+    expect(lastNote(d)).toMatchObject({ type: 'approval_rejected', dept: 'service' })
+  })
+
+  it('กันพลาด: ต้องมีเหตุผล · เครื่องที่ยังไม่ติดตั้ง · ขอซ้ำระหว่างรอ · งานที่ปิดแล้วต้องเปิดใหม่ก่อน', () => {
+    expect(() => requestRevertInstall(installed(), svc, { jobId: 'j1', unitIds: ['a'], reason: '  ' })).toThrow(/เหตุผล/)
+    expect(() => requestRevertInstall(installed(), svc, { jobId: 'j1', unitIds: [], reason: 'x' })).toThrow(/เลือกเครื่อง/)
+    const notYet = db({ users: [svc], jobs: [job({ terminalStatus: 'issued' })], lbsUnits: [unit({ id: 'b', status: 'issued', jobId: 'j1' })] })
+    expect(() => requestRevertInstall(notYet, svc, { jobId: 'j1', unitIds: ['b'], reason: 'x' })).toThrow(/ยังไม่ได้ยืนยันติดตั้ง/)
+    expect(() => ask(ask(installed()))).toThrow(/รอ Division พิจารณาอยู่แล้ว/)
+    expect(() => ask(closed(installed()))).toThrow(/ขอเปิดงานใหม่ก่อน/)
+  })
+
+  it('สถานะเปลี่ยนระหว่างรอ → อนุมัติไม่ผ่าน (ตรวจซ้ำตอน execute) · requestApproval ส่งต่อให้ทางเข้าเดียวกัน', () => {
+    let d = ask(installed())
+    d = closed(d)
+    expect(() => approveRequest(d, div, { requestId: d.approvalRequests[0].id })).toThrow(/ขอเปิดงานใหม่ก่อน/)
+    const viaGeneric = requestApproval(installed(), svc, { type: 'revert_install', jobId: 'j1', payload: { unitIds: ['a'], reason: 'ผิดเครื่อง' } })
+    expect(viaGeneric.approvalRequests[0]).toMatchObject({ type: 'revert_install', status: 'pending' })
+  })
+
+  it('revertUnitInstall ตรง ๆ ก็ยังต้องผ่านกติกาเดียวกัน (ยกเลิกซ้ำไม่ได้)', () => {
+    const d = revertUnitInstall(installed(), div, { jobId: 'j1', unitIds: ['a'], reason: 'x' })
+    expect(() => revertUnitInstall(d, div, { jobId: 'j1', unitIds: ['a'], reason: 'x' })).toThrow(/ยังไม่ได้ยืนยันติดตั้ง/)
+  })
+
+  it('ระหว่างรอ Division พิจารณา ปิดงานไม่ได้ · ตีกลับแล้วปิดต่อได้', () => {
+    let d = ask(installed())
+    expect(() => closeJobInstall(d, svc, { jobId: 'j1', hasIssues: false })).toThrow(/รอ Division พิจารณา/)
+    d = rejectApprovalRequest(d, div, { requestId: d.approvalRequests[0].id, reason: 'ผลถูกต้อง' })
+    expect(() => closeJobInstall(d, svc, { jobId: 'j1', hasIssues: false })).not.toThrow(/รอ Division พิจารณา/)
   })
 })

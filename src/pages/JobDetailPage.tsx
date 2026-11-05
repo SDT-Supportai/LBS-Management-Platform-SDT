@@ -18,12 +18,14 @@ import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType, EpicorTxnType
 //   จนกว่าจะกดบันทึก · ไฟล์ที่แนบไปแล้วอ่านจาก db ไม่ได้อยู่ในฟอร์ม (การลบมีผลทันที)
 interface PayForm {
   id: string | null; payType: PaymentType
+  orderNum: string; packId: string          // 0088 — กรอกก่อน Invoice No.
   invoiceNo: string; invoiceDate: string; percent: string; amount: string; paidAt: string; note: string
   files: File[]
 }
 
 const payFormOf = (r: JobPayment): PayForm => ({
   id: r.id, payType: r.payType,
+  orderNum: r.orderNum ?? '', packId: r.packId ?? '',
   invoiceNo: r.invoiceNo ?? '', invoiceDate: r.invoiceDate ?? '',
   percent: r.percent !== undefined ? String(r.percent) : '',
   amount: r.percent !== undefined ? '' : String(r.amount),
@@ -418,6 +420,8 @@ export default function JobDetailPage() {
 
     const payRows = pay.rows.map(p => [
       PAYMENT_TYPE_LABEL[p.payType] ?? p.payType,
+      p.orderNum || '-',
+      p.packId || '-',
       p.invoiceNo || '-',
       p.invoiceDate ? fmtDate(p.invoiceDate) : '-',
       p.percent ?? '-',
@@ -457,10 +461,10 @@ export default function JobDetailPage() {
       },
       {
         title: 'งวดเงิน (Payment)',
-        head: ['งวด', 'Invoice No.', 'วันที่ Invoice', '%', 'ยอดเงิน (บาท)', 'รับเงินเมื่อ'],
+        head: ['งวด', 'Order Num', 'Pack ID', 'Invoice No.', 'วันที่ Invoice', '%', 'ยอดเงิน (บาท)', 'รับเงินเมื่อ'],
         rows: payRows,
-        num: { 3: PCT, 4: 'money0' },
-        total: [`รวม ${pay.rows.length} งวด`, '', '', '', pay.billed, `รับแล้ว ${pay.paid.toLocaleString('th-TH')} บาท`],
+        num: { 5: PCT, 6: 'money0' },
+        total: [`รวม ${pay.rows.length} งวด`, '', '', '', '', '', pay.billed, `รับแล้ว ${pay.paid.toLocaleString('th-TH')} บาท`],
         empty: '(ยังไม่ได้ตั้งงวดเงินสำหรับงานนี้)',
       },
     ]
@@ -1125,16 +1129,18 @@ export default function JobDetailPage() {
               <div className="table-scroll">
                 <table>
                   <thead><tr>
-                    <th>งวด</th><th>Invoice No.</th><th>Date</th><th style={{ textAlign: 'right' }}>%</th>
+                    <th>งวด</th><th>Order Num</th><th>Pack ID</th><th>Invoice No.</th><th>Date</th><th style={{ textAlign: 'right' }}>%</th>
                     <th style={{ textAlign: 'right' }}>ยอดเงิน</th><th>รับเงิน</th><th>เอกสาร</th><th>หมายเหตุ</th>{canPay && <th></th>}
                   </tr></thead>
                   <tbody>
                     {pay.rows.length === 0 && (
-                      <tr><td colSpan={canPay ? 9 : 8}><div className="empty">ยังไม่มีงวดเงิน</div></td></tr>
+                      <tr><td colSpan={canPay ? 11 : 10}><div className="empty">ยังไม่มีงวดเงิน</div></td></tr>
                     )}
                     {pay.rows.map(r => (
                       <tr key={r.id}>
                         <td>{PAYMENT_TYPE_LABEL[r.payType]} #{r.seq}</td>
+                        <td className="mono">{r.orderNum || '-'}</td>
+                        <td className="mono">{r.packId || '-'}</td>
                         <td className="mono">{r.invoiceNo || '-'}</td>
                         <td>{fmtDate(r.invoiceDate)}</td>
                         <td style={{ textAlign: 'right' }}>{r.percent !== undefined ? `${r.percent}%` : '-'}</td>
@@ -1185,7 +1191,7 @@ export default function JobDetailPage() {
                 <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   {PAYMENT_TYPES.map(t => (
                     <button key={t} className="small" onClick={() => setPayForm({
-                      id: null, payType: t, invoiceNo: '', invoiceDate: '', percent: '', amount: '', paidAt: '', note: '', files: [],
+                      id: null, payType: t, orderNum: '', packId: '', invoiceNo: '', invoiceDate: '', percent: '', amount: '', paidAt: '', note: '', files: [],
                     })}>+ {PAYMENT_TYPE_LABEL[t]}</button>
                   ))}
                   <span className="muted">ใส่ % ของราคาขาย ({fmtBaht(job.budgetSalePrice)}) แล้วระบบคำนวณยอดให้ · หรือกรอกยอดเงินตรงๆ</span>
@@ -2393,12 +2399,13 @@ export default function JobDetailPage() {
         return (
           <Modal
             title={`${payForm.id ? 'แก้' : 'เพิ่ม'}งวด ${PAYMENT_TYPE_LABEL[payForm.payType]} — ${job.jobNo}`}
-            size="wide"
+            size="xl"
             onClose={() => setPayForm(null)}
             footer={<>
               <button onClick={() => setPayForm(null)}>ยกเลิก</button>
               <button className="primary" disabled={uploading} onClick={async () => {
                 const payload = {
+                  orderNum: payForm.orderNum, packId: payForm.packId,
                   invoiceNo: payForm.invoiceNo, invoiceDate: payForm.invoiceDate,
                   percent: pct, amount: pct !== undefined ? undefined : toBudgetNum(payForm.amount),
                   paidAt: payForm.paidAt, note: payForm.note,
@@ -2434,6 +2441,17 @@ export default function JobDetailPage() {
             <div className="muted" style={{ marginBottom: 12 }}>
               ราคาขายตามสัญญา <b>{fmtBaht(job.budgetSalePrice)}</b> · ใส่ % แล้วระบบคำนวณยอดให้
               (ถ้าไม่ใส่ % ให้กรอกยอดเงินตรงๆ) · ยอดที่บันทึกจะถูก <b>ตรึงไว้</b> ตามราคาขาย ณ วันนี้ ให้ตรงกับใบแจ้งหนี้จริง
+            </div>
+            {/* 0088 — Order Num / Pack ID มาก่อน Invoice No. (ลำดับเอกสารจริง: สั่งขาย → ส่งของ → แจ้งหนี้) */}
+            <div className="row">
+              <label className="field"><span>Order Num</span>
+                <input className="mono" value={payForm.orderNum}
+                  onChange={e => setPayForm({ ...payForm, orderNum: e.target.value })} placeholder="เช่น 102345" />
+              </label>
+              <label className="field"><span>Pack ID</span>
+                <input className="mono" value={payForm.packId}
+                  onChange={e => setPayForm({ ...payForm, packId: e.target.value })} placeholder="เช่น 55012" />
+              </label>
             </div>
             <div className="row">
               <label className="field"><span>Invoice No.</span>

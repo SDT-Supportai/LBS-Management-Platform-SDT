@@ -141,6 +141,7 @@ function mapStdBomLine(r: Row): StdBomLine {
 function mapJobPayment(r: Row): JobPayment {
   return {
     id: r.id, jobId: r.job_id, payType: r.pay_type, seq: r.seq,
+    orderNum: r.order_num ?? undefined, packId: r.pack_id ?? undefined,     // 0088
     invoiceNo: r.invoice_no ?? undefined, invoiceDate: r.invoice_date ?? undefined,
     percent: r.percent != null ? Number(r.percent) : undefined,
     amount: Number(r.amount),
@@ -248,6 +249,7 @@ function mapApproval(r: Row): ApprovalRequest {
     id: r.id, type: r.req_type as ApprovalType, jobId: r.job_id,
     payload: {
       requestIds: pl.request_ids ?? undefined,
+      unitIds: pl.unit_ids ?? undefined,                 // issue_job (0059) · revert_install (0090)
       startDate: pl.start_date ?? undefined, endDate: pl.end_date ?? undefined,
       location: pl.location ?? undefined, note: pl.note ?? undefined,
       reason: pl.reason ?? undefined,
@@ -559,12 +561,13 @@ async function rpc(sb: SupabaseClient, fn: string, params: Record<string, unknow
  */
 export async function addJobPaymentRemote(
   sb: SupabaseClient,
-  p: { jobId: string; payType: PaymentType; invoiceNo?: string; invoiceDate?: string; percent?: number; amount?: number; paidAt?: string; note?: string },
+  p: { jobId: string; payType: PaymentType; orderNum?: string; packId?: string; invoiceNo?: string; invoiceDate?: string; percent?: number; amount?: number; paidAt?: string; note?: string },
 ): Promise<string> {
   const { data, error } = await sb.rpc('rpc_add_job_payment', {
     p_job_id: p.jobId, p_type: p.payType, p_invoice_no: p.invoiceNo ?? null,
     p_invoice_date: p.invoiceDate || null, p_percent: p.percent ?? null, p_amount: p.amount ?? null,
     p_paid_at: p.paidAt || null, p_note: p.note ?? null,
+    p_order_num: p.orderNum || null, p_pack_id: p.packId || null,   // 0088
   })
   if (error) throw new Error(error.message)
   if (!data) throw new Error('บันทึกงวดเงินแล้วแต่ไม่ได้ id กลับมา — ยังไม่ได้รัน migration 0076 หรือเปล่า?')
@@ -695,17 +698,19 @@ export function remoteActions(sb: SupabaseClient) {
     // Payment ต่อ Job (0044) — Project เจ้าของงาน + Manage
     // ⚠️ ตัวจริงถูกแทนที่ที่ StoreContext ด้วย addJobPaymentRemote (ต้องคืน id ให้โมดัลผูกไฟล์ต่อ)
     //    คงไว้ที่นี่เพื่อให้ act มีคีย์ครบตอน Object.fromEntries — อย่าลบ
-    addJobPayment: (p: { jobId: string; payType: PaymentType; invoiceNo?: string; invoiceDate?: string; percent?: number; amount?: number; paidAt?: string; note?: string }) =>
+    addJobPayment: (p: { jobId: string; payType: PaymentType; orderNum?: string; packId?: string; invoiceNo?: string; invoiceDate?: string; percent?: number; amount?: number; paidAt?: string; note?: string }) =>
       rpc(sb, 'rpc_add_job_payment', {
         p_job_id: p.jobId, p_type: p.payType, p_invoice_no: p.invoiceNo ?? null,
         p_invoice_date: p.invoiceDate || null, p_percent: p.percent ?? null, p_amount: p.amount ?? null,
         p_paid_at: p.paidAt || null, p_note: p.note ?? null,
+        p_order_num: p.orderNum || null, p_pack_id: p.packId || null,   // 0088
       }),
-    updateJobPayment: (p: { paymentId: string; invoiceNo?: string; invoiceDate?: string; percent?: number; amount?: number; paidAt?: string; note?: string }) =>
+    updateJobPayment: (p: { paymentId: string; orderNum?: string; packId?: string; invoiceNo?: string; invoiceDate?: string; percent?: number; amount?: number; paidAt?: string; note?: string }) =>
       rpc(sb, 'rpc_update_job_payment', {
         p_payment_id: p.paymentId, p_invoice_no: p.invoiceNo ?? null,
         p_invoice_date: p.invoiceDate || null, p_percent: p.percent ?? null, p_amount: p.amount ?? null,
         p_paid_at: p.paidAt || null, p_note: p.note ?? null,
+        p_order_num: p.orderNum || null, p_pack_id: p.packId || null,   // 0088
       }),
     deleteJobPayment: (p: { paymentId: string }) => rpc(sb, 'rpc_delete_job_payment', { p_payment_id: p.paymentId }),
     // 0076 — เอกสารแนบรายงวด · ไฟล์จริงถูกอัปโหลดเข้า private bucket จาก UI ก่อน แล้วค่อยลงแถว
@@ -814,6 +819,9 @@ export function remoteActions(sb: SupabaseClient) {
           ...(p.payload.swapStockUnitId !== undefined ? { swap_stock_unit_id: p.payload.swapStockUnitId } : {}),
         },
       }),
+    // 0090 — ขอยกเลิกผลติดตั้ง (Service/Project) · เข้าคิว approval_requests เดียวกัน type revert_install
+    requestRevertInstall: (p: { jobId: string; unitIds: string[]; reason: string }) =>
+      rpc(sb, 'rpc_request_revert_install', { p_job_id: p.jobId, p_unit_ids: p.unitIds, p_reason: p.reason }),
     approveRequest: (p: { requestId: string }) =>
       rpc(sb, 'rpc_approve_request', { p_request_id: p.requestId }),
     rejectApprovalRequest: (p: { requestId: string; reason: string }) =>
