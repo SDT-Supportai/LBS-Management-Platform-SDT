@@ -3,7 +3,7 @@ import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from
 import { useStore, can } from './data/StoreContext'
 import { ErrorBoundary, ToastProvider, useConfirm, useTryAction } from './ui/components'
 import { DEPT_LABEL, fmtDateTime } from './ui/format'
-import LoginPage from './pages/LoginPage'
+import LoginPage, { GlassBackdrop } from './pages/LoginPage'
 import PublicStockPage from './pages/PublicStockPage'   // 0069 — หน้าสาธารณะ ไม่ต้อง login
 import DashboardPage from './pages/DashboardPage'
 // Map Tracking โหลดแยก chunk — leaflet + CSS ของมันรวม ~150 kB
@@ -299,10 +299,13 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="login-wrap">
-        <div className="login-card" style={{ textAlign: 'center' }}>
-          <h1>115kV LBS Platform</h1>
-          <div className="sub">กำลังเชื่อมต่อ Supabase...</div>
+      // พื้นหลังกระจกเดียวกับหน้า Login — เปิดแอปแล้วไม่กระพริบจากการ์ดขาวไปพื้นเข้ม
+      <div className="gl-wrap">
+        <GlassBackdrop />
+        <div className="gl-card gl-loading" role="status">
+          <span className="gl-spin" aria-hidden="true" />
+          <h2 style={{ margin: 0, fontSize: 18, color: '#fff' }}>115kV LBS Platform</h2>
+          <div className="gl-dev">Connecting to the server…</div>
         </div>
       </div>
     )

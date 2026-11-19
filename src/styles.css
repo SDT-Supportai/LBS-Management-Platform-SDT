@@ -602,38 +602,169 @@ body.is-busy button.danger { opacity: .55; pointer-events: none; cursor: progres
 .muted { color: var(--muted); font-size: 12.5px; line-height: 1.6; }
 .mono { font-family: Consolas, monospace; font-size: 12.5px; }
 
-/* ---------- login (Modern Corporate — gradient น้ำเงิน–ฟ้า + logo glow) ---------- */
-.login-wrap {
-  min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;
-  background: linear-gradient(135deg, #0a3d91 0%, #1e6fd9 48%, #38bdf8 100%);
-  position: relative; overflow: hidden;
+/* ---------- login (Glass + Motion — แบบ Canvas "Main" อนุมัติ 2026-11) ----------
+   กระจกโทนเข้มบนพื้นน้ำเงินกรมท่า · แสงลอย 4 ดวง · สายไฟ 115kV มีกระแสวิ่ง · องค์ประกอบค่อย ๆ ลอยขึ้น
+   ใช้ร่วมกับหน้าโหลด (App.tsx) ผ่าน <GlassBackdrop/> · ปิด motion ทั้งหมดเมื่อ prefers-reduced-motion */
+.gl-wrap {
+  min-height: 100vh; min-height: 100dvh; position: relative; overflow: hidden; box-sizing: border-box;
+  padding: 56px 32px 120px; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 56px;
+  color: #fff; background: linear-gradient(135deg, #081029 0%, #10276e 52%, #0a1a48 100%);
 }
-/* แสงนุ่มลอยพื้นหลังให้ดูมีมิติ */
-.login-wrap::before, .login-wrap::after {
-  content: ''; position: absolute; border-radius: 50%; filter: blur(80px); pointer-events: none;
+.gl-orb { position: absolute; border-radius: 50%; pointer-events: none; }
+.gl-orb-a { width: 560px; height: 560px; left: -160px; top: -180px; background: #2563eb; opacity: .55; filter: blur(110px); animation: gl-drift-a 16s ease-in-out infinite alternate; }
+.gl-orb-b { width: 480px; height: 480px; right: -120px; top: 12%; background: #22d3ee; opacity: .32; filter: blur(120px); animation: gl-drift-b 21s ease-in-out infinite alternate; }
+.gl-orb-c { width: 420px; height: 420px; left: 34%; bottom: -200px; background: #f59e0b; opacity: .26; filter: blur(120px); animation: gl-drift-c 26s ease-in-out infinite alternate; }
+.gl-orb-d { width: 360px; height: 360px; right: 22%; bottom: -160px; background: #22c55e; opacity: .22; filter: blur(110px); animation: gl-drift-b 21s ease-in-out infinite alternate; }
+.gl-lines { position: absolute; left: 0; bottom: 0; width: 100%; height: 200px; pointer-events: none; }
+.gl-wire { fill: none; stroke: rgba(147,197,253,.22); stroke-width: 1.5; }
+.gl-wire-2 { stroke: rgba(147,197,253,.16); }
+.gl-flow { fill: none; stroke: #7dd3fc; stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 46 474; animation: gl-flow 5s linear infinite; }
+.gl-flow-slow { stroke: #fbbf24; stroke-width: 2; stroke-dasharray: 30 490; animation-duration: 8s; }
+.gl-pole { fill: none; stroke: rgba(191,219,254,.35); stroke-width: 2; }
+
+.gl-hero { position: relative; flex: 1 1 440px; max-width: 580px; display: flex; flex-direction: column; gap: 22px; }
+.gl-chip {
+  align-self: flex-start; display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-radius: 999px;
+  font-size: 12.5px; font-weight: 600; letter-spacing: .04em; color: #dbeafe;
+  background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.22); backdrop-filter: blur(14px);
 }
-.login-wrap::before { width: 480px; height: 480px; background: rgba(125, 211, 252, .45); top: -140px; right: -100px; }
-.login-wrap::after  { width: 420px; height: 420px; background: rgba(37, 99, 235, .5);  bottom: -160px; left: -110px; }
-.login-card {
-  background: #fff; border-radius: 18px; padding: 34px 32px 28px; width: 100%; max-width: 440px;
-  box-shadow: 0 24px 70px rgba(6, 30, 80, .38);
-  position: relative; z-index: 1;
+.gl-dot { width: 8px; height: 8px; border-radius: 50%; background: #fbbf24; box-shadow: 0 0 10px #fbbf24; animation: gl-blink 1.8s ease-in-out infinite; }
+.gl-title { margin: 0 0 14px; font-size: clamp(34px, 4.6vw, 56px); line-height: 1.12; font-weight: 700; letter-spacing: -.02em; color: #fff; }
+.gl-title span { display: block; }
+.gl-grad { background: linear-gradient(90deg, #7dd3fc 0%, #a5b4fc 55%, #fcd34d 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.gl-tagline { display: flex; align-items: center; gap: 14px; font-size: clamp(16px, 1.6vw, 20px); font-weight: 500; letter-spacing: .01em; color: #dbeafe; }
+.gl-rule { flex: none; width: 44px; height: 2px; border-radius: 2px; background: linear-gradient(90deg, #7dd3fc, rgba(125,211,252,0)); }
+.gl-lead { margin: 0; font-size: 16px; line-height: 1.7; color: #c7d2fe; max-width: 520px; }
+.gl-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 6px; }
+.gl-tile {
+  display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; border-radius: 18px;
+  background: rgba(255,255,255,.09); border: 1px solid rgba(255,255,255,.20); backdrop-filter: blur(16px);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.18);
+  transition: transform .25s ease, background .25s ease, border-color .25s ease;
 }
-.login-head { text-align: center; margin-bottom: 22px; }
-.login-logo {
-  width: 200px; max-width: 78%; height: auto; margin-bottom: 12px;
-  animation: logo-in .8s ease both;
+.gl-tile:hover { transform: translateY(-4px); background: rgba(255,255,255,.17); border-color: rgba(255,255,255,.4); }
+.gl-tile-ic { flex: none; width: 38px; height: 38px; border-radius: 12px; display: flex; align-items: center; justify-content: center; color: #fff; border: 1px solid rgba(255,255,255,.28); }
+.gl-tint-blue   { background: linear-gradient(135deg, rgba(59,130,246,.85), rgba(37,99,235,.55)); }
+.gl-tint-indigo { background: linear-gradient(135deg, rgba(129,140,248,.85), rgba(99,102,241,.55)); }
+.gl-tint-amber  { background: linear-gradient(135deg, rgba(245,158,11,.8), rgba(217,119,6,.5)); }
+.gl-tint-green  { background: linear-gradient(135deg, rgba(34,197,94,.8), rgba(21,128,61,.5)); }
+.gl-tile-name { font-size: 14px; font-weight: 600; }
+.gl-tile-desc { font-size: 12.5px; color: #c7d2fe; line-height: 1.5; margin-top: 2px; }
+
+.gl-card {
+  position: relative; flex: 0 1 420px; box-sizing: border-box; padding: 34px 32px 28px; border-radius: 28px;
+  background: linear-gradient(160deg, rgba(255,255,255,.18), rgba(255,255,255,.07));
+  border: 1px solid rgba(255,255,255,.28); backdrop-filter: blur(26px) saturate(1.4); -webkit-backdrop-filter: blur(26px) saturate(1.4);
+  box-shadow: 0 30px 80px rgba(2,8,40,.55), inset 0 1px 0 rgba(255,255,255,.35);
+  display: flex; flex-direction: column; gap: 18px;
+  animation: gl-card-in .9s cubic-bezier(.2,.7,.2,1) .15s backwards;
 }
-.login-logo-fallback { display: inline-block; font-size: 64px; line-height: 1.2; }
-@keyframes logo-in {
-  from { opacity: 0; transform: translateY(-14px) scale(.9); }
-  to   { opacity: 1; transform: none; }
+.gl-brand { display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; }
+.gl-brand h2 { margin: 0; font-size: 19px; font-weight: 700; line-height: 1.35; color: #fff; }
+.gl-dev { font-size: 13px; color: #c7d2fe; margin-top: 4px; }
+.gl-logo { padding: 10px 16px; border-radius: 22px; background: #fff; animation: gl-bob 5s ease-in-out infinite, gl-halo 3.2s ease-in-out infinite; }
+.gl-logo img { display: block; width: 150px; height: auto; }
+.gl-logo-fallback { display: block; font-size: 48px; line-height: 1.1; }
+.gl-notice {
+  display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: 14px; font-size: 13px; line-height: 1.5;
+  color: #fde68a; background: rgba(245,158,11,.14); border: 1px solid rgba(251,191,36,.38);
 }
-.login-card h1 { font-size: 18px; margin-bottom: 4px; }
-.login-card .sub { color: var(--muted); font-size: 13px; }
-.demo-users { margin-top: 20px; border-top: 1px dashed var(--border); padding-top: 14px; }
-.demo-users button {
-  width: 100%; text-align: left; margin-bottom: 6px; display: flex; justify-content: space-between; font-weight: 400;
+.gl-notice svg { flex: none; margin-top: 1px; }
+.gl-form { display: flex; flex-direction: column; gap: 14px; margin: 0; }
+.gl-label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 500; color: #e0e7ff; }
+.gl-field { position: relative; display: block; }
+.gl-field-ic { position: absolute; left: 14px; top: 15px; color: #bfdbfe; pointer-events: none; }
+.gl-input {
+  width: 100%; box-sizing: border-box; height: 48px; padding: 0 14px 0 42px; border-radius: 14px;
+  border: 1px solid rgba(255,255,255,.28); background: rgba(255,255,255,.10); color: #fff; font: inherit; font-size: 15px;
+  transition: border-color .2s ease, box-shadow .2s ease, background .2s ease;
+}
+.gl-input-pw { padding-right: 52px; }
+.gl-input::placeholder { color: #a5b4fc; }
+.gl-input:focus { outline: none; border-color: #93c5fd; background: rgba(255,255,255,.17); box-shadow: 0 0 0 4px rgba(96,165,250,.3); }
+/* autofill ของ Chrome ทาพื้นเหลือง/ขาวทับกระจก — ดึงกลับเป็นโทนเข้ม */
+.gl-input:-webkit-autofill { -webkit-text-fill-color: #fff; -webkit-box-shadow: 0 0 0 1000px #1b2f72 inset; caret-color: #fff; }
+.gl-eye {
+  position: absolute; right: 2px; top: 2px; width: 44px; height: 44px; border: 0; border-radius: 12px; padding: 0;
+  background: transparent; color: #dbeafe; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: background .2s ease;
+}
+.gl-eye:hover { background: rgba(255,255,255,.16); }
+.gl-cta {
+  position: relative; overflow: hidden; margin-top: 4px; height: 50px; width: 100%; border-radius: 14px;
+  display: flex; align-items: center; justify-content: center; gap: 10px; cursor: pointer;
+  font: inherit; font-size: 16px; font-weight: 600; color: #fff;
+  background: linear-gradient(135deg, #2563eb, #4f46e5); border: 1px solid rgba(255,255,255,.3);
+  box-shadow: 0 12px 28px rgba(37,99,235,.42); transition: transform .2s ease, box-shadow .2s ease, opacity .2s ease;
+}
+.gl-cta:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 18px 38px rgba(37,99,235,.55); }
+.gl-cta:active:not(:disabled) { transform: scale(.98); }
+.gl-cta:disabled { opacity: .75; cursor: progress; }
+.gl-cta:focus-visible, .gl-eye:focus-visible, .gl-demo-btn:focus-visible { outline: 3px solid #bfdbfe; outline-offset: 3px; }
+.gl-cta-txt, .gl-cta-ic { position: relative; }
+.gl-sheen {
+  position: absolute; top: 0; left: 0; width: 34%; height: 100%; pointer-events: none;
+  background: linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,.32), rgba(255,255,255,0));
+  animation: gl-sheen 3.6s ease-in-out infinite;
+}
+.gl-spin { position: relative; width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid rgba(255,255,255,.35); border-top-color: #fff; animation: gl-spin .8s linear infinite; }
+.gl-foot, .gl-demo { padding-top: 14px; border-top: 1px solid rgba(255,255,255,.18); font-size: 12.5px; line-height: 1.6; color: #c7d2fe; }
+.gl-foot { display: flex; align-items: flex-start; gap: 10px; }
+.gl-foot svg { flex: none; margin-top: 2px; color: #93c5fd; }
+.gl-demo-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.gl-demo-head svg { color: #93c5fd; flex: none; }
+.gl-demo-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.gl-demo-btn {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; padding: 9px 12px; border-radius: 12px;
+  font: inherit; text-align: left; cursor: pointer; color: #fff;
+  background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.2);
+  transition: transform .2s ease, background .2s ease, border-color .2s ease;
+}
+.gl-demo-btn:hover:not(:disabled) { transform: translateY(-2px); background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.38); }
+.gl-demo-btn:disabled { opacity: .6; cursor: progress; }
+.gl-demo-name { font-size: 13px; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gl-demo-dept { font-size: 11.5px; color: #93c5fd; font-weight: 500; }
+/* กันกฎ button กลาง (button:hover / button:disabled:hover ทาพื้นขาว+ตัวอักษรเข้ม) ทับกระจก */
+.gl-wrap .gl-cta:hover, .gl-wrap .gl-demo-btn:hover, .gl-wrap .gl-eye:hover { color: #fff; }
+.gl-wrap .gl-cta:disabled, .gl-wrap .gl-cta:disabled:hover {
+  background: linear-gradient(135deg, #2563eb, #4f46e5); border-color: rgba(255,255,255,.3); color: #fff;
+}
+.gl-wrap .gl-demo-btn:disabled:hover { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.2); color: #fff; }
+/* หน้ากำลังเชื่อมต่อ (App.tsx) ใช้การ์ดเดียวกัน */
+.gl-loading { flex: 0 1 360px; align-items: center; text-align: center; }
+.gl-loading .gl-spin { width: 28px; height: 28px; }
+
+.gl-rise { animation: gl-rise .75s cubic-bezier(.2,.7,.2,1) backwards; }
+.gl-d1 { animation-delay: .08s; } .gl-d2 { animation-delay: .18s; } .gl-d3 { animation-delay: .28s; }
+.gl-d4 { animation-delay: .38s; } .gl-d5 { animation-delay: .48s; } .gl-d6 { animation-delay: .58s; }
+
+@keyframes gl-drift-a { from { transform: translate(0,0) scale(1); } to { transform: translate(70px,50px) scale(1.18); } }
+@keyframes gl-drift-b { from { transform: translate(0,0) scale(1.1); } to { transform: translate(-80px,-40px) scale(.92); } }
+@keyframes gl-drift-c { from { transform: translate(0,0); } to { transform: translate(50px,-70px) scale(1.12); } }
+@keyframes gl-rise { from { opacity: 0; transform: translateY(22px); } to { opacity: 1; transform: none; } }
+@keyframes gl-card-in { from { opacity: 0; transform: translateY(28px) scale(.96); } to { opacity: 1; transform: none; } }
+@keyframes gl-bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+@keyframes gl-halo { 0%,100% { box-shadow: 0 0 0 0 rgba(96,165,250,.5), 0 18px 40px rgba(2,8,40,.45); } 50% { box-shadow: 0 0 0 16px rgba(96,165,250,0), 0 18px 40px rgba(2,8,40,.45); } }
+@keyframes gl-sheen { 0% { transform: translateX(-130%) skewX(-20deg); } 55%,100% { transform: translateX(330%) skewX(-20deg); } }
+@keyframes gl-flow { to { stroke-dashoffset: -520; } }
+@keyframes gl-blink { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+@keyframes gl-spin { to { transform: rotate(360deg); } }
+
+/* จอเล็ก: การ์ดเข้าสู่ระบบขึ้นก่อน (คนเปิดมาเพื่อ login) · ข้อความแบรนด์ตามมาด้านล่าง */
+@media (max-width: 960px) {
+  .gl-wrap { padding: 32px 16px 110px; gap: 32px; }
+  .gl-card { order: -1; flex: 1 1 100%; max-width: 440px; }
+  .gl-hero { flex: 1 1 100%; max-width: 520px; }
+}
+@media (max-width: 520px) {
+  .gl-card { padding: 26px 20px 22px; border-radius: 24px; }
+  .gl-logo img { width: 128px; }
+  .gl-tiles, .gl-demo-list { grid-template-columns: 1fr; }
+  .gl-lead { font-size: 15px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gl-orb, .gl-flow, .gl-dot, .gl-card, .gl-logo, .gl-sheen, .gl-rise, .gl-spin { animation: none; }
+  .gl-tile, .gl-input, .gl-cta, .gl-demo-btn, .gl-eye { transition: none; }
 }
 
 /* ---------- responsive ---------- */
@@ -673,12 +804,9 @@ body.is-busy button.danger { opacity: .55; pointer-events: none; cursor: progres
   .main { padding: 16px; }
   .topbar { margin: -16px -16px 14px; padding: 8px 14px; }
   .row { flex-direction: column; }
-  .login-card { padding: 26px 20px 22px; }
-  .login-logo { width: 160px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .login-logo { animation: none; }
   .sidebar { transition: none; }
 }
 
