@@ -331,7 +331,7 @@ export const LINE_PUSH_TYPES: ReadonlySet<string> = new Set([
   'install_failed',                // Project ต้องเข้าไปแก้ให้ทีมเดินต่อได้
   'job_cancelled',                 // ทุกแผนกต้องหยุดทำงานกับใบนี้ทันที
 ])
-function notify(db: DB, p: { type: string; message: string; dept: Department | 'all'; jobId?: string }): DB {
+function notify(db: DB, p: { type: string; message: string; dept: Department | 'all'; jobId?: string; lineStatus?: 'off' }): DB {
   return {
     ...db,
     notifications: [
@@ -3969,9 +3969,17 @@ const APPROVAL_TYPE_LABEL: Record<ApprovalType, string> = {
   reopen_job: 'เปิดงานใหม่', revert_install: 'ยกเลิกผลติดตั้ง',
 }
 
-/** แผนกที่ได้รับแจ้งผลอนุมัติ/ตีกลับ = แผนกเจ้าของเรื่อง (revert_install มาจากหน้างาน → Service) */
-function approvalOwnerDept(type: ApprovalType): Department {
-  return type === 'revert_install' ? 'service' : 'project'
+/**
+ * แผนกที่ได้รับแจ้งผลอนุมัติ/ตีกลับ — ตัวแรก = เจ้าของเรื่อง (revert_install มาจากหน้างาน → Service)
+ * 0091: revert_install สำเนาถึง Project ด้วย (เจ้าของงาน/ผู้ขอฝั่ง Project ต้องรู้ว่าผลติดตั้งเปลี่ยน)
+ */
+function approvalNotifyDepts(type: ApprovalType): Department[] {
+  return type === 'revert_install' ? ['service', 'project'] : ['project']
+}
+
+/** แจ้งหลายแผนก — LINE กลุ่ม (ทั้งบริษัทกลุ่มเดียว) ได้แค่ฉบับแรก ฉบับที่เหลือ lineStatus 'off' กันข้อความซ้ำ */
+function notifyDepts(db: DB, depts: Department[], p: { type: string; message: string; jobId?: string }): DB {
+  return depts.reduce((d, dept, i) => notify(d, { ...p, dept, ...(i > 0 ? { lineStatus: 'off' as const } : {}) }), db)
 }
 
 export function requestApproval(
@@ -4091,8 +4099,8 @@ export function approveRequest(db: DB, actor: User, p: { requestId: string }): D
       receivedAccessoryToCentral: req.payload.receivedToCentral ?? true,
     })
   }
-  next = notify(next, {
-    type: 'approval_approved', dept: approvalOwnerDept(req.type), jobId: req.jobId,
+  next = notifyDepts(next, approvalNotifyDepts(req.type), {
+    type: 'approval_approved', jobId: req.jobId,
     message: `✅ อนุมัติ${APPROVAL_TYPE_LABEL[req.type]} · ${job.jobNo} · โดย ${actor.fullName}`,
   })
   return audit(next, actor, 'approval_request', p.requestId, 'approve_request',
@@ -4113,8 +4121,8 @@ export function rejectApprovalRequest(db: DB, actor: User, p: { requestId: strin
         ? { ...r, status: 'rejected' as const, decidedBy: actor.id, decidedAt: now(), rejectReason: p.reason.trim() }
         : r),
   }
-  next = notify(next, {
-    type: 'approval_rejected', dept: approvalOwnerDept(req.type), jobId: req.jobId,
+  next = notifyDepts(next, approvalNotifyDepts(req.type), {
+    type: 'approval_rejected', jobId: req.jobId,
     message: `⛔ ตีกลับ${APPROVAL_TYPE_LABEL[req.type]} · ${job.jobNo}: ${p.reason.trim()}`,
   })
   return audit(next, actor, 'approval_request', p.requestId, 'reject_request',
@@ -4159,6 +4167,8 @@ export function pendingRevertRequest(db: DB, jobId: string) {
 
 /** Service/Project ขอยกเลิกผลติดตั้ง → รอ Division พิจารณา */
 export function requestRevertInstall(db: DB, actor: User, p: { jobId: string; unitIds: string[]; reason: string }): DB {
+  const job0 = db.jobs.find(j => j.id === p.jobId)
+  if (job0) assertJobOwner(job0, actor)            // 0091: Project ขอได้เฉพาะงานที่ตัวเองเปิด (กติกา 0042)
   const { job, units } = assertRevertableUnits(db, p.jobId, p.unitIds)
   const reason = p.reason.trim()
   if (!reason) throw new Error('กรุณาระบุเหตุผลที่ขอยกเลิกผลติดตั้ง')

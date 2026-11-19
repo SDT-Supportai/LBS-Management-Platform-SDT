@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useStore, can } from '../data/StoreContext'
+import { useStore, can, ownsJob } from '../data/StoreContext'
 import { closeoutFiles, deriveJobStatus, jobDelivery, jobInstallSummary, jobIsFieldActive, qtyOutToField, effectiveQty, unitInstallState, unitJobSite, pendingRevertRequest, jobTeam, memberFullName, serviceIssues } from '../data/logic'
 import type { ServiceIssueKind } from '../data/logic'
 
@@ -650,7 +650,8 @@ export default function ServicePage() {
                         </td>
                         <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                           {/* 0090: ยืนยันผิดเครื่อง → ขอยกเลิกผล (ไม่แก้ตรง · ต้องผ่าน Division) */}
-                          {st === 'installed' && canRequestRevert && !revertReq && (
+                          {/* 0091: Project ขอได้เฉพาะงานที่ตัวเองเปิด (DB ตรวจซ้ำที่ rpc_request_revert_install) */}
+                          {st === 'installed' && canRequestRevert && ownsJob(user, unitJob) && !revertReq && (
                             <button className="small" onClick={() => openRevert(unitJob.id, u.id)}
                               title="ยืนยันผิดเครื่อง/ข้อมูลผิด — ส่งคำขอให้ Division พิจารณา">
                               ↩️ ขอยกเลิกผลติดตั้ง

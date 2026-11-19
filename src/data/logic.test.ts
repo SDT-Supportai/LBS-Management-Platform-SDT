@@ -2777,6 +2777,7 @@ describe('ขอยกเลิกผลติดตั้ง — ผ่าน D
   }), svc, { unitId: 'a', ...proof })
   const ask = (d: DB) => requestRevertInstall(d, svc, { jobId: 'j1', unitIds: ['a'], reason: 'กดยืนยันผิดเครื่อง' })
   const lastNote = (d: DB) => d.notifications[d.notifications.length - 1]
+  const notesOf = (d: DB, type: string) => d.notifications.filter(n => n.type === type)
   const closed = (d: DB): DB => ({ ...d, jobs: d.jobs.map(j => ({ ...j, terminalStatus: 'installed' as const })) })
 
   it('ขอ → ยังไม่เปลี่ยนผล (รอ Division) · อนุมัติ → กลับเป็นรอติดตั้ง · หลักฐานเดิมยังอยู่', () => {
@@ -2794,7 +2795,8 @@ describe('ขอยกเลิกผลติดตั้ง — ผ่าน D
     expect(d.unitInstallations.map(r => r.outcome)).toEqual(['installed', 'reverted'])
     expect(d.unitInstallations[0]).toMatchObject({ checkinLat: 17.6, photoUrl: 'x.jpg' })
     expect(d.unitInstallations[1]).toMatchObject({ reason: 'กดยืนยันผิดเครื่อง', performedBy: 'u3' })
-    expect(lastNote(d)).toMatchObject({ type: 'approval_approved', dept: 'service' })
+    // 0091: แจ้งทั้ง Service (เจ้าของเรื่อง) และ Project (เจ้าของงาน/ผู้ขอฝั่ง Project)
+    expect(notesOf(d, 'approval_approved').map(n => n.dept)).toEqual(['service', 'project'])
     expect(d.auditLogs.some(l => l.action === 'revert_unit_install')).toBe(true)
   })
 
@@ -2808,11 +2810,13 @@ describe('ขอยกเลิกผลติดตั้ง — ผ่าน D
     expect(jobInstallComplete(d, 'j1')).toBe(true)
   })
 
-  it('ตีกลับ → ผลเดิมคงอยู่ · แจ้ง Service', () => {
+  it('ตีกลับ → ผลเดิมคงอยู่ · แจ้ง Service + Project · LINE กลุ่มได้ฉบับเดียว (0091)', () => {
     let d = ask(installed())
     d = rejectApprovalRequest(d, div, { requestId: d.approvalRequests[0].id, reason: 'รูปถูกต้องแล้ว' })
     expect(unitInstallState(d, 'a')).toBe('installed')
-    expect(lastNote(d)).toMatchObject({ type: 'approval_rejected', dept: 'service' })
+    const notes = notesOf(d, 'approval_rejected')
+    expect(notes.map(n => n.dept)).toEqual(['service', 'project'])
+    expect(notes.filter(n => n.lineStatus === 'pending')).toHaveLength(1)
   })
 
   it('กันพลาด: ต้องมีเหตุผล · เครื่องที่ยังไม่ติดตั้ง · ขอซ้ำระหว่างรอ · งานที่ปิดแล้วต้องเปิดใหม่ก่อน', () => {
@@ -2830,6 +2834,20 @@ describe('ขอยกเลิกผลติดตั้ง — ผ่าน D
     expect(() => approveRequest(d, div, { requestId: d.approvalRequests[0].id })).toThrow(/ขอเปิดงานใหม่ก่อน/)
     const viaGeneric = requestApproval(installed(), svc, { type: 'revert_install', jobId: 'j1', payload: { unitIds: ['a'], reason: 'ผิดเครื่อง' } })
     expect(viaGeneric.approvalRequests[0]).toMatchObject({ type: 'revert_install', status: 'pending' })
+  })
+
+  it('0091: Project ที่ไม่ใช่เจ้าของงานขอไม่ได้ · เจ้าของงาน / Service / งานเก่าที่ไม่มีเจ้าของ ขอได้', () => {
+    const owner = { id: 'p1', email: 'p1@x.co', password: '', fullName: 'เจ้าของงาน', department: 'project' as const, isActive: true }
+    const other = { id: 'p2', email: 'p2@x.co', password: '', fullName: 'Project อื่น', department: 'project' as const, isActive: true }
+    const owned = (openedBy: string): DB => {
+      const d = installed()
+      return { ...d, users: [...d.users, owner, other], jobs: d.jobs.map(j => ({ ...j, openedBy })) }
+    }
+    const req = (d: DB, who: typeof owner | typeof svc) => requestRevertInstall(d, who, { jobId: 'j1', unitIds: ['a'], reason: 'ผิดเครื่อง' })
+    expect(() => req(owned('p1'), other)).toThrow(/ไม่ใช่งานที่คุณเปิด/)
+    expect(req(owned('p1'), owner).approvalRequests).toHaveLength(1)
+    expect(req(owned('p1'), svc).approvalRequests).toHaveLength(1)
+    expect(req(owned(''), other).approvalRequests).toHaveLength(1)          // งานเก่าไม่มีเจ้าของ = grandfather (0042)
   })
 
   it('revertUnitInstall ตรง ๆ ก็ยังต้องผ่านกติกาเดียวกัน (ยกเลิกซ้ำไม่ได้)', () => {
