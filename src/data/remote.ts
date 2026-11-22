@@ -2,7 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type {
   DB, User, Item, ProjectStock, LbsUnit, Job, AllocationTxn,
   AccessoryRequest, PurchaseRequisition, PurchaseOrder, AuditLog, AppNotification,
-  Department, ApprovalRequest, ApprovalComment, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit, UnitInstallation,
+  Department, ApprovalRequest, ApprovalComment, ApprovalType, ApprovalPayload, BudgetCosts, SiteVisit, UnitInstallation, CloseoutCorrection,
   TeamMember, JobAssignment, StockMovement, JobPayment, PaymentType,
   StdDrawing, StdDrawingFile, StdPrice, StdBom, StdBomLine, LbsUnitFile, JobWarranty, JobCloseoutFile,
   StockReturnRequest, StockReturnKind, JobPaymentFile, JobDueExtension,
@@ -243,6 +243,20 @@ function mapPo(r: Row): PurchaseOrder {
     receivedAt: r.received_at ?? undefined,
   }
 }
+/** 0094 — correction ของคำขอแก้ข้อมูลหลังปิดงาน: DB เก็บ snake_case */
+function correctionFromRow(c: Row): CloseoutCorrection {
+  if (c.kind === 'install_date') return { kind: 'install_date', unitId: c.unit_id, installedDate: c.installed_date }
+  if (c.kind === 'warranty') return { kind: 'warranty', unitId: c.unit_id ?? undefined, startDate: c.start_date, endDate: c.end_date }
+  if (c.kind === 'acceptance') return { kind: 'acceptance', acceptanceType: c.acceptance_type, acceptanceDocNo: c.acceptance_doc_no ?? undefined, acceptanceDate: c.acceptance_date }
+  return { kind: 'swap_serial', unitIds: c.unit_ids ?? [] }
+}
+function correctionToRow(c: CloseoutCorrection): Row {
+  if (c.kind === 'install_date') return { kind: c.kind, unit_id: c.unitId, installed_date: c.installedDate }
+  if (c.kind === 'warranty') return { kind: c.kind, unit_id: c.unitId ?? null, start_date: c.startDate, end_date: c.endDate }
+  if (c.kind === 'acceptance') return { kind: c.kind, acceptance_type: c.acceptanceType, acceptance_doc_no: c.acceptanceDocNo ?? null, acceptance_date: c.acceptanceDate }
+  return { kind: c.kind, unit_ids: c.unitIds }
+}
+
 function mapApproval(r: Row): ApprovalRequest {
   const pl = (r.payload ?? {}) as Row
   return {
@@ -256,6 +270,7 @@ function mapApproval(r: Row): ApprovalRequest {
       receivedToCentral: pl.received_to_central ?? undefined,
       swapAllocatedUnitId: pl.swap_allocated_unit_id ?? undefined,
       swapStockUnitId: pl.swap_stock_unit_id ?? undefined,
+      correction: pl.correction ? correctionFromRow(pl.correction as Row) : undefined,   // 0094
     },
     status: r.status, requestedBy: r.requested_by ?? '', requestedAt: r.requested_at,
     decidedBy: r.decided_by ?? undefined, decidedAt: r.decided_at ?? undefined,
@@ -705,12 +720,13 @@ export function remoteActions(sb: SupabaseClient) {
         p_paid_at: p.paidAt || null, p_note: p.note ?? null,
         p_order_num: p.orderNum || null, p_pack_id: p.packId || null,   // 0088
       }),
-    updateJobPayment: (p: { paymentId: string; orderNum?: string; packId?: string; invoiceNo?: string; invoiceDate?: string; percent?: number; amount?: number; paidAt?: string; note?: string }) =>
+    updateJobPayment: (p: { paymentId: string; orderNum?: string; packId?: string; invoiceNo?: string; invoiceDate?: string; percent?: number; amount?: number; paidAt?: string; note?: string; editReason?: string; recalc?: boolean }) =>
       rpc(sb, 'rpc_update_job_payment', {
         p_payment_id: p.paymentId, p_invoice_no: p.invoiceNo ?? null,
         p_invoice_date: p.invoiceDate || null, p_percent: p.percent ?? null, p_amount: p.amount ?? null,
         p_paid_at: p.paidAt || null, p_note: p.note ?? null,
         p_order_num: p.orderNum || null, p_pack_id: p.packId || null,   // 0088
+        p_edit_reason: p.editReason?.trim() || null, p_recalc: !!p.recalc,   // 0092
       }),
     deleteJobPayment: (p: { paymentId: string }) => rpc(sb, 'rpc_delete_job_payment', { p_payment_id: p.paymentId }),
     // 0076 — เอกสารแนบรายงวด · ไฟล์จริงถูกอัปโหลดเข้า private bucket จาก UI ก่อน แล้วค่อยลงแถว
@@ -822,6 +838,11 @@ export function remoteActions(sb: SupabaseClient) {
     // 0090 — ขอยกเลิกผลติดตั้ง (Service/Project) · เข้าคิว approval_requests เดียวกัน type revert_install
     requestRevertInstall: (p: { jobId: string; unitIds: string[]; reason: string }) =>
       rpc(sb, 'rpc_request_revert_install', { p_job_id: p.jobId, p_unit_ids: p.unitIds, p_reason: p.reason }),
+    // 0094 — คืน LBS ที่เบิกแล้ว (ติดตั้งไม่ได้) เข้าคลัง · ขอแก้ข้อมูลหลังปิดงาน → รอ Division พิจารณา
+    requestReturnLbs: (p: { jobId: string; unitIds: string[]; reason: string }) =>
+      rpc(sb, 'rpc_request_return_lbs', { p_job_id: p.jobId, p_unit_ids: p.unitIds, p_reason: p.reason }),
+    requestCloseoutCorrection: (p: { jobId: string; reason: string; correction: CloseoutCorrection }) =>
+      rpc(sb, 'rpc_request_closeout_correction', { p_job_id: p.jobId, p_correction: correctionToRow(p.correction), p_reason: p.reason }),
     approveRequest: (p: { requestId: string }) =>
       rpc(sb, 'rpc_approve_request', { p_request_id: p.requestId }),
     rejectApprovalRequest: (p: { requestId: string; reason: string }) =>

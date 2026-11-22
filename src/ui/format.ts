@@ -65,6 +65,8 @@ export const APPROVAL_TYPE_LABEL: Record<string, string> = {
   swap_lbs: 'สลับ LBS',
   reopen_job: 'เปิดงานใหม่',
   revert_install: 'ยกเลิกผลติดตั้ง',   // 0090
+  return_lbs: 'คืน LBS เข้าคลัง',     // 0094
+  correct_closeout: 'แก้ข้อมูลหลังปิดงาน',   // 0094
 }
 
 // งวดเงินต่อ Job (0044) — ชื่อตามที่ใช้ในสัญญางานติดตั้ง

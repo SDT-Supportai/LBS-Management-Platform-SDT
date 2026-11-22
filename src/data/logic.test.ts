@@ -24,7 +24,7 @@ import {
   jobDelivery, jobEffectiveDue, jobDueExtensions, extendJobDue, deleteJobDueExtension, jobDeliveredDate, memberSchedule,
   addJobPayment, updateJobPayment, addPaymentFile, deletePaymentFile, paymentFiles, paymentFileCount, deleteJobPayment, jobInstallComplete,
   requestRevertInstall, revertUnitInstall, requestApproval, approveRequest, rejectApprovalRequest, unitInstallDate,
-  updateJobBudget,
+  updateJobBudget, addAccessoryRequest, jobCloseBlockers, requestReturnLbs, requestCloseoutCorrection, reopenJob,
   createStdDrawing, updateStdDrawing, stdDrawingFiles, MAX_STD_DRAWING_FILES, jobStatusPhase,
   setJobCloseout, addCloseoutFile, deleteCloseoutFile, warrantyEndFor, warrantyStatus, addMonthsIso, type CloseoutInput,
 } from './logic'
@@ -2289,17 +2289,19 @@ describe('ปิดงาน: เอกสารรับมอบ + Warranty (0
   const file = (kind: 'acceptance' | 'warranty_installation' | 'warranty_lbs', name = `${kind}.pdf`) =>
     ({ kind, docType: kind === 'acceptance' ? ('HANDOVER' as const) : undefined, fileName: name, filePath: `data:${name}`, mimeType: 'application/pdf', sizeBytes: 1000 })
   const allFiles = [file('acceptance'), file('warranty_installation'), file('warranty_lbs')]
-  // 2 เครื่องบนใบ: a ติดตั้งสำเร็จ 2026-09-10 · b ติดตั้งไม่ได้ → Warranty LBS ต้องมีแค่ a
+  // 2 เครื่องเคยอยู่บนใบ: a ติดตั้งสำเร็จ 2026-09-10 · b ติดตั้งไม่ได้ → Warranty LBS ต้องมีแค่ a
+  // 0094 (มติ Q1): เครื่องที่ติดตั้งไม่ได้ต้องคืนเข้า LBS Inventory ก่อนปิดงาน ⇒ b ถูกคืนแล้ว (returned · in_stock)
   const base = (over: Partial<Job> = {}) => db({
     users: [svc],
     jobs: [job({ terminalStatus: 'issued', ...over })],
     lbsUnits: [
       unit({ id: 'a', status: 'issued', jobId: 'j1' }),
-      unit({ id: 'b', serialLvb: 'LVB-002', serialOm: 'OM-002', status: 'issued', jobId: 'j1' }),
+      unit({ id: 'b', serialLvb: 'LVB-002', serialOm: 'OM-002', status: 'in_stock', jobId: null }),
     ],
     unitInstallations: [
       { id: 'ui1', unitId: 'a', jobId: 'j1', outcome: 'installed', installedDate: '2026-09-10', performedBy: 'u2', performedAt: '2026-09-10T09:00:00.000Z' },
       { id: 'ui2', unitId: 'b', jobId: 'j1', outcome: 'blocked', reason: 'ฐานไม่เสร็จ', performedBy: 'u2', performedAt: '2026-09-10T10:00:00.000Z' },
+      { id: 'ui3', unitId: 'b', jobId: 'j1', outcome: 'returned', reason: 'คืนเข้าคลัง', performedBy: 'u2', performedAt: '2026-09-11T10:00:00.000Z' },
     ],
   })
   const closeout = (over: Partial<CloseoutInput> = {}): CloseoutInput => ({
@@ -2860,5 +2862,247 @@ describe('ขอยกเลิกผลติดตั้ง — ผ่าน D
     expect(() => closeJobInstall(d, svc, { jobId: 'j1', hasIssues: false })).toThrow(/รอ Division พิจารณา/)
     d = rejectApprovalRequest(d, div, { requestId: d.approvalRequests[0].id, reason: 'ผลถูกต้อง' })
     expect(() => closeJobInstall(d, svc, { jobId: 'j1', hasIssues: false })).not.toThrow(/รอ Division พิจารณา/)
+  })
+})
+
+// =============================================================================
+// 0092 — ความถูกต้องคลัง/ต้นทุน (เฟส 1 · ผลตรวจ Workflow 2026-11-18 + มติผู้ใช้ 2026-11-22)
+//   ① ยกเลิก Job คืนของเข้าคลังเฉพาะที่ "ยังอยู่ที่ Job จริง" (หักโอนคืน/ตัดจำหน่ายแล้ว)
+//   ② Q4: เบิกจากคลังกลาง = ต้นทุนถัวเฉลี่ยอัตโนมัติ (ไม่ใช้ราคาที่พิมพ์) · คลังยังไม่มีต้นทุน → บังคับกรอก
+//   ③ Q3: งวดเงินแก้ได้ แต่ยอดไม่เปลี่ยนเองเมื่อแก้ช่องอื่น · คิดใหม่ตามราคาขายต้องสั่งชัด ๆ · งวดที่รับเงินแล้วต้องมีหมายเหตุ
+// =============================================================================
+describe('0092 — ความถูกต้องคลัง/ต้นทุน', () => {
+  const prj = { id: 'u1', email: 'p@x.co', password: '', fullName: 'Project', department: 'project' as const, isActive: true }
+  const adm = { id: 'ad', email: 'a@x.co', password: '', fullName: 'Manage', department: 'admin' as const, isActive: true }
+  const bolt = { id: 'i1', code: 'B-1', name: 'Bolt', uom: 'pc', stockableCentrally: true } as DB['items'][number]
+  const stockOf = (d: DB) => d.accessoryStock.find(s => s.itemId === 'i1')?.qtyOnHand ?? 0
+
+  it('① ยกเลิก Job: เบิกคลังกลาง 10 ตัดจำหน่าย 4 → คืนคลัง 6 (ไม่ใช่ 10)', () => {
+    let d = db({ users: [prj, adm], items: [bolt], jobs: [job()],
+      accessoryRequests: [req({ source: 'central_stock', status: 'issued', qtyRequested: 10, prId: null, poId: undefined, unitPrice: 100 })],
+      accessoryStock: [{ itemId: 'i1', qtyOnHand: 0, avgUnitCost: 100 } as DB['accessoryStock'][number]] })
+    d = writeOffJobMaterial(d, prj, { requestId: 'r1', qty: 4, reason: 'เสียหาย' })
+    d = cancelJob(d, adm, { jobId: 'j1', reason: 'ลูกค้ายกเลิก', receivedAccessoryToCentral: true })
+    expect(stockOf(d)).toBe(6)
+  })
+
+  it('① ยกเลิก Job: PO รับครบ 10 โอนคืนคลังไปแล้ว 3 → คืนเพิ่มอีก 7 · คำขอคืนที่ค้างถูกปิดอัตโนมัติ', () => {
+    let d = db({ users: [prj, adm], items: [bolt], jobs: [job()],
+      accessoryRequests: [req({ status: 'received', qtyRequested: 10, qtyReceived: 10, unitPrice: 50 })],
+      accessoryStock: [{ itemId: 'i1', qtyOnHand: 0, avgUnitCost: 0 } as DB['accessoryStock'][number]] })
+    d = returnViaApproval(d, adm, { requestId: 'r1', qty: 3 })
+    expect(stockOf(d)).toBe(3)
+    d = requestStockReturn(d, prj, { requestId: 'r1', kind: 'transfer', qty: 2 })   // ค้างรอ Purchasing
+    d = cancelJob(d, adm, { jobId: 'j1', reason: 'ลูกค้ายกเลิก', receivedAccessoryToCentral: true })
+    expect(stockOf(d)).toBe(10)
+    expect(d.stockReturns.filter(s => s.status === 'pending')).toHaveLength(0)
+  })
+
+  it('② เบิกคลังกลาง: ใช้ต้นทุนถัวเฉลี่ย แม้ผู้ใช้พิมพ์ราคาอื่น', () => {
+    const d = addAccessoryRequest(db({ users: [prj], items: [bolt], jobs: [job()],
+      accessoryStock: [{ itemId: 'i1', qtyOnHand: 10, avgUnitCost: 100 } as DB['accessoryStock'][number]] }),
+      prj, { jobId: 'j1', itemId: 'i1', qty: 3, source: 'central_stock', unitPrice: 999 })
+    expect(d.accessoryRequests[0].unitPrice).toBe(100)
+  })
+
+  it('② คลังยังไม่มีต้นทุน: ต้องกรอกราคา · กรอกแล้วใช้ราคานั้น', () => {
+    const base = db({ users: [prj], items: [bolt], jobs: [job()],
+      accessoryStock: [{ itemId: 'i1', qtyOnHand: 10, avgUnitCost: 0 } as DB['accessoryStock'][number]] })
+    expect(() => addAccessoryRequest(base, prj, { jobId: 'j1', itemId: 'i1', qty: 3, source: 'central_stock' }))
+      .toThrow(/ยังไม่มีต้นทุน/)
+    const d = addAccessoryRequest(base, prj, { jobId: 'j1', itemId: 'i1', qty: 3, source: 'central_stock', unitPrice: 40 })
+    expect(d.accessoryRequests[0].unitPrice).toBe(40)
+  })
+
+  const paid30 = () => {
+    let d = db({ users: [prj], jobs: [job({ budgetSalePrice: 1_000_000 })] })
+    d = addJobPayment(d, prj, { jobId: 'j1', payType: 'advance', percent: 30, invoiceNo: 'INV1', paidAt: '2026-02-01' })
+    return updateJobBudget(d, prj, { jobId: 'j1', budgetSalePrice: 1_100_000 } as Parameters<typeof updateJobBudget>[2])
+  }
+
+  it('③ งวดรับเงินแล้ว แก้แค่ Pack ID → ยอดคงเดิม 300,000 (ไม่คิดใหม่ตามราคาขายใหม่)', () => {
+    let d = paid30()
+    const pm = d.jobPayments[0]
+    d = updateJobPayment(d, prj, { paymentId: pm.id, percent: 30, invoiceNo: 'INV1', paidAt: '2026-02-01', packId: 'PK9', editReason: 'ใส่ Pack ID' })
+    expect(d.jobPayments[0]).toMatchObject({ amount: 300000, baseSalePrice: 1_000_000, packId: 'PK9' })
+  })
+
+  it('③ สั่งคิดใหม่ตามราคาขายปัจจุบัน → 330,000 · เปลี่ยน % → คิดใหม่เสมอ', () => {
+    let d = paid30()
+    const id = d.jobPayments[0].id
+    d = updateJobPayment(d, prj, { paymentId: id, percent: 30, paidAt: '2026-02-01', recalc: true, editReason: 'ราคาขายใหม่ตาม VO' })
+    expect(d.jobPayments[0]).toMatchObject({ amount: 330000, baseSalePrice: 1_100_000 })
+    d = updateJobPayment(d, prj, { paymentId: id, percent: 20, paidAt: '2026-02-01', editReason: 'แก้ %' })
+    expect(d.jobPayments[0].amount).toBe(220000)
+  })
+
+  it('③ งวดที่รับเงินแล้ว: แก้ได้แต่ต้องมีหมายเหตุการแก้ · Audit เก็บเหตุผล', () => {
+    const d0 = paid30()
+    const id = d0.jobPayments[0].id
+    expect(() => updateJobPayment(d0, prj, { paymentId: id, percent: 30, paidAt: '2026-02-01', packId: 'X' }))
+      .toThrow(/หมายเหตุการแก้/)
+    const d = updateJobPayment(d0, prj, { paymentId: id, percent: 30, paidAt: '2026-02-01', packId: 'X', editReason: 'ลูกค้าแจ้ง Pack ใหม่' })
+    expect(d.auditLogs.find(l => l.action === 'update_job_payment')?.detail).toContain('ลูกค้าแจ้ง Pack ใหม่')
+  })
+
+  it('③ งวดที่ยังไม่รับเงิน: แก้ได้โดยไม่ต้องมีหมายเหตุ', () => {
+    let d = db({ users: [prj], jobs: [job({ budgetSalePrice: 1_000_000 })] })
+    d = addJobPayment(d, prj, { jobId: 'j1', payType: 'advance', percent: 30 })
+    expect(() => updateJobPayment(d, prj, { paymentId: d.jobPayments[0].id, percent: 30, packId: 'P1' })).not.toThrow()
+  })
+})
+
+// =============================================================================
+// 0093 — กติกาอนุมัติ (เฟส 1 · มติผู้ใช้ D1 2026-11-22 + ผลตรวจ Workflow)
+//   ① คนขอกับคนอนุมัติต้องเป็นคนละคน (Manage อนุมัติ/ตีกลับคำขอที่ตัวเองส่งไม่ได้)
+//   ② ยกเลิก Job แล้ว คำขอค้างอื่นของ Job นั้นถูกตีกลับอัตโนมัติ (เดิมค้าง pending ตลอดไป)
+//   ③ คำขอล้าสมัย: ออก PR — จำนวน/ราคาถูกแก้หลังส่งคำขอ → อนุมัติไม่ได้ · เบิก LBS — เก็บรายการเครื่อง ณ ตอนขอ
+// =============================================================================
+describe('0093 — กติกาอนุมัติ', () => {
+  const prj = { id: 'u1', email: 'p@x.co', password: '', fullName: 'Project', department: 'project' as const, isActive: true }
+  const adm = { id: 'ad', email: 'a@x.co', password: '', fullName: 'Manage', department: 'admin' as const, isActive: true }
+  const div = { id: 'dv', email: 'd@x.co', password: '', fullName: 'Division', department: 'sales' as const, isActive: true }
+  const base = () => db({ users: [prj, adm, div], jobs: [job()],
+    accessoryRequests: [req({ id: 'r1', status: 'pending', prId: null, poId: undefined, qtyRequested: 5, unitPrice: 100 })] })
+  const askPr = (d: DB, who: DB['users'][number] = prj) => requestApproval(d, who, { type: 'create_pr', jobId: 'j1', payload: { requestIds: ['r1'] } })
+
+  it('① Manage ส่งคำขอเอง → อนุมัติ/ตีกลับเองไม่ได้ · Division อนุมัติได้', () => {
+    const d = askPr(base(), adm)
+    const id = d.approvalRequests[0].id
+    expect(() => approveRequest(d, adm, { requestId: id })).toThrow(/ผู้ส่งเอง/)
+    expect(() => rejectApprovalRequest(d, adm, { requestId: id, reason: 'x' })).toThrow(/ผู้ส่งเอง/)
+    expect(approveRequest(d, div, { requestId: id }).approvalRequests[0].status).toBe('approved')
+  })
+
+  it('② อนุมัติยกเลิก Job → คำขอออก PR ที่ค้างถูกตีกลับอัตโนมัติ พร้อมเหตุผล', () => {
+    let d = askPr(base())
+    d = requestApproval(d, prj, { type: 'cancel_job', jobId: 'j1', payload: { reason: 'ลูกค้ายกเลิก', receivedToCentral: true } })
+    const cancelId = d.approvalRequests.find(r => r.type === 'cancel_job')!.id
+    d = approveRequest(d, div, { requestId: cancelId })
+    const pr = d.approvalRequests.find(r => r.type === 'create_pr')!
+    expect(pr.status).toBe('rejected')
+    expect(pr.rejectReason).toMatch(/ยกเลิก/)
+  })
+
+  it('③ ออก PR: แก้จำนวนหลังส่งคำขอ → อนุมัติไม่ได้ (คำขอล้าสมัย) · ไม่แก้ → อนุมัติได้', () => {
+    const d0 = askPr(base())
+    const id = d0.approvalRequests[0].id
+    const edited: DB = { ...d0, accessoryRequests: d0.accessoryRequests.map(r => ({ ...r, qtyRequested: 50 })) }
+    expect(() => approveRequest(edited, div, { requestId: id })).toThrow(/ล้าสมัย/)
+    const repriced: DB = { ...d0, accessoryRequests: d0.accessoryRequests.map(r => ({ ...r, unitPrice: 999 })) }
+    expect(() => approveRequest(repriced, div, { requestId: id })).toThrow(/ล้าสมัย/)
+    expect(() => approveRequest(d0, div, { requestId: id })).not.toThrow()
+  })
+
+  it('③ เบิก LBS ไม่ระบุเครื่อง → คำขอเก็บรายการเครื่องที่พร้อม ณ ตอนขอ', () => {
+    const d0 = db({ users: [prj, div], jobs: [job({ lbsQtyRequired: 1, installStartDate: '2026-12-01', installEndDate: '2026-12-02', issueLocation: 'A' } as Partial<Job>)],
+      lbsUnits: [unit({ id: 'a', status: 'allocated', jobId: 'j1', contractNo: 'C-1' } as Partial<LbsUnit>)] })
+    const d = requestApproval(d0, prj, { type: 'issue_job', jobId: 'j1', payload: {} })
+    expect(d.approvalRequests[0].payload.unitIds).toEqual(['a'])
+  })
+})
+
+// =============================================================================
+// 0094 — ปิดงาน/หลังปิดงาน (เฟส 1 · มติผู้ใช้ Q1/Q2 2026-11-22)
+//   ① ปิดงานได้เมื่อไม่มีของค้าง: เครื่องติดตั้งไม่ได้ · คำขอรอ Division พิจารณา · คืนวัสดุรอตรวจรับ · วัสดุค้าง
+//   ② Q1: เครื่องติดตั้งไม่ได้ → ขอคืนเข้า LBS Inventory → Division ตรวจรับ (ไม่มีตัดจำหน่าย LBS)
+//   ③ Q2: เริ่มนับประกันแล้ว เปิดงานใหม่ไม่ได้
+//   ④ Q2: ขอแก้ข้อมูลหลังปิดงาน (วันที่ติดตั้ง · วันประกัน · เอกสารรับมอบ · Serial สลับ) → Division พิจารณา งานยังปิดอยู่
+// =============================================================================
+describe('0094 — ปิดงาน/หลังปิดงาน', () => {
+  const svc = { id: 'sv', email: 's@x.co', password: '', fullName: 'ช่าง', department: 'service' as const, isActive: true }
+  const div = { id: 'dv', email: 'd@x.co', password: '', fullName: 'Division', department: 'sales' as const, isActive: true }
+  const prj = { id: 'u1', email: 'p@x.co', password: '', fullName: 'Project', department: 'project' as const, isActive: true }
+  const prj2 = { id: 'u9', email: 'p9@x.co', password: '', fullName: 'Project อื่น', department: 'project' as const, isActive: true }
+  const ev = (d: string, lat: number) => ({ installedDate: d, checkinLat: lat, checkinLng: 100.5, photoUrl: `${d}.jpg` })
+  const issued = () => db({
+    users: [svc, div, prj, prj2],
+    jobs: [job({ lbsQtyRequired: 2, terminalStatus: 'issued' })],
+    lbsUnits: [unit({ id: 'a', serialLvb: 'LV-A', status: 'issued', jobId: 'j1' }), unit({ id: 'b', serialLvb: 'LV-B', status: 'issued', jobId: 'j1' })],
+  })
+  const f = (k: string) => ({ kind: k, docType: k === 'acceptance' ? 'HANDOVER' : undefined, fileName: `${k}.pdf`, filePath: 'x', mimeType: 'application/pdf', sizeBytes: 10 })
+  const closeout = (units: string[], start = '2026-09-02'): CloseoutInput => ({
+    acceptanceType: 'HANDOVER', acceptanceDate: '2026-09-02',
+    installationWarranty: { start, end: '2027-09-01' },
+    lbsWarranties: units.map(u => ({ unitId: u, start, end: '2027-09-01' })),
+    files: [f('acceptance'), f('warranty_installation'), f('warranty_lbs')] as CloseoutInput['files'],
+  })
+  const close = (d: DB, units: string[], start?: string) =>
+    closeJobInstall(d, svc, { jobId: 'j1', hasIssues: false, closeout: closeout(units, start) })
+  const bothInstalledClosed = (start?: string) => {
+    let d = confirmUnitInstall(issued(), svc, { unitId: 'a', ...ev('2026-09-01', 14) })
+    d = confirmUnitInstall(d, svc, { unitId: 'b', ...ev('2026-09-03', 15) })
+    return close(d, ['a', 'b'], start)
+  }
+
+  it('①② เครื่องติดตั้งไม่ได้ค้าง → ปิดไม่ได้ · ขอคืนเข้าคลัง (รอพิจารณาก็ยังปิดไม่ได้) · Division ตรวจรับ → ปิดได้', () => {
+    let d = confirmUnitInstall(issued(), svc, { unitId: 'a', ...ev('2026-09-01', 14) })
+    d = blockUnitInstall(d, svc, { unitId: 'b', reason: 'ฐานรากไม่พร้อม' })
+    expect(jobCloseBlockers(d, 'j1').join()).toMatch(/ติดตั้งไม่ได้/)
+    expect(() => close(d, ['a'])).toThrow(/ติดตั้งไม่ได้/)
+    d = requestReturnLbs(d, svc, { jobId: 'j1', unitIds: ['b'], reason: 'ไซต์ยกเลิกจุดที่ 2' })
+    expect(() => close(d, ['a'])).toThrow(/รอ Division พิจารณา/)
+    d = approveRequest(d, div, { requestId: d.approvalRequests[0].id })
+    expect(d.lbsUnits.find(u => u.id === 'b')).toMatchObject({ status: 'in_stock', jobId: null })
+    expect(unitInstallState(d, 'b')).toBe('pending')
+    expect(d.allocations.some(x => x.txnType === 'return' && x.serialNos.includes('LV-B'))).toBe(true)
+    expect(() => close(d, ['a'])).not.toThrow()
+  })
+
+  it('② ขอคืน: ต้องเป็นเครื่องที่ยังไม่ติดตั้ง · Project ต้องเป็นเจ้าของงาน · ต้องมีเหตุผล', () => {
+    const d = confirmUnitInstall(issued(), svc, { unitId: 'a', ...ev('2026-09-01', 14) })
+    expect(() => requestReturnLbs(d, svc, { jobId: 'j1', unitIds: ['a'], reason: 'x' })).toThrow(/ติดตั้งแล้ว/)
+    expect(() => requestReturnLbs(d, prj2, { jobId: 'j1', unitIds: ['b'], reason: 'x' })).toThrow(/ไม่ใช่งานที่คุณเปิด/)
+    expect(() => requestReturnLbs(d, svc, { jobId: 'j1', unitIds: ['b'], reason: ' ' })).toThrow(/เหตุผล/)
+  })
+
+  it('① วัสดุซื้อเพิ่มยังไม่เสร็จ → ปิดไม่ได้', () => {
+    let d = bothInstalledClosed()
+    d = { ...d, jobs: d.jobs.map(j => ({ ...j, terminalStatus: 'issued' as const })),
+      accessoryRequests: [req({ status: 'pending', prId: null, poId: undefined })] }
+    expect(jobCloseBlockers(d, 'j1').join()).toMatch(/วัสดุ/)
+  })
+
+  it('③ เริ่มนับประกันแล้ว → เปิดงานใหม่ไม่ได้ (ทั้งขออนุมัติและ Manage ทำตรง)', () => {
+    const d = bothInstalledClosed('2026-09-02')
+    const adm = { id: 'ad', email: 'a@x.co', password: '', fullName: 'Manage', department: 'admin' as const, isActive: true }
+    expect(() => requestApproval(d, prj, { type: 'reopen_job', jobId: 'j1', payload: { reason: 'x' } })).toThrow(/ประกัน/)
+    expect(() => reopenJob({ ...d, users: [...d.users, adm] }, adm, { jobId: 'j1', reason: 'x' })).toThrow(/ประกัน/)
+  })
+
+  it('④ แก้วันที่ติดตั้ง → อนุมัติแล้ววันที่ใหม่มีผล งานยังปิดอยู่ · หลักฐานเดิมไม่ถูกลบ', () => {
+    let d = bothInstalledClosed()
+    d = requestCloseoutCorrection(d, svc, { jobId: 'j1', reason: 'กรอกวันผิด', correction: { kind: 'install_date', unitId: 'b', installedDate: '2026-09-04' } })
+    d = approveRequest(d, div, { requestId: d.approvalRequests[0].id })
+    expect(unitInstallDate(d, 'b')).toBe('2026-09-04')
+    expect(d.jobs[0]).toMatchObject({ terminalStatus: 'installed', installedAt: '2026-09-04' })
+    expect(d.unitInstallations.filter(r => r.unitId === 'b').map(r => r.outcome)).toEqual(['installed', 'reverted', 'installed'])
+  })
+
+  it('④ แก้วันประกัน LBS + เอกสารรับมอบ', () => {
+    let d = bothInstalledClosed()
+    d = requestCloseoutCorrection(d, svc, { jobId: 'j1', reason: 'ตามสัญญา', correction: { kind: 'warranty', unitId: 'a', startDate: '2026-09-01', endDate: '2028-09-01' } })
+    d = approveRequest(d, div, { requestId: d.approvalRequests[0].id })
+    expect(d.jobWarranties.find(w => w.unitId === 'a')).toMatchObject({ startDate: '2026-09-01', endDate: '2028-09-01' })
+    d = requestCloseoutCorrection(d, prj, { jobId: 'j1', reason: 'เลขเอกสารผิด', correction: { kind: 'acceptance', acceptanceType: 'HANDOVER', acceptanceDocNo: 'HO-2', acceptanceDate: '2026-09-05' } })
+    d = approveRequest(d, div, { requestId: d.approvalRequests[1].id })
+    expect(d.jobs[0]).toMatchObject({ acceptanceDocNo: 'HO-2', acceptanceDate: '2026-09-05' })
+  })
+
+  it('④ สลับ Serial ที่ยืนยันผิดเครื่อง → หลักฐาน (วันที่/GPS/รูป) และประกัน LBS สลับกัน', () => {
+    let d = bothInstalledClosed()
+    d = { ...d, jobWarranties: d.jobWarranties.map(w => w.unitId === 'a' ? { ...w, endDate: '2027-08-31' } : w) }
+    d = requestCloseoutCorrection(d, svc, { jobId: 'j1', reason: 'สแกน Serial สลับกัน', correction: { kind: 'swap_serial', unitIds: ['a', 'b'] } })
+    d = approveRequest(d, div, { requestId: d.approvalRequests[0].id })
+    expect(unitInstallDate(d, 'a')).toBe('2026-09-03')
+    expect(unitInstallDate(d, 'b')).toBe('2026-09-01')
+    expect(d.jobWarranties.find(w => w.unitId === 'b')?.endDate).toBe('2027-08-31')
+  })
+
+  it('④ ขอแก้ได้เฉพาะงานที่ปิดแล้ว · Project ต้องเป็นเจ้าของงาน', () => {
+    const open = confirmUnitInstall(issued(), svc, { unitId: 'a', ...ev('2026-09-01', 14) })
+    expect(() => requestCloseoutCorrection(open, svc, { jobId: 'j1', reason: 'x', correction: { kind: 'install_date', unitId: 'a', installedDate: '2026-09-02' } })).toThrow(/ปิดงานแล้ว/)
+    const d = bothInstalledClosed()
+    expect(() => requestCloseoutCorrection(d, prj2, { jobId: 'j1', reason: 'x', correction: { kind: 'install_date', unitId: 'a', installedDate: '2026-09-02' } })).toThrow(/ไม่ใช่งานที่คุณเปิด/)
   })
 })

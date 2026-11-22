@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useStore, can, ownsJob, canEditJob } from '../data/StoreContext'
-import { ACCEPTANCE_TYPES, jobSites, unitJobSite, unitCustomerInfo, matchJobSite, sameLocation, MAIN_SITE, jobWarranties, qtyIssuable, qtyFieldReturnable, reversibleMovements, stockReturnsOf, STOCK_RETURN_LABEL, deriveJobStatus, jobStatusPhase, jobIsFieldActive, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, qtyOutToField, parseLatLng, fmtLatLng, PAYMENT_TYPES, jobDelivery, jobDueExtensions, paymentFiles, paymentFileCount, isAllowedDocFile, MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB, todayIso, daysBetweenIso } from '../data/logic'
+import { ACCEPTANCE_TYPES, jobSites, unitJobSite, unitCustomerInfo, matchJobSite, sameLocation, MAIN_SITE, jobWarranties, qtyIssuable, qtyFieldReturnable, reversibleMovements, stockReturnsOf, STOCK_RETURN_LABEL, deriveJobStatus, jobStatusPhase, jobIsFieldActive, jobBudgetSummary, pendingPurchasingReqs, stockSummary, jobInstallSummary, unitInstallState, jobTeam, memberFullName, effectiveQty, stockCostOf, jobPaymentSummary, unitEta, unitStockState, jobEtaBlockReason, jobIssuePlan, accIssueBlockReason, qtyPendingIssue, qtyIssuedToService, qtyWrittenOff, qtyOutToField, parseLatLng, fmtLatLng, PAYMENT_TYPES, jobDelivery, jobDueExtensions, paymentFiles, paymentFileCount, isAllowedDocFile, MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB, todayIso, daysBetweenIso, jobWarrantyStarted } from '../data/logic'
 import { BudgetFields, CoordInput, DeliveryBadge, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useConfirm, usePrompt, useToast, useTryAction, emptyCostForm, costFormFromJob, costFormToApi, sitesToApi, sitesFromJob, readAsDataUrl, type CostForm, type InstallSite } from '../ui/components'
 import { uploadPaymentDoc, signedPaymentDocUrl, removePaymentDocs } from '../data/remote'
 import { supabase } from '../lib/supabase'
+import { CorrectionModal } from '../ui/CorrectionModal'
 import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, EPICOR_TXN, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, DEPT_LABEL, JOB_STATUS_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import {
   type Cell, type NumKind, type ReportCol, type SumTable,
@@ -21,6 +22,8 @@ interface PayForm {
   orderNum: string; packId: string          // 0088 — กรอกก่อน Invoice No.
   invoiceNo: string; invoiceDate: string; percent: string; amount: string; paidAt: string; note: string
   files: File[]
+  editReason: string     // 0092 — แก้งวดที่รับเงินแล้วต้องมีหมายเหตุการแก้
+  recalc: boolean        // 0092 — คิดยอดใหม่ตามราคาขายปัจจุบัน (ไม่ติ๊ก = ยอดเดิมคงไว้)
 }
 
 const payFormOf = (r: JobPayment): PayForm => ({
@@ -30,6 +33,7 @@ const payFormOf = (r: JobPayment): PayForm => ({
   percent: r.percent !== undefined ? String(r.percent) : '',
   amount: r.percent !== undefined ? '' : String(r.amount),
   paidAt: r.paidAt ?? '', note: r.note ?? '', files: [],
+  editReason: '', recalc: false,
 })
 
 const COST_LABEL: Record<string, string> = Object.fromEntries(COST_CATEGORIES.map(c => [c.key, c.label]))
@@ -163,6 +167,7 @@ export default function JobDetailPage() {
   const procureLocked = !job || job.terminalStatus === 'installed' || job.terminalStatus === 'cancelled'
   // รายการที่เพิ่มหลังเบิก (createdAt > issuedAt) — ใช้ติดป้ายให้เห็นว่าเป็นการซื้อเพิ่ม
   const isExtra = (createdAt: string) => !!job?.issuedAt && createdAt > job.issuedAt
+  const [corrOpen, setCorrOpen] = useState(false)            // 0094 — ขอแก้ข้อมูลหลังปิดงาน
   const pendingApprovalOf = (type: ApprovalType) =>
     db.approvalRequests.some(r => r.jobId === jobId && r.type === type && r.status === 'pending')
 
@@ -178,6 +183,7 @@ export default function JobDetailPage() {
   const jobPrs = db.prs.filter(p => p.jobId === jobId)
 
   if (!job) return <div className="empty">ไม่พบ Job นี้ <Link to="/jobs">กลับหน้า Jobs</Link></div>
+  const warrantyStarted = job.terminalStatus === 'installed' ? jobWarrantyStarted(db, job.id) : undefined   // 0094
 
   const budget = jobBudgetSummary(db, job)
   const pay = jobPaymentSummary(db, job)
@@ -831,8 +837,23 @@ export default function JobDetailPage() {
               {job.issuedNote && <> · {job.issuedNote}</>}
               {(job.reopenCount ?? 0) > 0 && <> · <b>เคยเปิดงานใหม่ {job.reopenCount} ครั้ง</b></>}
             </div>
+            {/* 0094 (มติ Q2): เริ่มนับประกันแล้ว → เปิดงานใหม่ไม่ได้ · บันทึกผิดให้ขอ Division แก้ (งานยังปิดอยู่) */}
+            {warrantyStarted && can(user, 'closeout.manage') && ownsJob(user, job) && (
+              <div style={{ marginTop: 10 }}>
+                <button className="small" disabled={pendingApprovalOf('correct_closeout')}
+                  title={pendingApprovalOf('correct_closeout') ? 'มีคำขอแก้ข้อมูลรอ Division พิจารณาอยู่แล้ว' : ''}
+                  onClick={() => setCorrOpen(true)}>
+                  📝 ขอแก้ข้อมูลที่บันทึกผิด
+                </button>
+                <span className="muted" style={{ marginLeft: 8 }}>
+                  เริ่มนับประกันแล้ว ({fmtDate(warrantyStarted)}) — เปิดงานใหม่ไม่ได้ · แก้วันที่ติดตั้ง / วันประกัน / เอกสารรับมอบ / Serial สลับ ผ่าน Division
+                  {pendingApprovalOf('correct_closeout') && <> · <b>⏳ รอ Division พิจารณา</b></>}
+                </span>
+              </div>
+            )}
+            {corrOpen && <CorrectionModal job={job} onClose={() => setCorrOpen(false)} />}
             {/* เปิดงานใหม่ (0041) — ปิดงานผิด/ต้องกลับไปแก้หน้างาน · Project ขออนุมัติ · Manage ทำตรง */}
-            {canManage && (
+            {canManage && !warrantyStarted && (
               <div style={{ marginTop: 10 }}>
                 <button className="small"
                   disabled={pendingApprovalOf('reopen_job')}
@@ -1123,7 +1144,7 @@ export default function JobDetailPage() {
               {pay.stale && (
                 <div className="muted" style={{ marginBottom: 8 }}>
                   ⚠️ ราคาขายถูกแก้หลังออกใบบางงวด — ยอดในตารางคือยอดที่คิดไว้ ณ วันออกใบ (ตรงกับเอกสารจริง)
-                  กด "แก้" แล้วบันทึกใหม่ถ้าต้องการคิดตามราคาขายปัจจุบัน
+                  ถ้าต้องการคิดตามราคาขายปัจจุบัน กด "แก้" แล้วติ๊ก "คิดยอดใหม่ตามราคาขายปัจจุบัน"
                 </div>
               )}
               <div className="table-scroll">
@@ -1191,7 +1212,7 @@ export default function JobDetailPage() {
                 <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   {PAYMENT_TYPES.map(t => (
                     <button key={t} className="small" onClick={() => setPayForm({
-                      id: null, payType: t, orderNum: '', packId: '', invoiceNo: '', invoiceDate: '', percent: '', amount: '', paidAt: '', note: '', files: [],
+                      id: null, payType: t, orderNum: '', packId: '', invoiceNo: '', invoiceDate: '', percent: '', amount: '', paidAt: '', note: '', files: [], editReason: '', recalc: false,
                     })}>+ {PAYMENT_TYPE_LABEL[t]}</button>
                   ))}
                   <span className="muted">ใส่ % ของราคาขาย ({fmtBaht(job.budgetSalePrice)}) แล้วระบบคำนวณยอดให้ · หรือกรอกยอดเงินตรงๆ</span>
@@ -1930,9 +1951,13 @@ export default function JobDetailPage() {
             <label className="field"><span>จำนวน{selAccItem ? ` (${selAccItem.uom})` : ''}</span>
               <input type="number" min={1} value={accForm.qty} onChange={e => setAccForm({ ...accForm, qty: Number(e.target.value) })} />
             </label>
-            <label className="field"><span>ราคาต่อหน่วย (บาท)</span>
-              <input type="number" min={0} value={accForm.unitPrice} placeholder="0" onChange={e => setAccForm({ ...accForm, unitPrice: e.target.value })} />
-            </label>
+            {/* 0092 (มติ Q4): เบิกคลังกลาง = ต้นทุนถัวเฉลี่ยอัตโนมัติ — ช่องราคาแสดงเฉพาะสั่งซื้อ หรือคลังยังไม่มีต้นทุน */}
+            {(accForm.source !== 'central_stock' || !(stockCostOf(db, accForm.itemId) > 0)) && (
+              <label className="field">
+                <span>ราคาต่อหน่วย (บาท){accForm.source === 'central_stock' ? ' — บังคับ: คลังยังไม่มีต้นทุน' : ''}</span>
+                <input type="number" min={0} value={accForm.unitPrice} placeholder="0" onChange={e => setAccForm({ ...accForm, unitPrice: e.target.value })} />
+              </label>
+            )}
             <label className="field"><span>ตัดต้นทุนหมวด (Phase Budget)</span>
               <select value={accForm.phaseBudget} onChange={e => setAccForm({ ...accForm, phaseBudget: e.target.value as CostCategoryKey })}>
                 <option value="raw_mat">Raw Material{job.budgetCosts?.raw_mat?.phase ? ` (${job.budgetCosts.raw_mat.phase})` : ''}</option>
@@ -1972,7 +1997,7 @@ export default function JobDetailPage() {
               </div>
             </div>
           )}
-          {accForm.source === 'central_stock' && selAccStockQty > 0 && (
+          {accForm.source === 'central_stock' && selAccStockQty > 0 && stockCostOf(db, accForm.itemId) > 0 && (
             <div className="muted" style={{ marginBottom: 8 }}>
               ราคาที่ใช้ตัดต้นทุนจะดึงจาก<b>ต้นทุนถัวเฉลี่ยของคลัง</b> ({fmtBaht(stockCostOf(db, accForm.itemId))}) โดยอัตโนมัติ
             </div>
@@ -2371,9 +2396,16 @@ export default function JobDetailPage() {
           เพราะงวดใหม่ยังไม่มี id ให้ผูกไฟล์จนกว่าจะบันทึก */}
       {payForm && (() => {
         const pct = toBudgetNum(payForm.percent)
-        const preview = pct !== undefined && job.budgetSalePrice !== undefined
-          ? Math.round(job.budgetSalePrice * pct) / 100
-          : toBudgetNum(payForm.amount)
+        const editing = payForm.id ? db.jobPayments.find(x => x.id === payForm.id) : undefined
+        const paidBefore = !!editing?.paidAt
+        const samePct = editing?.percent !== undefined && pct !== undefined && pct === editing.percent
+        const canRecalc = samePct && editing?.baseSalePrice !== undefined && editing.baseSalePrice !== job.budgetSalePrice
+        const frozen = samePct && !payForm.recalc
+        const preview = frozen && editing ? editing.amount
+          : pct !== undefined && job.budgetSalePrice !== undefined
+            ? Math.round(job.budgetSalePrice * pct) / 100
+            : toBudgetNum(payForm.amount)
+        const needReason = paidBefore && !payForm.editReason.trim()
         const attached = payForm.id ? paymentFiles(db, payForm.id) : []
         const maxMb = isDemo ? DEMO_MAX_DOC_FILE_MB : MAX_DOC_FILE_MB
 
@@ -2404,18 +2436,20 @@ export default function JobDetailPage() {
             onClose={() => setPayForm(null)}
             footer={<>
               <button onClick={() => setPayForm(null)}>ยกเลิก</button>
-              <button className="primary" disabled={uploading} onClick={async () => {
+              <button className="primary" disabled={uploading || needReason}
+                title={needReason ? 'งวดนี้รับเงินแล้ว — กรอกหมายเหตุการแก้ไขก่อน' : undefined} onClick={async () => {
                 const payload = {
                   orderNum: payForm.orderNum, packId: payForm.packId,
                   invoiceNo: payForm.invoiceNo, invoiceDate: payForm.invoiceDate,
                   percent: pct, amount: pct !== undefined ? undefined : toBudgetNum(payForm.amount),
                   paidAt: payForm.paidAt, note: payForm.note,
                 }
+                const editExtra = { editReason: payForm.editReason, recalc: payForm.recalc }
                 // บันทึกงวดก่อนเสมอ — ได้ id มาแล้วค่อยผูกไฟล์
                 let paymentId = payForm.id
                 const saved = await tryAction(
                   async () => {
-                    if (payForm.id) await act.updateJobPayment({ paymentId: payForm.id, ...payload })
+                    if (payForm.id) await act.updateJobPayment({ paymentId: payForm.id, ...payload, ...editExtra })
                     else paymentId = await act.addJobPayment({ jobId: job.id, payType: payForm.payType, ...payload })
                   },
                   payForm.files.length > 0
@@ -2475,7 +2509,15 @@ export default function JobDetailPage() {
                   placeholder={pct !== undefined ? 'คำนวณจาก % ให้แล้ว' : '720000'} />
               </label>
             </div>
-            <div className="budget-legend">ยอดที่จะบันทึก: {fmtBaht(preview)}</div>
+            <div className="budget-legend">ยอดที่จะบันทึก: {fmtBaht(preview)}{frozen && editing ? ' (ยอดเดิมตามใบแจ้งหนี้)' : ''}</div>
+            {/* 0092 — ราคาขายเปลี่ยนหลังออกใบ: ยอดเดิมคงไว้ คิดใหม่ต้องสั่งเอง */}
+            {canRecalc && (
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+                <input type="checkbox" checked={payForm.recalc}
+                  onChange={e => setPayForm({ ...payForm, recalc: e.target.checked })} />
+                <span>คิดยอดใหม่ตามราคาขายปัจจุบัน ({fmtBaht(job.budgetSalePrice)}) — เดิมคิดจาก {fmtBaht(editing?.baseSalePrice)}</span>
+              </label>
+            )}
             <div className="row">
               <label className="field"><span>รับเงินแล้วเมื่อ (เว้นว่าง = รอรับเงิน)</span>
                 <input type="date" value={payForm.paidAt}
@@ -2485,6 +2527,14 @@ export default function JobDetailPage() {
                 <input value={payForm.note} onChange={e => setPayForm({ ...payForm, note: e.target.value })} />
               </label>
             </div>
+            {/* 0092 (มติ Q3) — งวดที่รับเงินแล้วแก้ได้ แต่ต้องบอกเหตุผล (เก็บใน Audit) */}
+            {paidBefore && (
+              <label className="field">
+                <span>หมายเหตุการแก้ไข (บังคับ — งวดนี้รับเงินแล้ว {editing?.paidAt})</span>
+                <input value={payForm.editReason} placeholder="เช่น ลูกค้าแจ้ง Pack ID ใหม่"
+                  onChange={e => setPayForm({ ...payForm, editReason: e.target.value })} />
+              </label>
+            )}
 
             {/* ---------- เอกสารแนบของงวดนี้ (0076) ---------- */}
             <div className="budget-legend">เอกสารแนบของงวดนี้</div>

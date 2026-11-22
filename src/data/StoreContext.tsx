@@ -257,6 +257,8 @@ export interface StoreActions {
   reopenJob: (p: Parameters<typeof L.reopenJob>[2]) => MaybePromise
   requestApproval: (p: Parameters<typeof L.requestApproval>[2]) => MaybePromise
   requestRevertInstall: (p: Parameters<typeof L.requestRevertInstall>[2]) => MaybePromise
+  requestReturnLbs: (p: Parameters<typeof L.requestReturnLbs>[2]) => MaybePromise
+  requestCloseoutCorrection: (p: Parameters<typeof L.requestCloseoutCorrection>[2]) => MaybePromise
   approveRequest: (p: Parameters<typeof L.approveRequest>[2]) => MaybePromise
   rejectApprovalRequest: (p: Parameters<typeof L.rejectApprovalRequest>[2]) => MaybePromise
   addApprovalComment: (p: Parameters<typeof L.addApprovalComment>[2]) => MaybePromise
@@ -481,6 +483,9 @@ function DemoProvider({ children }: { children: ReactNode }) {
         requestApproval: run('job.manage', L.requestApproval),
         // 0090 — ขอยกเลิกผลติดตั้งที่บันทึกผิด (Service หน้างาน + Project) → รอ Division พิจารณา
         requestRevertInstall: run('install.revertRequest', L.requestRevertInstall),
+        // 0094 — คืน LBS ที่ติดตั้งไม่ได้เข้าคลัง (สิทธิ์เดียวกับขอยกเลิกผล) · ขอแก้ข้อมูลหลังปิดงาน (Service/Project)
+        requestReturnLbs: run('install.revertRequest', L.requestReturnLbs),
+        requestCloseoutCorrection: run('closeout.manage', L.requestCloseoutCorrection),
         approveRequest: run('approval.decide', L.approveRequest),
         rejectApprovalRequest: run('approval.decide', L.rejectApprovalRequest),
         addApprovalComment: run('approval.comment', L.addApprovalComment),
@@ -726,6 +731,17 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
     act.requestRevertInstall = async (p) => {
       await baseRequestRevert(p)
       await pushApprovalCard(p.jobId, 'revert_install')
+    }
+    // 0094 — การ์ดอนุมัติแบบเดียวกัน
+    const baseRequestReturn = act.requestReturnLbs
+    act.requestReturnLbs = async (p) => {
+      await baseRequestReturn(p)
+      await pushApprovalCard(p.jobId, 'return_lbs')
+    }
+    const baseRequestCorrection = act.requestCloseoutCorrection
+    act.requestCloseoutCorrection = async (p) => {
+      await baseRequestCorrection(p)
+      await pushApprovalCard(p.jobId, 'correct_closeout')
     }
 
     return {

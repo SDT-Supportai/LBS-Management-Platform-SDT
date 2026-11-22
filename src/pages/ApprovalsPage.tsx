@@ -1,7 +1,7 @@
 import { Fragment, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { approvalCommentsOf } from '../data/logic'
+import { approvalCommentsOf, correctionLabel } from '../data/logic'
 import { Modal, useToast, useTryAction } from '../ui/components'
 import { supabase } from '../lib/supabase'
 import { APPROVAL_TYPE_LABEL, APPROVAL_STATUS_LABEL, DEPT_LABEL, fmtDate, fmtDateTime } from '../ui/format'
@@ -159,6 +159,13 @@ export default function ApprovalsPage() {
       })
       return `${units.length} เครื่อง: ${units.join(', ')} → กลับเป็นรอติดตั้ง (หลักฐานเดิมเก็บในประวัติ) · เหตุผล: ${r.payload.reason ?? '-'}`
     }
+    if (r.type === 'return_lbs') {
+      // 0094: Division ต้องเห็นว่าเครื่องไหนกลับเข้าคลัง และทำไมติดตั้งไม่ได้
+      const units = (r.payload.unitIds ?? []).map(id => db.lbsUnits.find(x => x.id === id)?.serialLvb ?? '?')
+      return `${units.length} เครื่อง: ${units.join(', ')} → กลับเข้า LBS Inventory · เหตุผล: ${r.payload.reason ?? '-'}`
+    }
+    if (r.type === 'correct_closeout' && r.payload.correction)
+      return `${correctionLabel(db, r.payload.correction)} (งานยังปิดอยู่) · เหตุผล: ${r.payload.reason ?? '-'}`
     return `เหตุผล: ${r.payload.reason ?? '-'}${r.payload.receivedToCentral ? ' (วัสดุที่รับแล้วคืนเข้าสต็อกกลาง)' : ''}`
   }
 
@@ -260,7 +267,15 @@ export default function ApprovalsPage() {
                     <td style={{ maxWidth: 340 }}>{payloadSummary(r)}</td>
                     <td>{userName(r.requestedBy)}</td>
                     <td>{fmtDateTime(r.requestedAt)}</td>
-                    {canDecide && (
+                    {canDecide && r.requestedBy === user?.id && (
+                      // 0093 (มติ D1): คนขอกับคนอนุมัติต้องเป็นคนละคน — DB ปฏิเสธอยู่แล้ว ไม่ต้องให้กดแล้วเจอ error
+                      <td style={{ textAlign: 'right' }}>
+                        <span className="badge neutral" title="คนขอกับคนอนุมัติต้องเป็นคนละคน">
+                          คำขอของคุณเอง — รอ Division พิจารณา
+                        </span>
+                      </td>
+                    )}
+                    {canDecide && r.requestedBy !== user?.id && (
                       <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                         <button className="success small" style={{ marginRight: 6 }}
                           onClick={() => tryAction(() => act.approveRequest({ requestId: r.id }),

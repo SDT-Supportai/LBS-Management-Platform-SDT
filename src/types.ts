@@ -329,6 +329,15 @@ export interface PurchaseOrder {
 // revert_install (0090) = ขอยกเลิกผลติดตั้งที่บันทึกผิด — Service/Project ขอ · Division อนุมัติ
 //   ขอผ่าน requestRevertInstall (rpc_request_revert_install) ไม่ใช่ requestApproval เพราะผู้ขอหลักคือ Service
 export type ApprovalType = 'create_pr' | 'issue_job' | 'cancel_job' | 'swap_lbs' | 'reopen_job' | 'revert_install'
+  | 'return_lbs'          // 0094 — คืน LBS ที่เบิกแล้ว (ติดตั้งไม่ได้) เข้า LBS Inventory · Division ตรวจรับ
+  | 'correct_closeout'    // 0094 — ขอแก้ข้อมูลหลังปิดงาน (งานยังปิดอยู่)
+
+/** 0094 — ข้อมูลหลังปิดงานที่ขอแก้ได้ (มติผู้ใช้ Q2 2026-11-22) */
+export type CloseoutCorrection =
+  | { kind: 'install_date'; unitId: string; installedDate: string }
+  | { kind: 'warranty'; unitId?: string; startDate: string; endDate: string }   // unitId ว่าง = ประกันงานติดตั้ง
+  | { kind: 'acceptance'; acceptanceType: AcceptanceType; acceptanceDocNo?: string; acceptanceDate: string }
+  | { kind: 'swap_serial'; unitIds: string[] }                                   // 2 เครื่องบน Job เดียวกัน
 
 export interface ApprovalPayload {
   requestIds?: string[]            // create_pr
@@ -344,6 +353,9 @@ export interface ApprovalPayload {
   // swap_lbs: สลับเลข Serial (LVB+OM) ระหว่างเครื่องที่ดึงเข้า Job (allocated) กับเครื่องในคลัง (in_stock)
   swapAllocatedUnitId?: string     // เครื่องบน Job ที่จะรับเลขใหม่
   swapStockUnitId?: string         // เครื่องในคลังที่จะเอาเลขมาสลับ (คงอยู่ในคลัง)
+  // create_pr (0093): สำเนาจำนวน/ราคา ณ ตอนขอ — อนุมัติตอนที่รายการถูกแก้ไปแล้ว = คำขอล้าสมัย
+  snapshot?: { id: string; qty: number; unitPrice: number | null }[]
+  correction?: CloseoutCorrection  // correct_closeout (0094)
 }
 
 export interface ApprovalRequest {
@@ -429,6 +441,7 @@ export interface JobAssignment {
 // reverted (0090) = แถว "ยกเลิกผลติดตั้งก่อนหน้า" (Division อนุมัติแล้ว) → เครื่องกลับเป็น "รอติดตั้ง"
 //   แถว installed เดิมยังอยู่เป็นหลักฐาน (ไม่ลบ/ไม่แก้) · reason = เหตุผลที่ขอยกเลิก
 export type UnitInstallOutcome = 'installed' | 'blocked' | 'reverted'
+  | 'returned'   // 0094 — คืนเข้า LBS Inventory แล้ว (สถานะกลับเป็นรอติดตั้ง เมื่อถูกดึงไปใช้ Job อื่น)
 /** สถานะปัจจุบันของเครื่อง (reverted นับเป็น pending) */
 export type UnitInstallState = 'installed' | 'blocked' | 'pending'
 export interface UnitInstallation {

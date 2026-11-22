@@ -35,6 +35,10 @@ export default function ServicePage() {
   const [revertFor, setRevertFor] = useState<string | null>(null)        // jobId
   const [revertIds, setRevertIds] = useState<string[]>([])
   const [revertReason, setRevertReason] = useState('')
+  // 0094 (มติ Q1) — เครื่องติดตั้งไม่ได้ → ขอคืนเข้า LBS Inventory → Division ตรวจรับ
+  const [returnFor, setReturnFor] = useState<string | null>(null)        // jobId
+  const [returnIds, setReturnIds] = useState<string[]>([])
+  const [returnReason, setReturnReason] = useState('')
   // หลักฐานต่อเครื่อง (เฟส B) — วันที่ / GPS / รูป
   const [installedDate, setInstalledDate] = useState('')
   const [note, setNote] = useState('')
@@ -122,9 +126,10 @@ export default function ServicePage() {
           + ' — Project ต้องเบิก/โอนคืน/ตัดจำหน่ายให้ครบก่อน จึงปิดงานได้'
       : ''
   // 0090: คำขอยกเลิกผลติดตั้งค้างอยู่ = ปิดงานไม่ได้จนกว่า Division ตัดสิน (logic + trigger ก็กันอยู่)
-  const closeReason = (jobId: string, s: ReturnType<typeof jobInstallSummary>) =>
-    pendingRevert(jobId) ? 'มีคำขอยกเลิกผลติดตั้งรอ Division พิจารณา — ปิดงานได้หลัง Division ตัดสินแล้ว' : closeBlockedReason(s)
-  const canCloseNow = (jobId: string, s: ReturnType<typeof jobInstallSummary>) => s.canClose && !pendingRevert(jobId)
+  // 0094: เหตุที่ยังปิดไม่ได้มาจากตัวเดียวกับ DB (jobCloseBlockers ↔ app_job_close_blockers) — รวมคำขอค้างทุกประเภท
+  const closeReason = (_jobId: string, s: ReturnType<typeof jobInstallSummary>) =>
+    s.closeBlockers.length > 0 ? s.closeBlockers.join(' · ') : closeBlockedReason(s)
+  const canCloseNow = (_jobId: string, s: ReturnType<typeof jobInstallSummary>) => s.canClose
   // วัสดุที่ยังค้างจัดซื้อ (รวมของที่ซื้อเพิ่มหลังเบิก — 0037) ใช้เตือนตอนปิดงาน
   const outstandingProcurement = (jobId: string) => db.accessoryRequests.filter(r =>
     r.jobId === jobId && (r.status === 'pending' || r.status === 'pr_sent' || r.status === 'po_ordered'))
@@ -212,6 +217,19 @@ export default function ServicePage() {
     // ปิด modal รายเครื่องก่อน — ไม่ซ้อน 2 modal (ฟอร์มนี้มีรายการเครื่องให้เลือกในตัวอยู่แล้ว)
     setUnitJobId(null); setStep(null)
     setRevertIds([unitId]); setRevertReason(''); setRevertFor(jobId)
+  }
+  const pendingReturn = (jobId: string) =>
+    db.approvalRequests.find(r => r.jobId === jobId && r.type === 'return_lbs' && r.status === 'pending')
+  const openReturn = (jobId: string, unitId: string) => {
+    setUnitJobId(null); setStep(null)                       // ไม่ซ้อน 2 popup
+    setReturnIds([unitId]); setReturnReason(''); setReturnFor(jobId)
+  }
+  const submitReturn = async () => {
+    if (!returnFor) return
+    const ok = await tryAction(
+      () => act.requestReturnLbs({ jobId: returnFor, unitIds: returnIds, reason: returnReason }),
+      `ส่งคำขอคืน LBS ${returnIds.length} เครื่องเข้าคลังแล้ว — รอ Division พิจารณา`)
+    if (ok) setReturnFor(null)
   }
   const submitRevert = async () => {
     if (!revertFor) return
@@ -625,6 +643,8 @@ export default function ServicePage() {
                     const r = lastInstallRow(u.id)
                     const revertReq = pendingRevert(unitJob.id)
                     const revertPending = !!revertReq?.payload.unitIds?.includes(u.id)
+                    const returnReq = pendingReturn(unitJob.id)
+                    const returnPending = !!returnReq?.payload.unitIds?.includes(u.id)
                     // 0086: งานหลายจุด — ช่างต้องรู้ว่าเครื่องนี้ไปสถานีไหน กำหนดวันไหน
                     const site = unitJobSite(db, u)
                     return (
@@ -647,10 +667,20 @@ export default function ServicePage() {
                           {revertPending && (
                             <div><span className="badge amber" title={revertReq?.payload.reason}>⏳ ขอยกเลิกผล — รอ Division พิจารณา</span></div>
                           )}
+                          {returnPending && (
+                            <div><span className="badge amber" title={returnReq?.payload.reason}>⏳ ขอคืนเข้าคลัง — รอ Division พิจารณา</span></div>
+                          )}
                         </td>
                         <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                           {/* 0090: ยืนยันผิดเครื่อง → ขอยกเลิกผล (ไม่แก้ตรง · ต้องผ่าน Division) */}
                           {/* 0091: Project ขอได้เฉพาะงานที่ตัวเองเปิด (DB ตรวจซ้ำที่ rpc_request_revert_install) */}
+                          {/* 0094 (มติ Q1): ติดตั้งไม่ได้ → ขอคืนเข้า LBS Inventory (ต้องคืนก่อนปิดงาน · ไม่มีตัดจำหน่าย) */}
+                          {st === 'blocked' && canRequestRevert && ownsJob(user, unitJob) && !returnReq && (
+                            <button className="small" style={{ marginRight: 6 }} onClick={() => openReturn(unitJob.id, u.id)}
+                              title="เครื่องนี้ติดตั้งไม่ได้ — ส่งคำขอให้ Division ตรวจรับกลับเข้า LBS Inventory">
+                              📦 ขอคืนเข้าคลัง
+                            </button>
+                          )}
                           {st === 'installed' && canRequestRevert && ownsJob(user, unitJob) && !revertReq && (
                             <button className="small" onClick={() => openRevert(unitJob.id, u.id)}
                               title="ยืนยันผิดเครื่อง/ข้อมูลผิด — ส่งคำขอให้ Division พิจารณา">
@@ -840,6 +870,46 @@ export default function ServicePage() {
             <label className="field"><span>เหตุผล *</span>
               <textarea rows={3} value={revertReason} onChange={e => setRevertReason(e.target.value)}
                 placeholder="เช่น กดยืนยันผิดเครื่อง — เครื่องที่ติดตั้งจริงคือ C106407 ไม่ใช่ C106406" />
+            </label>
+          </Modal>
+        )
+      })()}
+
+      {/* 0094 — ขอคืน LBS ที่ติดตั้งไม่ได้เข้าคลัง → รอ Division พิจารณา */}
+      {returnFor && (() => {
+        const rj = db.jobs.find(j => j.id === returnFor)
+        if (!rj) return null
+        const candidates = unitsOut(rj.id).filter(u => unitInstallState(db, u.id) !== 'installed')
+        const toggle = (id: string) => setReturnIds(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id])
+        return (
+          <Modal title={`ขอคืน LBS เข้าคลัง — ${rj.jobNo}`} onClose={() => setReturnFor(null)}
+            footer={<>
+              <button onClick={() => setReturnFor(null)}>ยกเลิก</button>
+              <button className="primary" disabled={returnIds.length === 0 || !returnReason.trim()} onClick={submitReturn}>
+                ส่งคำขอ ({returnIds.length} เครื่อง)
+              </button>
+            </>}>
+            <div className="panel" style={{ marginBottom: 12 }}>
+              <div className="panel-body muted" style={{ fontSize: 13 }}>
+                ใช้กับเครื่องที่ <b>ติดตั้งไม่ได้</b> — ต้องคืนเข้า LBS Inventory ก่อนจึงปิดงานได้<br />
+                ① คำขอไปรอ Division พิจารณา → ② Division ตรวจรับแล้วเครื่องกลับเป็น <b>ว่างในคลังเดิม</b> ดึงไปใช้งานอื่นได้<br />
+                ประวัติการติดตั้งไม่ได้ของเครื่องนี้ยังเก็บไว้ครบ
+              </div>
+            </div>
+            <label className="field"><span>เครื่องที่จะคืน *</span></label>
+            <div style={{ marginBottom: 12 }}>
+              {candidates.map(u => (
+                <label key={u.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '4px 0' }}>
+                  <input type="checkbox" checked={returnIds.includes(u.id)} onChange={() => toggle(u.id)} />
+                  <span className="mono">{u.serialLvb}</span>
+                  <span className="muted mono">{u.serialOm}</span>
+                  {unitInstallState(db, u.id) === 'blocked' && <span className="muted">· ติดตั้งไม่ได้: {lastInstallRow(u.id)?.reason}</span>}
+                </label>
+              ))}
+            </div>
+            <label className="field"><span>เหตุผล *</span>
+              <textarea rows={3} value={returnReason} onChange={e => setReturnReason(e.target.value)}
+                placeholder="เช่น ลูกค้ายกเลิกจุดติดตั้งที่ 2 / ฐานรากไม่พร้อม เลื่อนไม่มีกำหนด" />
             </label>
           </Modal>
         )

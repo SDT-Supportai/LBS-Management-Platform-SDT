@@ -14,7 +14,10 @@ import { createClient } from '@supabase/supabase-js'
 const TYPE_LABEL = {
   create_pr: 'ออก PR', issue_job: 'เบิก LBS ให้ Service', cancel_job: 'ยกเลิก Job',
   swap_lbs: 'สลับ LBS', reopen_job: 'เปิดงานใหม่', revert_install: 'ยกเลิกผลติดตั้ง',
+  return_lbs: 'คืน LBS เข้าคลัง', correct_closeout: 'แก้ข้อมูลหลังปิดงาน',   // 0094
 }
+// 0094 — คำขอจากหน้างาน: Service ส่งการ์ดเองได้ (นอกจาก Project/Manage)
+const SERVICE_TYPES = ['revert_install', 'return_lbs', 'correct_closeout']
 
 // ⚠️ ห้าม fallback เป็นข้อความของ type อื่น — ผู้อนุมัติจะกด ✅ ให้เรื่องที่เข้าใจผิด
 //    เคยพลาดจริง: 0041 เพิ่ม reopen_job แต่ไม่ได้แก้ที่นี่ → ไม่มีสาขาแล้วตกลงมาที่ 'ยกเลิก Job'
@@ -36,6 +39,17 @@ function summarize(type, payload, serials = []) {
   // 0090: อนุมัติแล้วเครื่องกลับเป็น "รอติดตั้ง" · หลักฐานเดิมยังอยู่ในประวัติ
   if (type === 'revert_install')
     return `ยกเลิกผลติดตั้ง ${(payload.unit_ids ?? []).length} เครื่อง${serials.length ? ` (${serials.join(', ')})` : ''} → กลับเป็นรอติดตั้ง · เหตุผล: ${payload.reason ?? '-'}`
+  // 0094
+  if (type === 'return_lbs')
+    return `คืน LBS ${(payload.unit_ids ?? []).length} เครื่อง${serials.length ? ` (${serials.join(', ')})` : ''} เข้าคลัง (ติดตั้งไม่ได้) · เหตุผล: ${payload.reason ?? '-'}`
+  if (type === 'correct_closeout') {
+    const c = payload.correction ?? {}
+    const what = c.kind === 'install_date' ? `วันที่ติดตั้ง${serials[0] ? ' ' + serials[0] : ''} → ${c.installed_date}`
+      : c.kind === 'warranty' ? `วันประกัน → ${c.start_date} ถึง ${c.end_date}`
+      : c.kind === 'acceptance' ? `เอกสารรับมอบ → ${c.acceptance_type} ${c.acceptance_doc_no ?? ''} (${c.acceptance_date})`
+      : c.kind === 'swap_serial' ? `สลับผลติดตั้ง ${serials.join(' ↔ ')}` : null
+    if (what) return `แก้ข้อมูลหลังปิดงาน: ${what} · เหตุผล: ${payload.reason ?? '-'}`
+  }
   return `คำขอประเภท "${type}" — การ์ดนี้อธิบายรายละเอียดไม่ได้ กรุณาเปิดตรวจในระบบ`
 }
 
@@ -139,22 +153,32 @@ export async function onRequestPost(context) {
   const { data: r, error: rErr } = await q.maybeSingle()
   if (rErr) return Response.json({ ok: false, error: rErr.message }, { status: 500 })
   if (!r) return Response.json({ ok: true, skipped: 'ไม่พบคำขอที่รออนุมัติ' })
-  if (me.department === 'service' && r.req_type !== 'revert_install') {
+  if (me.department === 'service' && !SERVICE_TYPES.includes(r.req_type)) {
     return Response.json({ ok: false, error: 'แผนกของคุณไม่มีสิทธิ์ส่งการ์ดขออนุมัติประเภทนี้' }, { status: 403 })
   }
 
   const { data: job } = await sb.from('jobs').select('job_no, customer_name').eq('id', r.job_id).maybeSingle()
   const { data: requester } = await sb.from('profiles').select('full_name, department').eq('id', r.requested_by).maybeSingle()
   let serials = []
-  if (r.req_type === 'revert_install' && Array.isArray(r.payload?.unit_ids) && r.payload.unit_ids.length) {
-    const { data: us } = await sb.from('lbs_units').select('serial_lvb').in('id', r.payload.unit_ids)
-    serials = (us ?? []).map(u => u.serial_lvb)
+  // เครื่องที่เกี่ยวข้อง (revert_install / return_lbs = unit_ids · correct_closeout = correction.unit_id(s))
+  const unitIds = Array.isArray(r.payload?.unit_ids) ? r.payload.unit_ids
+    : r.req_type === 'correct_closeout'
+      ? (Array.isArray(r.payload?.correction?.unit_ids) ? r.payload.correction.unit_ids
+        : r.payload?.correction?.unit_id ? [r.payload.correction.unit_id] : [])
+      : []
+  if (['revert_install', 'return_lbs', 'correct_closeout'].includes(r.req_type) && unitIds.length) {
+    const { data: us } = await sb.from('lbs_units').select('id, serial_lvb').in('id', unitIds)
+    // คงลำดับตามคำขอ (สลับ Serial ต้องอ่าน A ↔ B ตามที่ขอ)
+    serials = unitIds.map(id => (us ?? []).find(u => u.id === id)?.serial_lvb).filter(Boolean)
   }
   const fromLabel = requester?.department === 'service' ? 'Service' : requester?.department === 'admin' ? 'Manage' : 'Project'
 
   // ผู้อนุมัติที่เชื่อม LINE แล้ว (Division/admin, ยัง active)
-  const { data: approvers } = await sb.from('profiles').select('line_user_id')
+  // 0093: ไม่ส่งการ์ดให้ผู้ขอเอง (คนขอกับคนอนุมัติต้องเป็นคนละคน — DB ปฏิเสธอยู่แล้ว กันกดแล้วเจอ error)
+  let approverQ = sb.from('profiles').select('line_user_id')
     .in('department', ['sales', 'admin']).eq('is_active', true).not('line_user_id', 'is', null)
+  if (r.requested_by) approverQ = approverQ.neq('id', r.requested_by)
+  const { data: approvers } = await approverQ
   const recipients = (approvers ?? []).map(a => a.line_user_id).filter(Boolean)
   if (recipients.length === 0) return Response.json({ ok: true, skipped: 'ยังไม่มีผู้อนุมัติที่เชื่อม LINE' })
 

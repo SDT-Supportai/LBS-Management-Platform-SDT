@@ -1,7 +1,7 @@
 import type {
   DB, Job, JobStatus, User, AccessoryRequest, AccReqStatus, PurchaseOrder, Department, LbsUnit, LbsUnitFile,
   JobPaymentFile, JobDueExtension,
-  ApprovalType, ApprovalPayload, BudgetCosts, CostCategoryKey,
+  ApprovalType, ApprovalPayload, ApprovalRequest, CloseoutCorrection, BudgetCosts, CostCategoryKey,
   SiteVisit, SiteVisitOutcome, UnitInstallState, TeamMember, JobAssignment,
   StockMovementType, PaymentType, EpicorTxnType,
   PublicShareLink, PublicStockView, StdDrawing, StdDrawingFile,
@@ -1472,6 +1472,10 @@ export interface PaymentInput {
   invoiceNo?: string; invoiceDate?: string
   percent?: number; amount?: number
   paidAt?: string; note?: string
+  /** 0092 — แก้งวดที่รับเงินแล้วต้องมีหมายเหตุการแก้ (เก็บใน Audit) */
+  editReason?: string
+  /** 0092 — คิดยอดใหม่ตามราคาขายปัจจุบัน (ไม่ติ๊ก = ยอดเดิมคงไว้ ถ้า % ไม่เปลี่ยน) */
+  recalc?: boolean
 }
 
 export function addJobPayment(
@@ -1506,21 +1510,30 @@ export function updateJobPayment(
   const pm = db.jobPayments.find(x => x.id === p.paymentId)
   if (!pm) throw new Error('ไม่พบงวดเงินนี้')
   const job = assertJobCostEditable(db, pm.jobId, actor)
-  const amount = paymentAmount(job, p.percent, p.amount)
   const clean = (s?: string) => { const t = s?.trim(); return t ? t : undefined }
+  // 0092 (มติ Q3): แก้ได้เสมอ แต่งวดที่รับเงินแล้วต้องบอกเหตุผล — เป็นยอดที่ลูกค้าจ่ายจริงไปแล้ว
+  const editReason = clean(p.editReason)
+  if (pm.paidAt && !editReason)
+    throw new Error(`งวดนี้รับเงินแล้ว (${pm.paidAt}) — กรุณาระบุหมายเหตุการแก้ไข`)
+  // 0092: ยอดเดิม "ตรึง" ไว้ตามใบแจ้งหนี้ — คิดใหม่เฉพาะเมื่อเปลี่ยน % / เปลี่ยนจากยอดกรอกเองเป็น % / สั่ง recalc
+  //   เดิมคิดใหม่ทุกครั้ง ⇒ แก้แค่ Pack ID หลังราคาขายเปลี่ยน ยอดงวดที่รับเงินแล้วเปลี่ยนเงียบ ๆ
+  const keepFrozen = p.percent !== undefined && p.percent === pm.percent && !p.recalc
+  const amount = keepFrozen ? pm.amount : paymentAmount(job, p.percent, p.amount)
+  const baseSalePrice = keepFrozen ? pm.baseSalePrice : job.budgetSalePrice
   const next: DB = {
     ...db,
     jobPayments: db.jobPayments.map(x => x.id === p.paymentId ? {
       ...x,
       orderNum: clean(p.orderNum), packId: clean(p.packId),
       invoiceNo: clean(p.invoiceNo), invoiceDate: clean(p.invoiceDate),
-      percent: p.percent, amount, baseSalePrice: job.budgetSalePrice,
+      percent: p.percent, amount, baseSalePrice,
       paidAt: clean(p.paidAt), note: clean(p.note),
     } : x),
   }
   return audit(next, actor, 'job_payment', pm.jobId, 'update_job_payment',
     `${job.jobNo} แก้งวด ${pm.payType} #${pm.seq} · Order ${clean(p.orderNum) ?? '-'} · Pack ${clean(p.packId) ?? '-'} · Invoice ${clean(p.invoiceNo) ?? '-'} · ${pm.amount} → ${amount} ฿` +
-    (clean(p.paidAt) ? ` · รับเงิน ${clean(p.paidAt)}` : ' · ยังไม่รับเงิน'))
+    (clean(p.paidAt) ? ` · รับเงิน ${clean(p.paidAt)}` : ' · ยังไม่รับเงิน') +
+    (editReason ? ` · เหตุผลที่แก้: ${editReason}` : ''))
 }
 
 export function deleteJobPayment(db: DB, actor: User, p: { paymentId: string }): DB {
@@ -2220,8 +2233,12 @@ export function addAccessoryRequest(
     const onHand = row?.qtyOnHand ?? 0
     if (onHand < p.qty)
       throw new Error(`คลังคงเหลือ ${item.name} มี ${onHand} ${item.uom} ไม่พอ (ขอ ${p.qty}) — เปลี่ยนเป็นสั่งซื้อผ่าน Purchasing ได้`)
-    // ต้นทุนตอนเบิก = ต้นทุนถัวเฉลี่ยของคลัง (ถ้ามี) — ต้นทุนไหลตามของจาก Job ต้นทาง
-    const issueCost = stockCostOf(db, p.itemId) || unitPrice
+    // ต้นทุนตอนเบิก = ต้นทุนถัวเฉลี่ยของคลัง (มติผู้ใช้ Q4 2026-11-22 · sync 0092) — ราคาที่พิมพ์มาไม่ถูกใช้
+    //   คลังยังไม่มีต้นทุน (ถัวเฉลี่ย 0) เท่านั้นที่ต้องกรอกราคาเอง ไม่งั้นต้นทุน Job กลายเป็น 0 เงียบ ๆ
+    const avgCost = stockCostOf(db, p.itemId)
+    const issueCost = avgCost > 0 ? avgCost : unitPrice
+    if (issueCost === undefined)
+      throw new Error(`${item.name} ยังไม่มีต้นทุนในคลัง — กรุณากรอกราคาต่อหน่วย`)
     next = {
       ...db,
       accessoryRequests: [...db.accessoryRequests, {
@@ -3091,7 +3108,8 @@ function latestInstallRow(db: DB, unitId: string) {
 export function unitInstallState(db: DB, unitId: string): UnitInstallState {
   const last = latestInstallRow(db, unitId)?.outcome
   // 0090: reverted = Division อนุมัติยกเลิกผลเดิมแล้ว → กลับเป็นรอติดตั้ง (ประวัติเดิมยังอยู่)
-  return !last || last === 'reverted' ? 'pending' : last
+  // 0094: returned = คืนเข้าคลังแล้ว → ถูกดึงไป Job อื่นก็เริ่มนับใหม่
+  return !last || last === 'reverted' || last === 'returned' ? 'pending' : last
 }
 
 /** แถว installed นี้ถูกยกเลิกภายหลังหรือยัง (0090) — ใช้ตัดออกจากสถิติ/วันที่ติดตั้ง */
@@ -3169,8 +3187,40 @@ export function jobInstallSummary(db: DB, jobId: string) {
     // ที่ยังค้างก่อนปิดได้ (ฝั่ง Project) — ใช้บอกเหตุผลเมื่อ unitsDone แต่ยังปิดไม่ได้
     lbsShort: job ? Math.max(0, job.lbsQtyRequired - units.length) : 0,
     pendingAccessories: jobPendingIssueAccessories(db, jobId).length,
-    canClose: unitsDone && issueComplete,
+    closeBlockers: jobCloseBlockers(db, jobId),
+    canClose: unitsDone && issueComplete && jobCloseBlockers(db, jobId).length === 0,
   }
+}
+
+/**
+ * 0094 — เหตุผลที่ยังปิดงานไม่ได้ (นอกจากเงื่อนไขหน้าไซต์) — ว่าง = ปิดได้ · sync app_job_close_blockers
+ *   มติ Q1: เครื่องที่ติดตั้งไม่ได้ต้องคืนเข้า LBS Inventory ก่อน (ไม่มีตัดจำหน่าย LBS)
+ *   ผลตรวจ Workflow: ปิดงานทั้งที่มีของซื้อเพิ่ม/คำขอ/ของคืนค้าง ⇒ ค้างถาวรทำต่อไม่ได้
+ */
+export function jobCloseBlockers(db: DB, jobId: string): string[] {
+  const out: string[] = []
+  const blocked = db.lbsUnits.filter(u => u.jobId === jobId && unitInstallState(db, u.id) === 'blocked')
+  if (blocked.length > 0)
+    out.push(`เครื่องติดตั้งไม่ได้ ${blocked.length} เครื่อง (${blocked.map(u => u.serialLvb).join(', ')}) — ส่งคำขอคืนเข้า LBS Inventory ก่อน`)
+  const pendingReq = db.approvalRequests.filter(r => r.jobId === jobId && r.status === 'pending')
+  if (pendingReq.length > 0)
+    out.push(`มีคำขอรอ Division พิจารณา: ${pendingReq.map(r => APPROVAL_TYPE_LABEL[r.type]).join(', ')}`)
+  const pendingRet = db.stockReturns.filter(s => s.jobId === jobId && s.status === 'pending')
+  if (pendingRet.length > 0)
+    out.push(`มีคำขอคืนวัสดุรอ Purchasing ตรวจรับ ${pendingRet.length} รายการ`)
+  const accOpen = db.accessoryRequests.filter(r => r.jobId === jobId && (
+    r.status === 'pending' || r.status === 'pr_sent' || r.status === 'po_ordered' ||
+    ((r.status === 'issued' || r.status === 'received') && qtyPendingIssue(r) > 0)))
+  if (accOpen.length > 0)
+    out.push(`วัสดุยังค้าง ${accOpen.length} รายการ (ยังซื้อไม่เสร็จ หรือยังไม่ออกหน้างาน)`)
+  return out
+}
+
+/** 0094 (มติ Q2): เริ่มนับประกันแล้ว = เปิดงานใหม่ไม่ได้ · ใบเก่าที่ไม่มีประกันยังเปิดได้ */
+export function jobWarrantyStarted(db: DB, jobId: string): string | undefined {
+  const today = new Date().toISOString().slice(0, 10)
+  return db.jobWarranties.filter(w => w.jobId === jobId && w.startDate <= today)
+    .map(w => w.startDate).sort()[0]
 }
 
 /**
@@ -3504,9 +3554,10 @@ export function closeJobInstall(
   if (!job) throw new Error('ไม่พบ Job')
   if (job.terminalStatus !== 'issued')
     throw new Error(`ปิดงานได้เฉพาะงานที่เบิกแล้ว (Issued) — ${job.jobNo} อยู่สถานะอื่น`)
-  // 0090: ผลติดตั้งกำลังถูกขอยกเลิก — ปิดก่อน Division ตัดสิน = ปิดบนข้อมูลที่อาจผิด + คำขอจะอนุมัติไม่ได้
-  if (pendingRevertRequest(db, p.jobId))
-    throw new Error(`${job.jobNo} มีคำขอยกเลิกผลติดตั้งรอ Division พิจารณา — ปิดงานได้หลัง Division ตัดสินแล้ว`)
+  // 0094: รวมทุกเหตุที่ยังปิดไม่ได้ (รวมคำขอยกเลิกผลติดตั้งค้างของ 0090) — sync app_job_close_blockers
+  const blockers = jobCloseBlockers(db, p.jobId)
+  if (blockers.length > 0)
+    throw new Error(`${job.jobNo} ยังปิดงานไม่ได้: ${blockers.join(' · ')}`)
   const s = jobInstallSummary(db, p.jobId)
   if (s.total === 0) throw new Error(`${job.jobNo} ไม่มีเครื่องที่เบิกไว้`)
   if (s.pending > 0)
@@ -3553,11 +3604,18 @@ export function closeJobInstall(
 // ไม่ลบประวัติ: unitInstallations คงไว้ทั้งหมด (เครื่องที่ยืนยันแล้วยังยืนยันแล้ว ปิดใหม่ได้ทันที)
 // แต่ล้าง field ที่เกี่ยวกับ "การปิดงาน" ทิ้ง เพราะจะถูกเขียนใหม่ตอนปิดรอบหน้า
 // (ถ้าไม่ล้าง จะมีงานสถานะ issued ที่มีวันปิดงานค้าง = รายงานเพี้ยน) — สำเนาเดิมเก็บลง audit
+function assertNotWarrantyStarted(db: DB, job: Job): void {
+  const started = jobWarrantyStarted(db, job.id)
+  if (started)
+    throw new Error(`${job.jobNo} เริ่มนับประกันแล้ว (${started}) — เปิดงานใหม่ไม่ได้ · ถ้าบันทึกผิดให้ใช้ "ขอแก้ข้อมูลที่บันทึกผิด"`)
+}
+
 export function reopenJob(db: DB, actor: User, p: { jobId: string; reason: string }): DB {
   const job = db.jobs.find(j => j.id === p.jobId)
   if (!job) throw new Error('ไม่พบ Job')
   if (job.terminalStatus !== 'installed')
     throw new Error(`เปิดงานใหม่ได้เฉพาะงานที่ปิดแล้ว (Installed) — ${job.jobNo} อยู่สถานะอื่น`)
+  assertNotWarrantyStarted(db, job)                                 // 0094 (มติ Q2)
   if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผลที่ขอเปิดงานใหม่')
 
   const prev = [
@@ -3884,6 +3942,19 @@ export function cancelJob(
     ],
   }
 
+  // 0092: คำขอคืนคลังที่ค้าง (ยังไม่ตรวจรับ) ปิดอัตโนมัติ — ของยังอยู่ที่ Job จึงถูกนับคืนรวมด้านล่างแทน
+  //   เดิมค้างไว้ให้ Purchasing ไล่กด "ตีกลับ Job" ทีละใบ
+  next = {
+    ...next,
+    stockReturns: next.stockReturns.map(s => s.jobId === p.jobId && s.status === 'pending'
+      ? { ...s, status: 'cancelled' as const, decidedBy: actor.id, decidedAt: ts, decisionNote: `ยกเลิกอัตโนมัติ: ${job.jobNo} ถูกยกเลิก` }
+      : s),
+  }
+  // 0092: จำนวนที่ "ยังอยู่ที่ Job จริง" = ที่ได้มา − โอนคืนคลังแล้ว − ออกหน้างาน − ตัดจำหน่าย
+  //   เดิมใช้ effectiveQty (ไม่หักตัดจำหน่าย) ⇒ ของที่ทิ้งไปแล้วกลับเข้าคลัง · SQL เดิมไม่หักอะไรเลย
+  const atJob = (r: AccessoryRequest, got: number) =>
+    Math.max(0, got - (r.qtyTransferred ?? 0) - qtyIssuedToService(r) - qtyWrittenOff(r))
+
   const reqs = next.accessoryRequests.filter(r => r.jobId === p.jobId)
   // เก็บทั้งจำนวนและมูลค่า เพื่อคำนวณต้นทุนต่อหน่วยตอนคืนเข้าคลัง (ต้นทุนไหลตามของ)
   const restock = new Map<string, { qty: number; value: number }>()
@@ -3895,13 +3966,13 @@ export function cancelJob(
   const updatedReqs = next.accessoryRequests.map(r => {
     if (r.jobId !== p.jobId) return r
     if (r.source === 'central_stock' && r.status === 'issued') {
-      addBack(r.itemId, effectiveQty(r), r.unitPrice)
+      addBack(r.itemId, atJob(r, r.qtyRequested), r.unitPrice)
       return { ...r, status: 'returned' as const }
     }
     // รับของจาก PO มาแล้วบางส่วน (po_ordered + qtyReceived > 0) — ห้ามทิ้งเงียบ ปฏิบัติเหมือน received (sync 0015)
     if (r.status === 'po_ordered' && r.qtyReceived > 0) {
       if (p.receivedAccessoryToCentral) {
-        addBack(r.itemId, r.qtyReceived, r.unitPrice)
+        addBack(r.itemId, atJob(r, r.qtyReceived), r.unitPrice)
         return { ...r, status: 'returned' as const }
       }
       return { ...r, status: 'received' as const }   // ปิดยอดตามที่รับจริง (ส่วนค้างรับยกเลิกไปกับ PO) พิจารณาเป็นเคสไป
@@ -3909,11 +3980,27 @@ export function cancelJob(
     if (r.status === 'pending' || r.status === 'pr_sent' || r.status === 'po_ordered')
       return { ...r, status: 'cancelled' as const }
     if (r.status === 'received' && p.receivedAccessoryToCentral) {
-      addBack(r.itemId, effectiveQty(r), r.unitPrice)
+      addBack(r.itemId, atJob(r, r.qtyReceived || r.qtyRequested), r.unitPrice)
       return { ...r, status: 'returned' as const }
     }
     return r
   })
+
+  // 0093: คำขอค้างอื่นของ Job นี้ (ออก PR / เบิก / สลับ …) ตีกลับอัตโนมัติ — เดิมค้าง pending ตลอดไป
+  //   (Badge ไม่ลด · กดอนุมัติแล้ว error) · คำขอยกเลิกที่กำลังอนุมัติอยู่ถูกตั้ง approved ไปก่อนแล้ว จึงไม่โดน
+  const voided = next.approvalRequests.filter(r => r.jobId === p.jobId && r.status === 'pending')
+  if (voided.length > 0) {
+    next = {
+      ...next,
+      approvalRequests: next.approvalRequests.map(r => r.jobId === p.jobId && r.status === 'pending'
+        ? { ...r, status: 'rejected' as const, decidedBy: actor.id, decidedAt: ts, rejectReason: `ระบบ: ${job.jobNo} ถูกยกเลิก` }
+        : r),
+    }
+    next = notify(next, {
+      type: 'approval_rejected', dept: 'project', jobId: p.jobId, lineStatus: 'off',
+      message: `⛔ คำขอค้าง ${voided.length} รายการของ ${job.jobNo} ถูกตีกลับอัตโนมัติ — Job ถูกยกเลิก`,
+    })
+  }
 
   const openPrIds = next.prs.filter(x => x.jobId === p.jobId && (x.status === 'pending' || x.status === 'po_issued')).map(x => x.id)
   next = {
@@ -3967,6 +4054,7 @@ export function cancelJob(
 const APPROVAL_TYPE_LABEL: Record<ApprovalType, string> = {
   create_pr: 'ออก PR', issue_job: 'เบิก LBS ให้ Service', cancel_job: 'ยกเลิก Job', swap_lbs: 'สลับ LBS',
   reopen_job: 'เปิดงานใหม่', revert_install: 'ยกเลิกผลติดตั้ง',
+  return_lbs: 'คืน LBS เข้าคลัง', correct_closeout: 'แก้ข้อมูลหลังปิดงาน',   // 0094
 }
 
 /**
@@ -3974,7 +4062,8 @@ const APPROVAL_TYPE_LABEL: Record<ApprovalType, string> = {
  * 0091: revert_install สำเนาถึง Project ด้วย (เจ้าของงาน/ผู้ขอฝั่ง Project ต้องรู้ว่าผลติดตั้งเปลี่ยน)
  */
 function approvalNotifyDepts(type: ApprovalType): Department[] {
-  return type === 'revert_install' ? ['service', 'project'] : ['project']
+  // 0094: คำขอที่มาจากหน้างาน (Service หรือ Project) แจ้งทั้งสองแผนก
+  return type === 'revert_install' || type === 'return_lbs' || type === 'correct_closeout' ? ['service', 'project'] : ['project']
 }
 
 /** แจ้งหลายแผนก — LINE กลุ่ม (ทั้งบริษัทกลุ่มเดียว) ได้แค่ฉบับแรก ฉบับที่เหลือ lineStatus 'off' กันข้อความซ้ำ */
@@ -3989,6 +4078,12 @@ export function requestApproval(
   // 0090: ขอยกเลิกผลติดตั้งมีทางเข้าของตัวเอง (ผู้ขอหลักคือ Service ไม่ใช่เจ้าของงาน)
   if (p.type === 'revert_install')
     return requestRevertInstall(db, actor, { jobId: p.jobId, unitIds: p.payload.unitIds ?? [], reason: p.payload.reason ?? '' })
+  if (p.type === 'return_lbs')                                     // 0094
+    return requestReturnLbs(db, actor, { jobId: p.jobId, unitIds: p.payload.unitIds ?? [], reason: p.payload.reason ?? '' })
+  if (p.type === 'correct_closeout') {                             // 0094
+    if (!p.payload.correction) throw new Error('กรุณาระบุข้อมูลที่ต้องการแก้')
+    return requestCloseoutCorrection(db, actor, { jobId: p.jobId, reason: p.payload.reason ?? '', correction: p.payload.correction })
+  }
   // guard ต่างกันตามประเภท: ออก PR ได้แม้เบิกแล้ว (0037) · เปิดงานใหม่ต้องปิดงานแล้ว (0041)
   const job = p.type === 'create_pr'
     ? assertJobProcurable(db, p.jobId, actor)
@@ -3998,6 +4093,7 @@ export function requestApproval(
           if (!j) throw new Error('ไม่พบ Job')
           if (j.terminalStatus !== 'installed')
             throw new Error(`ขอเปิดงานใหม่ได้เฉพาะงานที่ปิดแล้ว (Installed) — ${j.jobNo} อยู่สถานะอื่น`)
+          assertNotWarrantyStarted(db, j)   // 0094 (มติ Q2)
           return assertJobOwner(j, actor)   // 0042
         })()
       : assertJobEditable(db, p.jobId, actor)
@@ -4006,6 +4102,7 @@ export function requestApproval(
 
   // validate ล่วงหน้าตาม type (validate เต็มอีกรอบตอน execute)
   let typeLabel: string = APPROVAL_TYPE_LABEL[p.type]
+  let payload: ApprovalPayload = p.payload
   if (p.type === 'create_pr') {
     const ids = p.payload.requestIds ?? []
     if (ids.length === 0) throw new Error('กรุณาเลือกรายการที่จะออก PR')
@@ -4013,6 +4110,8 @@ export function requestApproval(
     if (reqs.length !== ids.length || reqs.some(r => r.jobId !== p.jobId || r.source !== 'purchasing' || r.status !== 'pending'))
       throw new Error('เลือกได้เฉพาะรายการสั่งซื้อที่ยังไม่ออก PR')
     typeLabel = `ออก PR (${ids.length} รายการ)`
+    // 0093: เก็บสำเนาจำนวน/ราคาที่ Division จะเห็น — แก้หลังส่งคำขอแล้วอนุมัติไม่ได้ (คำขอล้าสมัย)
+    payload = { ...payload, snapshot: reqs.map(r => ({ id: r.id, qty: r.qtyRequested, unitPrice: r.unitPrice ?? null })) }
   } else if (p.type === 'issue_job') {
     // 0059: คำขอนี้คือ "เบิก LBS" (Accessory ที่รับของแล้ว Project เบิกเองได้ ไม่ผ่านที่นี่)
     // validate แบบเดียวกับ issueJobLbs เพื่อไม่ให้คำขอที่เบิกไม่ได้ไปค้างรอ Division พิจารณา
@@ -4031,6 +4130,8 @@ export function requestApproval(
     // นัดติดตั้ง: เว้นว่างได้ถ้า Job มีนัดอยู่แล้ว (เบิก LBS ล็อตที่ 2) — resolveInstallPlan ตรวจให้
     resolveInstallPlan(job, p.payload)
     typeLabel = `เบิก LBS ให้ Service (${ids.length} เครื่อง)`
+    // 0093: ไม่ระบุเครื่อง = เก็บรายการที่พร้อม ณ ตอนขอ (เดิมไปเลือกใหม่ตอนอนุมัติ อาจได้มากกว่าที่ Division เห็น)
+    payload = { ...payload, unitIds: ids }
   } else if (p.type === 'swap_lbs') {
     if (!p.payload.reason?.trim()) throw new Error('กรุณาระบุเหตุผลการสลับ LBS')
     const a = db.lbsUnits.find(u => u.id === p.payload.swapAllocatedUnitId)
@@ -4050,7 +4151,7 @@ export function requestApproval(
   let next: DB = {
     ...db,
     approvalRequests: [...db.approvalRequests, {
-      id: reqId, type: p.type, jobId: p.jobId, payload: p.payload,
+      id: reqId, type: p.type, jobId: p.jobId, payload,
       status: 'pending' as const, requestedBy: actor.id, requestedAt: now(),
     }],
   }
@@ -4063,11 +4164,36 @@ export function requestApproval(
     `${job.jobNo} ขออนุมัติ${typeLabel}`)
 }
 
+/** 0093 (มติผู้ใช้ D1 2026-11-22): คนขอกับคนอนุมัติต้องเป็นคนละคน — ใช้กับทุกบัญชีรวม Manage ทั้งอนุมัติและตีกลับ */
+function assertNotOwnRequest(req: ApprovalRequest, actor: User): void {
+  if (req.requestedBy && req.requestedBy === actor.id)
+    throw new Error('คำขอนี้คุณเป็นผู้ส่งเอง — ต้องให้ผู้อนุมัติคนอื่นพิจารณา (รอ Division พิจารณา)')
+}
+
+/** 0093: ออก PR — จำนวน/ราคาที่ Division เห็นตอนขอ ต้องตรงกับตอนอนุมัติ (คำขอเก่าก่อน 0093 ไม่มี snapshot = ข้าม) */
+function assertPrSnapshotFresh(db: DB, req: ApprovalRequest): void {
+  const snap = req.payload.snapshot
+  if (!snap?.length) return
+  const changed = snap.filter(s => {
+    const r = db.accessoryRequests.find(x => x.id === s.id)
+    return !r || r.qtyRequested !== s.qty || (r.unitPrice ?? null) !== s.unitPrice
+  })
+  if (changed.length > 0) {
+    const names = changed.map(s => {
+      const r = db.accessoryRequests.find(x => x.id === s.id)
+      return db.items.find(i => i.id === r?.itemId)?.name ?? 'รายการที่ถูกลบ'
+    })
+    throw new Error(`คำขอล้าสมัย — รายการถูกแก้หลังส่งคำขอ (${names.join(', ')}) · กรุณาตีกลับแล้วให้ Project ส่งคำขอใหม่`)
+  }
+}
+
 export function approveRequest(db: DB, actor: User, p: { requestId: string }): DB {
   const req = db.approvalRequests.find(r => r.id === p.requestId)
   if (!req) throw new Error('ไม่พบคำขออนุมัติ')
   if (req.status !== 'pending') throw new Error('คำขอนี้ถูกตัดสินไปแล้ว')
+  assertNotOwnRequest(req, actor)                                   // 0093 (มติ D1)
   const job = db.jobs.find(j => j.id === req.jobId)!
+  if (req.type === 'create_pr') assertPrSnapshotFresh(db, req)      // 0093
 
   let next: DB = {
     ...db,
@@ -4093,6 +4219,10 @@ export function approveRequest(db: DB, actor: User, p: { requestId: string }): D
     next = reopenJob(next, actor, { jobId: req.jobId, reason: req.payload.reason ?? '' })
   } else if (req.type === 'revert_install') {
     next = revertUnitInstall(next, actor, { jobId: req.jobId, unitIds: req.payload.unitIds ?? [], reason: req.payload.reason ?? '' })
+  } else if (req.type === 'return_lbs') {
+    next = returnIssuedLbs(next, actor, { jobId: req.jobId, unitIds: req.payload.unitIds ?? [], reason: req.payload.reason ?? '' })
+  } else if (req.type === 'correct_closeout') {
+    next = applyCloseoutCorrection(next, actor, { jobId: req.jobId, reason: req.payload.reason ?? '', correction: req.payload.correction! })
   } else {
     next = cancelJob(next, actor, {
       jobId: req.jobId, reason: req.payload.reason ?? '',
@@ -4111,6 +4241,7 @@ export function rejectApprovalRequest(db: DB, actor: User, p: { requestId: strin
   const req = db.approvalRequests.find(r => r.id === p.requestId)
   if (!req) throw new Error('ไม่พบคำขออนุมัติ')
   if (req.status !== 'pending') throw new Error('คำขอนี้ถูกตัดสินไปแล้ว')
+  assertNotOwnRequest(req, actor)                                   // 0093 (มติ D1)
   if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผลที่ตีกลับ')
   const job = db.jobs.find(j => j.id === req.jobId)!
 
@@ -4943,4 +5074,192 @@ export function stdBomSummary(db: DB, bomId: string) {
     total: lines.some(l => l.estUnitCost !== undefined) ? total : undefined,
     unlinked: lines.filter(l => !l.itemId).length,   // ยังไม่ผูกฐานข้อมูลวัสดุ
   }
+}
+
+
+// =============================================================================
+// 0094 — คืน LBS ที่เบิกแล้ว (ติดตั้งไม่ได้) เข้า LBS Inventory · Division ตรวจรับ (มติผู้ใช้ Q1 2026-11-22)
+//   ก่อนหน้านี้: เครื่องที่ติดตั้งไม่ได้บนใบที่ปิดแล้วค้างสถานะ "เบิกแล้ว" ตลอด ไม่มีทางกลับคลัง
+//   ไม่มีการตัดจำหน่าย LBS — ทุกเครื่องต้องกลับเข้าคลัง แล้วค่อยดึงไปใช้งานอื่น
+// =============================================================================
+function assertReturnableUnits(db: DB, jobId: string, unitIds: string[]): { job: Job; units: LbsUnit[] } {
+  const job = db.jobs.find(j => j.id === jobId)
+  if (!job) throw new Error('ไม่พบ Job')
+  if (job.terminalStatus !== 'issued' && job.terminalStatus !== 'installed')
+    throw new Error(`${job.jobNo} ยังไม่ได้เบิกให้ Service — ใช้ "คืน LBS กลับสต็อก" ที่หน้า Job`)
+  const ids = Array.from(new Set(unitIds))
+  if (ids.length === 0) throw new Error('กรุณาเลือกเครื่องที่จะคืน')
+  const units = ids.map(id => {
+    const u = db.lbsUnits.find(x => x.id === id)
+    if (!u || u.jobId !== jobId) throw new Error(`มีเครื่องที่ไม่ได้อยู่ใน ${job.jobNo}`)
+    if (u.status !== 'issued') throw new Error(`${u.serialLvb} ยังไม่ได้เบิกให้ Service — ใช้ "คืน LBS กลับสต็อก" ที่หน้า Job`)
+    if (unitInstallState(db, u.id) === 'installed')
+      throw new Error(`${u.serialLvb} ติดตั้งแล้ว — คืนไม่ได้ (ถ้าบันทึกผิดใช้ "ขอยกเลิกผลติดตั้ง")`)
+    return u
+  })
+  return { job, units }
+}
+
+export function requestReturnLbs(db: DB, actor: User, p: { jobId: string; unitIds: string[]; reason: string }): DB {
+  const job0 = db.jobs.find(j => j.id === p.jobId)
+  if (job0) assertJobOwner(job0, actor)
+  const { job, units } = assertReturnableUnits(db, p.jobId, p.unitIds)
+  const reason = p.reason.trim()
+  if (!reason) throw new Error('กรุณาระบุเหตุผลที่ขอคืนเข้าคลัง')
+  if (db.approvalRequests.some(r => r.jobId === p.jobId && r.type === 'return_lbs' && r.status === 'pending'))
+    throw new Error(`${job.jobNo} มีคำขอคืน LBS รอ Division พิจารณาอยู่แล้ว`)
+  const reqId = uid()
+  const label = `คืน LBS เข้าคลัง (${units.length} เครื่อง)`
+  let next: DB = {
+    ...db,
+    approvalRequests: [...db.approvalRequests, {
+      id: reqId, type: 'return_lbs' as const, jobId: p.jobId, payload: { unitIds: units.map(u => u.id), reason },
+      status: 'pending' as const, requestedBy: actor.id, requestedAt: now(),
+    }],
+  }
+  next = notify(next, { type: 'approval_requested', dept: 'sales', jobId: p.jobId, message: `🔔 ${job.jobNo} ขออนุมัติ${label}` })
+  return audit(next, actor, 'approval_request', reqId, 'request_approval',
+    `${job.jobNo} ขออนุมัติ${label}: ${units.map(u => u.serialLvb).join(', ')} · เหตุผล: ${reason}`)
+}
+
+/** execute หลัง Division ตรวจรับ — เครื่องกลับเป็น in_stock คลังเดิม · ต่อแถว returned (ประวัติเดิมคงอยู่) */
+export function returnIssuedLbs(db: DB, actor: User, p: { jobId: string; unitIds: string[]; reason: string }): DB {
+  const { job, units } = assertReturnableUnits(db, p.jobId, p.unitIds)
+  const reason = p.reason.trim()
+  if (!reason) throw new Error('กรุณาระบุเหตุผลที่ขอคืนเข้าคลัง')
+  const at = now()
+  const ids = new Set(units.map(u => u.id))
+  const byStock = new Map<string, string[]>()
+  units.forEach(u => byStock.set(u.projectStockId, [...(byStock.get(u.projectStockId) ?? []), u.serialLvb]))
+  let next: DB = {
+    ...db,
+    unitInstallations: [...db.unitInstallations, ...units.map(u => ({
+      id: uid(), unitId: u.id, jobId: p.jobId, outcome: 'returned' as const, reason, performedBy: actor.id, performedAt: at,
+    }))],
+    lbsUnits: db.lbsUnits.map(u => ids.has(u.id) ? { ...u, status: 'in_stock' as const, jobId: null, installSiteId: undefined } : u),
+    allocations: [...db.allocations, ...Array.from(byStock.entries()).map(([stockId, sns]) => ({
+      id: uid(), jobId: p.jobId, projectStockId: stockId, txnType: 'return' as const, serialNos: sns,
+      performedBy: actor.id, performedAt: at, note: `คืนจาก ${job.jobNo} หลังเบิก (ติดตั้งไม่ได้) — ${reason}`,
+    }))],
+  }
+  for (const u of units)
+    next = audit(next, actor, 'lbs_unit', u.id, 'return_issued_lbs',
+      `${job.jobNo} คืน ${u.serialLvb}/${u.serialOm} เข้า LBS Inventory (ติดตั้งไม่ได้) — ${reason}`)
+  return next
+}
+
+// =============================================================================
+// 0094 — ขอแก้ข้อมูลหลังปิดงาน (มติผู้ใช้ Q2 2026-11-22: เริ่มประกันแล้วเปิดงานใหม่ไม่ได้ → แก้ผ่าน Division)
+//   งานยังปิดอยู่ · ประวัติติดตั้งแก้แบบต่อแถว (reverted + installed ใหม่) หลักฐานเดิมไม่ถูกลบ
+// =============================================================================
+const isIsoDate = (s?: string) => !!s && /^\d{4}-\d{2}-\d{2}$/.test(s)
+
+function assertCorrectable(db: DB, jobId: string, c: CloseoutCorrection): Job {
+  const job = db.jobs.find(j => j.id === jobId)
+  if (!job) throw new Error('ไม่พบ Job')
+  if (job.terminalStatus !== 'installed')
+    throw new Error(`ขอแก้ข้อมูลได้เฉพาะงานที่ปิดงานแล้ว — ${job.jobNo} ยังไม่ได้ปิดงาน (แก้ได้ที่หน้า Service ตามปกติ)`)
+  const today = new Date().toISOString().slice(0, 10)
+  const installedOnJob = (unitId: string) => {
+    const u = db.lbsUnits.find(x => x.id === unitId)
+    if (!u || u.jobId !== jobId) throw new Error(`มีเครื่องที่ไม่ได้อยู่ใน ${job.jobNo}`)
+    if (unitInstallState(db, unitId) !== 'installed') throw new Error(`${u.serialLvb} ไม่ได้อยู่ในสถานะติดตั้งแล้ว`)
+    return u
+  }
+  if (c.kind === 'install_date') {
+    installedOnJob(c.unitId)
+    if (!isIsoDate(c.installedDate) || c.installedDate > today) throw new Error('วันที่ติดตั้งไม่ถูกต้อง (ต้องไม่เกินวันนี้)')
+  } else if (c.kind === 'warranty') {
+    if (c.unitId) installedOnJob(c.unitId)
+    if (!isIsoDate(c.startDate) || !isIsoDate(c.endDate)) throw new Error('กรุณาระบุวันเริ่ม–วันสิ้นสุดประกัน')
+    if (c.endDate < c.startDate) throw new Error('วันสิ้นสุดประกันต้องไม่ก่อนวันเริ่ม')
+    if (!db.jobWarranties.some(w => w.jobId === jobId && (c.unitId ? w.kind === 'lbs' && w.unitId === c.unitId : w.kind === 'installation')))
+      throw new Error('ไม่พบประกันที่จะแก้ของงานนี้')
+  } else if (c.kind === 'acceptance') {
+    if (!['PAC', 'AC', 'COD', 'HANDOVER'].includes(c.acceptanceType)) throw new Error('กรุณาเลือกประเภทเอกสารรับมอบ')
+    if (!isIsoDate(c.acceptanceDate)) throw new Error('กรุณาระบุวันที่เอกสารรับมอบ')
+    if (!db.jobCloseoutFiles.some(f => f.jobId === jobId && f.kind === 'acceptance' && f.docType === c.acceptanceType))
+      throw new Error(`ต้องแนบไฟล์เอกสารรับมอบประเภท ${c.acceptanceType} ก่อน (แนบได้ที่หน้า Service (Warranty))`)
+  } else if (c.kind === 'swap_serial') {
+    const ids: string[] = Array.from(new Set(c.unitIds))
+    if (ids.length !== 2) throw new Error('เลือกเครื่องที่ยืนยันสลับกัน 2 เครื่อง')
+    ids.forEach(installedOnJob)
+  } else {
+    throw new Error('ประเภทการแก้ไขไม่ถูกต้อง')
+  }
+  return job
+}
+
+export function correctionLabel(db: DB, c: CloseoutCorrection): string {
+  const sn = (id?: string) => db.lbsUnits.find(u => u.id === id)?.serialLvb ?? '-'
+  if (c.kind === 'install_date') return `วันที่ติดตั้ง ${sn(c.unitId)} → ${c.installedDate}`
+  if (c.kind === 'warranty') return `ประกัน${c.unitId ? ` LBS ${sn(c.unitId)}` : 'งานติดตั้ง'} → ${c.startDate} ถึง ${c.endDate}`
+  if (c.kind === 'acceptance') return `เอกสารรับมอบ → ${c.acceptanceType} ${c.acceptanceDocNo ?? ''} (${c.acceptanceDate})`
+  return `สลับผลติดตั้ง ${c.unitIds.map(sn).join(' ↔ ')}`
+}
+
+export function requestCloseoutCorrection(db: DB, actor: User, p: { jobId: string; reason: string; correction: CloseoutCorrection }): DB {
+  const job0 = db.jobs.find(j => j.id === p.jobId)
+  if (job0) assertJobOwner(job0, actor)
+  const job = assertCorrectable(db, p.jobId, p.correction)
+  const reason = p.reason.trim()
+  if (!reason) throw new Error('กรุณาระบุเหตุผลที่ขอแก้ไข')
+  if (db.approvalRequests.some(r => r.jobId === p.jobId && r.type === 'correct_closeout' && r.status === 'pending'))
+    throw new Error(`${job.jobNo} มีคำขอแก้ข้อมูลรอ Division พิจารณาอยู่แล้ว`)
+  const reqId = uid()
+  const label = correctionLabel(db, p.correction)
+  let next: DB = {
+    ...db,
+    approvalRequests: [...db.approvalRequests, {
+      id: reqId, type: 'correct_closeout' as const, jobId: p.jobId, payload: { correction: p.correction, reason },
+      status: 'pending' as const, requestedBy: actor.id, requestedAt: now(),
+    }],
+  }
+  next = notify(next, { type: 'approval_requested', dept: 'sales', jobId: p.jobId, message: `🔔 ${job.jobNo} ขอแก้ข้อมูลหลังปิดงาน: ${label}` })
+  return audit(next, actor, 'approval_request', reqId, 'request_approval', `${job.jobNo} ขอแก้ข้อมูลหลังปิดงาน: ${label} · เหตุผล: ${reason}`)
+}
+
+/** execute หลัง Division อนุมัติ — งานยังปิดอยู่ */
+export function applyCloseoutCorrection(db: DB, actor: User, p: { jobId: string; reason: string; correction: CloseoutCorrection }): DB {
+  const c = p.correction
+  const job = assertCorrectable(db, p.jobId, c)
+  const reason = `แก้หลังปิดงาน: ${p.reason.trim()}`
+  const label = correctionLabel(db, c)
+  const at = now()
+  let next: DB = db
+
+  // ต่อแถว reverted + installed ใหม่ (ห้ามแก้แถวเดิม — เป็นหลักฐาน)
+  const reInstall = (d: DB, unitId: string, from: DB['unitInstallations'][number], installedDate?: string): DB => ({
+    ...d,
+    unitInstallations: [...d.unitInstallations,
+      { id: uid(), unitId, jobId: p.jobId, outcome: 'reverted' as const, reason, performedBy: actor.id, performedAt: at },
+      { ...from, id: uid(), unitId, jobId: p.jobId, outcome: 'installed' as const,
+        installedDate: installedDate ?? from.installedDate, note: reason, performedBy: actor.id, performedAt: at },
+    ],
+  })
+  if (c.kind === 'install_date') {
+    next = reInstall(next, c.unitId, latestInstallRow(db, c.unitId)!, c.installedDate)
+  } else if (c.kind === 'swap_serial') {
+    const [a, b] = c.unitIds
+    const ra = latestInstallRow(db, a)!, rb = latestInstallRow(db, b)!
+    next = reInstall(reInstall(next, a, rb), b, ra)
+    const wa = db.jobWarranties.find(w => w.kind === 'lbs' && w.unitId === a)
+    const wb = db.jobWarranties.find(w => w.kind === 'lbs' && w.unitId === b)
+    next = { ...next, jobWarranties: next.jobWarranties.map(w =>
+      w === wa && wb ? { ...w, startDate: wb.startDate, endDate: wb.endDate }
+      : w === wb && wa ? { ...w, startDate: wa.startDate, endDate: wa.endDate } : w) }
+  } else if (c.kind === 'warranty') {
+    next = { ...next, jobWarranties: next.jobWarranties.map(w => w.jobId === p.jobId &&
+      (c.unitId ? w.kind === 'lbs' && w.unitId === c.unitId : w.kind === 'installation')
+      ? { ...w, startDate: c.startDate, endDate: c.endDate } : w) }
+  } else if (c.kind === 'acceptance') {
+    next = { ...next, jobs: next.jobs.map(j => j.id === p.jobId
+      ? { ...j, acceptanceType: c.acceptanceType, acceptanceDocNo: c.acceptanceDocNo?.trim() || undefined, acceptanceDate: c.acceptanceDate } : j) }
+  }
+  // วันที่ติดตั้งเปลี่ยน → วันปิดงาน (= วันติดตั้งล่าสุด) ตามให้ตรง
+  if (c.kind === 'install_date' || c.kind === 'swap_serial') {
+    const last = next.lbsUnits.filter(u => u.jobId === p.jobId).map(u => unitInstallDate(next, u.id)).filter(Boolean).sort().pop()
+    if (last) next = { ...next, jobs: next.jobs.map(j => j.id === p.jobId ? { ...j, installedAt: last } : j) }
+  }
+  return audit(next, actor, 'job', p.jobId, 'correct_closeout', `${job.jobNo} แก้ข้อมูลหลังปิดงาน: ${label} — ${p.reason.trim()}`)
 }
