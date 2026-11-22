@@ -2827,13 +2827,13 @@ describe('ขอยกเลิกผลติดตั้ง — ผ่าน D
     const notYet = db({ users: [svc], jobs: [job({ terminalStatus: 'issued' })], lbsUnits: [unit({ id: 'b', status: 'issued', jobId: 'j1' })] })
     expect(() => requestRevertInstall(notYet, svc, { jobId: 'j1', unitIds: ['b'], reason: 'x' })).toThrow(/ยังไม่ได้ยืนยันติดตั้ง/)
     expect(() => ask(ask(installed()))).toThrow(/รอ Division พิจารณาอยู่แล้ว/)
-    expect(() => ask(closed(installed()))).toThrow(/ขอเปิดงานใหม่ก่อน/)
+    expect(() => ask(closed(installed()))).toThrow(/ขอแก้ข้อมูลที่บันทึกผิด/)   // 0094: เปิดงานใหม่ไม่ได้แล้ว
   })
 
   it('สถานะเปลี่ยนระหว่างรอ → อนุมัติไม่ผ่าน (ตรวจซ้ำตอน execute) · requestApproval ส่งต่อให้ทางเข้าเดียวกัน', () => {
     let d = ask(installed())
     d = closed(d)
-    expect(() => approveRequest(d, div, { requestId: d.approvalRequests[0].id })).toThrow(/ขอเปิดงานใหม่ก่อน/)
+    expect(() => approveRequest(d, div, { requestId: d.approvalRequests[0].id })).toThrow(/ขอแก้ข้อมูลที่บันทึกผิด/)
     const viaGeneric = requestApproval(installed(), svc, { type: 'revert_install', jobId: 'j1', payload: { unitIds: ['a'], reason: 'ผิดเครื่อง' } })
     expect(viaGeneric.approvalRequests[0]).toMatchObject({ type: 'revert_install', status: 'pending' })
   })
@@ -3097,6 +3097,29 @@ describe('0094 — ปิดงาน/หลังปิดงาน', () => {
     expect(unitInstallDate(d, 'a')).toBe('2026-09-03')
     expect(unitInstallDate(d, 'b')).toBe('2026-09-01')
     expect(d.jobWarranties.find(w => w.unitId === 'b')?.endDate).toBe('2027-08-31')
+  })
+
+  it('④ [review #1] สลับ Serial ส่ง ID ซ้ำ [a, a, b] → ปฏิเสธตั้งแต่ตอนขอ', () => {
+    const d = bothInstalledClosed()
+    expect(() => requestCloseoutCorrection(d, svc, { jobId: 'j1', reason: 'x', correction: { kind: 'swap_serial', unitIds: ['a', 'a', 'b'] } })).toThrow(/2 เครื่อง/)
+  })
+
+  it('④ [review #2] แก้วันที่ติดตั้ง → ประกัน LBS ที่เริ่มตามวันติดตั้งเดิม เลื่อนตาม (ระยะเท่าเดิม)', () => {
+    let d = confirmUnitInstall(issued(), svc, { unitId: 'a', ...ev('2026-09-01', 14) })
+    d = confirmUnitInstall(d, svc, { unitId: 'b', ...ev('2026-09-03', 15) })
+    d = closeJobInstall(d, svc, { jobId: 'j1', hasIssues: false, closeout: { ...closeout(['a', 'b']),
+      lbsWarranties: [{ unitId: 'a', start: '2026-09-01', end: '2027-08-31' }, { unitId: 'b', start: '2026-09-03', end: '2027-09-02' }] } })
+    d = requestCloseoutCorrection(d, svc, { jobId: 'j1', reason: 'กรอกวันผิด', correction: { kind: 'install_date', unitId: 'b', installedDate: '2026-09-10' } })
+    d = approveRequest(d, div, { requestId: d.approvalRequests[0].id })
+    expect(d.jobWarranties.find(w => w.unitId === 'b')).toMatchObject({ startDate: '2026-09-10', endDate: '2027-09-09' })
+    expect(d.jobWarranties.find(w => w.unitId === 'a')).toMatchObject({ startDate: '2026-09-01', endDate: '2027-08-31' })
+  })
+
+  it('④ [review #2] ประกันที่ตั้งเองไม่ตรงวันติดตั้ง (แก้ตามสัญญา) → ไม่ถูกเลื่อนทับ', () => {
+    let d = bothInstalledClosed('2026-09-05')                 // ประกันเริ่ม 09-05 ≠ วันติดตั้ง 09-03
+    d = requestCloseoutCorrection(d, svc, { jobId: 'j1', reason: 'กรอกวันผิด', correction: { kind: 'install_date', unitId: 'b', installedDate: '2026-09-04' } })
+    d = approveRequest(d, div, { requestId: d.approvalRequests[0].id })
+    expect(d.jobWarranties.find(w => w.unitId === 'b')?.startDate).toBe('2026-09-05')
   })
 
   it('④ ขอแก้ได้เฉพาะงานที่ปิดแล้ว · Project ต้องเป็นเจ้าของงาน', () => {

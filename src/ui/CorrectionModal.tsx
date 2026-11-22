@@ -90,6 +90,11 @@ export function CorrectionModal({ job, onClose }: { job: Job; onClose: () => voi
           </label>
         </div>
       )}
+      {kind === 'install_date' && (
+        <div className="muted" style={{ marginBottom: 10 }}>
+          ประกันตัวเครื่องที่เริ่มนับตามวันติดตั้งเดิม จะเลื่อนตามวันที่ใหม่ให้อัตโนมัติ (ระยะประกันเท่าเดิม)
+        </div>
+      )}
 
       {kind === 'warranty' && (
         <>

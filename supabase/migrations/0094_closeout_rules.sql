@@ -148,6 +148,35 @@ BEGIN
   RETURN j;
 END $$;
 
+-- ---------- 3.1) review #3: ขอยกเลิกผลติดตั้ง (0090) บนงานที่ปิดแล้ว ----------
+--   ข้อความเดิมบอก "ต้องขอเปิดงานใหม่ก่อน" แต่ข้อ 3 ห้ามเปิดงานใหม่หลังเริ่มประกันแล้ว = ทางตัน
+--   ⇒ ชี้ไปที่ "ขอแก้ข้อมูลที่บันทึกผิด" (correct_closeout) · body 0090 ทั้งดุ้น เปลี่ยนแค่ข้อความ
+CREATE OR REPLACE FUNCTION app_assert_revertable_units(j jobs, ids UUID[]) RETURNS UUID[]
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+DECLARE uniq UUID[]; bad TEXT;
+BEGIN
+  IF j.id IS NULL THEN RAISE EXCEPTION 'ไม่พบ Job'; END IF;
+  IF j.terminal_status = 'installed' THEN
+    RAISE EXCEPTION '% ปิดงานแล้ว — ยกเลิกผลติดตั้งไม่ได้ · ถ้าบันทึกผิด (วันที่ / Serial สลับ) ให้ใช้ "ขอแก้ข้อมูลที่บันทึกผิด" ที่หน้า Job', j.job_no;
+  END IF;
+  IF j.terminal_status = 'cancelled' THEN RAISE EXCEPTION '% ถูกยกเลิกแล้ว', j.job_no; END IF;
+  SELECT array_agg(DISTINCT x) INTO uniq FROM unnest(COALESCE(ids, '{}'::UUID[])) x WHERE x IS NOT NULL;
+  IF uniq IS NULL THEN RAISE EXCEPTION 'กรุณาเลือกเครื่องที่จะยกเลิกผลติดตั้ง'; END IF;
+  IF EXISTS (SELECT 1 FROM unnest(uniq) t(id) LEFT JOIN lbs_units u ON u.id = t.id
+              WHERE u.id IS NULL OR u.job_id IS DISTINCT FROM j.id) THEN
+    RAISE EXCEPTION 'มีเครื่องที่ไม่ได้อยู่ใน %', j.job_no;
+  END IF;
+  SELECT u.serial_lvb INTO bad
+    FROM lbs_units u LEFT JOIN v_unit_install_state s ON s.unit_id = u.id
+   WHERE u.id = ANY(uniq) AND s.outcome IS DISTINCT FROM 'installed'
+   LIMIT 1;
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION '% ยังไม่ได้ยืนยันติดตั้ง — ไม่มีผลให้ยกเลิก', bad;
+  END IF;
+  RETURN uniq;
+END $$;
+REVOKE ALL ON FUNCTION public.app_assert_revertable_units(jobs, UUID[]) FROM PUBLIC, anon, authenticated;
+
 -- ---------- 4) คืน LBS ที่เบิกแล้วเข้าคลัง (Division ตรวจรับ) ----------
 CREATE OR REPLACE FUNCTION app_assert_returnable_units(j jobs, p_unit_ids UUID[]) RETURNS UUID[]
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
@@ -277,8 +306,12 @@ BEGIN
       RAISE EXCEPTION 'ต้องแนบไฟล์เอกสารรับมอบประเภท % ก่อน (แนบได้ที่หน้า Service (Warranty))', v_t;
     END IF;
   ELSIF k = 'swap_serial' THEN
-    SELECT array_agg(DISTINCT (x)::UUID) INTO ids FROM jsonb_array_elements_text(COALESCE(c->'unit_ids', '[]'::jsonb)) x;
-    IF COALESCE(array_length(ids, 1), 0) <> 2 THEN RAISE EXCEPTION 'เลือกเครื่องที่ยืนยันสลับกัน 2 เครื่อง'; END IF;
+    -- review #1: exec อ่านตำแหน่งที่ 1/2 ของ array ดิบ ⇒ ต้องมีพอดี 2 ตัวและไม่ซ้ำ ([a,a,b] เดิมผ่าน แล้วสลับ a กับ a เอง)
+    IF jsonb_typeof(c->'unit_ids') IS DISTINCT FROM 'array' OR jsonb_array_length(c->'unit_ids') <> 2 THEN
+      RAISE EXCEPTION 'เลือกเครื่องที่ยืนยันสลับกัน 2 เครื่อง (ไม่ซ้ำกัน)';
+    END IF;
+    SELECT array_agg(DISTINCT (x)::UUID) INTO ids FROM jsonb_array_elements_text(c->'unit_ids') x;
+    IF COALESCE(array_length(ids, 1), 0) <> 2 THEN RAISE EXCEPTION 'เลือกเครื่องที่ยืนยันสลับกัน 2 เครื่อง (ไม่ซ้ำกัน)'; END IF;
   ELSE
     RAISE EXCEPTION 'ประเภทการแก้ไขไม่ถูกต้อง';
   END IF;
@@ -323,6 +356,7 @@ CREATE OR REPLACE FUNCTION app_exec_correct_closeout(actor profiles, p_job_id UU
 RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE j jobs; k TEXT := c->>'kind'; v_reason TEXT; u UUID; a UUID; b UUID;
         ra unit_installations; rb unit_installations; wa job_warranties; wb job_warranties; v_last DATE;
+        v_wshift INT := 0;
         -- ลำดับแถวต้องชัดเจนแม้อยู่ธุรกรรมเดียว (DISTINCT ON performed_at) — นาฬิกาบางเครื่องละเอียดไม่พอ ⇒ บวกทีละ 1 µs
         ts TIMESTAMPTZ := clock_timestamp();
 BEGIN
@@ -340,6 +374,13 @@ BEGIN
                                     installed_by_member_id, note, performed_by, performed_at)
     VALUES (u, p_job_id, 'installed', (c->>'installed_date')::DATE, ra.checkin_lat, ra.checkin_lng, ra.photo_url,
             ra.installed_by_member_id, v_reason, actor.id, ts + interval '1 microsecond');
+    -- review #2: มติผู้ใช้ "ประกัน LBS เริ่มจากวันติดตั้งจริงรายเครื่อง" ⇒ ประกันที่เริ่มตรงวันติดตั้งเดิมเลื่อนตาม
+    --   (ระยะประกันเท่าเดิม) · ประกันที่ตั้งเป็นวันอื่น (แก้ตามสัญญา) ไม่แตะ — ขอแก้ประกันแยกได้
+    UPDATE job_warranties
+       SET start_date = (c->>'installed_date')::DATE,
+           end_date   = end_date + ((c->>'installed_date')::DATE - ra.installed_date)
+     WHERE job_id = p_job_id AND kind = 'lbs' AND unit_id = u AND start_date = ra.installed_date;
+    GET DIAGNOSTICS v_wshift = ROW_COUNT;
 
   ELSIF k = 'swap_serial' THEN
     SELECT (x)::UUID INTO a FROM jsonb_array_elements_text(c->'unit_ids') WITH ORDINALITY t(x, i) WHERE i = 1;
@@ -386,7 +427,9 @@ BEGIN
   END IF;
 
   PERFORM app_audit('job', p_job_id, 'correct_closeout', actor.id,
-    j.job_no || ' แก้ข้อมูลหลังปิดงาน: ' || app_correction_label(c) || ' — ' || btrim(COALESCE(p_reason, '')));
+    j.job_no || ' แก้ข้อมูลหลังปิดงาน: ' || app_correction_label(c) ||
+    CASE WHEN v_wshift > 0 THEN ' (ประกัน LBS เลื่อนตามวันติดตั้ง)' ELSE '' END ||
+    ' — ' || btrim(COALESCE(p_reason, '')));
 END $$;
 REVOKE ALL ON FUNCTION public.app_exec_correct_closeout(profiles, UUID, JSONB, TEXT) FROM PUBLIC, anon, authenticated;
 

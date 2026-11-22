@@ -4270,14 +4270,14 @@ export function rejectApprovalRequest(db: DB, actor: User, p: { requestId: strin
 //   หลักฐานเดิม (วันที่/GPS/รูป/ช่าง) ยังอยู่ครบในประวัติ — ไม่มีการลบหรือแก้แถวเดิม
 // ขอบเขต:
 //   · เฉพาะเครื่องที่สถานะปัจจุบัน = installed บน Job เดียวกัน · ขอหลายเครื่องในคำขอเดียวได้
-//   · Job ที่ปิดงานแล้ว (Installed) ขอไม่ได้ → ต้อง "ขอเปิดงานใหม่" ก่อน (เอกสารรับมอบ/Warranty ผูกกับผลเดิม)
+//   · Job ที่ปิดงานแล้ว (Installed) ขอไม่ได้ → 0094: ใช้ "ขอแก้ข้อมูลที่บันทึกผิด" (เปิดงานใหม่หลังเริ่มประกันไม่ได้แล้ว)
 //   · คำขอค้างได้ 1 ใบต่อ Job (unique index approval_pending_uq เดียวกับคำขอประเภทอื่น)
 // =============================================================================
 function assertRevertableUnits(db: DB, jobId: string, unitIds: string[]): { job: Job; units: LbsUnit[] } {
   const job = db.jobs.find(j => j.id === jobId)
   if (!job) throw new Error('ไม่พบ Job')
   if (job.terminalStatus === 'installed')
-    throw new Error(`${job.jobNo} ปิดงานแล้ว — ต้องขอเปิดงานใหม่ก่อน จึงจะยกเลิกผลติดตั้งได้`)
+    throw new Error(`${job.jobNo} ปิดงานแล้ว — ยกเลิกผลติดตั้งไม่ได้ · ถ้าบันทึกผิด (วันที่ / Serial สลับ) ให้ใช้ "ขอแก้ข้อมูลที่บันทึกผิด" ที่หน้า Job`)
   if (job.terminalStatus === 'cancelled') throw new Error(`${job.jobNo} ถูกยกเลิกแล้ว`)
   const ids = [...new Set(unitIds)]
   if (ids.length === 0) throw new Error('กรุณาเลือกเครื่องที่จะยกเลิกผลติดตั้ง')
@@ -5181,8 +5181,9 @@ function assertCorrectable(db: DB, jobId: string, c: CloseoutCorrection): Job {
     if (!db.jobCloseoutFiles.some(f => f.jobId === jobId && f.kind === 'acceptance' && f.docType === c.acceptanceType))
       throw new Error(`ต้องแนบไฟล์เอกสารรับมอบประเภท ${c.acceptanceType} ก่อน (แนบได้ที่หน้า Service (Warranty))`)
   } else if (c.kind === 'swap_serial') {
+    // review #1: exec ใช้ตำแหน่งที่ 1/2 ⇒ ต้องมีพอดี 2 ตัวและไม่ซ้ำ ([a,a,b] เดิมผ่าน แล้วสลับ a กับ a เอง)
     const ids: string[] = Array.from(new Set(c.unitIds))
-    if (ids.length !== 2) throw new Error('เลือกเครื่องที่ยืนยันสลับกัน 2 เครื่อง')
+    if (c.unitIds.length !== 2 || ids.length !== 2) throw new Error('เลือกเครื่องที่ยืนยันสลับกัน 2 เครื่อง (ไม่ซ้ำกัน)')
     ids.forEach(installedOnJob)
   } else {
     throw new Error('ประเภทการแก้ไขไม่ถูกต้อง')
@@ -5238,7 +5239,13 @@ export function applyCloseoutCorrection(db: DB, actor: User, p: { jobId: string;
     ],
   })
   if (c.kind === 'install_date') {
-    next = reInstall(next, c.unitId, latestInstallRow(db, c.unitId)!, c.installedDate)
+    const prev = latestInstallRow(db, c.unitId)!
+    next = reInstall(next, c.unitId, prev, c.installedDate)
+    // review #2: ประกัน LBS เริ่มจากวันติดตั้งจริง ⇒ ประกันที่เริ่มตรงวันเดิมเลื่อนตาม (ระยะเท่าเดิม) · ตั้งวันอื่นไว้ = ไม่แตะ
+    const shift = daysBetweenIso(prev.installedDate ?? '', c.installedDate)
+    next = { ...next, jobWarranties: next.jobWarranties.map(w =>
+      w.jobId === p.jobId && w.kind === 'lbs' && w.unitId === c.unitId && w.startDate === prev.installedDate
+        ? { ...w, startDate: c.installedDate, endDate: addDaysIso(w.endDate, shift) } : w) }
   } else if (c.kind === 'swap_serial') {
     const [a, b] = c.unitIds
     const ra = latestInstallRow(db, a)!, rb = latestInstallRow(db, b)!
