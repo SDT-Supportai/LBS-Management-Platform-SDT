@@ -246,6 +246,7 @@ export default function WarrantyPage() {
         const miss = closeoutMissing(draft, closeoutFiles(db, editJob.id))
         return (
           <Modal size="xl" title={`${editJob.acceptanceType ? 'แก้ไข' : 'บันทึกย้อนหลัง'} เอกสารรับมอบ / Warranty — ${editJob.jobNo}`}
+            locked={saving}
             onClose={() => { if (!saving) { setEditJobId(null); setDraft(null) } }}
             footer={<>
               {miss.length > 0 && <div className="closeout-missing">ยังขาด {miss.length} รายการ: {miss.join(' · ')}</div>}
@@ -265,7 +266,7 @@ export default function WarrantyPage() {
 
       {/* ---------- เอกสารของ Job ---------- */}
       {filesJob && (
-        <Modal size="wide" title={`เอกสารรับมอบ / Warranty — ${filesJob.jobNo}`} onClose={() => setFilesJobId(null)}
+        <Modal size="wide" title={`เอกสารรับมอบ / Warranty — ${filesJob.jobNo}`} locked={uploading} onClose={() => setFilesJobId(null)}
           footer={<button onClick={() => setFilesJobId(null)}>ปิด</button>}>
           {(Object.keys(CLOSEOUT_FILE_LABEL) as CloseoutFileKind[]).map(kind => {
             const files = closeoutFiles(db, filesJob.id, kind)

@@ -667,6 +667,7 @@ export default function StandardsPage() {
         <Modal
           title={drawingForm.id ? 'แก้ไข Standard Drawing' : 'เพิ่ม Standard Drawing'}
           size="wide"
+          locked={savingDwg}
           onClose={() => { if (!savingDwg) closeDrawing() }}
           footer={<>
             <button disabled={savingDwg} onClick={closeDrawing}>ยกเลิก</button>

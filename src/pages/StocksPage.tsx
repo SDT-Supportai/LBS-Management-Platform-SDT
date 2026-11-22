@@ -1399,7 +1399,7 @@ export default function StocksPage() {
         const files = unitFiles(db, filesFor)
         const maxMb = isDemo ? DEMO_MAX_DOC_FILE_MB : MAX_DOC_FILE_MB
         return (
-          <Modal title={`เอกสารแนบ — ${u.serialLvb}`} size="wide" onClose={() => setFilesFor(null)}
+          <Modal title={`เอกสารแนบ — ${u.serialLvb}`} size="wide" locked={uploading} onClose={() => setFilesFor(null)}
             footer={<button onClick={() => setFilesFor(null)}>ปิด</button>}>
             <div className="muted" style={{ marginBottom: 12 }}>
               สัญญา · ใบส่งของ · รูปสภาพเครื่อง — แนบได้หลายไฟล์ · รับ <b>PDF และรูปภาพ</b> ขนาดไม่เกิน <b>{maxMb} MB</b>/ไฟล์

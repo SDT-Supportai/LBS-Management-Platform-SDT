@@ -855,7 +855,7 @@ export default function ServicePage() {
           ...(hasIssues && !issueDetail.trim() ? ['รายละเอียดปัญหา'] : []),
         ]
         return (
-          <Modal title={`ปิดงานติดตั้ง — ${closeJob.jobNo}`} size="xl" onClose={() => { if (!closing) setCloseFor(null) }}
+          <Modal title={`ปิดงานติดตั้ง — ${closeJob.jobNo}`} size="xl" locked={closing} onClose={() => { if (!closing) setCloseFor(null) }}
             footer={<>
               {missing.length > 0 && (
                 <div className="closeout-missing">ยังขาด {missing.length} รายการ: {missing.join(' · ')}</div>

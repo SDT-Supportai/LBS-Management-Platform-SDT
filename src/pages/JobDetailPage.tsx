@@ -2400,6 +2400,7 @@ export default function JobDetailPage() {
           <Modal
             title={`${payForm.id ? 'แก้' : 'เพิ่ม'}งวด ${PAYMENT_TYPE_LABEL[payForm.payType]} — ${job.jobNo}`}
             size="xl"
+            locked={uploading}
             onClose={() => setPayForm(null)}
             footer={<>
               <button onClick={() => setPayForm(null)}>ยกเลิก</button>

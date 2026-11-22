@@ -280,20 +280,31 @@ export function useTryAction() {
 
 // ---------------- Modal ----------------
 
-export function Modal({ title, onClose, children, footer, size = 'default' }: {
+// แผนเฟส 0 (2026-11-22): คลิกพื้นหลัง**ไม่ปิด**โมดัลอีกต่อไป — เดิมกรอกฟอร์มยาว (เปิด Job / เบิกให้ Service /
+//   งวดเงิน / Import) แล้วเผลอคลิกนอกกล่อง ข้อมูลหายทั้งหมด · ปิดได้ทางปุ่ม ✕ / ยกเลิก เท่านั้น
+//   คลิกพื้นหลัง = กล่องสั่นเบา ๆ บอกว่า "ปิดที่ปุ่ม" · ระหว่างบันทึก (runExclusive) หรือ locked (อัปโหลดไฟล์) ปิดไม่ได้
+export function Modal({ title, onClose, children, footer, size = 'default', locked = false }: {
   title: string
   onClose: () => void
   children: ReactNode
   footer?: ReactNode
   /** default 520px · wide 880px · xl 1180px + สูงเกือบเต็มจอ (ใช้กับโมดัลที่เนื้อในเป็นตารางหลายสิบบรรทัด) */
   size?: 'default' | 'wide' | 'xl'
+  /** true = ห้ามปิด (เช่น กำลังอัปโหลดไฟล์ที่ไม่ได้วิ่งผ่าน tryAction) */
+  locked?: boolean
 }) {
+  const busy = useContext(ToastCtx)?.busy ?? false
+  const blocked = locked || busy
+  const [nudge, setNudge] = useState(false)
   return (
-    <div className="modal-overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div className={`modal${size === 'default' ? '' : ` modal-${size}`}`}>
+    <div className="modal-overlay"
+      onMouseDown={e => { if (e.target === e.currentTarget) { setNudge(false); window.setTimeout(() => setNudge(true), 16) } }}>
+      <div className={`modal${size === 'default' ? '' : ` modal-${size}`}${nudge ? ' modal-nudge' : ''}`}
+        role="dialog" aria-modal="true" aria-label={title} onAnimationEnd={() => setNudge(false)}>
         <div className="modal-head">
           <h3>{title}</h3>
-          <button className="small" onClick={onClose}>✕</button>
+          <button className="small" onClick={() => { if (!blocked) onClose() }} disabled={blocked}
+            aria-label="ปิด" title={blocked ? 'กำลังบันทึก — รอสักครู่' : 'ปิด'}>✕</button>
         </div>
         <div className="modal-body">{children}</div>
         {footer && <div className="modal-foot">{footer}</div>}
