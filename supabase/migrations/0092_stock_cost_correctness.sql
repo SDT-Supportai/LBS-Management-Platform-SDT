@@ -73,7 +73,12 @@ BEGIN
     old_qty := 0; old_avg := 0; old_lot := NULL;
   END IF;
   d := NEW.qty_on_hand - old_qty;
-  IF d = 0 THEN RETURN NULL; END IF;
+  IF d = 0 THEN
+    -- review #9: ยอดไม่เปลี่ยนก็ต้องล้างบริบท ไม่งั้นติดไปกับรายการถัดไปใน transaction เดียวกัน
+    PERFORM app_set_stock_ctx(NULL, NULL, NULL, NULL, NULL);
+    PERFORM app_set_stock_lot(NULL);
+    RETURN NULL;
+  END IF;
 
   uc := NULLIF(current_setting('app.stock_cost', true), '')::NUMERIC;
   t  := COALESCE(NULLIF(current_setting('app.stock_type', true), ''), 'adjust');
@@ -220,7 +225,12 @@ BEGIN
       RAISE EXCEPTION '% ไม่มีในสต็อกกลาง ต้องสั่งซื้อผ่าน Purchasing', it.name;
     END IF;
     -- 0092 (Q4): ต้นทุน = ถัวเฉลี่ยของคลัง ณ ก่อนตัดยอด (ตัดจนเหลือ 0 แล้ว trigger รีเซ็ตเป็น 0)
-    SELECT avg_unit_cost INTO v_avg FROM accessory_stock WHERE item_id = p_item_id FOR UPDATE;
+    SELECT qty_on_hand, avg_unit_cost INTO onhand, v_avg FROM accessory_stock WHERE item_id = p_item_id FOR UPDATE;
+    -- review #6: ของไม่พอต้องเตือนก่อน "ยังไม่มีต้นทุน" (เดิมให้กรอกราคาก่อนแล้วค่อยบอกว่าของไม่พอ)
+    IF COALESCE(onhand, 0) < p_qty THEN
+      RAISE EXCEPTION 'สต็อกกลาง % คงเหลือ % % ไม่พอ (ขอ %) — เปลี่ยนเป็นสั่งซื้อผ่าน Purchasing ได้',
+        it.name, COALESCE(onhand, 0), it.uom, p_qty;
+    END IF;
     v_cost := CASE WHEN COALESCE(v_avg, 0) > 0 THEN v_avg ELSE p_unit_price END;
     IF v_cost IS NULL THEN
       RAISE EXCEPTION '% ยังไม่มีต้นทุนในคลัง — กรุณากรอกราคาต่อหน่วย', it.name;

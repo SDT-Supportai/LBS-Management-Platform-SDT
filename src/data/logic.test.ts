@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { correctionFromRow } from './remote'
 import type { DB, Job, AccessoryRequest, AccReqStatus, LbsUnit } from '../types'
 import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, ACC_STATUS_LABEL } from '../ui/format'
 import {
@@ -24,7 +25,7 @@ import {
   jobDelivery, jobEffectiveDue, jobDueExtensions, extendJobDue, deleteJobDueExtension, jobDeliveredDate, memberSchedule,
   addJobPayment, updateJobPayment, addPaymentFile, deletePaymentFile, paymentFiles, paymentFileCount, deleteJobPayment, jobInstallComplete,
   requestRevertInstall, revertUnitInstall, requestApproval, approveRequest, rejectApprovalRequest, unitInstallDate,
-  updateJobBudget, addAccessoryRequest, jobCloseBlockers, requestReturnLbs, requestCloseoutCorrection, reopenJob,
+  updateJobBudget, addAccessoryRequest, jobCloseBlockers, requestReturnLbs, requestCloseoutCorrection, reopenJob, jobWarrantyStarted,
   createStdDrawing, updateStdDrawing, stdDrawingFiles, MAX_STD_DRAWING_FILES, jobStatusPhase,
   setJobCloseout, addCloseoutFile, deleteCloseoutFile, warrantyEndFor, warrantyStatus, addMonthsIso, type CloseoutInput,
 } from './logic'
@@ -3127,5 +3128,30 @@ describe('0094 — ปิดงาน/หลังปิดงาน', () => {
     expect(() => requestCloseoutCorrection(open, svc, { jobId: 'j1', reason: 'x', correction: { kind: 'install_date', unitId: 'a', installedDate: '2026-09-02' } })).toThrow(/ปิดงานแล้ว/)
     const d = bothInstalledClosed()
     expect(() => requestCloseoutCorrection(d, prj2, { jobId: 'j1', reason: 'x', correction: { kind: 'install_date', unitId: 'a', installedDate: '2026-09-02' } })).toThrow(/ไม่ใช่งานที่คุณเปิด/)
+  })
+})
+
+// =============================================================================
+// review รอบ 1 — ข้อเล็ก (2026-11-22)
+//   #8 "เริ่มประกันแล้ว" ต้องนับวันตามเวลาไทย (เดิมใช้ UTC — ตี 0–7 ประกันที่เริ่ม "วันนี้" ยังเปิดงานใหม่ได้)
+//   #7 correction ประเภทที่ไม่รู้จักต้องไม่ถูกแปลงเป็น "สลับ Serial"
+// =============================================================================
+describe('review รอบ 1 — ข้อเล็ก', () => {
+  afterEach(() => { vi.useRealTimers() })
+  const adm = { id: 'ad', email: 'a@x.co', password: '', fullName: 'Manage', department: 'admin' as const, isActive: true }
+
+  it('#8 ตี 1:30 เวลาไทย วันที่ 2 ธ.ค. (UTC ยังเป็น 1 ธ.ค.) → ประกันที่เริ่ม 2 ธ.ค. นับว่าเริ่มแล้ว เปิดงานใหม่ไม่ได้', () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-12-01T18:30:00Z'))
+    const d = db({ users: [adm], jobs: [job({ terminalStatus: 'installed' })],
+      jobWarranties: [{ id: 'w', jobId: 'j1', kind: 'installation', startDate: '2026-12-02', endDate: '2027-12-01', createdAt: '' }] })
+    expect(jobWarrantyStarted(d, 'j1')).toBe('2026-12-02')
+    expect(() => reopenJob(d, adm, { jobId: 'j1', reason: 'x' })).toThrow(/ประกัน/)
+  })
+
+  it('#7 correction ประเภทที่ไม่รู้จัก → undefined (ไม่เดาเป็นสลับ Serial) · ประเภทที่รู้จักแปลงครบ', () => {
+    expect(correctionFromRow({ kind: 'install_site', unit_id: 'u' })).toBeUndefined()
+    expect(correctionFromRow({ kind: 'swap_serial', unit_ids: ['a', 'b'] })).toEqual({ kind: 'swap_serial', unitIds: ['a', 'b'] })
+    expect(correctionFromRow({ kind: 'install_date', unit_id: 'a', installed_date: '2026-09-04' }))
+      .toEqual({ kind: 'install_date', unitId: 'a', installedDate: '2026-09-04' })
   })
 })

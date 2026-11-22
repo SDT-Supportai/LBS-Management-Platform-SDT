@@ -169,6 +169,12 @@ export function fmtLatLng(lat?: number, lng?: number): string {
   return lat != null && lng != null ? `${lat}, ${lng}` : ''
 }
 
+/** review #8: "วันนี้" ตามเวลาไทย (UTC+7 ไม่มี DST) — ตรงกับ SQL (now() AT TIME ZONE 'Asia/Bangkok')::date
+ *  ไม่ขึ้นกับเขตเวลาของเครื่องที่เปิด (เทียบ todayIso ที่ใช้เวลาเครื่อง) */
+export function bangkokTodayIso(): string {
+  return new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10)
+}
+
 export function todayIso(): string {
   const d = new Date()
   const p = (n: number) => String(n).padStart(2, '0')
@@ -3176,6 +3182,7 @@ export function jobInstallSummary(db: DB, jobId: string) {
   //    เดิม canClose = unitsDone ⇒ ใบ Partially Issued ที่ติดตั้ง LBS ครบแล้วแต่วัสดุยังค้างเบิก
   //    ขึ้นป้าย "ติดตั้งครบ รอปิดงาน" + ปุ่ม 🏁 ปิดงานกดได้ แล้วกดไปเจอ error (ผู้ใช้จับได้)
   const issueComplete = job?.terminalStatus === 'issued'
+  const closeBlockers = jobCloseBlockers(db, jobId)   // review #10: คำนวณครั้งเดียว
   return {
     total: units.length, installed, blocked, pending,
     // ของที่อยู่กับช่างแล้ว (รอบนี้) — waiting = ยังอยู่คลัง รอ Project เบิกรอบถัดไป
@@ -3187,8 +3194,8 @@ export function jobInstallSummary(db: DB, jobId: string) {
     // ที่ยังค้างก่อนปิดได้ (ฝั่ง Project) — ใช้บอกเหตุผลเมื่อ unitsDone แต่ยังปิดไม่ได้
     lbsShort: job ? Math.max(0, job.lbsQtyRequired - units.length) : 0,
     pendingAccessories: jobPendingIssueAccessories(db, jobId).length,
-    closeBlockers: jobCloseBlockers(db, jobId),
-    canClose: unitsDone && issueComplete && jobCloseBlockers(db, jobId).length === 0,
+    closeBlockers,
+    canClose: unitsDone && issueComplete && closeBlockers.length === 0,
   }
 }
 
@@ -3218,7 +3225,7 @@ export function jobCloseBlockers(db: DB, jobId: string): string[] {
 
 /** 0094 (มติ Q2): เริ่มนับประกันแล้ว = เปิดงานใหม่ไม่ได้ · ใบเก่าที่ไม่มีประกันยังเปิดได้ */
 export function jobWarrantyStarted(db: DB, jobId: string): string | undefined {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = bangkokTodayIso()
   return db.jobWarranties.filter(w => w.jobId === jobId && w.startDate <= today)
     .map(w => w.startDate).sort()[0]
 }
@@ -5159,7 +5166,7 @@ function assertCorrectable(db: DB, jobId: string, c: CloseoutCorrection): Job {
   if (!job) throw new Error('ไม่พบ Job')
   if (job.terminalStatus !== 'installed')
     throw new Error(`ขอแก้ข้อมูลได้เฉพาะงานที่ปิดงานแล้ว — ${job.jobNo} ยังไม่ได้ปิดงาน (แก้ได้ที่หน้า Service ตามปกติ)`)
-  const today = new Date().toISOString().slice(0, 10)
+  const today = bangkokTodayIso()
   const installedOnJob = (unitId: string) => {
     const u = db.lbsUnits.find(x => x.id === unitId)
     if (!u || u.jobId !== jobId) throw new Error(`มีเครื่องที่ไม่ได้อยู่ใน ${job.jobNo}`)

@@ -140,7 +140,8 @@ BEGIN
     RAISE EXCEPTION 'เปิดงานใหม่ได้เฉพาะงานที่ปิดแล้ว (Installed) — % อยู่สถานะอื่น', j.job_no;
   END IF;
   -- 0094 (มติ Q2): เริ่มนับประกันแล้ว = เปิดงานใหม่ไม่ได้ (ใบเก่าที่ไม่มีประกันยังเปิดได้)
-  SELECT min(start_date) INTO v_start FROM job_warranties WHERE job_id = jid AND start_date <= current_date;
+  -- review #8: นับ "วันนี้" ตามเวลาไทย (Supabase = UTC · ตี 0–7 วันที่ยังเป็นเมื่อวาน)
+  SELECT min(start_date) INTO v_start FROM job_warranties WHERE job_id = jid AND start_date <= (now() AT TIME ZONE 'Asia/Bangkok')::date;
   IF v_start IS NOT NULL THEN
     RAISE EXCEPTION '% เริ่มนับประกันแล้ว (%) — เปิดงานใหม่ไม่ได้ · ถ้าบันทึกผิดให้ใช้ "ขอแก้ข้อมูลที่บันทึกผิด"', j.job_no, v_start;
   END IF;
@@ -287,7 +288,7 @@ BEGIN
   IF k = 'install_date' THEN
     ids := ARRAY[(c->>'unit_id')::UUID];
     v_d := NULLIF(c->>'installed_date', '')::DATE;
-    IF v_d IS NULL OR v_d > current_date THEN RAISE EXCEPTION 'วันที่ติดตั้งไม่ถูกต้อง (ต้องไม่เกินวันนี้)'; END IF;
+    IF v_d IS NULL OR v_d > (now() AT TIME ZONE 'Asia/Bangkok')::date THEN RAISE EXCEPTION 'วันที่ติดตั้งไม่ถูกต้อง (ต้องไม่เกินวันนี้)'; END IF;
   ELSIF k = 'warranty' THEN
     u := NULLIF(c->>'unit_id', '')::UUID;
     IF u IS NOT NULL THEN ids := ARRAY[u]; END IF;
@@ -581,6 +582,21 @@ BEGIN
     v_who || ' ให้ความเห็นคำขอ' || v_type || ' ของ ' || COALESCE(j.job_no, '-') || ': ' || v_body);
   RETURN cid;
 END $$;
+
+-- ---------- 7) review #4: คำขอเปิดงานใหม่ที่ค้างก่อน 0094 บนงานที่เริ่มประกันแล้ว → ตีกลับ ----------
+--   อนุมัติไม่ได้แล้ว (ข้อ 3) — ปล่อยไว้จะค้างในคิว Division ตลอด · แจ้ง Project ในเว็บ (ไม่ขึ้น LINE)
+WITH voided AS (
+  UPDATE approval_requests r
+     SET status = 'rejected', decided_at = now(),
+         reject_reason = 'ระบบ (0094): เริ่มนับประกันแล้ว เปิดงานใหม่ไม่ได้ — ถ้าบันทึกผิดให้ใช้ "ขอแก้ข้อมูลที่บันทึกผิด" ที่หน้า Job'
+   WHERE r.req_type = 'reopen_job' AND r.status = 'pending'
+     AND EXISTS (SELECT 1 FROM job_warranties w WHERE w.job_id = r.job_id AND w.start_date <= (now() AT TIME ZONE 'Asia/Bangkok')::date)
+  RETURNING r.job_id
+)
+INSERT INTO notifications (type, message, dept, job_id, line_status)
+SELECT 'approval_rejected', '⛔ คำขอเปิดงานใหม่ของ ' || j.job_no || ' ถูกตีกลับ — เริ่มนับประกันแล้ว ใช้ "ขอแก้ข้อมูลที่บันทึกผิด" แทน',
+       'project', v.job_id, 'off'
+  FROM voided v JOIN jobs j ON j.id = v.job_id;
 
 -- ---------- ตรวจผล ----------
 DO $$

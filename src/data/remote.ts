@@ -243,12 +243,14 @@ function mapPo(r: Row): PurchaseOrder {
     receivedAt: r.received_at ?? undefined,
   }
 }
-/** 0094 — correction ของคำขอแก้ข้อมูลหลังปิดงาน: DB เก็บ snake_case */
-function correctionFromRow(c: Row): CloseoutCorrection {
+/** 0094 — correction ของคำขอแก้ข้อมูลหลังปิดงาน: DB เก็บ snake_case
+ *  review #7: ประเภทที่ไม่รู้จัก = undefined (หน้า Approvals แสดงเหตุผลแทน) — ห้ามเดาเป็นประเภทอื่น */
+export function correctionFromRow(c: Row): CloseoutCorrection | undefined {
   if (c.kind === 'install_date') return { kind: 'install_date', unitId: c.unit_id, installedDate: c.installed_date }
   if (c.kind === 'warranty') return { kind: 'warranty', unitId: c.unit_id ?? undefined, startDate: c.start_date, endDate: c.end_date }
   if (c.kind === 'acceptance') return { kind: 'acceptance', acceptanceType: c.acceptance_type, acceptanceDocNo: c.acceptance_doc_no ?? undefined, acceptanceDate: c.acceptance_date }
-  return { kind: 'swap_serial', unitIds: c.unit_ids ?? [] }
+  if (c.kind === 'swap_serial') return { kind: 'swap_serial', unitIds: c.unit_ids ?? [] }
+  return undefined
 }
 function correctionToRow(c: CloseoutCorrection): Row {
   if (c.kind === 'install_date') return { kind: c.kind, unit_id: c.unitId, installed_date: c.installedDate }
