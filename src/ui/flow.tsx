@@ -6,7 +6,7 @@
 //   ConfirmSummary สรุปผลก่อนกดคำสั่งที่ย้อนไม่ได้ (ใช้ในโหมดยืนยันของ Modal — ไม่ซ้อนกล่อง)
 //   MyWorkPanel   กล่อง "งานของฉัน" (เฟส 3) — ต้องทำอะไร · งานไหน · ค้างกี่วัน · ปุ่มไปทำทันที
 // =============================================================================
-import type { ButtonHTMLAttributes, ReactNode } from 'react'
+import { useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import type { ApprovalRequest, DB, Job, User } from '../types'
 import { deptNames, isMyTurn, type Gate, type NextStep, type WorkItem } from '../data/flow'
@@ -131,9 +131,12 @@ function WorkRow({ w, today }: { w: WorkItem; today: string }) {
   )
 }
 
-export function MyWorkPanel({ items, user, limit = 8, today = todayIso() }: {
+export function MyWorkPanel({ items, user, limit = 8, today = todayIso(), defaultOpen = false }: {
   items: WorkItem[]; user: User | null; limit?: number; today?: string
+  /** ผู้ใช้สั่ง (2026-11-23): เริ่มซ่อนรายการ — หัวกล่องยังบอกจำนวน/เลยกำหนด กดเปิดเองได้ (แบบแผง Audit) */
+  defaultOpen?: boolean
 }) {
+  const [open, setOpen] = useState(defaultOpen)
   const head = items.slice(0, limit)
   const rest = items.slice(limit)
   const late = items.filter(w => w.lateDays > 0).length
@@ -144,9 +147,14 @@ export function MyWorkPanel({ items, user, limit = 8, today = todayIso() }: {
           📥 งานของฉัน <span className="mywork-count">{items.length}</span>
           {user && <span className="muted" style={{ fontWeight: 400 }}> · แผนก {DEPT_LABEL[user.department]}</span>}
         </h3>
-        {late > 0 && <span className="badge red">เลยกำหนด {late}</span>}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {late > 0 && <span className="badge red">เลยกำหนด {late}</span>}
+          <button className="small" aria-expanded={open} onClick={() => setOpen(v => !v)}>
+            {open ? 'ซ่อนรายการ' : `แสดงรายการ (${items.length})`}
+          </button>
+        </div>
       </div>
-      {items.length === 0 ? (
+      {!open ? null : items.length === 0 ? (
         <div className="panel-body muted">
           {user?.department === 'vip'
             ? '👑 VIP ดูภาพรวมได้ทุกหน้า — ไม่มีงานที่ต้องลงมือ (ให้ความเห็นคำขอได้ที่หน้ารออนุมัติ)'

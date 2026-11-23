@@ -108,12 +108,23 @@ describe('MyWorkPanel — กล่องงานของฉัน (เฟส 
     key: 'job:j1', title: 'เบิกให้ Service', detail: 'ของครบแล้ว', jobId: 'j1', jobNo: 'J-001', customer: 'กฟภ.',
     link: '/jobs/j1', lateDays: 0, tone: 'blue', ...over,
   })
+  it('ผู้ใช้สั่ง (2026-11-23): เริ่มซ่อนรายการ — หัวกล่องยังบอกจำนวน/เลยกำหนด + ปุ่ม "แสดงรายการ (n)"', () => {
+    const h = html(<MyWorkPanel user={user('project')} today="2026-11-23" items={[
+      item({ key: 'a', lateDays: 3, due: '2026-11-20', dueLabel: 'กำหนดส่ง', tone: 'red' }), item({ key: 'b' }),
+    ]} />)
+    expect(h).toContain('mywork-count">2<')
+    expect(h).toContain('เลยกำหนด 1')
+    expect(h).toContain('แสดงรายการ (2)')
+    expect(h).toContain('aria-expanded="false"')
+    expect(h).not.toContain('mywork-item')
+    expect(h).not.toContain('ไปทำ')
+  })
   it('ไม่มีงาน: บอกว่าไม่มีงานรอ · VIP บอกว่าเป็นมุมมองภาพรวม', () => {
-    expect(html(<MyWorkPanel items={[]} user={user('project')} today="2026-11-23" />)).toContain('ไม่มีงานที่รอคุณ')
-    expect(html(<MyWorkPanel items={[]} user={user('vip')} today="2026-11-23" />)).toContain('ไม่มีงานที่ต้องลงมือ')
+    expect(html(<MyWorkPanel items={[]} user={user('project')} today="2026-11-23" defaultOpen />)).toContain('ไม่มีงานที่รอคุณ')
+    expect(html(<MyWorkPanel items={[]} user={user('vip')} today="2026-11-23" defaultOpen />)).toContain('ไม่มีงานที่ต้องลงมือ')
   })
   it('แต่ละรายการ: ต้องทำอะไร · งานไหน · ค้างกี่วัน/เลยกี่วัน · ปุ่มไปทำทันที', () => {
-    const h = html(<MyWorkPanel user={user('project')} today="2026-11-23" items={[
+    const h = html(<MyWorkPanel user={user('project')} today="2026-11-23" defaultOpen items={[
       item({ key: 'a', lateDays: 3, due: '2026-11-20', dueLabel: 'กำหนดส่ง', tone: 'red' }),
       item({ key: 'b', title: 'พิจารณาคำขอ: ออก PR', link: '/approvals?id=x', waitingDays: 9, tone: 'amber' }),
       item({ key: 'c', due: '2026-11-30', dueLabel: 'กำหนดส่ง' }),
@@ -129,7 +140,7 @@ describe('MyWorkPanel — กล่องงานของฉัน (เฟส 
   })
   it('รายการเกินที่กำหนด: ซ่อนส่วนที่เหลือไว้ใต้ "ดูอีก n รายการ"', () => {
     const items = Array.from({ length: 10 }, (_, i) => item({ key: String(i) }))
-    const h = html(<MyWorkPanel items={items} user={user('admin')} limit={8} today="2026-11-23" />)
+    const h = html(<MyWorkPanel items={items} user={user('admin')} limit={8} today="2026-11-23" defaultOpen />)
     expect(h).toContain('ดูอีก 2 รายการ')
   })
 })
