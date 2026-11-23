@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { useStore, can } from './data/StoreContext'
+import { purchasingCounts } from './data/flow'
 import { ErrorBoundary, ToastProvider, useConfirm, useTryAction } from './ui/components'
 import { DEPT_LABEL, fmtDateTime } from './ui/format'
 import LoginPage, { GlassBackdrop } from './pages/LoginPage'
@@ -36,8 +37,8 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { db, user, logout, resetDemo, mode } = useStore()
   const { ask: askConfirm, element: confirmEl } = useConfirm()
   if (!user) return null
-  const pendingPrs = db.prs.filter(p => p.status === 'pending').length
-  const openPos = db.pos.filter(p => p.status === 'issued').length
+  // รีวิวเฟส 4: ตัวนับชุดเดียวกับหน้า Purchasing / Dashboard (รวม PR ที่ออก PO บางส่วน)
+  const { prAwaitingPo: pendingPrs, poAwaitingGoods: openPos } = purchasingCounts(db)
   const readyJobs = db.jobs.filter(j => deriveJobStatus(db, j) === 'ready_to_issue').length
   // 0071: badge ต้องนับงานที่เบิกบางส่วนด้วย — ของอยู่กับช่างแล้ว งานรออยู่จริง
   //   ถ้านับแต่ใบที่ครบ ตัวเลขบนเมนูจะน้อยกว่าจำนวนแถวในหน้า Service ที่เปิดเข้าไปเห็น

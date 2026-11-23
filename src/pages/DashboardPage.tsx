@@ -7,7 +7,7 @@ import {
 } from '../data/logic'
 import { DeliveryBadge, JobStatusBadge, useTryAction } from '../ui/components'
 import { MyWorkPanel } from '../ui/flow'
-import { myWork } from '../data/flow'
+import { myWork, purchasingCounts } from '../data/flow'
 import { fmtDate, fmtDateTime, DEPT_LABEL } from '../ui/format'
 import type { JobStatus } from '../types'
 
@@ -51,8 +51,8 @@ export default function DashboardPage() {
   const work = myWork(db, user, today)
   const pendingReqs = db.approvalRequests.filter(r => r.status === 'pending')
 
-  const pendingPr = db.prs.filter(p => p.status === 'pending')
-  const openPo = db.pos.filter(p => p.status === 'issued')
+  // รีวิวเฟส 4: ตัวนับชุดเดียวกับหน้า Purchasing (รวม PR ที่ออก PO บางส่วน)
+  const { prAwaitingPo, poAwaitingGoods } = purchasingCounts(db)
 
   // ฝั่ง Service — คืบหน้าติดตั้งรายเครื่องของงานที่เบิกแล้ว + งานที่ยังไม่มอบหมายทีม
   // 0071: นับงานที่เบิกบางส่วนด้วย ไม่งั้นการ์ดนี้ขัดกับหน้า Service/Scheduling ที่นับไปแล้ว
@@ -107,7 +107,7 @@ export default function DashboardPage() {
             {' '}<span className="muted">(On Hand {totals.onHand})</span>
             {totals.pending > 0 && <> · <b style={{ color: 'var(--amber, #d97706)' }} title="ของยังไม่ถึงคลัง — ดึงจองเข้า Job ได้ (ถ้ามี Contract No.) แต่เบิกให้ Service ไม่ได้จนกว่าจะถึง">รอเข้าคลัง {totals.pending} (ดึงจองได้ เบิกไม่ได้)</b></>}
             {totals.unknown > 0 && <> · <b title="ยังไม่ระบุ ETA to WH — กรอก FOB date ให้ครบเพื่อให้ระบบคำนวณ Status ได้">ไม่ระบุ ETA {totals.unknown}</b></>}
-            {totals.noContract > 0 && <> · <Link to="/stocks" title="ดึงเข้า Job ได้เฉพาะเครื่องที่มี Contract No. แล้ว — Division กรอกที่ LBS Inventory"><b style={{ color: 'var(--danger)' }}>ไม่มี Contract No. {totals.noContract} (ดึงไม่ได้)</b></Link></>}
+            {totals.noContract > 0 && <> · <Link to="/stocks?f=no_contract" title="ดึงเข้า Job ได้เฉพาะเครื่องที่มี Contract No. แล้ว — Division กรอกที่ LBS Inventory"><b style={{ color: 'var(--danger)' }}>ไม่มี Contract No. {totals.noContract} (ดึงไม่ได้)</b></Link></>}
             {' '}· ถูกดึงเข้า Job {totals.allocated} · เบิกติดตั้งแล้ว {totals.issued}
           </div>
         </div>
@@ -137,12 +137,12 @@ export default function DashboardPage() {
         </div>
         <div className="card">
           <div className="label">PRs Awaiting PO Issuance</div>
-          <div className="value"><Link to="/purchasing">{pendingPr.length}</Link></div>
+          <div className="value"><Link to="/purchasing">{prAwaitingPo}</Link></div>
           <div className="hint"><Link to="/purchasing">ไปหน้า Purchasing →</Link></div>
         </div>
         <div className="card">
           <div className="label">POs Pending Delivery</div>
-          <div className="value"><Link to="/purchasing">{openPo.length}</Link></div>
+          <div className="value"><Link to="/purchasing">{poAwaitingGoods}</Link></div>
           <div className="hint">รับของครบแล้ว Job จะขยับสถานะอัตโนมัติ · <Link to="/purchasing">ไปรับของ →</Link></div>
         </div>
         <div className="card">

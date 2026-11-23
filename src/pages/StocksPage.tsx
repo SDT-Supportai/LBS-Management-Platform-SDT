@@ -1,14 +1,15 @@
 import { useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import {
   stockSummary, unitInstallDate, unitCustomerInfo, unitFiles, unitFileCount, isAllowedDocFile, contractPeers, contractCustomerConflicts,
   MAX_DOC_FILE_MB, DEMO_MAX_DOC_FILE_MB,
   unitEta, unitEtaIsAuto, unitFlowState, unitLeadDays, addDaysIso,
-  ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX,
+  ETA_LEAD_DAYS, ETA_LEAD_MIN, ETA_LEAD_MAX, nextStockNo, parseSheetDate, unitPlanMissing,
 } from '../data/logic'
 import { uploadUnitDoc, signedUnitDocUrl, removeUnitDoc } from '../data/remote'
 import { supabase } from '../lib/supabase'
+import { stockPanelOpen } from '../data/flow'
 import { Modal, useConfirm, useToast, useTryAction, toBudgetNum, readAsDataUrl } from '../ui/components'
 import { fmtBaht, fmtDate, fmtDateTime, DEPT_LABEL, UNIT_FLOW } from '../ui/format'
 import {
@@ -91,23 +92,14 @@ const rowsToUnits = (rows: UnitRow[]) =>
     fob: r.fob, leadDays: r.leadDays, planPoReceipt: r.planPoReceipt, planDelivery: r.planDelivery,
   }))
 
-// Excel: เซลล์วันที่อ่านมาเป็น Date (อ่านด้วย cellDates) หรือเป็นข้อความ YYYY-MM-DD จากไฟล์ Export
-// คืน '' ถ้าอ่านไม่ได้ → ถือว่าไม่ได้กรอก (คงค่าเดิม) ไม่ใช่ error
+// Excel: วันที่อ่านด้วย parseSheetDate (logic.ts) — ข้อความ = DD-MM-YYYY เสมอ (ผู้ใช้กำหนด 2026-11-23)
+//   + เซลล์วันที่จริง + YYYY-MM-DD ของไฟล์ Export · อ่านไม่ออก = error ในหน้าตรวจก่อน Import
 /** ต้นทุนหน่วยล้านบาท เช่น 1,805,867.84 → "1.81 M฿" (ตาราง Project Stock · 2026-10-11) */
 function fmtMBaht(n?: number): string {
   if (n === undefined || n === null || !Number.isFinite(n)) return '-'
   return `${(n / 1_000_000).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} M฿`
 }
 
-function toIsoDate(v: unknown): string {
-  if (v instanceof Date && !Number.isNaN(v.getTime())) {
-    const p = (n: number) => String(n).padStart(2, '0')
-    return `${v.getFullYear()}-${p(v.getMonth() + 1)}-${p(v.getDate())}`   // local time กัน timezone เลื่อนวัน
-  }
-  const s = String(v ?? '').trim()
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
-  return ''
-}
 
 // สเปกคงที่ของ LBS ที่รับเข้าคลัง (แสดงเป็น Description ทุกคลัง)
 const LBS_DESCRIPTION = '115 kV Load Break Switch with SF6 Gas Interrupters, 2000A'
@@ -146,10 +138,10 @@ const SHEET_COLS: ColSpec[] = [
   { key: 'Location / Site', io: 'in', width: 28, format: 'ข้อความ',
     note: 'เงื่อนไขเดียวกับ Customer',
     alias: ['สถานที่ติดตั้ง', 'สถานที่', 'location', 'install_location', 'location / site', 'location/site'] },
-  { key: 'Plan PO receipt', io: 'in', width: 15, format: 'YYYY-MM-DD',
+  { key: 'Plan PO receipt', io: 'in', width: 15, format: 'DD-MM-YYYY',
     note: 'วันที่คาดว่าจะได้รับ PO จากลูกค้า (แผนฝั่งขาย) — คนละตัวกับ ETA to WH ที่เป็นวันของเข้าคลัง · เงื่อนไขเดียวกับ Customer',
     alias: ['plan po receipt', 'plan_po', 'plan po'] },
-  { key: 'FOB date', io: 'in', width: 13, format: 'YYYY-MM-DD',
+  { key: 'FOB date', io: 'in', width: 13, format: 'DD-MM-YYYY',
     note: 'วันที่ของลงเรือ — กรอกช่องนี้แล้วระบบคำนวณ ETA to WH ให้เอง', alias: ['fob', 'fob_date', 'fob date'] },
   { key: 'ระยะขนส่ง (วัน)', io: 'in', width: 15, format: `จำนวนเต็ม ${ETA_LEAD_MIN}–${ETA_LEAD_MAX}`, num: 'int',
     note: `ระยะเวลา FOB → คลัง · ปล่อยว่าง = ใช้ค่ามาตรฐาน ${ETA_LEAD_DAYS} วัน · ใช้ได้เมื่อกรอก FOB date เท่านั้น`,
@@ -157,10 +149,10 @@ const SHEET_COLS: ColSpec[] = [
   // ⚠️ ห้ามใส่ 'Plan PO receipt' เป็น alias ของ ETA อีก — 0053 ใช้ชื่อนั้นเป็นคอลัมน์ใหม่ (วันรับ PO จากลูกค้า)
   //    ถ้าเหลือไว้ ไฟล์รูปแบบใหม่จะถูกอ่านวันรับ PO ไปลง ETA to WH ผิดช่อง
   //    (ไฟล์ที่ export ก่อน 0049 ซึ่งใช้หัว "Plan PO receipt" ในความหมายวันของเข้าคลัง จึงต้องแก้หัวเป็น "ETA to WH" ก่อน import)
-  { key: 'ETA to WH', io: 'in', width: 13, format: 'YYYY-MM-DD',
+  { key: 'ETA to WH', io: 'in', width: 13, format: 'DD-MM-YYYY',
     note: 'วันที่ของถึงคลัง — กรอกเองได้เฉพาะเมื่อ "ไม่มี" FOB date · ถ้ามี FOB ระบบคำนวณทับให้เสมอ',
     alias: ['eta', 'eta to wh', 'plan_po_receipt'] },
-  { key: 'Plan Delivery', io: 'in', width: 14, format: 'YYYY-MM-DD',
+  { key: 'Plan Delivery', io: 'in', width: 14, format: 'DD-MM-YYYY',
     note: 'กำหนดส่งมอบ/ติดตั้งตามแผน', alias: ['plan delivery', 'plan_delivery'] },
   { key: 'Status', io: 'auto', width: 18, format: 'ข้อความ',
     note: 'ระบบคำนวณจาก ETA to WH + สถานะการดึง/เบิก: ? → Pending → On Hand → ถูกดึงเข้า Job → เบิกแล้ว รอติดตั้ง → ติดตั้งแล้ว' },
@@ -231,6 +223,13 @@ export default function StocksPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [addTo, setAddTo] = useState<string | null>(null)
   const [openStock, setOpenStock] = useState<string | null>(null)         // เริ่มต้นซ่อนรายการทุกคลัง
+  // เฟส 4: ตัวกรอง "ไม่มี Contract No. (ดึงไม่ได้)" — ลิงก์จาก Dashboard ?f=no_contract
+  const [params, setParams] = useSearchParams()
+  const noContractOnly = params.get('f') === 'no_contract'
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())   // คลังที่ผู้ใช้พับเองขณะเปิดตัวกรอง
+  const setNoContractOnly = (on: boolean) => setParams(p => {
+    const n = new URLSearchParams(p); if (on) n.set('f', 'no_contract'); else n.delete('f'); return n
+  }, { replace: true })
   // แท็บย่อยของหน้านี้ (2026-08-23) — แยก "คลัง LBS" ออกจาก "วัสดุตาม Job (Ref.PO)"
   //   เดิมเป็นแผงต่อท้ายกัน: ต้องเลื่อนผ่านทุกคลัง (แต่ละคลังมี 30–40 เครื่อง) กว่าจะถึงตารางวัสดุ
   //   ⚠️ ไม่ทำเป็น route แยก — ยังเป็นข้อมูล "คลัง" ชุดเดียวกัน และจะเสีย bookmark /stocks เดิม
@@ -263,7 +262,7 @@ export default function StocksPage() {
   const importFileRef = useRef<HTMLInputElement>(null)
   const importToRef = useRef<{ id: string; no: string } | null>(null)
 
-  const [stockNo, setStockNo] = useState(`Project Stock No.${db.projectStocks.length + 1}`)
+  const [stockNo, setStockNo] = useState(() => nextStockNo(db))   // เฟส 4: เลขสูงสุด + 1 (ไม่ชนหลังลบคลัง)
   const [rows, setRows] = useState<UnitRow[]>([emptyRow()])
   const [notes, setNotes] = useState('')
   const [poNo, setPoNo] = useState('')
@@ -552,7 +551,7 @@ export default function StocksPage() {
       ['2', 'แถวที่ Serial ตรงกับเครื่องเดิมในคลังนี้ = อัพเดทเครื่องนั้น · Serial ใหม่ = รับเข้าเป็นเครื่องใหม่'],
       ['3', 'Serial ที่ชนกับเครื่องในคลังอื่น = ระบบขึ้น error ไม่ให้นำเข้า (กันกรอกผิด)'],
       ['4', 'เครื่องที่เบิกให้ Service แล้วจะถูกข้ามทั้งแถว — ระบบล็อกการแก้ไขไว้'],
-      ['5', 'วันที่กรอกเป็น YYYY-MM-DD (เช่น 2026-09-01) หรือใช้เซลล์ชนิดวันที่ของ Excel ก็ได้'],
+      ['5', 'วันที่กรอกเป็น DD-MM-YYYY (วัน-เดือน-ปี เช่น 01-09-2026 หรือ 01-09-2569 · คั่นด้วย - หรือ / ก็ได้) — ระบบอ่านวันก่อนเดือนเสมอ · ค่า YYYY-MM-DD ที่ไฟล์นี้ Export ออกมา Import กลับได้ตามเดิม · หรือใช้เซลล์ชนิดวันที่ของ Excel'],
       ['6', `ETA to WH = FOB date + ระยะขนส่ง · ถ้าไม่กรอก FOB และไม่กรอก ETA เลย Status จะขึ้น "?" (ระบบไม่เดาว่าของถึงคลังแล้ว)`],
       ['7', `ชีต "${SHEET_SUMMARY}" กับชีตนี้เป็นชีตอ่านอย่างเดียว — ระบบข้ามให้เองตอน Import ไม่ต้องลบก่อนอัปไฟล์`],
       ['8', `แก้ไขได้เฉพาะชีต "${s.stockNo}" · ห้ามเปลี่ยนชื่อชีตนั้น ห้ามย้าย/ลบแถวหัวตาราง และห้ามเพิ่มแถวรวมท้ายตาราง`],
@@ -603,30 +602,38 @@ export default function StocksPage() {
         const om = cell(row, colKeys('Serial.OM'))
         const costStr = cell(row, colKeys('Cost/Set'))
         const no = `แถว ${i + 2}`
+        // เฟส 4: วันที่อ่านไม่ออก = error (เดิมกลายเป็นค่าว่าง "คงเดิม" เงียบ ๆ) · ข้อความ = DD-MM-YYYY เสมอ
+        const dateErrs: string[] = []
+        const toIsoDate = (label: string) => {
+          const r = parseSheetDate(rawCell(row, colKeys(label)))
+          if (r.error) dateErrs.push(`${label}: ${r.error}`)
+          return r.value
+        }
         // ข้อมูลแผนรายเครื่อง (0048/0049) — ช่องว่าง = คงค่าเดิม
-        const fob = toIsoDate(rawCell(row, colKeys('FOB date'))) || undefined
+        const fob = toIsoDate('FOB date') || undefined
         // "ETA to WH" ในไฟล์ = ค่าคำนวณจาก FOB → ถ้าแถวนี้มี FOB ให้ข้าม (กันเขียนค่า auto ทับเป็นค่ากรอกมือ)
         // แถวที่ไม่มี FOB จึงจะรับ ETA เป็นค่ากรอกเอง (ลงคอลัมน์เดิม plan_po_receipt_date)
-        const etaCell = toIsoDate(rawCell(row, colKeys('ETA to WH'))) || undefined
+        const etaCell = toIsoDate('ETA to WH') || undefined
         const leadStr = cell(row, colKeys('ระยะขนส่ง (วัน)'))
         if (leadStr !== '' && (!Number.isInteger(Number(leadStr)) || Number(leadStr) < ETA_LEAD_MIN || Number(leadStr) > ETA_LEAD_MAX))
           return void errors.push(`${no}: ระยะขนส่ง (วัน) "${leadStr}" ต้องเป็นจำนวนเต็ม ${ETA_LEAD_MIN}–${ETA_LEAD_MAX}`)
-        if (leadStr !== '' && !fob)
+        if (leadStr !== '' && !fob && dateErrs.length === 0)
           return void errors.push(`${no}: กรอก "ระยะขนส่ง (วัน)" แต่ไม่ได้กรอก "FOB date" — ระยะขนส่งใช้คำนวณต่อจาก FOB เท่านั้น`)
         const plan = {
           contractNo: cell(row, colKeys('Contract No.')) || undefined,
           customer: cell(row, colKeys('Customer')) || undefined,
           phone: cell(row, colKeys('Contact Number')) || undefined,
           location: cell(row, colKeys('Location / Site')) || undefined,
-          planPo: toIsoDate(rawCell(row, colKeys('Plan PO receipt'))) || undefined,
+          planPo: toIsoDate('Plan PO receipt') || undefined,
           fob,
           // ระยะขนส่งมีความหมายเฉพาะเมื่อมี FOB (ไม่มี FOB = ETA กรอกตรงๆ ไม่ต้องคำนวณ)
           leadDays: fob && leadStr !== '' ? Number(leadStr) : undefined,
           planPoReceipt: fob ? undefined : etaCell,
-          planDelivery: toIsoDate(rawCell(row, colKeys('Plan Delivery'))) || undefined,
+          planDelivery: toIsoDate('Plan Delivery') || undefined,
         }
         if (!lvb && !om) return                       // ข้ามแถวว่าง
         if (!lvb || !om) return void errors.push(`${no}: ต้องมีทั้ง Serial.LVB และ Serial.OM`)
+        if (dateErrs.length > 0) return void errors.push(`${no}: ${dateErrs.join(' · ')}`)
         if (lvb === om) return void errors.push(`${no}: LVB กับ OM ห้ามเป็นเลขเดียวกัน (${lvb})`)
         if (costStr !== '' && (Number.isNaN(Number(costStr)) || Number(costStr) < 0))
           return void errors.push(`${no}: Cost/Set "${costStr}" ต้องเป็นตัวเลขไม่ติดลบ`)
@@ -872,7 +879,7 @@ export default function StocksPage() {
       {tab === 'stock' && <>
       {canManage && (
         <div style={{ marginBottom: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button className="primary" onClick={() => { setRows([emptyRow()]); setStockNo(`Project Stock No.${db.projectStocks.length + 1}`); setPoNo(''); setNotes(''); setShowCreate(true) }}>+ สร้าง Project Stock ใหม่ (สั่งซื้อ LBS เข้าคลัง)</button>
+          <button className="primary" onClick={() => { setRows([emptyRow()]); setStockNo(nextStockNo(db)); setPoNo(''); setNotes(''); setShowCreate(true) }}>+ สร้าง Project Stock ใหม่ (สั่งซื้อ LBS เข้าคลัง)</button>
           <button onClick={() => setShowShare(v => !v)}>
             🔗 ลิงก์ให้ผู้บริหารดู{activeLinks.length > 0 ? ` (${activeLinks.length})` : ''}
           </button>
@@ -973,10 +980,29 @@ export default function StocksPage() {
         </Modal>
       )}
 
+      {noContractOnly && (
+        <div className="filter-chips" role="status">
+          <span className="chip on">กรอง: ไม่มี Contract No. (ดึงไม่ได้) · {db.projectStocks.reduce((n, s) => n + stockSummary(db, s.id).noContract, 0)} เครื่อง</span>
+          <button className="small" onClick={() => setNoContractOnly(false)}>✕ ล้างตัวกรอง</button>
+          <span className="muted" style={{ fontSize: 12 }}>กรอกเลขสัญญาที่ปุ่ม "แก้ข้อมูล" ท้ายแถว — กรอกแล้วต้องมี Customer + Location ด้วย</span>
+        </div>
+      )}
       {db.projectStocks.map(s => {
         const sum = stockSummary(db, s.id)
-        const units = db.lbsUnits.filter(u => u.projectStockId === s.id)
-        const expanded = openStock === s.id
+        const allUnits = db.lbsUnits.filter(u => u.projectStockId === s.id)
+        // ตัวกรองไม่มี Contract No. = เครื่องในคลังที่ดึงเข้า Job ไม่ได้ (0084) — นับแบบเดียวกับ stockSummary.noContract
+        const units = noContractOnly ? allUnits.filter(u => u.status === 'in_stock' && !u.contractNo?.trim()) : allUnits
+        // ตัวกรองเปิดอยู่ = กางทุกคลังที่มีเครื่องเข้าเงื่อนไข (มาจาก Dashboard ต้องเห็นทันที)
+        const expanded = stockPanelOpen(s.id, { openStock, collapsed, filterOn: noContractOnly, hasMatches: units.length > 0 })
+        const toggleStock = () => {
+          if (expanded) {
+            if (openStock === s.id) setOpenStock(null)
+            setCollapsed(c => new Set(c).add(s.id))                        // พับได้แม้ตัวกรองกางให้เอง
+          } else {
+            setCollapsed(c => { const n = new Set(c); n.delete(s.id); return n })
+            setOpenStock(s.id)
+          }
+        }
         return (
           <div className="panel" key={s.id}>
             <div className="panel-head">
@@ -992,6 +1018,13 @@ export default function StocksPage() {
                   <span className="badge neutral" title={`ยังไม่ระบุ ETA to WH ${sum.unknown} เครื่อง — กรอก FOB date (หรือใช้ปุ่ม 🚢 ตั้ง FOB ทั้งคลัง) เพื่อให้ระบบคำนวณ Status ได้`}>
                     ? {sum.unknown}
                   </span>
+                )}{' '}
+                {sum.noContract > 0 && (
+                  <button type="button" className="badge red" style={{ cursor: 'pointer', border: 0 }}
+                    title="เครื่องในคลังที่ยังไม่มี Contract No. — ดึงเข้า Job ไม่ได้ (0084) · กดเพื่อกรองดูเฉพาะเครื่องเหล่านี้"
+                    onClick={() => { setNoContractOnly(true); setCollapsed(c => { const n = new Set(c); n.delete(s.id); return n }) }}>
+                    ไม่มี Contract No. {sum.noContract}
+                  </button>
                 )}{' '}
                 <span className="badge blue">ถูกดึง {sum.allocated}</span>{' '}
                 <span className="badge neutral">เบิกแล้ว {sum.issued}</span>{' '}
@@ -1026,14 +1059,14 @@ export default function StocksPage() {
                     if (await askConfirm({
                       title: `ลบ ${s.stockNo}`,
                       description: <>
-                        <b>Serial ทั้ง {sum.total} เครื่องในคลังนี้จะถูกลบไปด้วย</b> · กู้คืนไม่ได้ —
+                        <b>Serial ทั้ง {sum.total} เครื่องในคลังนี้จะถูกลบไปด้วย</b> พร้อม<b>เอกสารแนบรายเครื่อง</b>และ<b>ลิงก์ผู้บริหารที่ผูกคลังนี้</b> · กู้คืนไม่ได้ —
                         ระบบจะไม่ให้ลบถ้าคลังนี้เคยมีประวัติดึง/คืน LBS (ถ้าเลิกใช้แล้วให้ "ปิดคลัง" แทน)
                       </>,
                       confirmLabel: 'ลบคลังนี้',
                     })) tryAction(() => act.deleteProjectStock({ stockId: s.id }), `ลบ ${s.stockNo} แล้ว`)
                   }}>ลบ</button>
                 )}
-                <button className="small" onClick={() => setOpenStock(expanded ? null : s.id)}>{expanded ? 'ซ่อนรายการ' : `ดูรายเครื่อง (${sum.total})`}</button>
+                <button className="small" onClick={toggleStock}>{expanded ? 'ซ่อนรายการ' : `ดูรายเครื่อง (${noContractOnly ? `${units.length}/${sum.total}` : sum.total})`}</button>
               </div>
             </div>
             <div className="panel-body muted" style={{ paddingBottom: 0 }}>
@@ -1046,6 +1079,11 @@ export default function StocksPage() {
                 <table className="grid">
                   <thead><tr><th>Serial.LVB</th><th>Serial.OM</th><th style={{ textAlign: 'right' }}>Cost/Set (M฿)</th><th>Contract No.</th><th>Customer</th><th>Contact Number</th><th>Location / Site</th><th>Plan PO receipt</th><th>Job No.</th><th>FOB date</th><th>ETA to WH</th><th>Status</th><th>Plan Delivery</th><th>Actual Delivery</th>{canManage && <th></th>}</tr></thead>
                   <tbody>
+                    {units.length === 0 && (
+                      <tr><td colSpan={canManage ? 15 : 14}><div className="empty">
+                        {noContractOnly ? 'ไม่มีเครื่องที่ยังไม่มี Contract No. ในคลังนี้' : 'ยังไม่มีเครื่องในคลังนี้'}
+                      </div></td></tr>
+                    )}
                     {units.map(u => {
                       // 0073: ลำดับความจริง 3 ชั้น — Job ชนะ (0014) → สัญญา → แผน · helper เดียวใช้ทุกที่
                       const info = unitCustomerInfo(db, u)
@@ -1132,7 +1170,7 @@ export default function StocksPage() {
                                 📎{unitFileCount(db, u.id) > 0 ? ` ${unitFileCount(db, u.id)}` : ''}
                               </button>
                               {u.status === 'issued'
-                                ? <span className="muted" title="เบิกให้ Service แล้ว — allocation ถูกล็อก แก้ข้อมูลรายเครื่องไม่ได้">🔒</span>
+                                ? <span className="muted" style={{ fontSize: 12 }} title="เบิกให้ Service แล้ว — allocation ถูกล็อก แก้ข้อมูลรายเครื่องไม่ได้">🔒 เบิกแล้ว</span>
                                 : <button className="small" onClick={() => setEditPlan({
                                     id: u.id, canEditSerial: u.status === 'in_stock', hasJob: !!u.jobId,
                                     serialLvb: u.serialLvb, serialOm: u.serialOm,
@@ -1498,6 +1536,9 @@ export default function StocksPage() {
         // ป้าย "(แผน)" หายทันทีที่พิมพ์เลขสัญญา — สื่อกติกาในขณะที่คนกำลังกรอก ไม่ต้องรอบันทึก
         const planLabel = (editPlan.hasJob || editPlan.contractNo.trim()) ? '' : ' (แผน)'
         const contractNeedsInfo = !editPlan.hasJob && !!editPlan.contractNo.trim()
+        // เฟส 4: กติกาเดียวกับ server (unitPlanMissing) — ขาดแล้วปิดปุ่มบันทึก เดิมกดได้ → แก้ Serial ผ่านไปก่อนแล้วค่อย error
+        const planMissing = unitPlanMissing({ contractNo: editPlan.contractNo, customer: editPlan.customerName,
+          location: editPlan.installLocation, hasJob: editPlan.hasJob })
         // 0087: เลขสัญญาที่พิมพ์อยู่ซ้ำกับเครื่องไหน (PO หลาย set = ปกติ) — ใช้เตือน + เสนอคัดลอกข้อมูลลูกค้า
         const peers = contractPeers(db, editPlan.contractNo, editPlan.id)
         const ref = peers.find(p => p.planCustomerName || p.planInstallLocation)
@@ -1508,8 +1549,13 @@ export default function StocksPage() {
           size="wide"
           onClose={() => setEditPlan(null)}
           footer={<>
+            {planMissing.length > 0 && (
+              <span className="modal-foot-summary" style={{ color: 'var(--danger)' }} role="status">
+                กรอก Contract No. แล้วต้องระบุ {planMissing.join(' และ ')}
+              </span>
+            )}
             <button onClick={() => setEditPlan(null)}>ยกเลิก</button>
-            <button className="primary" disabled={editPlan.canEditSerial && serialEmpty} onClick={async () => {
+            <button className="primary" disabled={(editPlan.canEditSerial && serialEmpty) || planMissing.length > 0} onClick={async () => {
               if (await tryAction(
                 async () => {
                   // แก้ Serial ก่อน (มี guard unique ฝั่ง server) แล้วค่อยบันทึกข้อมูลแผน

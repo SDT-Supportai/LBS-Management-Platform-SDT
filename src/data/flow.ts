@@ -17,7 +17,7 @@ import {
   jobCancelBlockReason, jobIsFieldActive, daysBetweenIso, pendingPurchasingReqs, todayIso, prSnapshotChanges, correctionLabel,
   type JobDelivery,
 } from './logic'
-import { APPROVAL_TYPE_LABEL, DEPT_LABEL, fmtDate } from '../ui/format'
+import { APPROVAL_TYPE_LABEL, DEPT_LABEL, PR_STATUS_LABEL, fmtDate } from '../ui/format'
 
 // ---------------- Gate: กดได้ / กดไม่ได้เพราะอะไร / ใครทำได้ ----------------
 export type Gate =
@@ -475,17 +475,16 @@ export function myWork(db: DB, user: User | null, today = todayIso()): WorkItem[
   const doesPurchasing = can(user, 'purchasing.manage')
   const queuedJobs = { pr: new Set<string>(), po: new Set<string>() }
   if (doesPurchasing) {
-    for (const pr of db.prs.filter(x => x.status === 'pending')) {
-      const waitingDays = daysBetweenIso(bkkDate(pr.createdAt), today)
+    // เฟส 4: คิวเดียวกับหน้า Purchasing — รวม PR ที่ออก PO ไปบางส่วนแล้ว (เดิมนับแค่ pending)
+    for (const { pr, openLines, waitingDays } of prsAwaitingPo(db, today)) {
       queuedJobs.pr.add(pr.jobId)
       items.push({
         key: `pr:${pr.id}`, title: 'ออก PO', ...jobInfo(pr.jobId), link: '/purchasing',
-        detail: `${pr.prNo} · ${pr.requestIds.length} รายการ · ส่งโดย ${nameOf(pr.createdBy)}`,
+        detail: `${pr.prNo} · ${openLines} รายการ${pr.status === 'po_issued' ? ' (ออก PO บางส่วนแล้ว)' : ''} · ส่งโดย ${nameOf(pr.createdBy)}`,
         lateDays: 0, waitingDays, tone: tone(0, waitingDays),
       })
     }
-    for (const po of db.pos.filter(x => x.status === 'issued')) {
-      const lateDays = late(po.expectedDate)
+    for (const { po, lateDays } of posAwaitingGoods(db, today)) {
       queuedJobs.po.add(po.jobId)
       items.push({
         key: `po:${po.id}`, title: 'รับของตาม PO', ...jobInfo(po.jobId), link: '/purchasing',
@@ -680,4 +679,74 @@ export function approvalFacts(db: DB, r: ApprovalRequest, today = todayIso()): A
     stale: r.type === 'create_pr' && r.status === 'pending' ? prSnapshotChanges(db, r) : [],
     outcome: job ? approvalOutcome(r.type, job, stepTitle) : '-',
   }
+}
+
+// ---------------- คิว Purchasing (เฟส 4) ----------------
+/**
+ * PR ที่ยังมีบรรทัดรอออก PO — รวมใบที่ออก PO ไปบางส่วนแล้ว (po_issued + ยังมี pr_sent) · ค้างนานก่อน
+ * ใช้ร่วม: ป้ายจำนวนหน้า Purchasing · คิวรอออก PO · งานของฉัน (เดิมแต่ละที่นับเองและนับแค่ pending)
+ */
+export function prsAwaitingPo(db: DB, today = todayIso()) {
+  return db.prs
+    .filter(pr => pr.status === 'pending' || pr.status === 'po_issued')
+    .map(pr => ({
+      pr,
+      openLines: db.accessoryRequests.filter(r => r.prId === pr.id && r.status === 'pr_sent').length,
+      waitingDays: daysBetweenIso(bkkDate(pr.createdAt), today),
+    }))
+    .filter(x => x.openLines > 0)
+    .sort((a, b) => a.pr.createdAt.localeCompare(b.pr.createdAt))
+}
+
+/** PO ที่ยังรอรับของ (issued) · ค้างนานก่อน · lateDays = เลยกำหนดส่งของกี่วัน */
+export function posAwaitingGoods(db: DB, today = todayIso()) {
+  return db.pos
+    .filter(po => po.status === 'issued')
+    .map(po => ({
+      po,
+      waitingDays: daysBetweenIso(bkkDate(po.createdAt), today),
+      lateDays: po.expectedDate && po.expectedDate < today ? daysBetweenIso(po.expectedDate, today) : 0,
+    }))
+    .sort((a, b) => a.po.createdAt.localeCompare(b.po.createdAt))
+}
+
+/** ป้ายสถานะ PR ที่แยก "ออก PO บางส่วน" ออกจาก "ออก PO แล้ว" (ค่าในระบบเป็น po_issued ทั้งคู่) */
+export function prStatusLabel(db: DB, pr: DB['prs'][number]): string {
+  if (pr.status === 'po_issued') {
+    const open = db.accessoryRequests.filter(r => r.prId === pr.id && r.status === 'pr_sent').length
+    if (open > 0) return `ออก PO บางส่วน · รอออก PO อีก ${open} รายการ`
+  }
+  return PR_STATUS_LABEL[pr.status] ?? pr.status
+}
+
+/**
+ * จำนวนที่จะส่งบันทึกรับของ — เฉพาะบรรทัดที่ยังค้างรับอยู่ในตาราง (lines)
+ * 🔴 เฟส 4: เดิมส่งทุกค่าที่เคยกรอก รวมบรรทัดที่หลุดจากตารางแล้ว (✏️ แก้จำนวนจนบรรทัดจบ) ⇒ server ปฏิเสธทั้งชุด
+ * over = บรรทัดที่กรอกเกินจำนวนค้างรับ (ปิดปุ่มบันทึกก่อนส่ง)
+ */
+export function pendingReceipts(qty: Record<string, string | number>, lines: { id: string; remaining: number }[]) {
+  const receipts: { requestId: string; qty: number }[] = []
+  const over: string[] = []
+  for (const l of lines) {
+    const n = Number(qty[l.id] ?? '')
+    if (!Number.isFinite(n) || n <= 0) continue
+    receipts.push({ requestId: l.id, qty: n })
+    if (n > l.remaining) over.push(l.id)
+  }
+  return { receipts, over }
+}
+
+/** รีวิวเฟส 4 ข้อ 1: ตัวนับ Purchasing ชุดเดียว — Dashboard · ป้ายเมนู · หน้า Purchasing (เดิม Dashboard/เมนูนับแค่ PR pending) */
+export function purchasingCounts(db: DB) {
+  return { prAwaitingPo: prsAwaitingPo(db).length, poAwaitingGoods: posAwaitingGoods(db).length }
+}
+
+/**
+ * รีวิวเฟส 4 ข้อ 3: การ์ดคลังกางอยู่ไหม (หน้า LBS Inventory)
+ *   ตัวกรอง "ไม่มี Contract No." เปิด = คลังที่มีเครื่องเข้าเงื่อนไขกางเอง แต่ผู้ใช้พับได้ (collapsed)
+ *   เดิมบังคับกางจนพับไม่ได้ ต้องล้างตัวกรองก่อน
+ */
+export function stockPanelOpen(id: string, s: { openStock: string | null; collapsed: Set<string>; filterOn: boolean; hasMatches: boolean }): boolean {
+  if (s.openStock === id) return true
+  return s.filterOn && s.hasMatches && !s.collapsed.has(id)
 }

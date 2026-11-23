@@ -1073,6 +1073,18 @@ export function updateProjectStock(
     `แก้ไข ${stock.stockNo}${stock.status !== p.status ? ` (${p.status === 'closed' ? 'ปิดคลัง — ห้ามดึงเพิ่ม' : 'เปิดคลังอีกครั้ง'})` : ''}`)
 }
 
+/**
+ * เลข Project Stock ที่จะเสนอให้ตอนสร้างคลังใหม่ — เลขสูงสุดที่ใช้อยู่ + 1 (ไม่ซ้ำกับที่มีอยู่)
+ * 🔴 เฟส 4: เดิม = จำนวนคลัง + 1 ⇒ มี No.1–3 ลบ No.2 แล้วสร้างใหม่ → เสนอ No.3 ชนของเดิม
+ */
+export function nextStockNo(db: DB): string {
+  const nums = db.projectStocks.map(s => Number(/No\.\s*(\d+)\s*$/i.exec(s.stockNo)?.[1] ?? 0))
+  let n = Math.max(db.projectStocks.length, ...nums, 0) + 1
+  const taken = new Set(db.projectStocks.map(s => s.stockNo.trim().toLowerCase()))
+  while (taken.has(`project stock no.${n}`)) n++
+  return `Project Stock No.${n}`
+}
+
 // ลบ Project Stock ได้เฉพาะคลัง "เปล่า" (ทุกเครื่องยัง in_stock + ไม่เคยมีประวัติดึง/คืน)
 export function deleteProjectStock(db: DB, actor: User, p: { stockId: string }): DB {
   const stock = db.projectStocks.find(s => s.id === p.stockId)
@@ -1083,10 +1095,15 @@ export function deleteProjectStock(db: DB, actor: User, p: { stockId: string }):
     throw new Error(`${stock.stockNo} มีเครื่องที่ถูกดึงเข้า Job/เบิกแล้ว ${bad} เครื่อง ลบไม่ได้ — ใช้ "ปิดคลัง" แทน`)
   if (db.allocations.some(a => a.projectStockId === p.stockId))
     throw new Error(`${stock.stockNo} มีประวัติดึง/คืนแล้ว ลบไม่ได้ — ใช้ "ปิดคลัง" แทนเพื่อคง audit trail`)
+  // 🔴 เฟส 4: ลบของที่ผูกคลัง/เครื่องตามไปด้วย ให้ตรงกับ LIVE (ON DELETE CASCADE ของ 0069 ลิงก์ · 0074 เอกสาร)
+  //   เดิม demo ทิ้งไว้ ⇒ ลิงก์ผู้บริหารของคลังที่ลบแล้วยังเปิดได้ (หน้าเปล่า) · LIVE = ลิงก์ใช้ไม่ได้
+  const unitIds = new Set(units.map(u => u.id))
   const next: DB = {
     ...db,
     projectStocks: db.projectStocks.filter(s => s.id !== p.stockId),
     lbsUnits: db.lbsUnits.filter(u => u.projectStockId !== p.stockId),
+    publicShareLinks: db.publicShareLinks.filter(l => l.projectStockId !== p.stockId),
+    lbsUnitFiles: db.lbsUnitFiles.filter(f => !unitIds.has(f.unitId)),
   }
   return audit(next, actor, 'project_stock', p.stockId, 'delete_stock',
     `ลบ ${stock.stockNo} (LBS ในคลัง ${units.length} เครื่อง ไม่เคยมีประวัติดึง/คืน)`)
@@ -1257,11 +1274,8 @@ export function updateUnitPlan(
   // 0073: กรอกเลขสัญญาแล้ว = ข้อมูลลูกค้าชุดนี้ "ตกลงแล้ว" ไม่ใช่แผน ⇒ ต้องมี Customer + Location
   //   (เบอร์ไม่บังคับ) · ยกเว้นเครื่องที่ผูก Job แล้ว — ข้อมูลมาจาก Job และเลขสัญญาเป็นแค่ Ref.
   const contractNo = clean(p.contractNo)
-  if (contractNo && !unit.jobId) {
-    const missing = [
-      !clean(p.planCustomerName) && 'Customer',
-      !clean(p.planInstallLocation) && 'Location / Site',
-    ].filter(Boolean)
+  {
+    const missing = unitPlanMissing({ contractNo: p.contractNo, customer: p.planCustomerName, location: p.planInstallLocation, hasJob: !!unit.jobId })
     if (missing.length > 0)
       throw new Error(`กรอก Contract No. แล้วต้องระบุ ${missing.join(' และ ')} ด้วย — ข้อมูลชุดนี้จะเลิกเป็น "แผน"`)
   }
@@ -2144,6 +2158,8 @@ export function importStockCount(
   for (const row of p.rows) {
     const item = next.items.find(i => i.id === row.itemId)
     if (!item) throw new Error(`ไม่พบวัสดุ ${row.itemId}`)
+    // 🔴 เฟส 4 (sync 0097 trigger): LBS หลักไม่ใช่วัสดุคลังคงเหลือ — นับที่ LBS Inventory
+    if (item.itemType === 'main_equipment') throw new Error(`${item.name} เป็น LBS หลัก — นำเข้าตรวจนับคลังคงเหลือไม่ได้`)
     if (row.qty !== undefined && row.qty < 0) throw new Error(`${item.name}: ยอดติดลบไม่ได้`)
     if (row.unitCost !== undefined && row.unitCost < 0) throw new Error(`${item.name}: ต้นทุนติดลบไม่ได้`)
     const curQty = stockQtyOf(next, item.id)
@@ -2444,6 +2460,10 @@ export function rejectPR(db: DB, actor: User, p: { prId: string; reason: string 
   const pr = db.prs.find(x => x.id === p.prId)
   if (!pr) throw new Error('ไม่พบ PR')
   if (pr.status !== 'pending') throw new Error(`${pr.prNo} ออก PO ไปแล้วหรือปิดไปแล้ว ตีกลับไม่ได้`)
+  // เฟส 4 (sync 0097): PR ที่ยังมี PO ไม่ถูกยกเลิก ตีกลับไม่ได้ — กันกรณีสถานะเพี้ยนกลับเป็น pending
+  //   (บรรทัดที่รับของแล้วจะชี้ไปที่ PR ที่ถูกตีกลับ)
+  if (db.pos.some(x => x.prId === p.prId && x.status !== 'cancelled'))
+    throw new Error(`${pr.prNo} มี PO ที่ยังไม่ถูกยกเลิก — ตีกลับไม่ได้ (ยกเลิก PO ก่อน หรือแก้จำนวนบรรทัดแทน)`)
   if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผลที่ตีกลับ')
   const job = db.jobs.find(j => j.id === pr.jobId)!
   let next: DB = {
@@ -2507,7 +2527,7 @@ export function createPO(
     `ออก ${poNo} จาก ${pr.prNo} (${job.jobNo}) ${chosen.length} รายการ · Supplier: ${p.supplierName}`)
 }
 
-// ยกเลิก PO เดี่ยว (ยังไม่รับของเลย): คืน line ของ PO → pr_sent; PR กลับ pending ถ้าไม่เหลือ line po_ordered
+// ยกเลิก PO เดี่ยว (ยังไม่รับของเลย): คืน line ของ PO → pr_sent; PR กลับ pending ถ้าไม่เหลือ PO ใบอื่น (0097)
 export function cancelPO(db: DB, actor: User, p: { poId: string; reason: string }): DB {
   const po = db.pos.find(x => x.id === p.poId)
   if (!po) throw new Error('ไม่พบ PO')
@@ -2522,11 +2542,13 @@ export function cancelPO(db: DB, actor: User, p: { poId: string; reason: string 
 
   const reqs2 = db.accessoryRequests.map(r =>
     r.poId === p.poId && r.status === 'po_ordered' ? { ...r, status: 'pr_sent' as const, poId: null } : r)
-  const stillOrdered = reqs2.some(r => r.prId === po.prId && r.status === 'po_ordered')
+  // 🔴 เฟส 4 (sync 0097): PR กลับ "รอออก PO" เฉพาะเมื่อไม่เหลือ PO ใบอื่นที่ไม่ถูกยกเลิก
+  //   เดิมดูแค่บรรทัด po_ordered ⇒ PR ที่มี PO อีกใบรับของครบแล้ว กลับเป็น pending แล้วถูกตีกลับได้
+  const otherLivePo = db.pos.some(x => x.prId === po.prId && x.id !== p.poId && x.status !== 'cancelled')
   let next: DB = {
     ...db,
     pos: db.pos.map(x => x.id === p.poId ? { ...x, status: 'cancelled' as const } : x),
-    prs: db.prs.map(x => x.id === po.prId && !stillOrdered ? { ...x, status: 'pending' as const } : x),
+    prs: db.prs.map(x => x.id === po.prId && !otherLivePo ? { ...x, status: 'pending' as const } : x),
     accessoryRequests: reqs2,
   }
   next = notify(next, {
@@ -4531,6 +4553,12 @@ export function deleteItem(db: DB, actor: User, p: { itemId: string }): DB {
     throw new Error(`${item.name} ถูกใช้ใน Job แล้ว ลบไม่ได้ (คง audit trail)`)
   if ((db.accessoryStock.find(r => r.itemId === p.itemId)?.qtyOnHand ?? 0) > 0)
     throw new Error(`${item.name} ยังมีของในสต็อกกลาง ลบไม่ได้`)
+  // 🔴 เฟส 4 (sync 0097 trigger): ใช้ใน BOM มาตรฐาน = ลบแล้ว BOM ชี้ของที่ไม่มี (LIVE เดิมขึ้น FK error ดิบ)
+  if (db.stdBomLines.some(l => l.itemId === p.itemId))
+    throw new Error(`${item.name} อยู่ใน BOM มาตรฐาน ลบไม่ได้ — เอาออกจาก BOM ที่หน้า Standards Library ก่อน`)
+  //   มีประวัติเคลื่อนไหวคลัง = หลักฐานบัญชีคลัง (LIVE เดิม ON DELETE CASCADE ลบประวัติทิ้งทั้งหมด)
+  if (db.stockMovements.some(m => m.itemId === p.itemId))
+    throw new Error(`${item.name} มีประวัติเคลื่อนไหวคลังแล้ว ลบไม่ได้ (คงหลักฐานบัญชีคลัง) — ตั้งเป็น "สั่งซื้อเท่านั้น" แทนถ้าเลิกใช้`)
   let next: DB = {
     ...db,
     items: db.items.filter(i => i.id !== p.itemId),
@@ -5322,4 +5350,47 @@ export function applyCloseoutCorrection(db: DB, actor: User, p: { jobId: string;
     if (last) next = { ...next, jobs: next.jobs.map(j => j.id === p.jobId ? { ...j, installedAt: last } : j) }
   }
   return audit(next, actor, 'job', p.jobId, 'correct_closeout', `${job.jobNo} แก้ข้อมูลหลังปิดงาน: ${label} — ${p.reason.trim()}`)
+}
+
+// ---------------- เฟส 4 · LBS Inventory ----------------
+/**
+ * 0073: กรอก Contract No. แล้ว (เครื่องที่ยังไม่ผูก Job) ต้องมี Customer + Location — คืนช่องที่ขาด
+ * ใช้ร่วม updateUnitPlan (บังคับ) กับฟอร์มแก้ข้อมูลรายเครื่อง (ปิดปุ่มบันทึก) — เฟส 4: เดิมฟอร์มให้กดบันทึก
+ * แล้วแก้ Serial ผ่านไปก่อน ค่อยเจอ error ตอนบันทึกข้อมูลแผน = บันทึกไปครึ่งเดียว
+ */
+export function unitPlanMissing(p: { contractNo?: string; customer?: string; location?: string; hasJob: boolean }): string[] {
+  if (p.hasJob || !p.contractNo?.trim()) return []
+  return [
+    !p.customer?.trim() && 'Customer',
+    !p.location?.trim() && 'Location / Site',
+  ].filter((x): x is string => !!x)
+}
+
+/**
+ * อ่านช่องวันที่จากไฟล์ Excel — **ข้อความ = DD-MM-YYYY เสมอ (วันก่อนเดือน)** ตามที่ผู้ใช้กำหนด (2026-11-23)
+ *   คั่นด้วย - / . ได้ · ปี ค.ศ. หรือ พ.ศ. · เซลล์วันที่จริงของ Excel (Date) · YYYY-MM-DD (รูปแบบที่ไฟล์ Export ของระบบเขียน
+ *   — ต้องรับไว้ ไม่งั้นไฟล์ที่ Export ออกไป Import กลับไม่ได้)
+ * 🔴 เฟส 4: เดิมรูปแบบอื่นกลายเป็นค่าว่าง = "คงค่าเดิม" เงียบ ๆ (พิมพ์ 15/03/2026 แล้วไม่มีอะไรเกิดขึ้น)
+ *   ตอนนี้ไม่ว่าง + อ่านไม่ออก/ไม่มีวันจริง = error ในหน้าตรวจก่อน Import
+ */
+export function parseSheetDate(v: unknown): { value: string; error?: string } {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  if (v instanceof Date) {
+    if (Number.isNaN(v.getTime())) return { value: '', error: 'วันที่ในเซลล์ไม่ถูกต้อง' }
+    return { value: `${v.getFullYear()}-${pad(v.getMonth() + 1)}-${pad(v.getDate())}` }   // local time กันเลื่อนวัน
+  }
+  const s = String(v ?? '').trim()
+  if (!s) return { value: '' }
+  let y: number, m: number, d: number
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s)
+  const dmy = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/.exec(s)
+  if (iso) [y, m, d] = [Number(iso[1]), Number(iso[2]), Number(iso[3])]
+  else if (dmy) [d, m, y] = [Number(dmy[1]), Number(dmy[2]), Number(dmy[3])]
+  else return { value: '', error: `วันที่ "${s}" อ่านไม่ออก — ใช้รูปแบบ DD-MM-YYYY (วัน-เดือน-ปี ค.ศ. หรือ พ.ศ.)` }
+  // DD-MM-YYYY เสมอ (ผู้ใช้กำหนด) — 3/5/2026 = 3 พ.ค. · แบบอเมริกัน 03/15/2026 = เดือน 15 → "ไม่มีอยู่จริง" ข้างล่าง
+  if (y > 2400) y -= 543                                    // พ.ศ. → ค.ศ.
+  const t = new Date(Date.UTC(y, m - 1, d))
+  if (t.getUTCFullYear() !== y || t.getUTCMonth() !== m - 1 || t.getUTCDate() !== d)
+    return { value: '', error: `วันที่ "${s}" ไม่มีอยู่จริง` }
+  return { value: `${y}-${pad(m)}-${pad(d)}` }
 }

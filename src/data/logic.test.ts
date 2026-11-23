@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { correctionFromRow, mapApproval } from './remote'
+import { correctionFromRow, mapApproval, fetchMovements } from './remote'
 import type { DB, Job, AccessoryRequest, AccReqStatus, LbsUnit } from '../types'
 import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, ACC_STATUS_LABEL } from '../ui/format'
 import {
@@ -17,7 +17,7 @@ import {
   writeOffJobMaterial, contractPeers, contractCustomerConflicts,
   jobSites, unitJobSite, matchJobSite, assignUnitSite, MAIN_SITE,
   createShareLink, revokeShareLink, publicStockView, touchShareLink, newShareToken,
-  adjustPoLine, confirmUnitInstall, blockUnitInstall, assignJobTeam, logSiteVisit, closeJobInstall,
+  adjustPoLine, cancelPO, rejectPR, deleteItem, nextStockNo, deleteProjectStock, parseSheetDate, unitPlanMissing, confirmUnitInstall, blockUnitInstall, assignJobTeam, logSiteVisit, closeJobInstall,
   jobInstallSummary, jobHasIssuedUnits, jobIsFieldActive, unitInstallState, jobTeam, qtyOutToField,
   updateUnitPlan, unitCustomerInfo, importUnitsToStock,
   addUnitFile, deleteUnitFile, unitFiles, unitFileCount, isAllowedDocFile,
@@ -3206,5 +3206,187 @@ describe('mapApproval — แถว approval_requests จริง (LIVE)', () =
     const a = mapApproval(row)
     expect(prSnapshotChanges(db({ items, accessoryRequests: reqs(4) }), a)).toEqual([])
     expect(prSnapshotChanges(db({ items, accessoryRequests: reqs(6) }), a)).toEqual(['ลูกถ้วย'])
+  })
+})
+
+// =============================================================================
+// เฟส 4 · Purchasing — 1 PR แตกหลาย PO: ยกเลิก PO ใบหนึ่งต้องไม่ทำให้ PR กลับ "รอออก PO"
+//   ถ้ายังมี PO ใบอื่นที่ไม่ถูกยกเลิก (โดยเฉพาะใบที่รับของแล้ว) · ตีกลับ PR ที่มี PO อยู่ไม่ได้ (LIVE = 0097)
+// =============================================================================
+describe('เฟส 4 · ยกเลิก PO / ตีกลับ PR เมื่อ PR แตกหลาย PO', () => {
+  const actor = { id: 'u9', email: 'pur@x.co', password: '', fullName: 'มาลี', department: 'purchasing' as const, isActive: true }
+  const T0 = '2026-01-01T00:00:00.000Z'
+  const po = (id: string, status: 'issued' | 'received' | 'cancelled') =>
+    ({ id, poNo: id.toUpperCase(), prId: 'pr1', jobId: 'j1', supplierName: 'ซัพ', expectedDate: '2026-06-01', status, createdBy: 'u9', createdAt: T0 })
+  const two = () => db({
+    users: [actor], jobs: [job()],
+    items: [{ id: 'i1', code: 'A', name: 'ลูกถ้วย', itemType: 'accessory' as const, uom: 'ea', stockableCentrally: false }],
+    prs: [{ id: 'pr1', prNo: 'PR-1', jobId: 'j1', status: 'po_issued', requestIds: ['ra', 'rb'], createdBy: 'u1', createdAt: T0 }],
+    pos: [po('po1', 'received'), po('po2', 'issued')],
+    accessoryRequests: [
+      req({ id: 'ra', prId: 'pr1', poId: 'po1', status: 'received', qtyRequested: 2, qtyReceived: 2 }),
+      req({ id: 'rb', prId: 'pr1', poId: 'po2', status: 'po_ordered', qtyRequested: 3 }),
+    ],
+  })
+
+  it('🔴 PO1 รับของครบแล้ว · ยกเลิก PO2 → PR ยังเป็น "ออก PO แล้ว" (ไม่กลับ pending) · บรรทัดของ PO2 กลับรอออก PO', () => {
+    const d = cancelPO(two(), actor, { poId: 'po2', reason: 'ซัพส่งไม่ได้' })
+    expect(d.prs[0].status).toBe('po_issued')
+    expect(d.accessoryRequests.find(r => r.id === 'rb')).toMatchObject({ status: 'pr_sent', poId: null })
+  })
+
+  it('🔴 ตีกลับ PR ที่ยังมี PO (ไม่ถูกยกเลิก) ไม่ได้ — แม้สถานะ PR จะเพี้ยนเป็น pending', () => {
+    const d0: DB = { ...two(), prs: two().prs.map(p => ({ ...p, status: 'pending' as const })) }
+    expect(() => rejectPR(d0, actor, { prId: 'pr1', reason: 'x' })).toThrow(/มี PO/)
+  })
+
+  it('PO ใบเดียวของ PR ถูกยกเลิก (ไม่มีใบอื่น) → PR กลับ "รอออก PO" ตามเดิม แล้วตีกลับได้', () => {
+    const d0 = db({
+      users: [actor], jobs: [job()],
+      prs: [{ id: 'pr1', prNo: 'PR-1', jobId: 'j1', status: 'po_issued', requestIds: ['rb'], createdBy: 'u1', createdAt: T0 }],
+      pos: [po('po2', 'issued')],
+      accessoryRequests: [req({ id: 'rb', prId: 'pr1', poId: 'po2', status: 'po_ordered', qtyRequested: 3 })],
+    })
+    const d = cancelPO(d0, actor, { poId: 'po2', reason: 'สั่งผิดรุ่น' })
+    expect(d.prs[0].status).toBe('pending')
+    expect(rejectPR(d, actor, { prId: 'pr1', reason: 'ราคาเกินงบ' }).prs[0].status).toBe('rejected')
+  })
+})
+
+// =============================================================================
+// เฟส 4 · LBS Inventory
+// =============================================================================
+describe('เฟส 4 · LBS Inventory', () => {
+  const adm = { id: 'u1', email: 'a@x.co', password: '', fullName: 'Div', department: 'sales' as const, isActive: true }
+  const stock = (id: string, stockNo: string) => ({ id, stockNo, itemId: 'lbs', status: 'open' as const, createdAt: '2026-01-01T00:00:00.000Z' })
+
+  it('🔴 เลข Project Stock ถัดไป = เลขสูงสุด + 1 (เดิม = จำนวนคลัง + 1 → ลบ No.2 แล้วสร้างใหม่ชน No.3)', () => {
+    expect(nextStockNo(db({}))).toBe('Project Stock No.1')
+    expect(nextStockNo(db({ projectStocks: [stock('s1', 'Project Stock No.1'), stock('s3', 'Project Stock No.3')] as never }))).toBe('Project Stock No.4')
+    expect(nextStockNo(db({ projectStocks: [stock('s1', 'คลังพิเศษ')] as never }))).toBe('Project Stock No.2')
+  })
+
+  it('🔴 ลบคลัง (demo) ลบลิงก์ผู้บริหารที่ผูกคลังนี้ + เอกสารแนบของเครื่องในคลังด้วย — ตรงกับ LIVE (ON DELETE CASCADE)', () => {
+    const d0 = db({
+      users: [adm],
+      projectStocks: [stock('s1', 'No.1'), stock('s2', 'No.2')] as never,
+      lbsUnits: [unit({ id: 'a', projectStockId: 's1' }), unit({ id: 'b', serialLvb: 'L2', serialOm: 'O2', projectStockId: 's2' })],
+      publicShareLinks: [
+        { id: 'l1', tokenHash: 'x', projectStockId: 's1', createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'l2', tokenHash: 'y', createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' },
+      ] as never,
+      lbsUnitFiles: [
+        { id: 'f1', unitId: 'a', fileName: 'x.pdf', filePath: 'p', mimeType: 'application/pdf', sizeBytes: 1, uploadedBy: 'u1', uploadedAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'f2', unitId: 'b', fileName: 'y.pdf', filePath: 'q', mimeType: 'application/pdf', sizeBytes: 1, uploadedBy: 'u1', uploadedAt: '2026-01-01T00:00:00.000Z' },
+      ] as never,
+    })
+    const d = deleteProjectStock(d0, adm, { stockId: 's1' })
+    expect(d.publicShareLinks.map(l => l.id)).toEqual(['l2'])        // ลิงก์ทุกคลัง (ไม่ผูก) ยังอยู่
+    expect(d.lbsUnitFiles.map(f => f.id)).toEqual(['f2'])
+  })
+
+  it('🔴 วันที่ในไฟล์ Import: รูปแบบที่อ่านไม่ออกต้องเป็น error ไม่ใช่ "คงเดิม" เงียบ ๆ · รับ วว/ดด/ปปปป (พ.ศ./ค.ศ.)', () => {
+    expect(parseSheetDate('')).toEqual({ value: '' })
+    expect(parseSheetDate('2026-03-15')).toEqual({ value: '2026-03-15' })
+    expect(parseSheetDate(new Date(2026, 2, 15))).toEqual({ value: '2026-03-15' })
+    expect(parseSheetDate('15/03/2026')).toEqual({ value: '2026-03-15' })
+    expect(parseSheetDate('5/3/2569')).toEqual({ value: '2026-03-05' })   // ปี พ.ศ. = รูปแบบไทย (วว/ดด) ไม่กำกวม
+    expect(parseSheetDate('31/02/2026').error).toBeTruthy()             // ไม่มีวันจริง
+    expect(parseSheetDate('มี.ค. 69').error).toBeTruthy()
+  })
+
+  it('🔴 ฟอร์มแก้ข้อมูลรายเครื่อง: กติกาเดียวกับ server — ใส่ Contract No. ต้องมี Customer + Location (ไม่ผูก Job)', () => {
+    expect(unitPlanMissing({ contractNo: 'C-1', customer: '', location: 'A', hasJob: false })).toEqual(['Customer'])
+    expect(unitPlanMissing({ contractNo: 'C-1', customer: ' ', location: '', hasJob: false })).toEqual(['Customer', 'Location / Site'])
+    expect(unitPlanMissing({ contractNo: 'C-1', customer: '', location: '', hasJob: true })).toEqual([])
+    expect(unitPlanMissing({ contractNo: '', customer: '', location: '', hasJob: false })).toEqual([])
+  })
+})
+
+// =============================================================================
+// เฟส 4 · Material Master — ลบวัสดุ / ตรวจนับคลัง (LIVE = 0097 trigger)
+// =============================================================================
+describe('เฟส 4 · Material Master', () => {
+  const pur = { id: 'u9', email: 'p@x.co', password: '', fullName: 'มาลี', department: 'purchasing' as const, isActive: true }
+  const acc1 = { id: 'i1', code: 'ACC-1', name: 'ลูกถ้วย', itemType: 'accessory' as const, uom: 'ea', stockableCentrally: true }
+  const lbs = { id: 'lbs', code: 'LBS-115', name: 'LBS 115kV', itemType: 'main_equipment' as const, uom: 'set', stockableCentrally: false }
+
+  it('🔴 ลบวัสดุที่อยู่ใน BOM มาตรฐานไม่ได้ (LIVE เดิมขึ้น FK error ดิบ · demo ลบได้แล้ว BOM ชี้ของที่ไม่มี)', () => {
+    const d = db({ users: [pur], items: [acc1], stdBomLines: [{ id: 'bl', bomId: 'b1', itemId: 'i1', name: 'ลูกถ้วย', qty: 3 }] as never })
+    expect(() => deleteItem(d, pur, { itemId: 'i1' })).toThrow(/BOM มาตรฐาน/)
+  })
+
+  it('🔴 ลบวัสดุที่มีประวัติเคลื่อนไหวคลังไม่ได้ (LIVE เดิมลบประวัติทิ้งทั้งหมดด้วย CASCADE)', () => {
+    const d = db({ users: [pur], items: [acc1],
+      stockMovements: [{ id: 'm1', itemId: 'i1', qty: 5, type: 'initial', balanceAfter: 5, performedBy: 'u9', performedAt: '2026-01-01T00:00:00.000Z' }] as never })
+    expect(() => deleteItem(d, pur, { itemId: 'i1' })).toThrow(/ประวัติ/)
+  })
+
+  it('วัสดุใหม่ที่ไม่เคยใช้ที่ไหนเลย ลบได้ตามเดิม', () => {
+    expect(deleteItem(db({ users: [pur], items: [acc1] }), pur, { itemId: 'i1' }).items).toEqual([])
+  })
+
+  it('🔴 ตรวจนับคลัง: LBS หลักนำเข้าไม่ได้ (เดิมสร้างแถวคลังคงเหลือ + ตั้ง LBS เป็นวัสดุเก็บคลัง)', () => {
+    const d = db({ users: [pur], items: [acc1, lbs] })
+    expect(() => importStockCount(d, pur, { reason: 'นับสิ้นเดือน', rows: [{ itemId: 'lbs', qty: 2 }] })).toThrow(/LBS หลัก/)
+  })
+})
+
+// ผู้ใช้กำหนด (2026-11-23): วันที่ในไฟล์ต้องอ่านเป็น DD-MM-YYYY ทั้งหมด (วันก่อนเดือนเสมอ — ไม่มีกรณี "กำกวม")
+//   YYYY-MM-DD (ไฟล์ Export ของระบบเอง) และเซลล์วันที่จริงของ Excel ยังรับ — ไม่งั้นไฟล์ที่ Export ออกไป Import กลับไม่ได้
+describe('parseSheetDate — DD-MM-YYYY ทั้งหมด', () => {
+  it('🔴 "3/5/2026" = 3 พฤษภาคม 2026 (วันก่อนเดือน) ไม่ใช่ error กำกวม', () => {
+    expect(parseSheetDate('3/5/2026')).toEqual({ value: '2026-05-03' })
+    expect(parseSheetDate('03-05-2026')).toEqual({ value: '2026-05-03' })
+    expect(parseSheetDate('03.05.2026')).toEqual({ value: '2026-05-03' })
+    expect(parseSheetDate('12/1/2026')).toEqual({ value: '2026-01-12' })
+  })
+  it('ปี พ.ศ. · วัน > 12 · วันเท่ากับเดือน · YYYY-MM-DD ของไฟล์ Export · เดือน > 12 = ไม่มีอยู่จริง', () => {
+    expect(parseSheetDate('3/5/2569')).toEqual({ value: '2026-05-03' })
+    expect(parseSheetDate('15/03/2026')).toEqual({ value: '2026-03-15' })
+    expect(parseSheetDate('5/5/2026')).toEqual({ value: '2026-05-05' })
+    expect(parseSheetDate('2026-05-03')).toEqual({ value: '2026-05-03' })
+    expect(parseSheetDate('03/15/2026').error).toMatch(/ไม่มีอยู่จริง/)     // แบบอเมริกัน ดด/วว = เดือน 15
+  })
+  it('อ่านไม่ออก = error บอกรูปแบบ DD-MM-YYYY', () => {
+    expect(parseSheetDate('มี.ค. 69').error).toMatch(/DD-MM-YYYY/)
+  })
+})
+
+// รีวิวเฟส 4 · ข้อ 4 — LIVE โหลดประวัติเคลื่อนไหวครบ (เดิม limit 1000 ทั้งระบบ — ประวัติเก่าหาย)
+describe('fetchMovements — โหลดประวัติเคลื่อนไหวครบทุกหน้า (LIVE)', () => {
+  const rows = Array.from({ length: 5 }, (_, i) => ({
+    id: 'm' + i, item_id: 'i1', qty: '1', balance_after: String(i + 1), movement_type: 'adjust', performed_at: `2026-11-0${5 - i}T00:00:00Z`,
+  }))
+  const stub = () => {
+    const calls: { eq?: [string, string]; order?: [string, unknown]; range?: [number, number] }[] = []
+    const client = {
+      from(table: string) {
+        expect(table).toBe('stock_movements')
+        const c: (typeof calls)[number] = {}; calls.push(c)
+        const b = {
+          select() { return b },
+          eq(col: string, v: string) { c.eq = [col, v]; return b },
+          order(col: string, o: unknown) { c.order = [col, o]; return b },
+          range(from: number, to: number) { c.range = [from, to]; return Promise.resolve({ data: rows.slice(from, to + 1), error: null }) },
+        }
+        return b
+      },
+    }
+    return { client, calls }
+  }
+  it('🔴 อ่านทีละหน้าจนหมด (ไม่ตัดที่ 1,000) · เรียงใหม่ → เก่า · กรองรายวัสดุได้', async () => {
+    const { client, calls } = stub()
+    const got = await fetchMovements(client as never, { itemId: 'i1', pageSize: 2 })
+    expect(got.map(m => m.id)).toEqual(['m0', 'm1', 'm2', 'm3', 'm4'])
+    expect(got[0]).toMatchObject({ itemId: 'i1', qty: 1, balanceAfter: 1, type: 'adjust' })
+    expect(calls.map(c => c.range)).toEqual([[0, 1], [2, 3], [4, 5]])
+    expect(calls[0].eq).toEqual(['item_id', 'i1'])
+    expect(calls[0].order).toEqual(['performed_at', { ascending: false }])
+  })
+  it('ไม่ระบุวัสดุ = ทั้งระบบ (ใช้กับ Excel ที่นับจำนวนรายการเคลื่อนไหว)', async () => {
+    const { client, calls } = stub()
+    expect((await fetchMovements(client as never, { pageSize: 10 })).length).toBe(5)
+    expect(calls[0].eq).toBeUndefined()
   })
 })

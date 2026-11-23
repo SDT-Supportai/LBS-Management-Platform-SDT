@@ -378,6 +378,26 @@ async function q(sb: SupabaseClient, table: string, order?: { col: string; asc?:
 }
 
 /**
+ * ประวัติเคลื่อนไหวคลังแบบครบทุกแถว (LIVE) — อ่านทีละหน้า (range) จนหมด · เรียงใหม่ → เก่า
+ * 🔴 รีวิวเฟส 4 ข้อ 4: ตอนโหลดหน้าแรกดึง stock_movements แค่ 1,000 แถวล่าสุดทั้งระบบ ⇒ วัสดุที่เคลื่อนไหวนานแล้ว
+ *    ประวัติหาย/ไม่ครบในกล่องประวัติ และนับจำนวนใน Excel ขาด · ป้าย "ถูกย้อนแล้ว" หาแถวย้อนไม่เจอ
+ *    ใช้ฟังก์ชันนี้ตอนเปิดกล่องประวัติ (รายวัสดุ) และตอน Export (ทั้งระบบ) แทน
+ */
+export async function fetchMovements(sb: SupabaseClient, opts: { itemId?: string; pageSize?: number } = {}): Promise<StockMovement[]> {
+  const size = opts.pageSize ?? 1000
+  const out: StockMovement[] = []
+  for (let from = 0; ; from += size) {
+    let query = sb.from('stock_movements').select('*')
+    if (opts.itemId) query = query.eq('item_id', opts.itemId)
+    const { data, error } = await query.order('performed_at', { ascending: false }).range(from, from + size - 1)
+    if (error) throw new Error(`โหลดประวัติเคลื่อนไหวไม่สำเร็จ: ${error.message}`)
+    const rows = (data ?? []) as Row[]
+    out.push(...rows.map(mapStockMovement))
+    if (rows.length < size) return out
+  }
+}
+
+/**
  * ตารางของฟีเจอร์ใหม่ที่อาจยังไม่ได้รัน SQL — ไม่มีตาราง = คืน [] แทนที่จะทำทั้งแอปโหลดไม่ขึ้น
  * (q() ปกติ throw ⇒ ถ้าเผลอ push ก่อนรัน SQL ทุกหน้าจะว่างเปล่า) · error อื่นยัง throw ตามเดิม
  */

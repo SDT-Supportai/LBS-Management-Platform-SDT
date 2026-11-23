@@ -7,9 +7,13 @@ import {
   SHEET_SUMMARY, SHEET_GUIDE, buildWorkbook, dataSheet, dataSheetName,
   guideSheet, saveReport, stampMeta, summarySheet,
 } from '../ui/xlsxReport'
-import type { Item, StockMovementType } from '../types'
+import type { Item, StockMovement, StockMovementType } from '../types'
 import { Link } from 'react-router-dom'
 import { pendingStockReturns, STOCK_RETURN_LABEL, todayIso } from '../data/logic'
+import { fetchMovements } from '../data/remote'
+import { supabase } from '../lib/supabase'
+// เฟส 4: ตัวอ่านไฟล์ Import ย้ายไป src/data/materialImport.ts (มีเทสต์)
+import { cell, parseImportRows, parseCountRows, type ImportRow } from '../data/materialImport'
 
 // 0080 — ไฟล์ตรวจนับคลังคงเหลือ (หัวคอลัมน์ใช้ทั้งตอน Export และ Import)
 const COUNT_COLS = {
@@ -69,85 +73,8 @@ const STOCK_COLS: ReportCol[] = [
 const pctOf = (part: number, whole: number): Cell => (whole > 0 ? (part / whole) * 100 : '-')
 const PCT: NumKind = 'pct'
 
-interface ImportRow {
-  epicorCode: string; name: string; uom: string
-  supply?: boolean           // การจัดหา: true = เก็บคลังคงเหลือ · false = Purchasing เท่านั้น
-  stockQty?: number          // คลังคงเหลือที่ต้องการให้เป็น (undefined = ไม่แตะยอด)
-  curQty?: number            // ยอดปัจจุบัน (ใช้โชว์ diff ใน preview)
-  lotNo?: string             // Lot No. ที่จะตั้ง (0055 · undefined/ว่าง = คงค่าเดิม ไม่ล้าง)
-  curLot?: string            // Lot No. ปัจจุบัน (ใช้โชว์ diff ใน preview)
-  action: 'create' | 'update' | 'unchanged' | 'error'
-  error?: string
-  itemId?: string
-}
-
-// อ่านค่าจากหัวตารางหลายรูปแบบ (ไทยตามไฟล์ export / อังกฤษ)
-function cell(row: Record<string, unknown>, keys: string[]): string {
-  for (const [k, v] of Object.entries(row)) {
-    if (keys.some(key => k.trim().toLowerCase() === key.toLowerCase()))
-      return String(v ?? '').trim()
-  }
-  return ''
-}
-
-// การจัดหา: รับได้ทั้งไทย/อังกฤษ — คลังสินค้า|คลังคงเหลือ|stock|central = เก็บสต็อก · purchasing|สั่งซื้อ = ซื้อเท่านั้น
-function parseSupply(v: string): boolean | undefined {
-  const t = v.trim().toLowerCase()
-  if (!t) return undefined
-  if (/คลัง|stock|central/.test(t)) return true
-  if (/purchas|สั่งซื้อ|จัดซื้อ/.test(t)) return false
-  return undefined
-}
-
-function parseImportRows(
-  rows: Record<string, unknown>[], items: Item[],
-  stockOf: (id: string) => number, lotOf: (id: string) => string | undefined,
-): ImportRow[] {
-  const seen = new Set<string>()   // กันรหัส Epicor ซ้ำกันเองในไฟล์
-  return rows.map(raw => {
-    const epicorCode = cell(raw, ['รหัส Epicor', 'epicor', 'epicor_code', 'epicor code', 'รหัส', 'code'])
-    const name = cell(raw, ['ชื่ออุปกรณ์', 'ชื่อ', 'name'])
-    const uom = cell(raw, ['หน่วย', 'uom'])
-    const supply = parseSupply(cell(raw, ['การจัดหา', 'supply', 'source']))
-    const qtyRaw = cell(raw, ['คลังคงเหลือ', 'คงเหลือ', 'qty', 'qty_on_hand', 'stock'])
-    const qtyNum = qtyRaw === '' ? undefined : Number(qtyRaw)
-    // ช่องว่าง = คงค่าเดิม (กติกาเดียวกับไฟล์ Import ของ Project Stock) — ล้าง Lot ต้องทำบนหน้าเว็บ
-    const lotNo = cell(raw, ['Lot No.', 'lot no.', 'lot no', 'lot', 'ล็อต', 'lot_no']) || undefined
-    const base: Omit<ImportRow, 'action'> = { epicorCode, name, uom, supply, stockQty: qtyNum, lotNo }
-    if (!epicorCode) return { ...base, action: 'error' as const, error: 'ไม่มีรหัส Epicor' }
-    if (!name) return { ...base, action: 'error' as const, error: 'ไม่มีชื่ออุปกรณ์' }
-    if (qtyNum !== undefined && (Number.isNaN(qtyNum) || qtyNum < 0))
-      return { ...base, action: 'error' as const, error: `คลังคงเหลือ "${qtyRaw}" ไม่ใช่ตัวเลขที่ใช้ได้` }
-    if (qtyNum !== undefined && qtyNum > 0 && supply === false)
-      return { ...base, action: 'error' as const, error: 'มียอดคงเหลือ แต่การจัดหาเป็น Purchasing — เลือกให้ตรงกัน' }
-    if (lotNo !== undefined && supply === false)
-      return { ...base, action: 'error' as const, error: 'กรอก Lot No. แต่การจัดหาเป็น Purchasing — วัสดุที่ไม่เก็บคลังไม่มีล็อต' }
-    const key = epicorCode.toLowerCase()
-    if (seen.has(key)) return { ...base, action: 'error' as const, error: `รหัส Epicor "${epicorCode}" ซ้ำในไฟล์` }
-    seen.add(key)
-    const existing = items.find(i => (i.epicorCode ?? '').toLowerCase() === key)
-    if (!existing) {
-      // Lot No. ผูกกับ "ของที่เข้าคลัง" — สร้างวัสดุใหม่แบบยอด 0 แล้วใส่ล็อตไว้เฉยๆ ไม่มีความหมาย
-      // เตือนที่นี่แทนที่จะรับแล้วเงียบ (แบบเดียวกับ error "กรอกระยะขนส่งแต่ไม่กรอก FOB" ของ Project Stock)
-      if (lotNo !== undefined && (qtyNum ?? 0) <= 0)
-        return { ...base, action: 'error' as const, error: 'กรอก Lot No. แต่ไม่มียอดคงเหลือ — ล็อตตั้งได้เมื่อมีของเข้าคลัง' }
-      return { ...base, action: 'create' as const }
-    }
-    if (existing.itemType === 'main_equipment')
-      return { ...base, action: 'error' as const, error: 'เป็น LBS หลัก แก้จากไฟล์ไม่ได้' }
-    const curQty = stockOf(existing.id)
-    const curLot = lotOf(existing.id)
-    const changed = existing.name !== name
-      || (uom !== '' && existing.uom !== uom)
-      || (supply !== undefined && supply !== existing.stockableCentrally)
-      || (qtyNum !== undefined && qtyNum !== curQty)
-      || (lotNo !== undefined && lotNo !== curLot)
-    return { ...base, curQty, curLot, action: changed ? 'update' as const : 'unchanged' as const, itemId: existing.id }
-  })
-}
-
 export default function MasterDataPage() {
-  const { db, user, act } = useStore()
+  const { db, user, act, mode } = useStore()
   const tryAction = useTryAction()
   const { ask: askPrompt, element: promptEl } = usePrompt()
   const { ask: askConfirm, element: confirmEl } = useConfirm()
@@ -162,6 +89,16 @@ export default function MasterDataPage() {
   const [importing, setImporting] = useState(false)
   const [importReason, setImportReason] = useState('')            // เหตุผลตอนนำเข้าที่กระทบยอดคลัง (S3)
   const [ledgerItem, setLedgerItem] = useState<Item | null>(null)  // ดูประวัติการเคลื่อนไหว (S2)
+  // รีวิวเฟส 4: LIVE โหลดประวัติรายวัสดุครบทุกแถวตอนเปิดกล่อง (ตอนโหลดหน้าแรกได้แค่ 1,000 แถวล่าสุดทั้งระบบ)
+  //   null = ใช้ข้อมูลในหน่วยความจำ (demo) · 'loading' = กำลังโหลด
+  const [ledgerRows, setLedgerRows] = useState<StockMovement[] | 'loading' | null>(null)
+  const openLedger = async (i: Item) => {
+    setLedgerItem(i)
+    if (mode !== 'supabase' || !supabase) { setLedgerRows(null); return }
+    setLedgerRows('loading')
+    try { setLedgerRows(await fetchMovements(supabase, { itemId: i.id })) }
+    catch (e) { setLedgerRows(null); show((e as Error).message + ' — แสดงเฉพาะที่โหลดไว้', true) }
+  }
   const [showCatalog, setShowCatalog] = useState(false)   // เริ่มต้นซ่อนตาราง (กดแสดงเอง)
   const [showStock, setShowStock] = useState(false)       // คลังคงเหลือ — เริ่มต้นซ่อนเช่นกัน
   const [search, setSearch] = useState('')                // ค้นหาวัสดุทั้งหน้า (ชื่อ / รหัส Epicor / Lot)
@@ -219,28 +156,8 @@ export default function MasterDataPage() {
       const XLSX = await import('xlsx')
       const wb = XLSX.read(await file.arrayBuffer())
       const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[wb.SheetNames[0]], { defval: '' })
-      const rows: CountPreview['rows'] = []
-      const errors: string[] = []
-      raw.forEach((row, idx) => {
-        const no = `แถว ${idx + 2}`
-        const code = cell(row, [COUNT_COLS.code, 'code'])
-        const ep = cell(row, [COUNT_COLS.epicor, 'epicor'])
-        const qStr = cell(row, [COUNT_COLS.newQty, 'counted_qty', 'qty'])
-        const cStr = cell(row, [COUNT_COLS.newCost, 'unit_cost', 'cost'])
-        if (!qStr && !cStr) return                                   // ไม่ได้กรอกอะไร = ไม่แตะ
-        const item = (code && db.items.find(i => i.code === code)) || (ep && db.items.find(i => i.epicorCode === ep)) || undefined
-        if (!item) return void errors.push(`${no}: ไม่พบวัสดุ "${code || ep || '-'}" ในระบบ`)
-        const qty = qStr === '' ? undefined : Number(qStr)
-        const cost = cStr === '' ? undefined : Number(cStr)
-        if (qty !== undefined && (!Number.isFinite(qty) || qty < 0)) return void errors.push(`${no} ${item.name}: ยอดนับ "${qStr}" ต้องเป็นตัวเลขไม่ติดลบ`)
-        if (cost !== undefined && (!Number.isFinite(cost) || cost < 0)) return void errors.push(`${no} ${item.name}: ต้นทุน "${cStr}" ต้องเป็นตัวเลขไม่ติดลบ`)
-        if (rows.some(r => r.item.id === item.id)) return void errors.push(`${no} ${item.name}: มีซ้ำในไฟล์`)
-        const curQty = stockQty(item.id), curCost = stockCost(item.id)
-        const qtyChanged = qty !== undefined && qty !== curQty
-        const costChanged = cost !== undefined && Math.abs(cost - curCost) > 0.004 && (qty ?? curQty) > 0
-        if (!qtyChanged && !costChanged) return
-        rows.push({ item, curQty, curCost, qty: qtyChanged ? qty : undefined, cost: costChanged ? cost : undefined })
-      })
+      // เฟส 4: ตัวอ่านอยู่ที่ materialImport.ts — จับวัสดุซ้ำในไฟล์ได้ทุกกรณี + ไม่รับ LBS หลัก
+      const { rows, errors } = parseCountRows(raw, db.items, stockQty, stockCost, COUNT_COLS)
       if (rows.length === 0 && errors.length === 0) return show('ไม่มีรายการที่ต่างจากระบบ — ยอดและต้นทุนตรงกันทั้งหมด')
       setCountReason('')
       setCountPreview({ rows, errors })
@@ -282,9 +199,11 @@ export default function MasterDataPage() {
   const catalogOpen = showCatalog || term !== ''
   /** ไม่มีอะไรอยู่ในขอบเขตเลย = ไม่มีอะไรให้ export (ปุ่มเป็น disabled แบบเดียวกับแท็บวัสดุตาม Job) */
   const nothingInScope = accessories.length === 0 && stockItems.length === 0
-  const movementsOf = (itemId: string) => db.stockMovements
+  const movementsOf = (itemId: string, all: StockMovement[] = db.stockMovements) => all
     .filter(m => m.itemId === itemId)
     .slice().sort((a, b) => b.performedAt.localeCompare(a.performedAt))
+  // กล่องประวัติ: LIVE ใช้ชุดที่โหลดครบ (ledgerRows) · demo ใช้ db
+  const ledgerAll = Array.isArray(ledgerRows) ? ledgerRows : db.stockMovements
   const jobNoOf = (id: string) => db.jobs.find(j => j.id === id)?.jobNo ?? '-'
   const userNameOf = (id: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
 
@@ -326,8 +245,10 @@ export default function MasterDataPage() {
     const wsCatalog = dataSheet(XLSX, catalogRows, CATALOG_COLS)
 
     // ---- ชีตคลังคงเหลือ (อ่านอย่างเดียว) ----
-    const lastMoveOf = (itemId: string) => movementsOf(itemId)[0]?.performedAt
-    const moveCountOf = (itemId: string) => db.stockMovements.filter(m => m.itemId === itemId).length
+    // รีวิวเฟส 4: LIVE นับจากประวัติครบทุกแถว (ข้อมูลตอนโหลดหน้าได้แค่ 1,000 แถวล่าสุดทั้งระบบ)
+    const allMoves = mode === 'supabase' && supabase ? await fetchMovements(supabase) : db.stockMovements
+    const lastMoveOf = (itemId: string) => movementsOf(itemId, allMoves)[0]?.performedAt
+    const moveCountOf = (itemId: string) => allMoves.filter(m => m.itemId === itemId).length
     const stockRows: Record<string, Cell>[] = stockItems.map(i => {
       const qty = stockQty(i.id)
       const avg = stockCost(i.id)
@@ -666,6 +587,87 @@ export default function MasterDataPage() {
         {!canMaster && ' · การเพิ่ม/แก้/ลบ + นำเข้า Excel เป็นสิทธิ์ของ Purchasing และ Manage'}
       </div>
 
+      {/* ---------------- 0080: รอตรวจรับเข้าคลัง (คำขอคืน/โอน/ช่างคืน จาก Job) ----------------
+          เฟส 4: ย้ายขึ้นบนสุดของหน้า (เดิมอยู่ใต้ค้นหา + ฐานข้อมูลวัสดุ) · Purchasing/Manage เห็นเสมอ (ว่าง = ✅ ไม่มี) */}
+      {(pendingReturns.length > 0 || canReceive) && (
+        <div className="panel">
+          <div className="panel-head">
+            <h3>📥 รอตรวจรับเข้าคลัง ({pendingReturns.length})
+              <span className="muted" style={{ fontWeight: 400 }}> · ของที่ Job ขอคืน — ยอดคลังยังไม่เพิ่มจนกว่า Purchasing จะนับของและรับเข้า</span>
+            </h3>
+          </div>
+          {pendingReturns.length === 0 ? (
+            <div className="panel-body muted">✅ ไม่มีของคืนรอตรวจรับ</div>
+          ) : (
+          <div className="table-scroll">
+            <table>
+              <thead><tr>
+                <th>ขอเมื่อ</th><th>Job</th><th>วัสดุ</th><th>ประเภท</th>
+                <th style={{ textAlign: 'right' }}>จำนวนแจ้งคืน</th><th style={{ textAlign: 'right' }}>ต้นทุน/หน่วย</th>
+                <th>ผู้ขอ</th><th>หมายเหตุ</th><th></th>
+              </tr></thead>
+              <tbody>
+                {pendingReturns.map(s => {
+                  const it = db.items.find(i => i.id === s.itemId)
+                  const jb = db.jobs.find(j => j.id === s.jobId)
+                  const uom = it?.uom ?? ''
+                  return (
+                    <tr key={s.id}>
+                      <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(s.requestedAt)}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        {jb ? <Link to={`/jobs/${jb.id}`}><b>{jb.jobNo}</b></Link> : '-'}
+                        {jb?.terminalStatus === 'cancelled' && <div><span className="badge red">Job ยกเลิกแล้ว</span></div>}
+                      </td>
+                      <td>{it?.name ?? '-'}<div className="muted mono" style={{ fontSize: 11 }}>{it?.epicorCode ?? it?.code}</div></td>
+                      <td><span className={`badge ${s.kind === 'field_return' ? 'blue' : 'neutral'}`}>{STOCK_RETURN_LABEL[s.kind]}</span></td>
+                      <td style={{ textAlign: 'right' }}><b>{s.qty}</b> {uom}</td>
+                      <td style={{ textAlign: 'right' }}>{fmtBaht(s.unitCost)}</td>
+                      <td className="muted">{db.users.find(u => u.id === s.requestedBy)?.fullName ?? '-'}</td>
+                      <td className="muted" style={{ maxWidth: 240 }}>{s.note || '-'}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        {canReceive ? <>
+                          <button className="small success" onClick={async () => {
+                            const v = await askPrompt({
+                              title: `รับเข้าคลัง — ${it?.name ?? ''}`,
+                              description: <>
+                                {jb?.jobNo} แจ้ง{STOCK_RETURN_LABEL[s.kind]} <b>{s.qty} {uom}</b> · นับของที่ได้รับจริงแล้วกรอกจำนวน ·
+                                <b>รับไม่ครบได้</b> — ส่วนที่ขาดจะตีกลับ Job อัตโนมัติ (ยังค้างที่เดิม) และแจ้ง Project
+                                <br />ยอดคลังเพิ่ม + ต้นทุน Job ลดตามจำนวนที่รับจริง
+                              </>,
+                              fields: [
+                                { key: 'qty', label: 'จำนวนที่รับเข้าคลังจริง', type: 'number', min: 0, required: true, suffix: uom, value: String(s.qty),
+                                  validate: x => Number(x) > s.qty ? `ได้ไม่เกิน ${s.qty} ${uom}` : Number(x) <= 0 ? 'ต้องมากกว่า 0 — ถ้าไม่ได้รับเลยให้กด "ตีกลับ Job"' : undefined },
+                                { key: 'note', label: 'หมายเหตุการตรวจรับ', placeholder: 'เช่น สภาพดี / ขาด 2 ชิ้น ช่างยังไม่ได้ส่ง' },
+                              ],
+                              confirmLabel: 'รับเข้าคลัง',
+                            })
+                            if (!v) return
+                            tryAction(() => act.receiveStockReturn({ id: s.id, receivedQty: Number(v.qty), note: v.note || undefined }),
+                              `รับ ${it?.name ?? ''} ${Number(v.qty)} ${uom} เข้าคลังแล้ว`)
+                          }}>✅ รับเข้าคลัง</button>{' '}
+                          <button className="small danger" onClick={async () => {
+                            const v = await askPrompt({
+                              title: `ตีกลับ Job — ${it?.name ?? ''}`,
+                              description: <>ไม่รับของเข้าคลัง · ของกลับไปอยู่ที่เดิมของ {jb?.jobNo} (ไม่มีอะไรขยับ) และแจ้ง Project พร้อมเหตุผล</>,
+                              fields: [{ key: 'reason', label: 'เหตุผลที่ตีกลับ', type: 'textarea', required: true,
+                                placeholder: 'เช่น ไม่ได้รับของจริง / ของเสียหายใช้ไม่ได้ / ผิดรายการ' }],
+                              confirmLabel: 'ตีกลับ Job',
+                            })
+                            if (!v) return
+                            tryAction(() => act.rejectStockReturn({ id: s.id, reason: v.reason }), 'ตีกลับคำขอแล้ว — แจ้ง Project')
+                          }}>↩️ ตีกลับ Job</button>
+                        </> : <span className="badge amber">รอ Purchasing ตรวจรับ</span>}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          )}
+        </div>
+      )}
+
       {/* ค้นหาระดับหน้า — กรองทั้ง 2 พาเนล และไฟล์ Export ตามนี้ (ไฟล์ = สิ่งที่เห็นบนจอ)
           อยู่เหนือทั้ง 2 พาเนลโดยตั้งใจ: ถ้าวางในหัวพาเนลใดพาเนลหนึ่ง คนจะอ่านว่ากรองแค่พาเนลนั้น */}
       <div className="panel">
@@ -749,82 +751,6 @@ export default function MasterDataPage() {
         )}
       </div>
 
-      {/* ---------------- 0080: รอตรวจรับเข้าคลัง (คำขอคืน/โอน/ช่างคืน จาก Job) ---------------- */}
-      {pendingReturns.length > 0 && (
-        <div className="panel">
-          <div className="panel-head">
-            <h3>📥 รอตรวจรับเข้าคลัง ({pendingReturns.length})
-              <span className="muted" style={{ fontWeight: 400 }}> · ของที่ Job ขอคืน — ยอดคลังยังไม่เพิ่มจนกว่า Purchasing จะนับของและรับเข้า</span>
-            </h3>
-          </div>
-          <div className="table-scroll">
-            <table>
-              <thead><tr>
-                <th>ขอเมื่อ</th><th>Job</th><th>วัสดุ</th><th>ประเภท</th>
-                <th style={{ textAlign: 'right' }}>จำนวนแจ้งคืน</th><th style={{ textAlign: 'right' }}>ต้นทุน/หน่วย</th>
-                <th>ผู้ขอ</th><th>หมายเหตุ</th><th></th>
-              </tr></thead>
-              <tbody>
-                {pendingReturns.map(s => {
-                  const it = db.items.find(i => i.id === s.itemId)
-                  const jb = db.jobs.find(j => j.id === s.jobId)
-                  const uom = it?.uom ?? ''
-                  return (
-                    <tr key={s.id}>
-                      <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(s.requestedAt)}</td>
-                      <td style={{ whiteSpace: 'nowrap' }}>
-                        {jb ? <Link to={`/jobs/${jb.id}`}><b>{jb.jobNo}</b></Link> : '-'}
-                        {jb?.terminalStatus === 'cancelled' && <div><span className="badge red">Job ยกเลิกแล้ว</span></div>}
-                      </td>
-                      <td>{it?.name ?? '-'}<div className="muted mono" style={{ fontSize: 11 }}>{it?.epicorCode ?? it?.code}</div></td>
-                      <td><span className={`badge ${s.kind === 'field_return' ? 'blue' : 'neutral'}`}>{STOCK_RETURN_LABEL[s.kind]}</span></td>
-                      <td style={{ textAlign: 'right' }}><b>{s.qty}</b> {uom}</td>
-                      <td style={{ textAlign: 'right' }}>{fmtBaht(s.unitCost)}</td>
-                      <td className="muted">{db.users.find(u => u.id === s.requestedBy)?.fullName ?? '-'}</td>
-                      <td className="muted" style={{ maxWidth: 240 }}>{s.note || '-'}</td>
-                      <td style={{ whiteSpace: 'nowrap' }}>
-                        {canReceive ? <>
-                          <button className="small success" onClick={async () => {
-                            const v = await askPrompt({
-                              title: `รับเข้าคลัง — ${it?.name ?? ''}`,
-                              description: <>
-                                {jb?.jobNo} แจ้ง{STOCK_RETURN_LABEL[s.kind]} <b>{s.qty} {uom}</b> · นับของที่ได้รับจริงแล้วกรอกจำนวน ·
-                                <b>รับไม่ครบได้</b> — ส่วนที่ขาดจะตีกลับ Job อัตโนมัติ (ยังค้างที่เดิม) และแจ้ง Project
-                                <br />ยอดคลังเพิ่ม + ต้นทุน Job ลดตามจำนวนที่รับจริง
-                              </>,
-                              fields: [
-                                { key: 'qty', label: 'จำนวนที่รับเข้าคลังจริง', type: 'number', min: 0, required: true, suffix: uom, value: String(s.qty),
-                                  validate: x => Number(x) > s.qty ? `ได้ไม่เกิน ${s.qty} ${uom}` : Number(x) <= 0 ? 'ต้องมากกว่า 0 — ถ้าไม่ได้รับเลยให้กด "ตีกลับ Job"' : undefined },
-                                { key: 'note', label: 'หมายเหตุการตรวจรับ', placeholder: 'เช่น สภาพดี / ขาด 2 ชิ้น ช่างยังไม่ได้ส่ง' },
-                              ],
-                              confirmLabel: 'รับเข้าคลัง',
-                            })
-                            if (!v) return
-                            tryAction(() => act.receiveStockReturn({ id: s.id, receivedQty: Number(v.qty), note: v.note || undefined }),
-                              `รับ ${it?.name ?? ''} ${Number(v.qty)} ${uom} เข้าคลังแล้ว`)
-                          }}>✅ รับเข้าคลัง</button>{' '}
-                          <button className="small danger" onClick={async () => {
-                            const v = await askPrompt({
-                              title: `ตีกลับ Job — ${it?.name ?? ''}`,
-                              description: <>ไม่รับของเข้าคลัง · ของกลับไปอยู่ที่เดิมของ {jb?.jobNo} (ไม่มีอะไรขยับ) และแจ้ง Project พร้อมเหตุผล</>,
-                              fields: [{ key: 'reason', label: 'เหตุผลที่ตีกลับ', type: 'textarea', required: true,
-                                placeholder: 'เช่น ไม่ได้รับของจริง / ของเสียหายใช้ไม่ได้ / ผิดรายการ' }],
-                              confirmLabel: 'ตีกลับ Job',
-                            })
-                            if (!v) return
-                            tryAction(() => act.rejectStockReturn({ id: s.id, reason: v.reason }), 'ตีกลับคำขอแล้ว — แจ้ง Project')
-                          }}>↩️ ตีกลับ Job</button>
-                        </> : <span className="badge amber">รอ Purchasing ตรวจรับ</span>}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
       {/* ---------------- คลังคงเหลือ (แยกจากฐานข้อมูลวัสดุ — S2) ---------------- */}
       <div className="panel">
         <div className="panel-head">
@@ -891,7 +817,7 @@ export default function MasterDataPage() {
                     <td>{avg > 0 ? fmtBaht(avg) : <span className="muted">-</span>}</td>
                     <td>{avg > 0 ? fmtBaht(qty * avg) : <span className="muted">-</span>}</td>
                     <td style={{ whiteSpace: 'nowrap', textAlign: 'right' }}>
-                      <button className="small" style={{ marginRight: 6 }} onClick={() => setLedgerItem(i)}>📜 ประวัติ</button>
+                      <button className="small" style={{ marginRight: 6 }} onClick={() => openLedger(i)}>📜 ประวัติ</button>
                       {canStock && <button className="small" style={{ marginRight: 6 }} title="แก้ Lot No. โดยไม่แตะยอดคงเหลือ" onClick={() => editLot(i)}>🏷 Lot</button>}
                       {canStock && <button className="small" onClick={() => adjustStock(i)}>ปรับยอด</button>}
                     </td>
@@ -910,7 +836,7 @@ export default function MasterDataPage() {
         <Modal title={`ประวัติการเคลื่อนไหว — ${ledgerItem.name}`} onClose={() => setLedgerItem(null)} size="wide"
           footer={<>
             <span className="muted" style={{ marginRight: 'auto', fontSize: 12.5 }}>
-              {movementsOf(ledgerItem.id).length} รายการ · เรียงใหม่ → เก่า
+              {ledgerRows === 'loading' ? 'กำลังโหลดประวัติทั้งหมด…' : `${movementsOf(ledgerItem.id, ledgerAll).length} รายการ · เรียงใหม่ → เก่า`}
             </span>
             <button onClick={() => setLedgerItem(null)}>ปิด</button>
           </>}>
@@ -928,13 +854,21 @@ export default function MasterDataPage() {
                 <th>Job</th><th>หมายเหตุ</th><th>ผู้ทำรายการ</th>
               </tr></thead>
               <tbody>
-                {movementsOf(ledgerItem.id).length === 0 && (
+                {ledgerRows !== 'loading' && movementsOf(ledgerItem.id, ledgerAll).length === 0 && (
                   <tr><td colSpan={8}><div className="empty">ยังไม่มีการเคลื่อนไหว</div></td></tr>
                 )}
-                {movementsOf(ledgerItem.id).map(m => (
-                  <tr key={m.id}>
+                {movementsOf(ledgerItem.id, ledgerAll).map(m => {
+                  // เฟส 4: รายการที่ถูกย้อนแล้ว / รายการที่เป็นการย้อน — เดิมดูเหมือนเคลื่อนไหว 2 ครั้งแยกกัน
+                  const reversedBy = ledgerAll.find(x => x.reversalOf === m.id)
+                  const orig = m.reversalOf ? ledgerAll.find(x => x.id === m.reversalOf) : undefined
+                  return (
+                  <tr key={m.id} className={reversedBy ? 'muted' : undefined}>
                     <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(m.performedAt)}</td>
-                    <td><span className="badge neutral">{MOVEMENT_LABEL[m.type] ?? m.type}</span></td>
+                    <td>
+                      <span className="badge neutral">{MOVEMENT_LABEL[m.type] ?? m.type}</span>
+                      {reversedBy && <div><span className="badge amber" title={`ย้อนเมื่อ ${fmtDateTime(reversedBy.performedAt)}`}>↩️ ถูกย้อนแล้ว</span></div>}
+                      {orig && <div className="muted" style={{ fontSize: 11 }}>ย้อนรายการ {fmtDateTime(orig.performedAt)}</div>}
+                    </td>
                     <td style={{ color: m.qty > 0 ? 'var(--green)' : 'var(--danger)', fontWeight: 600, textAlign: 'right', whiteSpace: 'nowrap' }}>
                       {m.qty > 0 ? '+' : ''}{m.qty} <span className="muted" style={{ fontWeight: 400 }}>{ledgerItem.uom}</span>
                       {m.unitCost !== undefined && m.unitCost > 0 && (
@@ -948,7 +882,8 @@ export default function MasterDataPage() {
                     <td className="muted">{m.note || '-'}</td>
                     <td className="muted" style={{ whiteSpace: 'nowrap' }}>{userNameOf(m.performedBy)}</td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>

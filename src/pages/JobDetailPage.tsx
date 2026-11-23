@@ -8,7 +8,8 @@ import { supabase } from '../lib/supabase'
 import { CorrectionModal } from '../ui/CorrectionModal'
 import { jobActions, jobNextStep, pendingApprovals, type JobActionKey } from '../data/flow'
 import { GateButton, NextStepBar, PendingBadge } from '../ui/flow'
-import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, EPICOR_TXN, PR_STATUS_LABEL, COST_CATEGORIES, PAYMENT_TYPE_LABEL, DEPT_LABEL, JOB_STATUS_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
+import { prStatusLabel } from '../data/flow'
+import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, EPICOR_TXN, COST_CATEGORIES, PAYMENT_TYPE_LABEL, DEPT_LABEL, JOB_STATUS_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import {
   type Cell, type NumKind, type ReportCol, type SumTable,
   SHEET_SUMMARY, SHEET_GUIDE, buildWorkbook, dataSheet, guideSheet,
@@ -1679,7 +1680,7 @@ export default function JobDetailPage() {
         {jobPrs.length > 0 && (
           <div className="panel-body muted">
             PR ของ Job นี้: {jobPrs.map(p =>
-              `${p.prNo} (${PR_STATUS_LABEL[p.status]}${p.status === 'rejected' ? `: ${p.rejectReason}` : ''})`).join(' · ')}
+              `${p.prNo} (${prStatusLabel(db, p)}${p.status === 'rejected' ? `: ${p.rejectReason}` : ''})`).join(' · ')}
           </div>
         )}
       </div>

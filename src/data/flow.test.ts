@@ -8,7 +8,8 @@ import { describe, it, expect } from 'vitest'
 import type { DB, Job, LbsUnit, User, AccessoryRequest, ApprovalRequest, UnitInstallation, Department } from '../types'
 import {
   jobActions, jobAction, jobNextStep, isMyTurn, pendingApprovals, pendingGate, permGate, jobCloseReason, deptNames,
-  JOB_ACTION_ORDER, myWork, approvalFacts, bkkDate, jobListMatches, type JobActionKey,
+  JOB_ACTION_ORDER, myWork, approvalFacts, bkkDate, jobListMatches, prsAwaitingPo, posAwaitingGoods, prStatusLabel,
+  pendingReceipts, purchasingCounts, stockPanelOpen, type JobActionKey,
 } from './flow'
 import { jobDelivery, jobInstallSummary, jobStatusPhase, memberSchedule } from './logic'
 
@@ -750,5 +751,86 @@ describe('รีวิวเฟส 3 · ข้อ 4 — ตัวกรองห
     const r = row()
     expect(jobListMatches({ ...r, d: { ...r.d, atRisk: true } }, 'at_risk', false, USERS.owner)).toBe(true)
     expect(jobListMatches({ ...r, d: { ...r.d, atRisk: false } }, 'at_risk', false, USERS.owner)).toBe(false)
+  })
+})
+
+// =============================================================================
+// เฟส 4 (2026-11-23) — Purchasing: คิวรอออก PO / รอรับของ (ค้างนานก่อน) · ป้าย PR บางส่วน · รับของ
+// =============================================================================
+describe('เฟส 4 · คิว Purchasing', () => {
+  const pr = (id: string, createdAt: string, status: DB['prs'][number]['status'] = 'pending'): DB['prs'][number] =>
+    ({ id, prNo: id.toUpperCase(), jobId: 'j1', status, requestIds: [], createdBy: 'u-p', createdAt })
+  const po = (id: string, createdAt: string, status: DB['pos'][number]['status'] = 'issued'): DB['pos'][number] =>
+    ({ id, poNo: id.toUpperCase(), prId: 'p1', jobId: 'j1', supplierName: 'ซัพ', expectedDate: '2026-11-30', status, createdBy: 'u-pur', createdAt })
+
+  it('PR รอออก PO: รวมใบที่ออก PO ไปบางส่วนแล้ว (ยังมีบรรทัดรอ) · ไม่รวมใบที่สั่งครบ/ตีกลับ · ค้างนานก่อน', () => {
+    const d = db({ jobs: [job()],
+      prs: [pr('p1', '2026-11-20T03:00:00Z'), pr('p2', '2026-11-05T03:00:00Z', 'po_issued'), pr('p3', '2026-11-01T03:00:00Z', 'po_issued'),
+        pr('p4', '2026-11-02T03:00:00Z', 'rejected')],
+      accessoryRequests: [acc('a', { prId: 'p1', status: 'pr_sent' }), acc('b', { prId: 'p2', status: 'pr_sent' }),
+        acc('c', { prId: 'p2', status: 'po_ordered' }), acc('d', { prId: 'p3', status: 'po_ordered' })],
+    })
+    expect(prsAwaitingPo(d, TODAY).map(x => [x.pr.id, x.openLines, x.waitingDays])).toEqual([['p2', 1, 18], ['p1', 1, 3]])
+  })
+
+  it('PO รอรับของ: เฉพาะ issued · ค้างนานก่อน · บอกเลยกำหนดส่งของกี่วัน', () => {
+    const d = db({ jobs: [job()], pos: [po('o1', '2026-11-10T03:00:00Z'), po('o2', '2026-11-02T03:00:00Z'), po('o3', '2026-11-01T03:00:00Z', 'received')] })
+    expect(posAwaitingGoods(d, TODAY).map(x => [x.po.id, x.waitingDays, x.lateDays])).toEqual([['o2', 21, 0], ['o1', 13, 0]])
+    const late: DB = { ...d, pos: [po('o1', '2026-11-10T03:00:00Z')].map(p => ({ ...p, expectedDate: '2026-11-20' })) }
+    expect(posAwaitingGoods(late, TODAY)[0].lateDays).toBe(3)
+  })
+
+  it('งานของฉัน (Purchasing) นับ PR ที่ออก PO บางส่วนแล้วด้วย — เดิมนับแค่ pending', () => {
+    const d = db({ jobs: [job()], lbsUnits: [unit('a', { planPoReceiptDate: '2026-12-15' }), unit('b', { planPoReceiptDate: '2026-12-15' })],
+      prs: [pr('p2', '2026-11-05T03:00:00Z', 'po_issued')],
+      accessoryRequests: [acc('b', { prId: 'p2', status: 'pr_sent' }), acc('c', { prId: 'p2', status: 'po_ordered', poId: 'o9' })] })
+    expect(myWork(d, USERS.purchasing, TODAY).map(w => w.key)).toEqual(['pr:p2'])
+  })
+
+  it('ป้ายสถานะ PR: ออก PO บางส่วน (ยังมีบรรทัดรอ) ≠ ออก PO แล้ว รอรับของ', () => {
+    const d = db({ prs: [pr('p2', T, 'po_issued'), pr('p3', T, 'po_issued'), pr('p1', T)],
+      accessoryRequests: [acc('b', { prId: 'p2', status: 'pr_sent' }), acc('c', { prId: 'p2', status: 'po_ordered' }), acc('d', { prId: 'p3', status: 'po_ordered' })] })
+    expect(prStatusLabel(d, d.prs[0])).toBe('ออก PO บางส่วน · รอออก PO อีก 1 รายการ')
+    expect(prStatusLabel(d, d.prs[1])).toBe('ออก PO แล้ว รอรับของ')
+    expect(prStatusLabel(d, d.prs[2])).toBe('รอ Purchasing ออก PO')
+  })
+})
+
+describe('เฟส 4 · รับของ — ส่งเฉพาะบรรทัดที่ยังค้างรับ', () => {
+  const lines = [{ id: 'a', remaining: 5 }, { id: 'b', remaining: 2 }]
+  it('🔴 ค่าที่กรอกค้างของบรรทัดที่หลุดจากตารางแล้ว (แก้จำนวนจนจบ) ต้องไม่ถูกส่ง', () => {
+    expect(pendingReceipts({ a: '3', gone: '5' }, lines)).toEqual({ receipts: [{ requestId: 'a', qty: 3 }], over: [] })
+  })
+  it('ช่องว่าง/0 ไม่ส่ง · เกินจำนวนค้างรับ = รายการ over (ปุ่มบันทึกต้องปิด)', () => {
+    expect(pendingReceipts({ a: '', b: '0' }, lines)).toEqual({ receipts: [], over: [] })
+    expect(pendingReceipts({ a: '6', b: '2' }, lines)).toEqual({ receipts: [{ requestId: 'a', qty: 6 }, { requestId: 'b', qty: 2 }], over: ['a'] })
+  })
+})
+
+// =============================================================================
+// รีวิวเฟส 4 (2026-11-23)
+// =============================================================================
+describe('รีวิวเฟส 4 · ข้อ 1 — ตัวนับ Purchasing ชุดเดียวทุกหน้า (Dashboard · เมนู · หน้า Purchasing)', () => {
+  it('🔴 PR ที่ออก PO บางส่วน (ยังมีบรรทัดรอ) นับเป็น "PR รอออก PO" · PO issued นับเป็นรอรับของ', () => {
+    const d = db({ jobs: [job()],
+      prs: [{ id: 'p1', prNo: 'PR-1', jobId: 'j1', status: 'po_issued', requestIds: [], createdBy: 'u-p', createdAt: T },
+        { id: 'p2', prNo: 'PR-2', jobId: 'j1', status: 'pending', requestIds: [], createdBy: 'u-p', createdAt: T }],
+      pos: [{ id: 'o1', poNo: 'PO-1', prId: 'p1', jobId: 'j1', supplierName: 'S', expectedDate: '2026-12-01', status: 'issued', createdBy: 'u-pur', createdAt: T }],
+      accessoryRequests: [acc('a', { prId: 'p1', status: 'pr_sent' }), acc('b', { prId: 'p1', status: 'po_ordered', poId: 'o1' }), acc('c', { prId: 'p2', status: 'pr_sent' })] })
+    expect(purchasingCounts(d)).toEqual({ prAwaitingPo: 2, poAwaitingGoods: 1 })
+  })
+})
+
+describe('รีวิวเฟส 4 · ข้อ 3 — ตัวกรองไม่มี Contract No.: กาง/พับคลังได้', () => {
+  const base = { openStock: null, collapsed: new Set<string>(), filterOn: true, hasMatches: true }
+  it('ตัวกรองเปิด + มีเครื่องเข้าเงื่อนไข = กางเอง · 🔴 พับได้ (เดิมพับไม่ได้จนล้างตัวกรอง)', () => {
+    expect(stockPanelOpen('s1', base)).toBe(true)
+    expect(stockPanelOpen('s1', { ...base, collapsed: new Set(['s1']) })).toBe(false)
+  })
+  it('ตัวกรองปิด = กางเฉพาะคลังที่กดเปิด · คลังที่ไม่มีเครื่องเข้าเงื่อนไข = ไม่กางเอง', () => {
+    expect(stockPanelOpen('s1', { ...base, filterOn: false })).toBe(false)
+    expect(stockPanelOpen('s1', { ...base, filterOn: false, openStock: 's1' })).toBe(true)
+    expect(stockPanelOpen('s1', { ...base, hasMatches: false })).toBe(false)
+    expect(stockPanelOpen('s1', { ...base, hasMatches: false, openStock: 's1' })).toBe(true)
   })
 })

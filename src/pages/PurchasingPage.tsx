@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import { Modal, usePrompt, useTryAction } from '../ui/components'
-import { poCostSummary } from '../data/logic'
+import { poCostSummary, todayIso } from '../data/logic'
+import { prsAwaitingPo, posAwaitingGoods, prStatusLabel, pendingReceipts } from '../data/flow'
 import { fmtBaht, fmtDate, fmtDateTime, COST_CATEGORIES } from '../ui/format'
 import type { CostCategoryKey } from '../types'
 
@@ -32,7 +33,7 @@ const PR_COLS: PrColSpec[] = [
   { key: 'ราคาที่เสนอ/หน่วย', io: 'supplier', width: 20, note: 'ให้ซัพพลายเออร์กรอกราคาต่อหน่วยที่เสนอ' },
   { key: 'มูลค่าที่เสนอ', io: 'supplier', width: 18, note: 'ราคาที่เสนอ × จำนวน' },
   { key: 'ยี่ห้อ/รุ่นที่เสนอ', io: 'supplier', width: 22, note: 'ระบุยี่ห้อ/รุ่นที่จะส่ง — ใช้เทียบสเปกก่อนออก PO' },
-  { key: 'กำหนดส่งได้', io: 'supplier', width: 14, note: 'วันที่ส่งของได้ (YYYY-MM-DD)' },
+  { key: 'กำหนดส่งได้', io: 'supplier', width: 14, note: 'วันที่ส่งของได้ (DD-MM-YYYY)' },
   { key: 'หมายเหตุ', io: 'supplier', width: 30, note: 'เงื่อนไขอื่น เช่น MOQ / ค่าขนส่ง / ระยะเวลายืนราคา' },
 ]
 const PR_HEADERS = PR_COLS.map(c => c.key)
@@ -45,19 +46,22 @@ export default function PurchasingPage() {
   const [poFor, setPoFor] = useState<string | null>(null)
   const [rejectFor, setRejectFor] = useState<string | null>(null)
   const [prNoFor, setPrNoFor] = useState<{ id: string; prNo: string } | null>(null)   // แก้เลข PR (0047)
-  const [receiveFor, setReceiveFor] = useState<string | null>(null)
+  // เฟส 4: กล่อง PO เดียว 2 โหมด — รายละเอียด | รับของ (เดิมมีแต่กล่องรับของ)
+  const [poView, setPoView] = useState<{ id: string; tab: 'detail' | 'receive' } | null>(null)
   const [poNo, setPoNo] = useState('')
   const [supplier, setSupplier] = useState('')
   const [expectedDate, setExpectedDate] = useState('')
   const [rejectReason, setRejectReason] = useState('')
-  const [receiveQty, setReceiveQty] = useState<Record<string, number>>({})
+  // เก็บเป็นข้อความ — ลบช่องให้ว่างได้ (เดิม Number('') = 0 ช่องโชว์ "0")
+  const [receiveQty, setReceiveQty] = useState<Record<string, string>>({})
   const [poLineIds, setPoLineIds] = useState<Record<string, boolean>>({})   // เลือก line เข้า PO (0022)
 
   // ปิดโมดัลรับของเองเมื่อ PO ปิดใบไปแล้ว — เกิดได้จาก ✏️ แก้จำนวน (0070) ที่ทำให้บรรทัด
   // สุดท้ายจบทั้งที่ยังเปิดโมดัลค้างอยู่ · ไม่ปิดจะเหลือหน้าจอเปล่าที่กดอะไรต่อไม่ได้
+  //   เฟส 4: ไม่ปิดทิ้ง — สลับไปแท็บรายละเอียด ให้เห็นว่าใบปิดแล้ว (รับครบ/ยกเลิก)
   useEffect(() => {
-    if (receiveFor && db.pos.find(p => p.id === receiveFor)?.status !== 'issued') setReceiveFor(null)
-  }, [db.pos, receiveFor])
+    if (poView?.tab === 'receive' && db.pos.find(p => p.id === poView.id)?.status !== 'issued') setPoView({ ...poView, tab: 'detail' })
+  }, [db.pos, poView])
 
   const itemOf = (id: string) => db.items.find(i => i.id === id)
   const prLines = (prId: string) => db.accessoryRequests.filter(r => r.prId === prId)
@@ -95,8 +99,12 @@ export default function PurchasingPage() {
   const jobsWithDocs = [...db.jobs]
     .filter(j => db.prs.some(p => p.jobId === j.id) || db.pos.some(p => p.jobId === j.id))
     .reverse()
-  const totalPendingPr = db.prs.filter(p => p.status === 'pending').length
-  const totalOpenPo = db.pos.filter(p => p.status === 'issued').length
+  // เฟส 4: คิวเดียวกับงานของฉัน — รวม PR ที่ออก PO บางส่วนแล้ว (เดิมป้ายนับแค่ pending) · ค้างนานก่อน
+  const today = todayIso()
+  const prQueue = prsAwaitingPo(db, today)
+  const poQueue = posAwaitingGoods(db, today)
+  const totalPendingPr = prQueue.length
+  const totalOpenPo = poQueue.length
 
   // ---------------- Export PR ที่ยังไม่ได้ออก PO → Excel template ขอราคา ----------------
   // นับเฉพาะ line ที่ยัง `pr_sent` (ยังไม่ผูก PO) — ใบที่ออก PO บางส่วนแล้วจะได้เฉพาะส่วนที่เหลือ
@@ -165,10 +173,12 @@ export default function PurchasingPage() {
   }
   const totalPrLines = prTemplateRows().length
 
-  const receivePo = receiveFor ? db.pos.find(p => p.id === receiveFor) : null
+  const viewPo = poView ? db.pos.find(p => p.id === poView.id) ?? null : null
+  const receivePo = viewPo?.status === 'issued' ? viewPo : null
   const receiveLines = receivePo
     ? poLines(receivePo.id).filter(r => r.status === 'po_ordered' && r.qtyReceived < r.qtyRequested)
     : []
+  const receiveCheck = pendingReceipts(receiveQty, receiveLines.map(r => ({ id: r.id, remaining: r.qtyRequested - r.qtyReceived })))
 
   // เปิด modal ออก PO — default เลือกทุก line ที่ยังไม่ได้สั่งของ PR นั้น
   const openPo = (prId: string) => {
@@ -194,25 +204,23 @@ export default function PurchasingPage() {
     }
   }
 
-  const openReceive = (poId: string) => {
+  const openPoView = (poId: string, tab: 'detail' | 'receive') => {
     setReceiveQty({})
-    setReceiveFor(poId)
+    setPoView({ id: poId, tab })
   }
 
   const submitReceive = async () => {
-    if (!receivePo) return
-    const receipts = Object.entries(receiveQty)
-      .map(([requestId, qty]) => ({ requestId, qty: Number(qty) || 0 }))
-      .filter(r => r.qty > 0)
-    if (await tryAction(() => act.receivePOItems({ poId: receivePo.id, receipts }),
+    if (!receivePo || receiveCheck.over.length > 0) return
+    // เฉพาะบรรทัดที่ยังค้างรับในตาราง — ค่าที่กรอกค้างของบรรทัดที่หลุดไปแล้วไม่ถูกส่ง (pendingReceipts)
+    if (await tryAction(() => act.receivePOItems({ poId: receivePo.id, receipts: receiveCheck.receipts }),
       'บันทึกรับของแล้ว — สถานะ Job อัพเดทอัตโนมัติ')) {
-      setReceiveFor(null)
+      setPoView(null)
     }
   }
 
   const fillAll = () => {
-    const filled: Record<string, number> = {}
-    receiveLines.forEach(r => { filled[r.id] = r.qtyRequested - r.qtyReceived })
+    const filled: Record<string, string> = {}
+    receiveLines.forEach(r => { filled[r.id] = String(r.qtyRequested - r.qtyReceived) })
     setReceiveQty(filled)
   }
 
@@ -266,6 +274,47 @@ export default function PurchasingPage() {
         <b> ตัดเข้างาน</b> = ยอดที่หักงบ Job จริง = ราคา × (จำนวนที่สั่ง − จำนวนที่โอนคืนคลัง) —
         ปกติเท่ากัน จะต่างเมื่อ Project โอนวัสดุเหลือคืนคลัง ระบบจะโชว์ทั้งสองยอดในคอลัมน์ต้นทุนรวม
       </div>
+
+      {/* เฟส 4: คิวงาน — PR รอออก PO · PO รอรับของ เรียงค้างนานก่อน (ไม่ต้องไล่กางทีละ Job) */}
+      {(prQueue.length > 0 || poQueue.length > 0) && (
+        <div className="panel">
+          <div className="panel-head"><h3>คิวงาน Purchasing <span className="muted" style={{ fontWeight: 400 }}>· ค้างนานก่อน</span></h3></div>
+          <div className="queue-grid">
+            <div>
+              <div className="queue-head">📄 PR รอออก PO ({prQueue.length})</div>
+              {prQueue.length === 0 && <div className="muted queue-empty">ไม่มี</div>}
+              <ul className="queue-list">
+                {prQueue.map(({ pr, openLines, waitingDays }) => (
+                  <li key={pr.id}>
+                    <div>
+                      <b className="mono">{pr.prNo}</b> <span className="muted">· {db.jobs.find(j => j.id === pr.jobId)?.jobNo}</span>
+                      <div className="muted" style={{ fontSize: 12 }}>{openLines} รายการ{pr.status === 'po_issued' ? ' · ออก PO บางส่วนแล้ว' : ''}</div>
+                    </div>
+                    <span className={waitingDays >= 7 ? 'badge amber' : 'muted'} style={{ whiteSpace: 'nowrap' }}>{waitingDays > 0 ? `ค้าง ${waitingDays} วัน` : 'วันนี้'}</span>
+                    {canManage && <button className="small primary" onClick={() => openPo(pr.id)}>ออก PO</button>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <div className="queue-head">📦 PO รอรับของ ({poQueue.length})</div>
+              {poQueue.length === 0 && <div className="muted queue-empty">ไม่มี</div>}
+              <ul className="queue-list">
+                {poQueue.map(({ po, waitingDays, lateDays }) => (
+                  <li key={po.id}>
+                    <div>
+                      <b className="mono">{po.poNo}</b> <span className="muted">· {db.jobs.find(j => j.id === po.jobId)?.jobNo} · {po.supplierName}</span>
+                      <div className="muted" style={{ fontSize: 12 }}>ออกเมื่อ {waitingDays > 0 ? `${waitingDays} วันก่อน` : 'วันนี้'} · กำหนดส่ง {fmtDate(po.expectedDate)}</div>
+                    </div>
+                    {lateDays > 0 ? <span className="badge red" style={{ whiteSpace: 'nowrap' }}>เลยกำหนดส่ง {lateDays} วัน</span> : <span />}
+                    <button className="small" onClick={() => openPoView(po.id, canManage ? 'receive' : 'detail')}>{canManage ? 'รับของ' : 'รายละเอียด'}</button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Export รวมทุกงาน — ใช้รวบยอดสั่งของประจำวัน · ต่อ Job มีปุ่มแยกในแต่ละการ์ด */}
       {totalPrLines > 0 && (
@@ -341,7 +390,7 @@ export default function PurchasingPage() {
                           <tr key={r.id}>
                             {idx === 0 && (
                               <td className="mono" rowSpan={lines.length}>
-                                <b>{pr.prNo}</b>{pr.status === 'po_issued' && <div className="muted" style={{ fontSize: 11 }}>ออก PO บางส่วนแล้ว</div>}
+                                <b>{pr.prNo}</b>{pr.status === 'po_issued' && <div className="muted" style={{ fontSize: 11 }}>{prStatusLabel(db, pr)}</div>}
                                 {/* แก้เลข PR ให้ตรงเอกสารจริงจาก Epicor (0047) — เฉพาะใบที่ยังไม่ออก PO */}
                                 {canManage && pr.status === 'pending' && (
                                   <div style={{ marginTop: 4 }}>
@@ -436,8 +485,9 @@ export default function PurchasingPage() {
                                   </span>
                                 )}
                               </span>
+                              <button className="small" onClick={() => openPoView(po.id, 'detail')}>รายละเอียด</button>
                               {canManage && po.status === 'issued' && (
-                                <button className="small success" onClick={() => openReceive(po.id)}>รับของ</button>
+                                <button className="small success" onClick={() => openPoView(po.id, 'receive')}>รับของ</button>
                               )}
                               {canManage && po.status === 'issued' && totalReceived === 0 && (
                                 <button className="small danger" onClick={async () => {
@@ -639,16 +689,76 @@ export default function PurchasingPage() {
 
       {/* รับของ — โมดัลกว้างพิเศษ + ตาราง: PO จริงมี 10–30 บรรทัด ถ้าเรียงเป็น field ซ้อนกัน
           ต้องเลื่อนหาช่องกรอกทีละอัน · ตารางทำให้เทียบ "สั่ง / รับแล้ว / ค้างรับ" ได้ในบรรทัดเดียว */}
-      {receivePo && (() => {
-        const filledCount = receiveLines.filter(r => (receiveQty[r.id] ?? 0) > 0).length
+      {viewPo && poView?.tab === 'detail' && (() => {
+        const lines = poLines(viewPo.id)
+        const pr = db.prs.find(x => x.id === viewPo.prId)
+        const job = db.jobs.find(j => j.id === viewPo.jobId)
+        const cost = poCostSummary(db, viewPo.id)
+        const canReceive = canManage && viewPo.status === 'issued'
+        return (
+        <Modal title={`${viewPo.poNo} — ${job?.jobNo ?? '-'}`} size="xl" onClose={() => setPoView(null)}
+          subtitle={<>{viewPo.supplierName} · จาก {pr?.prNo ?? '-'} · ออกเมื่อ {fmtDateTime(viewPo.createdAt)}</>}
+          tabs={canReceive ? [{ key: 'detail', label: 'รายละเอียด' }, { key: 'receive', label: 'รับของ' }] : undefined}
+          tab="detail" onTab={k => setPoView({ id: viewPo.id, tab: k as 'detail' | 'receive' })}
+          footer={<button onClick={() => setPoView(null)}>ปิด</button>}>
+          <dl className="facts">
+            <dt>สถานะ</dt>
+            <dd>{viewPo.status === 'issued' ? 'รอรับของ' : viewPo.status === 'received' ? `รับของครบ ${fmtDate(viewPo.receivedAt)}` : 'ยกเลิก'}</dd>
+            <dt>กำหนดส่งของ</dt><dd>{fmtDate(viewPo.expectedDate)}</dd>
+            <dt>มูลค่าสั่งซื้อ</dt>
+            <dd>
+              <b>{fmtBaht(cost.ordered)}</b> · {cost.lineCount} รายการ
+              {cost.charged !== cost.ordered && <span className="muted"> · ตัดเข้างาน {fmtBaht(cost.charged)}</span>}
+              {cost.missingPrice > 0 && <span className="badge red" style={{ marginLeft: 6 }}>ยังไม่กรอกราคา {cost.missingPrice}</span>}
+            </dd>
+          </dl>
+          <div className="table-scroll">
+            <table className="dense">
+              <thead><tr>
+                <th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th>
+                <th style={{ textAlign: 'right' }}>สั่ง</th><th style={{ textAlign: 'right' }}>ราคา/หน่วย</th>
+                <th style={{ textAlign: 'right' }}>มูลค่า</th><th style={{ textAlign: 'right' }}>รับแล้ว</th>
+              </tr></thead>
+              <tbody>
+                {lines.map(r => {
+                  const it = itemOf(r.itemId)
+                  const dropped = r.status === 'cancelled'
+                  return (
+                    <tr key={r.id} className={dropped ? 'muted' : undefined}>
+                      <td className="mono">{it?.epicorCode || '-'}</td>
+                      <td>{it?.name ?? '-'}{dropped && <span className="badge red" style={{ marginLeft: 6 }}>ตัดออกจาก PO</span>}</td>
+                      <td style={{ textAlign: 'right' }}>{r.qtyRequested} {it?.uom ?? ''}</td>
+                      <td style={{ textAlign: 'right' }}>{fmtBaht(r.unitPrice)}</td>
+                      <td style={{ textAlign: 'right' }}>{fmtBaht(r.unitPrice !== undefined ? r.unitPrice * r.qtyRequested : undefined)}</td>
+                      <td style={{ textAlign: 'right' }}>{dropped ? '-' : `${r.qtyReceived}/${r.qtyRequested}`}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Modal>
+        )
+      })()}
+
+      {receivePo && poView?.tab === 'receive' && (() => {
+        const filledCount = receiveCheck.receipts.length
         const totalRemaining = receiveLines.reduce((s, r) => s + (r.qtyRequested - r.qtyReceived), 0)
         return (
-        <Modal title={`รับของตาม ${receivePo.poNo}`} size="xl" onClose={() => setReceiveFor(null)}
+        <Modal title={`รับของตาม ${receivePo.poNo}`} size="xl" onClose={() => setPoView(null)}
+          dirty={filledCount > 0}
+          tabs={[{ key: 'detail', label: 'รายละเอียด' }, { key: 'receive', label: 'รับของ' }]}
+          tab="receive" onTab={k => setPoView({ id: receivePo.id, tab: k as 'detail' | 'receive' })}
           footer={<>
-            <button onClick={() => setReceiveFor(null)}>ยกเลิก</button>
+            <span className="modal-foot-summary" role="status">
+              กรอกแล้ว {filledCount} รายการ
+              {receiveCheck.over.length > 0 && <> · <span style={{ color: 'var(--danger)' }}>เกินจำนวนค้างรับ {receiveCheck.over.length} รายการ</span></>}
+            </span>
+            <button onClick={() => setPoView(null)}>ยกเลิก</button>
             <button onClick={() => setReceiveQty({})} disabled={filledCount === 0}>ล้างที่กรอก</button>
             <button onClick={fillAll} disabled={receiveLines.length === 0}>รับครบทุกรายการ</button>
-            <button className="success" onClick={submitReceive} disabled={filledCount === 0}>
+            <button className="success" onClick={submitReceive} disabled={filledCount === 0 || receiveCheck.over.length > 0}
+              title={receiveCheck.over.length > 0 ? 'มีบรรทัดที่กรอกเกินจำนวนค้างรับ — แก้ก่อนบันทึก' : undefined}>
               บันทึกรับของ ({filledCount} รายการ)
             </button>
           </>}>
@@ -689,9 +799,9 @@ export default function PurchasingPage() {
                           <input type="number" min={0} max={remaining} value={val}
                             style={{ width: 110, borderColor: over ? 'var(--danger)' : undefined }}
                             placeholder={`สูงสุด ${remaining}`}
-                            onChange={e => setReceiveQty({ ...receiveQty, [r.id]: Number(e.target.value) })} />
+                            onChange={e => setReceiveQty({ ...receiveQty, [r.id]: e.target.value })} />
                           <button className="small" style={{ marginLeft: 6 }} title="เติมจำนวนที่ค้างรับทั้งหมด"
-                            onClick={() => setReceiveQty({ ...receiveQty, [r.id]: remaining })}>ครบ</button>
+                            onClick={() => setReceiveQty({ ...receiveQty, [r.id]: String(remaining) })}>ครบ</button>
                           {over && <div style={{ fontSize: 11, color: 'var(--danger)' }}>เกินจำนวนที่ค้างรับ</div>}
                         </td>
                         {/* ทางออกกรณีกรอกจำนวนเกิน / ใส่ item เกินมา (0070) — ไม่มีปุ่มนี้ line จะค้าง
