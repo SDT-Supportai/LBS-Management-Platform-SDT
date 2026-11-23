@@ -411,7 +411,7 @@ export const DUE_WARN_DAYS = 30
 //   ห้ามใช้คำว่า "แผน" ลอย ๆ ในป้ายสถานะเด็ดขาด — มันชี้ได้ทั้ง 2 อัน
 //
 // ลำดับตัดสิน (บนสุดชนะ) — เรียงตาม "สิ่งที่ต้องลงมือก่อน" ไม่ใช่ความรุนแรงของวันที่:
-//   ปิดแล้ว → ติดปัญหาหน้างาน → รอปิดงาน → ติดตั้งครบแต่รอเบิกของที่เหลือ → [เลยวันนัด → กำลังติดตั้ง → รอถึงวันนัด] → เลยกำหนดส่ง
+//   ปิดแล้ว → ติดปัญหาหน้างาน → รอปิดงาน → ติดตั้งครบแต่ค้างเรื่องก่อนปิด / รอเบิกของที่เหลือ → [เลยวันนัด → กำลังติดตั้ง → รอถึงวันนัด] → เลยกำหนดส่ง
 //   → ใกล้กำหนด → ตามกำหนด
 //   🔴 blocked มาก่อนทุกเรื่องวันที่: เครื่องที่ติดตั้งไม่ได้คือของจริงที่ค้าง ส่วนวันที่ยังเลื่อนได้
 //   🔴 awaiting_close มาก่อน late: ทุกเครื่องได้ข้อสรุปแล้ว เหลือแค่กดปิด — ไล่วันที่ตอนนี้ไม่ช่วยอะไร
@@ -421,7 +421,9 @@ export const DUE_WARN_DAYS = 30
 export type DeliveryState =
   | 'closed'          // ปิดงาน/ยกเลิกแล้ว — ไม่ต้องเตือนอะไรอีก
   | 'blocked'         // มีเครื่องติดตั้งไม่ได้ และยังไม่ได้ข้อสรุปครบทั้งใบ
-  | 'awaiting_close'  // ทุกเครื่องได้ข้อสรุปแล้ว รอ Service กดปิดงาน
+  | 'awaiting_close'  // ทุกเครื่องได้ข้อสรุปแล้ว รอ Service กดปิดงาน — **กดปิดได้จริงเท่านั้น** (canClose)
+  | 'awaiting_clearance' // ติดตั้งครบ ของออกครบใบ แต่ยังมีเรื่องค้างก่อนปิด (คำขอรอ Division / ของคืนรอ Purchasing
+                         //   ตรวจรับ) — ยังกดปิดไม่ได้ ⇒ ห้ามนับรวม "รอปิดงาน" (รีวิวเฟส 2 ข้อ 3)
   | 'awaiting_issue_rest' // ติดตั้งครบแล้ว แต่ใบยังเบิกไม่ครบ (วัสดุค้าง/LBS ไม่ครบ Scope) — รอ Project
   | 'visit_overdue'   // ของอยู่กับช่างแล้ว แต่เลยวันนัดติดตั้งสุดท้ายโดยยังไม่ได้ข้อสรุป
   | 'installing'      // อยู่ในช่วงนัดติดตั้ง หรือมีผลยืนยันรายเครื่องแล้ว = เดินอยู่จริง
@@ -576,6 +578,17 @@ export function jobDelivery(db: DB, job: Job, today = todayIso()): JobDelivery {
   // 2.1) งานหน้าไซต์จบแล้ว แต่ใบยังเบิกไม่ครบ (Partially Issued) — ปิดงานไม่ได้จนกว่า Project จะเคลียร์
   //      🔴 เดิมตกไปที่ข้อ 2 แล้วขึ้น "รอปิดงาน" ทั้งที่ Service กดปิดไม่ได้ (2026-09-24)
   if (inst.unitsDone) {
+    // เฟส 2 (2026-11-23): ของออกครบใบแล้ว (issued) ไม่มีของค้างเบิก แต่ปิดไม่ได้เพราะเรื่องอื่น (คำขอรอพิจารณา/
+    //   ของคืนรอตรวจรับ) — เดิมตกไปขึ้น "รอเบิกของที่เหลือ … เบิกของที่เหลือให้ครบทั้งใบ" ทั้งที่ไม่มีอะไรให้เบิก
+    //   🔴 รีวิวเฟส 2 ข้อ 3: state แยก (ไม่ใช่ awaiting_close) — ไม่งั้น Dashboard/ตารางช่างนับเป็น "รอปิดงาน"
+    //      ทั้งที่กดปิดไม่ได้ · และวัสดุเพิ่มที่ยังไม่เบิก (pendingAccessories) ยังต้องอยู่ "รอ Project เบิกของ"
+    if (inst.issueComplete && inst.pendingAccessories === 0 && inst.closeBlockers.length > 0) {
+      return {
+        ...base, state: 'awaiting_clearance', tone: 'amber', atRisk: false,
+        label: `ติดตั้งครบ · ค้าง ${inst.closeBlockers.length} เรื่องก่อนปิดงาน${verdict}`,
+        nextStep: inst.closeBlockers.join(' · '),
+      }
+    }
     const todo = [
       inst.lbsShort > 0 ? `ดึง/เบิก LBS อีก ${inst.lbsShort} เครื่องให้ครบ Scope` : '',
       inst.pendingAccessories > 0
@@ -631,8 +644,13 @@ export function jobDelivery(db: DB, job: Job, today = todayIso()): JobDelivery {
 
   // 4) ยังไม่ออกจากคลัง — ตรงนี้เท่านั้นที่ "เลยกำหนดส่ง" แปลว่างานค้างจริง ไม่มีใครกำลังทำอยู่
   const status = deriveJobStatus(db, job)
+  // รีวิวรอบสุดท้าย: วัสดุยังซื้ออยู่ แต่ LBS/วัสดุบางส่วนพร้อมแล้ว = ปุ่มเบิกกดได้ ⇒ ห้ามบอกให้รอครบก่อนเบิก
+  const issuePlan = status === 'procuring_accessory' ? jobIssuePlan(db, job.id, today) : null
+  const partReady = !!issuePlan && (issuePlan.accReady.length > 0 || (issuePlan.lbsShort === 0 && issuePlan.lbsReady.length > 0))
   const blockedBy =
     status === 'ready_to_issue' ? 'ของครบแล้ว — Project กดเบิกให้ Service ได้ทันที'
+    : status === 'procuring_accessory' && partReady
+      ? 'ของบางส่วนพร้อมแล้ว — Project เบิกให้ Service ก่อนได้ · วัสดุที่เหลือรอฝ่ายจัดซื้อ (ดูหน้า Purchasing)'
     : status === 'procuring_accessory' ? 'รอวัสดุจากฝ่ายจัดซื้อให้ครบก่อนเบิก (ดูหน้า Purchasing)'
     : status === 'allocated' ? 'ดึง LBS เข้างานแล้ว — เปิด PR วัสดุที่เหลือ'
     : status === 'partially_issued' ? 'เบิกไปแล้วบางส่วน — เบิกส่วนที่เหลือให้ Service'
@@ -3244,6 +3262,8 @@ export function jobStatusPhase(db: DB, job: Job): string | undefined {
   if (status === 'issued') {
     if (s.canClose) return 'ติดตั้งครบ รอปิดงาน'
     if (s.blocked > 0) return `ติดปัญหา ${s.blocked} เครื่อง`
+    // รีวิวเฟส 2: พูดให้ตรงกับป้ายกำหนดส่ง (awaiting_clearance / awaiting_issue_rest)
+    if (s.unitsDone) return s.pendingAccessories > 0 ? 'ติดตั้งครบ · ค้างเบิกของ' : 'ติดตั้งครบ · ค้างก่อนปิดงาน'
     if (s.installed > 0) return `ติดตั้งแล้ว ${s.installed}/${s.total}`
     return 'รอติดตั้ง'
   }
@@ -3741,9 +3761,12 @@ export function memberSchedule(db: DB, memberId: string) {
   return {
     active,
     // awaiting_issue_rest = ติดตั้งครบแล้ว รอ Project เบิกของที่เหลือ ⇒ ไม่ใช่ "รอติดตั้ง" ของช่าง
-    pendingInstall: byState.filter(s => s !== 'awaiting_close' && s !== 'blocked' && s !== 'awaiting_issue_rest').length,
+    pendingInstall: byState.filter(s => s !== 'awaiting_close' && s !== 'blocked' && s !== 'awaiting_issue_rest'
+      && s !== 'awaiting_clearance').length,
     awaitingIssueRest: byState.filter(s => s === 'awaiting_issue_rest').length,
+    // awaitingClose = กดปิดได้จริง · awaitingClearance = ติดตั้งครบแต่รอ Division/Purchasing เคลียร์ก่อน (รีวิวเฟส 2)
     awaitingClose: byState.filter(s => s === 'awaiting_close').length,
+    awaitingClearance: byState.filter(s => s === 'awaiting_clearance').length,
     blockedJobs: byState.filter(s => s === 'blocked').length,
     doneCount: jobs.filter(j => j.terminalStatus === 'installed').length,
     // จำนวนเครื่องที่ช่างคนนี้ยืนยันติดตั้งเอง (จาก unit_installations)
@@ -3908,6 +3931,19 @@ export function logSiteVisit(
       : `${job.jobNo} ติดปัญหาหน้างาน — ${p.reason.trim()}`)
 }
 
+/**
+ * 0059/0067: เบิกของออกไปแล้วบางส่วน = ยกเลิก Job ไม่ได้ (ของอยู่ในมือ Service ระบบคืนเข้าคลังเองไม่ได้)
+ * ใช้ร่วม 3 ทาง: cancelJob (ทำจริง) · requestApproval (ไม่ให้คำขอที่อนุมัติไม่ผ่านแน่ ๆ ไปค้างรอ Division) ·
+ * ปุ่มยกเลิก Job (flow.ts) — mirror app_assert_no_issued_out (0067) · คำขอ = trigger ใน 0096
+ */
+export function jobCancelBlockReason(db: DB, jobId: string): string | null {
+  const issuedOut = db.lbsUnits.filter(u => u.jobId === jobId && u.status === 'issued').length
+    + db.accessoryRequests.filter(r => r.jobId === jobId && qtyIssuedToService(r) > 0).length
+  if (issuedOut === 0) return null
+  const jobNo = db.jobs.find(j => j.id === jobId)?.jobNo ?? '-'
+  return `${jobNo} เบิกของให้ Service ไปแล้วบางส่วน — ยกเลิกไม่ได้ ให้ Service คืนของเข้าคลังก่อน แล้วให้ Manage จัดการเป็นเคส`
+}
+
 // ยกเลิก Job: auto คืน LBS กลับ Stock เดิมตาม allocation + คืน Accessory สต็อกกลาง
 export function cancelJob(
   db: DB, actor: User,
@@ -3917,11 +3953,8 @@ export function cancelJob(
   if (!p.reason.trim()) throw new Error('กรุณาระบุเหตุผลการยกเลิก')
   // 0059: เบิกออกไปแล้วบางส่วน = ของอยู่ในมือ Service ระบบคืนเข้าคลังเองไม่ได้
   //   (ใบที่เบิกครบแล้วถูก assertJobEditable กันอยู่แล้ว — ตรงนี้ปิดช่องว่างของสถานะ partially_issued)
-  const issuedOut = db.lbsUnits.filter(u => u.jobId === p.jobId && u.status === 'issued').length
-    + db.accessoryRequests.filter(r => r.jobId === p.jobId && qtyIssuedToService(r) > 0).length
-  if (issuedOut > 0)
-    throw new Error(`${job.jobNo} เบิกของให้ Service ไปแล้วบางส่วน — ยกเลิกไม่ได้` +
-      ` ให้ Service คืนของเข้าคลังก่อน แล้วให้ Manage จัดการเป็นเคส`)
+  const cancelBlock = jobCancelBlockReason(db, job.id)
+  if (cancelBlock) throw new Error(cancelBlock)
 
   let next: DB = db
   const ts = now()
@@ -4151,6 +4184,9 @@ export function requestApproval(
   } else if (p.type === 'reopen_job') {
     if (!p.payload.reason?.trim()) throw new Error('กรุณาระบุเหตุผลที่ขอเปิดงานใหม่')
   } else {
+    // cancel_job — รีวิวรอบสุดท้ายข้อ 2: เดิมส่งคำขอได้ แล้ว Division กดอนุมัติไปเจอ error ใน cancelJob
+    const cancelBlock = jobCancelBlockReason(db, p.jobId)
+    if (cancelBlock) throw new Error(cancelBlock)
     if (!p.payload.reason?.trim()) throw new Error('กรุณาระบุเหตุผลการยกเลิก')
   }
 

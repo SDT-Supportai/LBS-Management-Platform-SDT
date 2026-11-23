@@ -100,10 +100,13 @@ export function usePrompt() {
     { cfg: PromptConfig; resolve: (v: Record<string, string> | null) => void } | null
   >(null)
   const [values, setValues] = useState<Record<string, string>>({})
+  const [initial, setInitial] = useState<Record<string, string>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
 
   const ask = useCallback((cfg: PromptConfig) => new Promise<Record<string, string> | null>(resolve => {
-    setValues(Object.fromEntries(cfg.fields.map(f => [f.key, f.value ?? ''])))
+    const init = Object.fromEntries(cfg.fields.map(f => [f.key, f.value ?? '']))
+    setValues(init)
+    setInitial(init)
     setErrors({})
     setState({ cfg, resolve })
   }), [])
@@ -137,6 +140,7 @@ export function usePrompt() {
       title={state.cfg.title}
       size={state.cfg.fields.length > 2 ? 'wide' : 'default'}
       onClose={() => close(null)}
+      dirty={Object.keys(values).some(k => (values[k] ?? '') !== (initial[k] ?? ''))}
       footer={<>
         <button onClick={() => close(null)}>ยกเลิก</button>
         <button className={state.cfg.danger ? 'danger' : 'primary'} onClick={submit}>
@@ -283,7 +287,27 @@ export function useTryAction() {
 // แผนเฟส 0 (2026-11-22): คลิกพื้นหลัง**ไม่ปิด**โมดัลอีกต่อไป — เดิมกรอกฟอร์มยาว (เปิด Job / เบิกให้ Service /
 //   งวดเงิน / Import) แล้วเผลอคลิกนอกกล่อง ข้อมูลหายทั้งหมด · ปิดได้ทางปุ่ม ✕ / ยกเลิก เท่านั้น
 //   คลิกพื้นหลัง = กล่องสั่นเบา ๆ บอกว่า "ปิดที่ปุ่ม" · ระหว่างบันทึก (runExclusive) หรือ locked (อัปโหลดไฟล์) ปิดไม่ได้
-export function Modal({ title, onClose, children, footer, size = 'default', locked = false }: {
+// เฟส 2 (2026-11-23) — Glass Popup: กล่องเดียวสลับโหมด (tabs) · ย้อนขั้น (onBack) · กันข้อมูลหาย (dirty)
+//   · มือถือ (≤640px) เป็นเต็มจอ หัว/ปุ่มค้างอยู่ เนื้อหาเลื่อนเอง
+//   · Esc = เหมือนคลิกพื้นหลัง (รีวิวเฟส 2 ข้อ 1 · มติผู้ใช้): กล่องบนสุดสั่น **ไม่ปิด** — เดิมเฟส 2 ให้ Esc ปิดกล่อง
+//     ที่ไม่มี dirty ทันที ⇒ ฟอร์มกว่า 40 กล่องกด Esc พลาดครั้งเดียวข้อมูลหาย (ย้อนมาตรการเฟส 0)
+//   ⚠️ dirty กันเฉพาะ ✕ — ปุ่ม "ยกเลิก" ในส่วนท้ายเป็นการตั้งใจทิ้งข้อมูลอยู่แล้ว
+export interface ModalTab { key: string; label: string; disabled?: boolean; hint?: string }
+
+// กล่องที่เปิดอยู่เรียงตามลำดับเปิด — Esc สั่นแค่กล่องบนสุด (กล่องยืนยันที่ซ้อนอยู่บนฟอร์ม)
+const modalStack: object[] = []
+
+/**
+ * ปุ่มคีย์บอร์ดบนกล่อง → ทำอะไร (แยกออกมาให้เทสต์บน node ได้ ไม่ต้องมี DOM — modal.test.ts)
+ * Esc = 'poke' เสมอ (เหมือนคลิกพื้นหลัง) · ห้ามคืน 'close' — ปิดได้ทางปุ่ม ✕ / ยกเลิก เท่านั้น
+ */
+export function modalKeyAction(key: string, isTop: boolean): 'poke' | null {
+  if (key !== 'Escape' || !isTop) return null
+  return 'poke'
+}
+
+export function Modal({ title, onClose, children, footer, size = 'default', locked = false,
+  dirty = false, tabs, tab, onTab, onBack, backLabel = '← กลับ', subtitle }: {
   title: string
   onClose: () => void
   children: ReactNode
@@ -292,21 +316,85 @@ export function Modal({ title, onClose, children, footer, size = 'default', lock
   size?: 'default' | 'wide' | 'xl'
   /** true = ห้ามปิด (เช่น กำลังอัปโหลดไฟล์ที่ไม่ได้วิ่งผ่าน tryAction) */
   locked?: boolean
+  /** true = มีข้อมูลที่กรอกค้าง — กด ✕ จะถามก่อนทิ้ง (ถามในกล่องเดิม ไม่เปิดกล่องซ้อน) · Esc ไม่ปิดกล่องอยู่แล้ว */
+  dirty?: boolean
+  /** โหมดของกล่อง เช่น ข้อมูล / แก้ไข / เอกสาร — สลับในกล่องเดียว แทนการเปิดกล่องซ้อน */
+  tabs?: ModalTab[]
+  tab?: string
+  onTab?: (key: string) => void
+  /** ปุ่มย้อนขั้นบนหัวกล่อง (เช่น โหมดยืนยัน → กลับไปแก้) */
+  onBack?: () => void
+  backLabel?: string
+  subtitle?: ReactNode
 }) {
   const busy = useContext(ToastCtx)?.busy ?? false
   const blocked = locked || busy
   const [nudge, setNudge] = useState(false)
+  const [askDiscard, setAskDiscard] = useState(false)
+  const poke = () => { setNudge(false); window.setTimeout(() => setNudge(true), 16) }
+  const requestClose = () => {
+    if (blocked) { poke(); return }
+    if (dirty) { setAskDiscard(true); return }
+    onClose()
+  }
+  // ref = ให้ตัวจับ Esc (ผูกครั้งเดียว) เรียกเวอร์ชันล่าสุด
+  const pokeRef = useRef(poke)
+  pokeRef.current = poke
+  const self = useRef({}).current
+  useEffect(() => {
+    modalStack.push(self)
+    const onKey = (e: KeyboardEvent) => {
+      const act = modalKeyAction(e.key, modalStack[modalStack.length - 1] === self)
+      if (!act) return
+      e.preventDefault()
+      pokeRef.current()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      const i = modalStack.lastIndexOf(self)
+      if (i >= 0) modalStack.splice(i, 1)
+    }
+  }, [self])
+  useEffect(() => { if (!dirty) setAskDiscard(false) }, [dirty])
+
   return (
-    <div className="modal-overlay"
-      onMouseDown={e => { if (e.target === e.currentTarget) { setNudge(false); window.setTimeout(() => setNudge(true), 16) } }}>
+    <div className="modal-overlay" onMouseDown={e => { if (e.target === e.currentTarget) poke() }}>
       <div className={`modal${size === 'default' ? '' : ` modal-${size}`}${nudge ? ' modal-nudge' : ''}`}
         role="dialog" aria-modal="true" aria-label={title} onAnimationEnd={() => setNudge(false)}>
         <div className="modal-head">
-          <h3>{title}</h3>
-          <button className="small" onClick={() => { if (!blocked) onClose() }} disabled={blocked}
+          <div className="modal-head-title">
+            {onBack && (
+              <button className="small modal-back" onClick={onBack} disabled={blocked}>{backLabel}</button>
+            )}
+            <div>
+              <h3>{title}</h3>
+              {subtitle && <div className="modal-sub">{subtitle}</div>}
+            </div>
+          </div>
+          <button className="small" onClick={requestClose} disabled={blocked}
             aria-label="ปิด" title={blocked ? 'กำลังบันทึก — รอสักครู่' : 'ปิด'}>✕</button>
         </div>
+        {tabs && tabs.length > 0 && (
+          <div className="modal-tabs" role="tablist">
+            {tabs.map(t => (
+              <button key={t.key} role="tab" aria-selected={t.key === tab}
+                className={t.key === tab ? 'active' : undefined}
+                disabled={t.disabled || blocked} title={t.hint}
+                onClick={() => { if (t.key !== tab) onTab?.(t.key) }}>{t.label}</button>
+            ))}
+          </div>
+        )}
         <div className="modal-body">{children}</div>
+        {askDiscard && (
+          <div className="modal-discard" role="alert">
+            <span>มีข้อมูลที่กรอกไว้ — ปิดตอนนี้ข้อมูลจะหาย</span>
+            <span className="modal-discard-actions">
+              <button className="small primary" autoFocus onClick={() => setAskDiscard(false)}>กลับไปกรอกต่อ</button>
+              <button className="small danger" onClick={() => { setAskDiscard(false); onClose() }}>ทิ้งข้อมูลและปิด</button>
+            </span>
+          </div>
+        )}
         {footer && <div className="modal-foot">{footer}</div>}
       </div>
     </div>
@@ -340,7 +428,7 @@ export function JobStatusBadge({ status, phase }: { status: JobStatus; phase?: s
  *    กำลังติดตั้งอยู่ขึ้นแดงเหมือนงานที่ยังไม่เริ่ม · ทุกหน้าต้องมาจาก jobDelivery() เท่านั้น
  */
 const DELIVERY_ICON: Record<DeliveryState, string> = {
-  closed: '', blocked: '🛑', awaiting_close: '📦', awaiting_issue_rest: '📋', visit_overdue: '⏰',
+  closed: '', blocked: '🛑', awaiting_close: '📦', awaiting_clearance: '⏳', awaiting_issue_rest: '📋', visit_overdue: '⏰',
   installing: '🔧', awaiting_visit: '🚚', overdue: '🔴', due_soon: '⚠️', on_track: '', no_due: '',
 }
 export function DeliveryBadge({ d }: { d: JobDelivery }) {

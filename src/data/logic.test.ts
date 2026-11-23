@@ -728,6 +728,12 @@ describe('เบิกแยกส่วน — เดินสถานะจ�
       .toThrow(/ยกเลิกไม่ได้/)
   })
 
+  it('เบิกออกไปแล้วบางส่วน → ส่งคำขอยกเลิก Job ไม่ได้ตั้งแต่ต้น (ไม่ปล่อยให้ค้างรอ Division แล้วอนุมัติไม่ผ่าน · รีวิวรอบสุดท้ายข้อ 2)', () => {
+    const d = issueJobLbs(base(), actor, { jobId: 'j1', ...plan })
+    expect(() => requestApproval(d, actor, { type: 'cancel_job', jobId: 'j1', payload: { reason: 'ลูกค้าเลื่อน', receivedToCentral: true } }))
+      .toThrow(/เบิกของให้ Service ไปแล้วบางส่วน — ยกเลิกไม่ได้/)
+  })
+
   it('ไม่มีนัดติดตั้งเดิมและไม่กรอกมา → ต้องเตือน ไม่ใช่เบิกผ่าน', () => {
     expect(() => issueJobLbs(base(), actor, { jobId: 'j1' })).toThrow(/กำหนดวันติดตั้ง/)
   })

@@ -79,6 +79,8 @@ export default function DashboardPage() {
     && (x.d.state === 'installing' || x.d.state === 'awaiting_visit')).length
   const dueSoon = jobList.filter(x => x.d.state === 'due_soon').length
   const awaitingClose = jobList.filter(x => x.d.state === 'awaiting_close').length
+  // ติดตั้งครบแต่ยังกดปิดไม่ได้ (รอ Division/Purchasing) — แยกจาก "รอปิดงาน" ไม่ให้ยอดเกินจริง (รีวิวเฟส 2)
+  const awaitingClearance = jobList.filter(x => x.d.state === 'awaiting_clearance').length
 
   return (
     <div className="dash">
@@ -210,7 +212,8 @@ export default function DashboardPage() {
             {visitOverdue > 0 && <span className="badge red" style={{ marginLeft: 6 }} title="เลยวันนัดติดตั้งแล้วแต่ยังไม่มีผลยืนยันรายเครื่อง">เลยวันนัดติดตั้ง {visitOverdue}</span>}
             {lateButMoving > 0 && <span className="badge amber" style={{ marginLeft: 6 }} title="งานเดินอยู่ตามวันนัด แต่เลยกำหนดส่งที่ให้ลูกค้าไว้">เลยกำหนดส่งแต่งานเดินอยู่ {lateButMoving}</span>}
             {dueSoon > 0 && <span className="badge amber" style={{ marginLeft: 6 }}>≤{DUE_WARN_DAYS} วัน {dueSoon}</span>}
-            {awaitingClose > 0 && <span className="badge blue" style={{ marginLeft: 6 }}>รอปิดงาน {awaitingClose}</span>}
+            {awaitingClose > 0 && <span className="badge blue" style={{ marginLeft: 6 }} title="ติดตั้งครบ กดปิดงานได้แล้ว">รอปิดงาน {awaitingClose}</span>}
+            {awaitingClearance > 0 && <span className="badge amber" style={{ marginLeft: 6 }} title="ติดตั้งครบแล้ว แต่ยังปิดงานไม่ได้ — มีคำขอรอ Division พิจารณา หรือของคืนรอ Purchasing ตรวจรับ">รอเคลียร์ก่อนปิดงาน {awaitingClearance}</span>}
           </h3>
           <Link to="/jobs">ดูทั้งหมด →</Link>
         </div>

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can, ownsJob } from '../data/StoreContext'
+import { jobCloseReason } from '../data/flow'
 import { closeoutFiles, deriveJobStatus, jobDelivery, jobInstallSummary, jobIsFieldActive, qtyOutToField, effectiveQty, unitInstallState, unitJobSite, pendingRevertRequest, jobTeam, memberFullName, serviceIssues } from '../data/logic'
 import type { ServiceIssueKind } from '../data/logic'
 
@@ -111,24 +112,8 @@ export default function ServicePage() {
   }
   const itemOf = (id: string) => db.items.find(i => i.id === id)
   const userOf = (id?: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
-  // เหตุผลที่ปิดงานยังไม่ได้ (ใช้เป็น tooltip) — '' = ปิดได้
-  const closeBlockedReason = (s: ReturnType<typeof jobInstallSummary>) =>
-    s.total === 0 ? 'ไม่มีเครื่องที่เบิกไว้'
-      // 0071: แยกให้ชัดว่า "ค้างเพราะยังไม่ได้เบิก" ต่างจาก "ค้างเพราะช่างยังไม่ได้ยืนยัน"
-      //   สองอย่างนี้คนละคนต้องไปทำ — ข้อความเดิมบอกแค่ตัวเลขรวม ช่างจะไล่หาไม่เจอว่าติดที่ใคร
-      : s.waiting > 0 ? `ยังมี ${s.waiting} เครื่องที่ Project ยังไม่ได้เบิกให้ — ปิดงานได้เมื่อของออกครบ Scope`
-      : s.pending > 0 ? `ต้องได้ข้อสรุปทุกเครื่องก่อน (เหลือ ${s.pending} เครื่อง)`
-      : s.installed === 0 ? 'ต้องมีเครื่องที่ติดตั้งสำเร็จอย่างน้อย 1 เครื่อง'
-      // 2026-09-24: ติดตั้งครบแล้วแต่ใบยังเบิกไม่ครบ — ค้างที่ Project ไม่ใช่ที่ช่าง
-      : !s.issueComplete ? 'ติดตั้งครบแล้ว แต่ใบยังเบิกของไม่ครบ'
-          + (s.lbsShort > 0 ? ` (LBS ขาดอีก ${s.lbsShort} เครื่องจาก Scope)` : '')
-          + (s.pendingAccessories > 0 ? ` (วัสดุค้างเบิก ${s.pendingAccessories} รายการ)` : '')
-          + ' — Project ต้องเบิก/โอนคืน/ตัดจำหน่ายให้ครบก่อน จึงปิดงานได้'
-      : ''
-  // 0090: คำขอยกเลิกผลติดตั้งค้างอยู่ = ปิดงานไม่ได้จนกว่า Division ตัดสิน (logic + trigger ก็กันอยู่)
-  // 0094: เหตุที่ยังปิดไม่ได้มาจากตัวเดียวกับ DB (jobCloseBlockers ↔ app_job_close_blockers) — รวมคำขอค้างทุกประเภท
-  const closeReason = (_jobId: string, s: ReturnType<typeof jobInstallSummary>) =>
-    s.closeBlockers.length > 0 ? s.closeBlockers.join(' · ') : closeBlockedReason(s)
+  // เหตุผลที่ปิดงานยังไม่ได้ — ตัวเดียวกับ Job Detail/แถบขั้นต่อไป (เฟส 2 ย้ายไป src/data/flow.ts) · '' = ปิดได้
+  const closeReason = (_jobId: string, s: ReturnType<typeof jobInstallSummary>) => jobCloseReason(s)
   const canCloseNow = (_jobId: string, s: ReturnType<typeof jobInstallSummary>) => s.canClose
   // วัสดุที่ยังค้างจัดซื้อ (รวมของที่ซื้อเพิ่มหลังเบิก — 0037) ใช้เตือนตอนปิดงาน
   const outstandingProcurement = (jobId: string) => db.accessoryRequests.filter(r =>

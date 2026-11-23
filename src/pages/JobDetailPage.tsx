@@ -6,13 +6,15 @@ import { BudgetFields, CoordInput, DeliveryBadge, InstallSitesEditor, JobStatusB
 import { uploadPaymentDoc, signedPaymentDocUrl, removePaymentDocs } from '../data/remote'
 import { supabase } from '../lib/supabase'
 import { CorrectionModal } from '../ui/CorrectionModal'
-import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, EPICOR_TXN, PR_STATUS_LABEL, COST_CATEGORIES, APPROVAL_TYPE_LABEL, PAYMENT_TYPE_LABEL, DEPT_LABEL, JOB_STATUS_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
+import { jobActions, jobNextStep, pendingApprovals, type JobActionKey } from '../data/flow'
+import { GateButton, NextStepBar, PendingBadge } from '../ui/flow'
+import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, EPICOR_TXN, PR_STATUS_LABEL, COST_CATEGORIES, PAYMENT_TYPE_LABEL, DEPT_LABEL, JOB_STATUS_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import {
   type Cell, type NumKind, type ReportCol, type SumTable,
   SHEET_SUMMARY, SHEET_GUIDE, buildWorkbook, dataSheet, guideSheet,
   orDash, saveReport, stampMeta, summarySheet,
 } from '../ui/xlsxReport'
-import type { LbsUnit, CostCategoryKey, ApprovalType, PaymentType, EpicorTxnType, AccessoryRequest, JobPayment } from '../types'
+import type { LbsUnit, CostCategoryKey, PaymentType, EpicorTxnType, AccessoryRequest, JobPayment } from '../types'
 
 // ฟอร์มงวดเงิน (0044) — id = null คือเพิ่มงวดใหม่
 // 0076: `files` = ไฟล์ที่เลือกไว้แต่ **ยังไม่อัปโหลด** — งวดใหม่ยังไม่มี id จึงผูกไฟล์ไม่ได้
@@ -168,8 +170,6 @@ export default function JobDetailPage() {
   // รายการที่เพิ่มหลังเบิก (createdAt > issuedAt) — ใช้ติดป้ายให้เห็นว่าเป็นการซื้อเพิ่ม
   const isExtra = (createdAt: string) => !!job?.issuedAt && createdAt > job.issuedAt
   const [corrOpen, setCorrOpen] = useState(false)            // 0094 — ขอแก้ข้อมูลหลังปิดงาน
-  const pendingApprovalOf = (type: ApprovalType) =>
-    db.approvalRequests.some(r => r.jobId === jobId && r.type === type && r.status === 'pending')
 
   const allocatedUnits = useMemo(
     () => db.lbsUnits.filter(u => u.jobId === jobId && (u.status === 'allocated' || u.status === 'issued')),
@@ -202,6 +202,9 @@ export default function JobDetailPage() {
   // 0075 — สถานะกำหนดส่ง · ขยายได้จนถึง issued (ปิดเมื่อ installed/cancelled ตรงกับ guard ฝั่ง DB)
   const delivery = jobDelivery(db, job)
   const dueHistory = jobDueExtensions(db, job.id)
+  // เฟส 2: ด่านของทุกปุ่มหลักมาจากที่เดียว (src/data/flow.ts) — กดไม่ได้ต้องบอกเหตุผล ไม่หายเงียบ
+  const actions = jobActions(db, job, user)
+  const A = (k: JobActionKey) => actions.find(a => a.key === k)!
   const canExtendDue = canManage && !procureLocked
   const itemOf = (id: string) => db.items.find(i => i.id === id)
   const stockOf = (id: string) => db.projectStocks.find(s => s.id === id)
@@ -593,6 +596,10 @@ export default function JobDetailPage() {
         <button className="small" onClick={() => window.print()}>🖨️ ปริ้นสรุปโครงการ (PDF)</button>
       </div>
 
+      {/* เฟส 2: ขั้นต่อไป · ใครทำ · ภายในวันที่ + คำขอที่รอ Division พิจารณา — คำถามแรกของทุกคนที่เปิดใบงาน */}
+      <NextStepBar step={jobNextStep(db, job)} user={user} job={job} />
+      <PendingBadge db={db} reqs={pendingApprovals(db, job.id)} />
+
       {/* 0042: Project เปิดใบอื่นได้แต่ทำรายการไม่ได้ — บอกให้ชัดว่าทำไมปุ่มหาย */}
       {readOnlyJob && (
         <div className="panel"><div className="panel-body">
@@ -840,14 +847,11 @@ export default function JobDetailPage() {
             {/* 0094 (มติ Q2): เริ่มนับประกันแล้ว → เปิดงานใหม่ไม่ได้ · บันทึกผิดให้ขอ Division แก้ (งานยังปิดอยู่) */}
             {warrantyStarted && can(user, 'closeout.manage') && ownsJob(user, job) && (
               <div style={{ marginTop: 10 }}>
-                <button className="small" disabled={pendingApprovalOf('correct_closeout')}
-                  title={pendingApprovalOf('correct_closeout') ? 'มีคำขอแก้ข้อมูลรอ Division พิจารณาอยู่แล้ว' : ''}
-                  onClick={() => setCorrOpen(true)}>
+                <GateButton className="small" gate={A('correct_closeout').gate} onClick={() => setCorrOpen(true)}>
                   📝 ขอแก้ข้อมูลที่บันทึกผิด
-                </button>
+                </GateButton>
                 <span className="muted" style={{ marginLeft: 8 }}>
                   เริ่มนับประกันแล้ว ({fmtDate(warrantyStarted)}) — เปิดงานใหม่ไม่ได้ · แก้วันที่ติดตั้ง / วันประกัน / เอกสารรับมอบ / Serial สลับ ผ่าน Division
-                  {pendingApprovalOf('correct_closeout') && <> · <b>⏳ รอ Division พิจารณา</b></>}
                 </span>
               </div>
             )}
@@ -855,9 +859,7 @@ export default function JobDetailPage() {
             {/* เปิดงานใหม่ (0041) — ปิดงานผิด/ต้องกลับไปแก้หน้างาน · Project ขออนุมัติ · Manage ทำตรง */}
             {canManage && !warrantyStarted && (
               <div style={{ marginTop: 10 }}>
-                <button className="small"
-                  disabled={pendingApprovalOf('reopen_job')}
-                  title={pendingApprovalOf('reopen_job') ? 'มีคำขอเปิดงานใหม่รอ Division พิจารณาอยู่แล้ว' : ''}
+                <GateButton className="small" gate={A('reopen_job').gate}
                   onClick={async () => {
                     const v = await askPrompt({
                       title: isManage ? `เปิดงาน ${job.jobNo} ใหม่` : `ขออนุมัติเปิดงาน ${job.jobNo} ใหม่`,
@@ -876,8 +878,8 @@ export default function JobDetailPage() {
                       : tryAction(() => act.requestApproval({ type: 'reopen_job', jobId: job.id, payload: { reason: v.reason } }),
                           `ส่งคำขอเปิดงาน ${job.jobNo} ใหม่ ให้ Division พิจารณาแล้ว`)
                   }}>
-                  🔄 {isManage ? 'เปิดงานใหม่' : 'ขออนุมัติเปิดงานใหม่'}
-                </button>
+                  🔄 {A('reopen_job').label}
+                </GateButton>
                 <span className="muted" style={{ marginLeft: 8 }}>
                   ใช้เมื่อปิดงานผิด หรือต้องกลับไปแก้หน้างาน — ประวัติการยืนยันรายเครื่องจะยังอยู่ครบ
                 </span>
@@ -973,16 +975,7 @@ export default function JobDetailPage() {
         </div></div>
       )}
 
-      {/* คำขอที่รอ Division พิจารณาของ Job นี้ */}
-      {db.approvalRequests.some(r => r.jobId === jobId && r.status === 'pending') && (
-        <div className="panel"><div className="panel-body">
-          ⏳ <b>รอ Division พิจารณา:</b>{' '}
-          {db.approvalRequests.filter(r => r.jobId === jobId && r.status === 'pending')
-            .map(r => APPROVAL_TYPE_LABEL[r.type])
-            .join(' · ')}
-          {' '}— <Link to="/approvals">ดูสถานะที่หน้ารออนุมัติ →</Link>
-        </div></div>
-      )}
+      {/* คำขอที่รอ Division พิจารณา — ย้ายขึ้นไปใต้แถบขั้นต่อไป (PendingBadge) เฟส 2 */}
 
       {/* ของที่ดึงเข้า Job แล้วแต่ยังไม่ถึงคลัง (0052) — บอกเหตุผลตรงนี้ ไม่ให้ผู้ใช้งงว่าทำไมปุ่มเบิกกดไม่ได้ */}
       {!locked && etaBlock && (
@@ -1004,33 +997,28 @@ export default function JobDetailPage() {
           ⇒ ผู้ใช้เพิ่มวัสดุ · ออก PR · รับของได้ครบ แล้วไม่มีทางเบิกออกไปหน้างาน ของค้างที่ Job ถาวร
           ⇒ แยกกติกา: ปุ่มที่แตะ **LBS / ตัวใบงาน** ใช้ `locked` · ปุ่ม **เบิกให้ Service** ใช้
              `procureLocked` ให้ตรงกับ guard ฝั่งหลังบ้านเป๊ะ (หลังบ้านอนุญาตอยู่แล้ว ไม่ต้องแก้ RPC) */}
-      {canManage && (!locked || canIssueExtra) && (
-        <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
+      {/* เฟส 2: Project คนอื่นเห็นแถบนี้ด้วย (ปุ่มจาง + "เฉพาะเจ้าของงาน") — เดิมหายทั้งแถบ ไม่รู้ว่าทำไม */}
+      {can(user, 'job.manage') && (!locked || canIssueExtra) && (
+        <div className={`action-bar${readOnlyJob ? ' reasons-hidden' : ''}`}>
           {!locked && <>
-            <button className="primary" onClick={() => {
+            <GateButton className="primary" gate={A('draw_lbs').gate} onClick={() => {
               // เริ่มที่คลังแรกที่มีเครื่องติดสัญญาให้ดึง — ไม่งั้นเปิดมาเจอคลังว่างต้องไล่เลือกเอง
               const open = db.projectStocks.filter(s => s.status === 'open')
               setDrawStock((open.find(s => contractDrawable(s.id).length > 0) ?? open[0])?.id ?? '')
               openModal('draw')
-            }}>+ ดึง LBS เข้า Job</button>
-            <button onClick={() => { setReturnTarget(''); openModal('return') }} disabled={returnableUnits.length === 0}>คืน LBS กลับสต็อก</button>
+            }}>+ ดึง LBS เข้า Job</GateButton>
+            <GateButton gate={A('return_lbs').gate} onClick={() => { setReturnTarget(''); openModal('return') }}>คืน LBS กลับสต็อก</GateButton>
           </>}
           {/* 0059: ปุ่มเดียวเปิด popup ให้เลือกว่ารอบนี้เบิกอะไร — ไม่ใช่เบิกทั้งใบทีเดียวอีกแล้ว
               เงื่อนไขเปิดใช้ = "มีของอะไรเบิกได้บ้าง" (ไม่ผูกกับสถานะ ready_to_issue ทั้งใบ)
               เพราะทั้งหมดของฟีเจอร์นี้คือเบิก LBS ได้ระหว่างที่ Accessory ยังรอ PO */}
-          {!procureLocked && <button className="success" onClick={openIssueModal}
-            disabled={!canIssueAnything || (plan.accReady.length === 0 && pendingApprovalOf('issue_job'))}
-            title={plan.lbsShort > 0 && plan.accReady.length === 0
-              ? `ดึง LBS ยังไม่ครบ Scope — ขาดอีก ${plan.lbsShort} เครื่อง`
-              : !canIssueAnything ? 'ยังไม่มีของที่พร้อมเบิก — LBS รอ ETA to WH / วัสดุรอรับของจาก PO'
-              : pendingApprovalOf('issue_job') ? 'มีคำขอเบิก LBS รอ Division พิจารณาอยู่แล้ว — เบิกวัสดุได้ตามปกติ'
-              : ''}>
+          {!procureLocked && <GateButton className="success" onClick={openIssueModal} gate={A('issue').gate}>
             เบิกให้ Service{canIssueAnything && <> ({[
               plan.lbsShort === 0 && plan.lbsReady.length > 0 ? `LBS ${plan.lbsReady.length}` : null,
               plan.accReady.length > 0 ? `วัสดุ ${plan.accReady.length}` : null,
             ].filter(Boolean).join(' + ')})</>}
-          </button>}
-          {!locked && <><button onClick={() => {
+          </GateButton>}
+          {!locked && <><GateButton gate={A('edit_job').gate} onClick={() => {
             setEditForm({
               jobNo: job.jobNo,
               customerName: job.customerName, contactPhone: job.contactPhone ?? '',
@@ -1042,13 +1030,13 @@ export default function JobDetailPage() {
             setEditCosts(costFormFromJob(job.budgetCosts))
             setEditSites(sitesFromJob(job.installSites))
             openModal('edit')
-          }}>แก้ไขข้อมูล Job</button>
-          <button className="danger" disabled={pendingApprovalOf('cancel_job')}
-            title={pendingApprovalOf('cancel_job') ? 'มีคำขอยกเลิกรอ Division พิจารณาอยู่แล้ว' : ''}
+          }}>แก้ไขข้อมูล Job</GateButton>
+          <GateButton className="danger" gate={A('cancel_job').gate}
             onClick={() => { setCancelReason(''); setReceivedToCentral(true); openModal('cancel') }}>
-            {isManage ? 'ยกเลิก Job' : 'ขออนุมัติยกเลิก Job'}
-          </button>
-          {db.allocations.every(a => a.jobId !== job.id) && accReqs.length === 0 && (
+            {A('cancel_job').label}
+          </GateButton>
+          {/* ลบ Draft: แสดงเฉพาะใบที่ลบได้จริง (ไม่ใช่งานปกติ — โชว์จางทุกใบจะรก) */}
+          {A('delete_draft').gate.ok && (
             <button className="danger" onClick={async () => {
               if (await askConfirm({
                 title: `ลบ ${job.jobNo}`,
@@ -1261,15 +1249,14 @@ export default function JobDetailPage() {
               : <span className="badge amber">ขาดอีก {job.lbsQtyRequired - allocatedUnits.length} เครื่อง</span>}
             {/* สลับเลข Serial ของเครื่องบน Job กับเครื่องในคลัง (ก่อนเบิกให้ Service) — project ขออนุมัติ Division ก่อน */}
             {canManage && !locked && allocatedUnits.some(u => u.status === 'allocated') && inStockUnits.length > 0 && (
-              <button className="small" disabled={pendingApprovalOf('swap_lbs')}
-                title={pendingApprovalOf('swap_lbs') ? 'มีคำขอสลับ LBS รอ Division พิจารณาอยู่แล้ว' : ''}
+              <GateButton className="small" gate={A('swap_lbs').gate}
                 onClick={() => {
                   const firstAlloc = allocatedUnits.find(u => u.status === 'allocated')
                   setSwapForm({ allocatedUnitId: firstAlloc?.id ?? '', stockUnitId: inStockUnits[0]?.id ?? '', reason: '' })
                   setModal('swap')
                 }}>
-                {isManage ? '🔁 สลับ LBS' : '🔁 ขออนุมัติสลับ LBS'}
-              </button>
+                🔁 {A('swap_lbs').label}
+              </GateButton>
             )}
           </div>
         </div>
@@ -1347,8 +1334,7 @@ export default function JobDetailPage() {
               </button>
             )}
             {canManage && !procureLocked && pendingReqs.length > 0 && (
-              <button className="small primary" disabled={pendingApprovalOf('create_pr')}
-                title={pendingApprovalOf('create_pr') ? 'มีคำขอออก PR รอ Division พิจารณาอยู่แล้ว' : ''}
+              <GateButton className="small primary" gate={A('request_pr').gate}
                 onClick={() => isManage
                   ? tryAction(() => act.createPR({ jobId: job.id, requestIds: pendingReqs.map(r => r.id) }),
                       'ออก PR ส่งให้ Purchasing แล้ว')
@@ -1357,8 +1343,8 @@ export default function JobDetailPage() {
                       payload: { requestIds: pendingReqs.map(r => r.id) },
                     }), 'ส่งคำขอออก PR ให้ Division พิจารณาแล้ว')
                 }>
-                {isManage ? `ออก PR ส่ง Purchasing (${pendingReqs.length} รายการ)` : `ขออนุมัติออก PR (${pendingReqs.length} รายการ)`}
-              </button>
+                {A('request_pr').label} ({pendingReqs.length} รายการ)
+              </GateButton>
             )}
           </div>
         </div>
@@ -1719,7 +1705,7 @@ export default function JobDetailPage() {
 
       {/* ---------------- Modals ---------------- */}
       {modal === 'draw' && (
-        <Modal title="ดึง LBS เข้า Job (เลือกรายเครื่อง)" size="xl" onClose={close}
+        <Modal title="ดึง LBS เข้า Job (เลือกรายเครื่อง)" size="xl" onClose={close} dirty={picked.size > 0}
           footer={<>
             <button onClick={close}>ยกเลิก</button>
             <button className="primary" disabled={picked.size === 0}
@@ -1827,7 +1813,7 @@ export default function JobDetailPage() {
       )}
 
       {modal === 'return' && (
-        <Modal title="คืน LBS กลับสต็อก" onClose={close}
+        <Modal title="คืน LBS กลับสต็อก" onClose={close} dirty={picked.size > 0}
           footer={<>
             <button onClick={close}>ยกเลิก</button>
             <button className="primary" disabled={picked.size === 0 || !returnTarget}
@@ -1851,7 +1837,7 @@ export default function JobDetailPage() {
         const b = db.lbsUnits.find(u => u.id === swapForm.stockUnitId)
         const allocatable = allocatedUnits.filter(u => u.status === 'allocated')
         return (
-        <Modal title={`สลับ LBS — ${job.jobNo}`} size="wide" onClose={close}
+        <Modal title={`สลับ LBS — ${job.jobNo}`} size="wide" onClose={close} dirty={!!swapForm.reason.trim()}
           footer={<>
             <button onClick={close}>ยกเลิก</button>
             <button className="primary" disabled={!swapForm.allocatedUnitId || !swapForm.stockUnitId || !swapForm.reason.trim()}
@@ -2255,7 +2241,7 @@ export default function JobDetailPage() {
       })()}
 
       {modal === 'cancel' && (
-        <Modal title={isManage ? `ยกเลิก ${job.jobNo}` : `ขออนุมัติยกเลิก ${job.jobNo} (Division)`} onClose={close}
+        <Modal title={isManage ? `ยกเลิก ${job.jobNo}` : `ขออนุมัติยกเลิก ${job.jobNo} (Division)`} onClose={close} dirty={!!cancelReason.trim()}
           footer={<>
             <button onClick={close}>กลับ</button>
             <button className="danger"

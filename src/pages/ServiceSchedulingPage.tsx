@@ -24,8 +24,14 @@ function WorkloadChips({ s }: { s: ReturnType<typeof memberSchedule> }) {
         <span className="badge green" style={{ marginLeft: s.blockedJobs + s.pendingInstall > 0 ? 6 : 0 }}
           title="ติดตั้งครบแล้ว เหลือกดปิดงานที่หน้า Service (Installation)">รอปิดงาน {s.awaitingClose}</span>
       )}
-      {s.awaitingIssueRest > 0 && (
+      {s.awaitingClearance > 0 && (
         <span className="badge amber" style={{ marginLeft: s.blockedJobs + s.pendingInstall + s.awaitingClose > 0 ? 6 : 0 }}
+          title="ติดตั้งครบแล้ว แต่ยังปิดงานไม่ได้ — มีคำขอรอ Division พิจารณา หรือของคืนรอ Purchasing ตรวจรับ">
+          รอเคลียร์ก่อนปิด {s.awaitingClearance}
+        </span>
+      )}
+      {s.awaitingIssueRest > 0 && (
+        <span className="badge amber" style={{ marginLeft: s.blockedJobs + s.pendingInstall + s.awaitingClose + s.awaitingClearance > 0 ? 6 : 0 }}
           title="ติดตั้งครบแล้ว แต่ใบยังเบิกของไม่ครบ — รอ Project เบิก/เคลียร์ของที่เหลือก่อนปิดงาน">
           รอ Project เบิกของ {s.awaitingIssueRest}
         </span>
