@@ -4,8 +4,8 @@ import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter } from 'react-router-dom'
 import type { DB, User } from '../types'
-import { GateButton, NextStepBar, PendingBadge, ConfirmSummary } from './flow'
-import type { NextStep } from '../data/flow'
+import { GateButton, NextStepBar, PendingBadge, ConfirmSummary, MyWorkPanel } from './flow'
+import type { NextStep, WorkItem } from '../data/flow'
 
 const html = (el: JSX.Element) => renderToStaticMarkup(<MemoryRouter>{el}</MemoryRouter>)
 const user = (department: User['department']): User =>
@@ -100,5 +100,36 @@ describe('ConfirmSummary — สรุปก่อนกดคำสั่งท
   })
   it('irreversible=false ไม่ขึ้นคำเตือน', () => {
     expect(html(<ConfirmSummary items={['x']} irreversible={false} />)).not.toContain('ย้อนกลับไม่ได้')
+  })
+})
+
+describe('MyWorkPanel — กล่องงานของฉัน (เฟส 3)', () => {
+  const item = (over: Partial<WorkItem> = {}): WorkItem => ({
+    key: 'job:j1', title: 'เบิกให้ Service', detail: 'ของครบแล้ว', jobId: 'j1', jobNo: 'J-001', customer: 'กฟภ.',
+    link: '/jobs/j1', lateDays: 0, tone: 'blue', ...over,
+  })
+  it('ไม่มีงาน: บอกว่าไม่มีงานรอ · VIP บอกว่าเป็นมุมมองภาพรวม', () => {
+    expect(html(<MyWorkPanel items={[]} user={user('project')} today="2026-11-23" />)).toContain('ไม่มีงานที่รอคุณ')
+    expect(html(<MyWorkPanel items={[]} user={user('vip')} today="2026-11-23" />)).toContain('ไม่มีงานที่ต้องลงมือ')
+  })
+  it('แต่ละรายการ: ต้องทำอะไร · งานไหน · ค้างกี่วัน/เลยกี่วัน · ปุ่มไปทำทันที', () => {
+    const h = html(<MyWorkPanel user={user('project')} today="2026-11-23" items={[
+      item({ key: 'a', lateDays: 3, due: '2026-11-20', dueLabel: 'กำหนดส่ง', tone: 'red' }),
+      item({ key: 'b', title: 'พิจารณาคำขอ: ออก PR', link: '/approvals?id=x', waitingDays: 9, tone: 'amber' }),
+      item({ key: 'c', due: '2026-11-30', dueLabel: 'กำหนดส่ง' }),
+    ]} />)
+    expect(h).toContain('งานของฉัน')
+    expect(h).toContain('mywork-count">3<')
+    expect(h).toContain('เลยกำหนดส่ง 3 วัน')
+    expect(h).toContain('ค้าง 9 วัน')
+    expect(h).toContain('อีก 7 วัน')
+    expect(h).toContain('J-001')
+    expect(h).toContain('href="/approvals?id=x"')
+    expect(h).toContain('ไปทำ')
+  })
+  it('รายการเกินที่กำหนด: ซ่อนส่วนที่เหลือไว้ใต้ "ดูอีก n รายการ"', () => {
+    const items = Array.from({ length: 10 }, (_, i) => item({ key: String(i) }))
+    const h = html(<MyWorkPanel items={items} user={user('admin')} limit={8} today="2026-11-23" />)
+    expect(h).toContain('ดูอีก 2 รายการ')
   })
 })

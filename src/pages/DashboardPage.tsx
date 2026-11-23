@@ -6,6 +6,8 @@ import {
   jobDelivery, todayIso, DUE_WARN_DAYS, stockComments,
 } from '../data/logic'
 import { DeliveryBadge, JobStatusBadge, useTryAction } from '../ui/components'
+import { MyWorkPanel } from '../ui/flow'
+import { myWork } from '../data/flow'
 import { fmtDate, fmtDateTime, DEPT_LABEL } from '../ui/format'
 import type { JobStatus } from '../types'
 
@@ -32,10 +34,11 @@ export default function DashboardPage() {
       acc.total += sum.total
       acc.pending += sum.pending; acc.onHand += sum.onHand; acc.unknown += sum.unknown
       acc.allocated += sum.allocated; acc.issued += sum.issued
+      acc.noContract += sum.noContract; acc.drawable += sum.drawable
       return acc
     },
     // ไม่เก็บ available (= in_stock ทั้งหมด) แยก — ทับซ้อนกับ onHand + pending + unknown
-    { total: 0, pending: 0, onHand: 0, unknown: 0, allocated: 0, issued: 0 },
+    { total: 0, pending: 0, onHand: 0, unknown: 0, allocated: 0, issued: 0, noContract: 0, drawable: 0 },
   )
 
   const statusCount = new Map<JobStatus, number>()
@@ -43,6 +46,10 @@ export default function DashboardPage() {
     const st = deriveJobStatus(db, j)
     statusCount.set(st, (statusCount.get(st) ?? 0) + 1)
   })
+
+  // เฟส 3: กล่องงานของฉัน — สิ่งที่รอผู้ใช้คนนี้จากทุกหน้า · คำขอที่รอ Division (ช่องใหม่บนเส้นทางงาน)
+  const work = myWork(db, user, today)
+  const pendingReqs = db.approvalRequests.filter(r => r.status === 'pending')
 
   const pendingPr = db.prs.filter(p => p.status === 'pending')
   const openPo = db.pos.filter(p => p.status === 'issued')
@@ -88,54 +95,62 @@ export default function DashboardPage() {
       <div className="page-title">Dashboard</div>
       <div className="page-sub">ภาพรวมเรียลไทม์ — สต็อก 115kV LBS · สถานะงานโครงการ · งานค้างระหว่างแผนก</div>
 
+      {/* เฟส 3 — งานของฉัน: เห็นงานที่รอตัวเองทันทีหลัง login ไม่ต้องไล่เปิดทุกหน้า */}
+      <MyWorkPanel items={work} user={user} today={today} />
+
       <div className="cards">
         <div className="card">
           <div className="label">Total LBS Target Plan</div>
           <div className="value">{totals.total} <span className="muted">เครื่อง</span></div>
           <div className="hint">
-            พร้อมดึง (On Hand) {totals.onHand}
-            {totals.pending > 0 && <> · <b style={{ color: 'var(--amber, #d97706)' }}>รอเข้าคลัง {totals.pending}</b></>}
+            <span title="ถึงคลังแล้ว และมี Contract No. — ดึงเข้า Job ได้ทันที">พร้อมดึง {totals.drawable}</span>
+            {' '}<span className="muted">(On Hand {totals.onHand})</span>
+            {totals.pending > 0 && <> · <b style={{ color: 'var(--amber, #d97706)' }} title="ของยังไม่ถึงคลัง — ดึงจองเข้า Job ได้ (ถ้ามี Contract No.) แต่เบิกให้ Service ไม่ได้จนกว่าจะถึง">รอเข้าคลัง {totals.pending} (ดึงจองได้ เบิกไม่ได้)</b></>}
             {totals.unknown > 0 && <> · <b title="ยังไม่ระบุ ETA to WH — กรอก FOB date ให้ครบเพื่อให้ระบบคำนวณ Status ได้">ไม่ระบุ ETA {totals.unknown}</b></>}
+            {totals.noContract > 0 && <> · <Link to="/stocks" title="ดึงเข้า Job ได้เฉพาะเครื่องที่มี Contract No. แล้ว — Division กรอกที่ LBS Inventory"><b style={{ color: 'var(--danger)' }}>ไม่มี Contract No. {totals.noContract} (ดึงไม่ได้)</b></Link></>}
             {' '}· ถูกดึงเข้า Job {totals.allocated} · เบิกติดตั้งแล้ว {totals.issued}
           </div>
         </div>
         <div className="card">
           <div className="label">Jobs In Progress</div>
-          <div className="value">{db.jobs.filter(j => !j.terminalStatus || j.terminalStatus === 'issued').length}</div>
+          <div className="value"><Link to="/jobs?f=active">{db.jobs.filter(j => !j.terminalStatus || j.terminalStatus === 'issued').length}</Link></div>
           <div className="hint">
             {/* 0075: "ต้องเร่ง" = ใบที่ไม่มีใครเดินอยู่จริง — เลยกำหนดส่งทั้งที่ของยังไม่ออกจากคลัง ·
                 ติดปัญหาหน้างาน · เลยวันนัดติดตั้งแล้วยังไม่มีผลยืนยัน
                 ใบที่อยู่ในช่วงนัดติดตั้งไม่ถูกนับ — มันเดินอยู่ ไม่ได้ค้าง */}
             {overdue + blocked + visitOverdue > 0 && (
-              <><b style={{ color: 'var(--danger)' }} title="เลยกำหนดส่งทั้งที่ของยังไม่ออกจากคลัง · ติดปัญหาหน้างาน · หรือเลยวันนัดติดตั้งแล้วยังไม่มีผลยืนยัน">
+              <><Link to="/jobs?f=at_risk"><b style={{ color: 'var(--danger)' }} title="เลยกำหนดส่งทั้งที่ของยังไม่ออกจากคลัง · ติดปัญหาหน้างาน · หรือเลยวันนัดติดตั้งแล้วยังไม่มีผลยืนยัน">
                 ต้องเร่ง {overdue + blocked + visitOverdue} งาน
-              </b> · </>
+              </b></Link> · </>
             )}
             {lateButMoving > 0 && <><b style={{ color: 'var(--amber, #d97706)' }} title="งานเดินอยู่ตามวันนัดติดตั้ง แต่เลยกำหนดส่งที่ให้ลูกค้าไว้ — ถ้าตกลงเลื่อนแล้วให้บันทึกขยายกำหนดส่ง">เลยกำหนดส่งแต่งานเดินอยู่ {lateButMoving} งาน</b> · </>}
             {dueSoon > 0 && <><b style={{ color: 'var(--amber, #d97706)' }}>ใกล้ครบกำหนด {dueSoon} งาน</b> · </>}
-            พร้อมเบิก {statusCount.get('ready_to_issue') ?? 0}
+            <Link to="/jobs?f=ready_to_issue">พร้อมเบิก {statusCount.get('ready_to_issue') ?? 0}</Link>
             {(statusCount.get('partially_issued') ?? 0) > 0 && (
-              <> · <b style={{ color: '#8a5a00' }}>เบิกบางส่วน {statusCount.get('partially_issued')}</b></>
+              <> · <Link to="/jobs?f=partially_issued"><b style={{ color: '#8a5a00' }}>เบิกบางส่วน {statusCount.get('partially_issued')}</b></Link></>
             )}
-            {' '}· รอติดตั้ง {statusCount.get('issued') ?? 0} งาน
+            {' '}· <Link to="/jobs?f=issued">รอติดตั้ง {statusCount.get('issued') ?? 0} งาน</Link>
+            {pendingReqs.length > 0 && (
+              <> · <Link to="/approvals"><b style={{ color: 'var(--amber, #d97706)' }} title="คำสั่งที่ยังไม่มีผลจนกว่า Division จะอนุมัติ">⏳ รอ Division พิจารณา {pendingReqs.length}</b></Link></>
+            )}
           </div>
         </div>
         <div className="card">
           <div className="label">PRs Awaiting PO Issuance</div>
-          <div className="value">{pendingPr.length}</div>
+          <div className="value"><Link to="/purchasing">{pendingPr.length}</Link></div>
           <div className="hint"><Link to="/purchasing">ไปหน้า Purchasing →</Link></div>
         </div>
         <div className="card">
           <div className="label">POs Pending Delivery</div>
-          <div className="value">{openPo.length}</div>
-          <div className="hint">รับของครบแล้ว Job จะขยับสถานะอัตโนมัติ</div>
+          <div className="value"><Link to="/purchasing">{openPo.length}</Link></div>
+          <div className="hint">รับของครบแล้ว Job จะขยับสถานะอัตโนมัติ · <Link to="/purchasing">ไปรับของ →</Link></div>
         </div>
         <div className="card">
           <div className="label">Installation Work (Service)</div>
           <div className="value">{svc.installed}<span className="muted">/{svc.units} เครื่อง</span></div>
           <div className="hint">
             {svc.unassigned > 0
-              ? <b style={{ color: 'var(--danger)' }}>ยังไม่มอบหมายทีม {svc.unassigned} งาน</b>
+              ? <Link to="/service"><b style={{ color: 'var(--danger)' }}>ยังไม่มอบหมายทีม {svc.unassigned} งาน</b></Link>
               : `${issuedJobs.length} งานรอติดตั้ง`}
             {svc.blocked > 0 && <> · ติดตั้งไม่ได้ {svc.blocked} เครื่อง</>}
             {' '}· <Link to="/scheduling">ตารางทีม →</Link>
@@ -155,13 +170,14 @@ export default function DashboardPage() {
             <thead>
               <tr>
                 <th>Stock No.</th><th>ทั้งหมด</th>
-                <th>On Hand (พร้อมดึง)</th><th>Pending (รอเข้าคลัง)</th><th>? (ไม่ระบุ ETA)</th>
+                <th>On Hand (ถึงคลังแล้ว)</th><th>Pending (รอเข้าคลัง · ดึงจองได้ เบิกไม่ได้)</th><th>? (ไม่ระบุ ETA)</th>
+                <th title="ดึงเข้า Job ได้เฉพาะเครื่องที่มี Contract No. แล้ว">ไม่มี Contract No. (ดึงไม่ได้)</th>
                 <th>ถูกดึงเข้า Job</th><th>เบิกติดตั้งแล้ว</th>
               </tr>
             </thead>
             <tbody>
               {db.projectStocks.length === 0 && (
-                <tr><td colSpan={7}><div className="empty">ยังไม่มี Project Stock</div></td></tr>
+                <tr><td colSpan={8}><div className="empty">ยังไม่มี Project Stock</div></td></tr>
               )}
               {db.projectStocks.map(s => {
                 const sum = stockSummary(db, s.id)
@@ -179,6 +195,7 @@ export default function DashboardPage() {
                         ? <span className="badge neutral" title="ยังไม่ระบุ ETA to WH — กรอก FOB date ที่หน้า Project Stock">{sum.unknown}</span>
                         : <span className="muted">-</span>}
                     </td>
+                    <td>{sum.noContract > 0 ? <span className="badge red">{sum.noContract}</span> : <span className="muted">-</span>}</td>
                     <td>{sum.allocated}</td>
                     <td>{sum.issued}</td>
                   </tr>
@@ -191,6 +208,7 @@ export default function DashboardPage() {
                   <td><b>{totals.onHand}</b></td>
                   <td><b>{totals.pending || '-'}</b></td>
                   <td><b>{totals.unknown || '-'}</b></td>
+                  <td><b>{totals.noContract || '-'}</b></td>
                   <td><b>{totals.allocated}</b></td>
                   <td><b>{totals.issued}</b></td>
                 </tr>

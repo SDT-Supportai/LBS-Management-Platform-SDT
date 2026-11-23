@@ -4,12 +4,13 @@
 //   NextStepBar   "ขั้นต่อไป · ใครทำ · ภายในวันที่" บนหัวงาน
 //   PendingBadge  "⏳ รอ Division พิจารณา: …" ทุกคำขอที่ค้างของงาน
 //   ConfirmSummary สรุปผลก่อนกดคำสั่งที่ย้อนไม่ได้ (ใช้ในโหมดยืนยันของ Modal — ไม่ซ้อนกล่อง)
+//   MyWorkPanel   กล่อง "งานของฉัน" (เฟส 3) — ต้องทำอะไร · งานไหน · ค้างกี่วัน · ปุ่มไปทำทันที
 // =============================================================================
 import type { ButtonHTMLAttributes, ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import type { ApprovalRequest, DB, Job, User } from '../types'
-import { deptNames, isMyTurn, type Gate, type NextStep } from '../data/flow'
-import { APPROVAL_TYPE_LABEL, fmtDate, fmtDateTime } from './format'
+import { deptNames, isMyTurn, type Gate, type NextStep, type WorkItem } from '../data/flow'
+import { APPROVAL_TYPE_LABEL, DEPT_LABEL, fmtDate, fmtDateTime } from './format'
 import { daysBetweenIso, todayIso } from '../data/logic'
 
 // ---------------- ปุ่มพร้อมเหตุผล ----------------
@@ -99,5 +100,69 @@ export function ConfirmSummary({ items, irreversible = true, children }: {
       <ul>{items.map((x, i) => <li key={i}>{x}</li>)}</ul>
       {children}
     </div>
+  )
+}
+
+// ---------------- กล่องงานของฉัน (เฟส 3) ----------------
+function workWhen(w: WorkItem, today: string): { text: string; late: boolean } | null {
+  if (w.lateDays > 0) return { text: `เลย${w.dueLabel ?? 'กำหนด'} ${w.lateDays} วัน`, late: true }
+  if (w.due) {
+    const left = daysBetweenIso(today, w.due)
+    return { text: left === 0 ? `${w.dueLabel ?? 'กำหนด'}วันนี้` : `ภายใน ${fmtDate(w.due)} (อีก ${left} วัน)`, late: false }
+  }
+  if (w.waitingDays !== undefined) return { text: w.waitingDays > 0 ? `ค้าง ${w.waitingDays} วัน` : 'เข้ามาวันนี้', late: false }
+  return null
+}
+
+function WorkRow({ w, today }: { w: WorkItem; today: string }) {
+  const when = workWhen(w, today)
+  return (
+    <li className={`mywork-item tone-${w.tone}`}>
+      <div className="mywork-text">
+        <div className="mywork-title">
+          <b>{w.title}</b>
+          {w.jobNo && <span className="mywork-job">{w.jobNo}{w.customer ? ` · ${w.customer}` : ''}</span>}
+        </div>
+        {w.detail && <div className="mywork-detail">{w.detail}</div>}
+      </div>
+      {when && <span className={`mywork-when${when.late ? ' is-late' : ''}`}>{when.text}</span>}
+      <Link className="mywork-go" to={w.link}>ไปทำ →</Link>
+    </li>
+  )
+}
+
+export function MyWorkPanel({ items, user, limit = 8, today = todayIso() }: {
+  items: WorkItem[]; user: User | null; limit?: number; today?: string
+}) {
+  const head = items.slice(0, limit)
+  const rest = items.slice(limit)
+  const late = items.filter(w => w.lateDays > 0).length
+  return (
+    <section className="panel mywork" aria-label="งานของฉัน">
+      <div className="panel-head">
+        <h3>
+          📥 งานของฉัน <span className="mywork-count">{items.length}</span>
+          {user && <span className="muted" style={{ fontWeight: 400 }}> · แผนก {DEPT_LABEL[user.department]}</span>}
+        </h3>
+        {late > 0 && <span className="badge red">เลยกำหนด {late}</span>}
+      </div>
+      {items.length === 0 ? (
+        <div className="panel-body muted">
+          {user?.department === 'vip'
+            ? '👑 VIP ดูภาพรวมได้ทุกหน้า — ไม่มีงานที่ต้องลงมือ (ให้ความเห็นคำขอได้ที่หน้ารออนุมัติ)'
+            : '✅ ไม่มีงานที่รอคุณตอนนี้'}
+        </div>
+      ) : (
+        <>
+          <ul className="mywork-list">{head.map(w => <WorkRow key={w.key} w={w} today={today} />)}</ul>
+          {rest.length > 0 && (
+            <details className="mywork-more">
+              <summary>ดูอีก {rest.length} รายการ</summary>
+              <ul className="mywork-list">{rest.map(w => <WorkRow key={w.key} w={w} today={today} />)}</ul>
+            </details>
+          )}
+        </>
+      )}
+    </section>
   )
 }

@@ -259,7 +259,22 @@ function correctionToRow(c: CloseoutCorrection): Row {
   return { kind: c.kind, unit_ids: c.unitIds }
 }
 
-function mapApproval(r: Row): ApprovalRequest {
+/**
+ * 0093: สำเนาจำนวน/ราคา ณ ตอนขอ (create_pr) — key ฝั่ง SQL = { id, qty, unit_price }
+ * 🔴 รีวิวเฟส 3 ข้อ 1: เดิมไม่ได้แปลง ⇒ LIVE ไม่เคยเตือน "คำขอล้าสมัย" และยอดเงินใช้ค่าปัจจุบันแทนค่าที่ Division ถูกขอ
+ * ตีความเหมือน app_exec_approve: qty::NUMERIC · NULLIF(unit_price,'')::NUMERIC (ว่าง/null = ไม่มีราคา)
+ * ไม่ใช่ array (คำขอก่อน 0093) = undefined → ไม่ตรวจล้าสมัย (ตรงกับ jsonb_typeof(...) = 'array')
+ */
+function mapSnapshot(v: unknown): ApprovalPayload['snapshot'] {
+  if (!Array.isArray(v)) return undefined
+  return (v as Row[]).map(s => ({
+    id: String(s.id),
+    qty: Number(s.qty),
+    unitPrice: s.unit_price === null || s.unit_price === undefined || s.unit_price === '' ? null : Number(s.unit_price),
+  }))
+}
+
+export function mapApproval(r: Row): ApprovalRequest {
   const pl = (r.payload ?? {}) as Row
   return {
     id: r.id, type: r.req_type as ApprovalType, jobId: r.job_id,
@@ -273,6 +288,7 @@ function mapApproval(r: Row): ApprovalRequest {
       swapAllocatedUnitId: pl.swap_allocated_unit_id ?? undefined,
       swapStockUnitId: pl.swap_stock_unit_id ?? undefined,
       correction: pl.correction ? correctionFromRow(pl.correction as Row) : undefined,   // 0094
+      snapshot: mapSnapshot(pl.snapshot),                                                 // 0093
     },
     status: r.status, requestedBy: r.requested_by ?? '', requestedAt: r.requested_at,
     decidedBy: r.decided_by ?? undefined, decidedAt: r.decided_at ?? undefined,

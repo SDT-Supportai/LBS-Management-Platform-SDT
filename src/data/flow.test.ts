@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest'
 import type { DB, Job, LbsUnit, User, AccessoryRequest, ApprovalRequest, UnitInstallation, Department } from '../types'
 import {
   jobActions, jobAction, jobNextStep, isMyTurn, pendingApprovals, pendingGate, permGate, jobCloseReason, deptNames,
-  JOB_ACTION_ORDER, type JobActionKey,
+  JOB_ACTION_ORDER, myWork, approvalFacts, bkkDate, jobListMatches, type JobActionKey,
 } from './flow'
 import { jobDelivery, jobInstallSummary, jobStatusPhase, memberSchedule } from './logic'
 
@@ -531,5 +531,224 @@ describe('รีวิวรอบสุดท้าย · ข้อ 4 — ต�
     const d = rest([acc('r1', { status: 'pr_sent', prId: 'pr1' })], 2)
     expect(jobDelivery(d, J(d), TODAY).state).toBe('awaiting_issue_rest')
     expect(jobNextStep(d, J(d), TODAY)).toMatchObject({ title: 'ออก PO', who: ['purchasing'] })
+  })
+})
+
+// =============================================================================
+// เฟส 3 (2026-11-23) — กล่อง "งานของฉัน": รวมทุกอย่างที่รอผู้ใช้คนนี้จากทุกหน้า แยกตามแผนก
+// =============================================================================
+describe('เฟส 3 · งานของฉัน (myWork)', () => {
+  const W = (d: DB, who: keyof typeof USERS) => myWork(d, USERS[who], TODAY)
+  const etaUnits = [unit('a', { planPoReceiptDate: '2026-12-15' }), unit('b', { planPoReceiptDate: '2026-12-15' })]
+  const pr = (over: Partial<DB['prs'][number]> = {}): DB['prs'][number] =>
+    ({ id: 'pr1', prNo: 'PR-001', jobId: 'j1', status: 'pending', requestIds: ['r1'], createdBy: 'u-p', createdAt: T, ...over })
+  const po = (over: Partial<DB['pos'][number]> = {}): DB['pos'][number] =>
+    ({ id: 'po1', poNo: 'PO-001', prId: 'pr1', jobId: 'j1', supplierName: 'ซัพ A', expectedDate: '2026-11-20', status: 'issued', createdBy: 'u-pur', createdAt: T, ...over })
+
+  it('Project เจ้าของงาน: ขั้นต่อไปของงานตัวเอง ลิงก์ไปหน้า Job · Project คนอื่น/VIP/ไม่ login = ไม่มีงาน', () => {
+    const d = sc('ready').db
+    expect(W(d, 'owner')).toEqual([expect.objectContaining({
+      key: 'job:j1', title: 'เบิกให้ Service', jobId: 'j1', jobNo: 'J-001', link: '/jobs/j1', due: '2026-12-31', lateDays: 0,
+    })])
+    expect(W(d, 'other')).toEqual([])
+    expect(W(d, 'vip')).toEqual([])
+    expect(myWork(d, null, TODAY)).toEqual([])
+  })
+
+  it('Division: คำขอรอพิจารณาเป็นรายการละใบ ลิงก์ตรงไปคำขอ · ค้างกี่วัน · ไม่ซ้ำกับขั้นต่อไปของงาน', () => {
+    const d = sc('ready_cancel_pending').db
+    expect(W(d, 'division')).toEqual([expect.objectContaining({
+      key: 'appr:ap-cancel_job', title: 'พิจารณาคำขอ: ยกเลิก Job', jobNo: 'J-001',
+      link: '/approvals?id=ap-cancel_job', waitingDays: 22, lateDays: 0,
+    })])
+    expect(W(d, 'division')[0].detail).toContain('ส่งโดย วิชัย เจ้าของงาน')
+  })
+
+  it('Manage ไม่เห็นคำขอที่ตัวเองส่งเป็นงานต้องพิจารณา (มติ D1)', () => {
+    const d: DB = { ...sc('ready').db, approvalRequests: [appr('swap_lbs', { requestedBy: 'u-adm' })] }
+    expect(W(d, 'manage').some(w => w.key.startsWith('appr:'))).toBe(false)
+    expect(W(d, 'division').map(w => w.key)).toContain('appr:ap-swap_lbs')
+  })
+
+  it('Purchasing: PR รอออก PO เป็นรายการละใบ (ไม่ซ้ำกับขั้นต่อไปของงานเดียวกัน)', () => {
+    const d = db({ jobs: [job()], lbsUnits: etaUnits, accessoryRequests: [acc('r1', { status: 'pr_sent', prId: 'pr1' })], prs: [pr()] })
+    expect(W(d, 'purchasing')).toEqual([expect.objectContaining({
+      key: 'pr:pr1', title: 'ออก PO', jobNo: 'J-001', link: '/purchasing', waitingDays: 22,
+    })])
+    expect(W(d, 'purchasing')[0].detail).toContain('PR-001')
+  })
+
+  it('Purchasing: PO เลยวันส่งของ = เลยกำหนด ขึ้นก่อน · ของคืนรอตรวจรับเป็นรายการลิงก์ไป Material Master', () => {
+    const d = db({
+      jobs: [job()], lbsUnits: etaUnits,
+      accessoryRequests: [acc('r1', { status: 'po_ordered', prId: 'pr1', poId: 'po1' }), acc('r2', { status: 'received', qtyReceived: 1, qtyIssuedToService: 1 })],
+      prs: [pr({ status: 'po_issued' })], pos: [po()],
+      stockReturns: [{ id: 'sr', requestId: 'r2', jobId: 'j1', itemId: 'i1', kind: 'return', qty: 1, status: 'pending', requestedAt: '2026-11-20T03:00:00.000Z' }],
+    })
+    const w = W(d, 'purchasing')
+    expect(w.map(x => x.key)).toEqual(['po:po1', 'ret:sr'])
+    expect(w[0]).toMatchObject({ title: 'รับของตาม PO', due: '2026-11-20', lateDays: 3, tone: 'red' })
+    expect(w[1]).toMatchObject({ title: 'ตรวจรับของคืน', link: '/master', waitingDays: 3 })
+  })
+
+  it('Service: ของออกหน้างานแล้วแต่ยังไม่มอบหมายทีม → "มอบหมายทีมช่าง" ก่อน · มอบหมายแล้ว = ขั้นหน้างานปกติ ลิงก์หน้า Site Installation', () => {
+    const d = sc('installing').db
+    expect(W(d, 'service')).toEqual([expect.objectContaining({ key: 'job:j1', title: 'มอบหมายทีมช่าง', link: '/service' })])
+    expect(W(d, 'service')[0].detail).toContain('ยืนยันติดตั้งรายเครื่อง')
+    const withTeam: DB = { ...d, jobAssignments: [{ id: 'as', jobId: 'j1', memberId: 'm1', isLead: true, assignedBy: 'u-svc', assignedAt: T }] }
+    expect(W(withTeam, 'service')).toEqual([expect.objectContaining({ key: 'job:j1', title: 'ยืนยันติดตั้งรายเครื่อง', link: '/service' })])
+  })
+
+  it('ติดตั้งครบแล้ว (รอปิดงาน) แม้ไม่มีทีมในระบบ = ขั้นปิดงาน ไม่ใช่ "มอบหมายทีมช่าง" (งานหน้างานจบแล้ว)', () => {
+    const d = sc('awaiting_close').db
+    expect(W(d, 'service')).toEqual([expect.objectContaining({ key: 'job:j1', title: 'ปิดงานติดตั้ง', link: '/service' })])
+  })
+
+  it('เรียง: เลยกำหนดก่อน (เลยมากก่อน) → มีวันกำหนด (ใกล้ก่อน) → ค้างนานก่อน', () => {
+    const j2 = job({ id: 'j2', jobNo: 'J-002', requiredDate: '2026-11-10' })
+    const j3 = job({ id: 'j3', jobNo: 'J-003', requiredDate: '2026-11-21' })
+    const d = db({
+      jobs: [job(), j2, j3],
+      lbsUnits: [unit('a'), unit('b'), unit('c', { jobId: 'j2' }), unit('d', { jobId: 'j2' }), unit('e', { jobId: 'j3' }), unit('f', { jobId: 'j3' })],
+    })
+    expect(W(d, 'owner').map(w => [w.jobNo, w.lateDays])).toEqual([['J-002', 13], ['J-003', 2], ['J-001', 0]])
+  })
+
+  it('Manage เห็นงานทุกแผนก (ทำแทนได้ทุกขั้น) แต่ไม่ซ้ำ', () => {
+    const d: DB = { ...db({ jobs: [job()], lbsUnits: etaUnits, accessoryRequests: [acc('r1', { status: 'pr_sent', prId: 'pr1' })], prs: [pr()] }),
+      approvalRequests: [appr('swap_lbs')] }
+    const keys = W(d, 'manage').map(w => w.key)
+    expect(keys.sort()).toEqual(['appr:ap-swap_lbs', 'pr:pr1'])
+  })
+})
+
+// =============================================================================
+// เฟส 3 — Approval Queue: ข้อมูลตัดสินใจตามประเภทคำขอ (Division เห็นครบก่อนกดอนุมัติ)
+// =============================================================================
+describe('เฟส 3 · approvalFacts — ข้อมูลตัดสินใจตามประเภท', () => {
+  const items = [
+    { id: 'i1', code: 'A', name: 'ลูกถ้วย', itemType: 'accessory' as const, uom: 'ea', stockableCentrally: false },
+    { id: 'i2', code: 'B', name: 'สายไฟ', itemType: 'accessory' as const, uom: 'm', stockableCentrally: false },
+  ]
+  const val = (f: ReturnType<typeof approvalFacts>, label: string) => f.facts.find(x => x.label === label)?.value
+
+  it('ออก PR: รายการ + มูลค่ารวมจากสำเนา ณ ตอนขอ · บอกจำนวนรายการที่ยังไม่มีราคา', () => {
+    const d = db({ jobs: [job()], items,
+      accessoryRequests: [acc('r1', { qtyRequested: 4, unitPrice: 250 }), acc('r2', { itemId: 'i2', qtyRequested: 10 })],
+      approvalRequests: [appr('create_pr', { payload: { requestIds: ['r1', 'r2'],
+        snapshot: [{ id: 'r1', qty: 4, unitPrice: 250 }, { id: 'r2', qty: 10, unitPrice: null }] } })] })
+    const f = approvalFacts(d, d.approvalRequests[0], TODAY)
+    expect(f.money).toEqual({ total: 1000, unpriced: 1 })
+    expect(val(f, 'รายการ')).toBe('ลูกถ้วย ×4 ea @ 250 · สายไฟ ×10 m (ยังไม่มีราคา)')
+    expect(f.stale).toEqual([])
+    expect(f.outcome).toBe('ถ้าอนุมัติ: ระบบออก PR ให้ Purchasing ออก PO ต่อ')
+  })
+
+  it('ออก PR: รายการถูกแก้หลังส่งคำขอ = เตือนว่าอนุมัติไม่ได้ (กติกาเดียวกับ approveRequest · 0093)', () => {
+    const d = db({ jobs: [job()], items,
+      accessoryRequests: [acc('r1', { qtyRequested: 6, unitPrice: 250 })],
+      approvalRequests: [appr('create_pr', { payload: { requestIds: ['r1'], snapshot: [{ id: 'r1', qty: 4, unitPrice: 250 }] } })] })
+    expect(approvalFacts(d, d.approvalRequests[0], TODAY).stale).toEqual(['ลูกถ้วย'])
+  })
+
+  it('เบิก LBS: Serial ที่จะเบิกจริง + นัดติดตั้ง', () => {
+    const d = db({ jobs: [job()], lbsUnits: [unit('a'), unit('b')],
+      approvalRequests: [appr('issue_job', { payload: { unitIds: ['a', 'b'], startDate: '2026-12-01', endDate: '2026-12-02', location: 'สถานี A' } })] })
+    const f = approvalFacts(d, d.approvalRequests[0], TODAY)
+    expect(val(f, 'LBS ที่จะเบิก (2 เครื่อง)')).toBe('LVB-a, LVB-b')
+    expect(val(f, 'นัดติดตั้ง')).toBe('1 ธ.ค. 2569 – 2 ธ.ค. 2569 · สถานี A')
+  })
+
+  it('สลับ LBS: คู่ที่สลับ + ต้นทุนที่เปลี่ยน + เหตุผล', () => {
+    const d = db({ jobs: [job()], lbsUnits: [unit('a', { unitCost: 100000 }), unit('x', { status: 'in_stock', jobId: null, unitCost: 120000 })],
+      approvalRequests: [appr('swap_lbs', { payload: { swapAllocatedUnitId: 'a', swapStockUnitId: 'x', reason: 'เครื่องเดิมชำรุด' } })] })
+    const f = approvalFacts(d, d.approvalRequests[0], TODAY)
+    expect(val(f, 'สลับ')).toBe('LVB-a/OM-a (บน Job) ↔ LVB-x/OM-x (คลัง)')
+    expect(val(f, 'ต้นทุน LBS ของงาน')).toBe('100,000 → 120,000 บาท')
+    expect(val(f, 'เหตุผล')).toBe('เครื่องเดิมชำรุด')
+  })
+
+  it('ยกเลิก Job: บอกผลทั้งสองทาง + LBS ที่จะคืนสต็อก + วัสดุที่รับแล้วไปไหน', () => {
+    const d = sc('ready_cancel_pending').db
+    const r: ApprovalRequest = { ...d.approvalRequests[0], payload: { reason: 'ลูกค้ายกเลิก', receivedToCentral: true } }
+    const f = approvalFacts({ ...d, approvalRequests: [r] }, r, TODAY)
+    expect(val(f, 'เหตุผล')).toBe('ลูกค้ายกเลิก')
+    expect(val(f, 'LBS คืนสต็อก')).toBe('2 เครื่อง')
+    expect(val(f, 'วัสดุที่รับแล้ว')).toBe('คืนเข้าสต็อกกลาง')
+    expect(f.outcome).toContain('ถ้าอนุมัติ: ยกเลิก J-001')
+    expect(f.outcome).toContain('ถ้าไม่อนุมัติ: ทำต่อที่ "เบิกให้ Service"')
+  })
+
+  it('ยกเลิกผลติดตั้ง: เครื่อง + วันที่ที่ยืนยันไว้', () => {
+    const d: DB = { ...sc('awaiting_close').db,
+      approvalRequests: [appr('revert_install', { payload: { unitIds: ['a'], reason: 'บันทึกผิดเครื่อง' } })] }
+    const f = approvalFacts(d, d.approvalRequests[0], TODAY)
+    expect(val(f, 'เครื่อง (1)')).toBe('LVB-a (ติดตั้ง 1 พ.ย. 2569)')
+    expect(val(f, 'เหตุผล')).toBe('บันทึกผิดเครื่อง')
+  })
+})
+
+// =============================================================================
+// รีวิวเฟส 3 (2026-11-23) — เทสต์ที่ชี้ปัญหาก่อนแก้
+// =============================================================================
+describe('รีวิวเฟส 3 · ข้อ 2 — งานของฉันไม่ซ้ำกับรายการคิว (รอเคลียร์ก่อนปิดงาน)', () => {
+  const W = (d: DB, who: keyof typeof USERS) => myWork(d, USERS[who], TODAY)
+  const ret = { id: 'sr', requestId: 'r1', jobId: 'j1', itemId: 'i1', kind: 'return' as const, qty: 1, status: 'pending' as const, requestedAt: T }
+
+  it('Purchasing: ของคืนรอตรวจรับ = รายการ "ตรวจรับของคืน" รายการเดียว (ไม่มี "เคลียร์เรื่องค้างก่อนปิดงาน" ซ้ำ)', () => {
+    const d: DB = { ...sc('awaiting_close').db, stockReturns: [ret] }
+    expect(jobDelivery(d, J(d), TODAY).state).toBe('awaiting_clearance')
+    expect(W(d, 'purchasing').map(w => w.key)).toEqual(['ret:sr'])
+  })
+
+  it('Division: คำขอที่ค้างก่อนปิด = รายการ "พิจารณาคำขอ" รายการเดียว', () => {
+    const d: DB = { ...sc('awaiting_close').db, approvalRequests: [appr('swap_lbs')] }
+    expect(jobDelivery(d, J(d), TODAY).state).toBe('awaiting_clearance')
+    expect(W(d, 'division').map(w => w.key)).toEqual(['appr:ap-swap_lbs'])
+  })
+
+  it('Manage: ทั้งของคืน + คำขอ อยู่ในคิวครบแล้ว = ไม่มีรายการงานซ้ำ', () => {
+    const d: DB = { ...sc('awaiting_close').db, stockReturns: [ret], approvalRequests: [appr('swap_lbs')] }
+    expect(W(d, 'manage').map(w => w.key).sort()).toEqual(['appr:ap-swap_lbs', 'ret:sr'])
+  })
+
+  it('ส่วนที่ไม่มีคิวยังขึ้นตามเดิม: เครื่องติดตั้งไม่ได้ (Service/Project ต้องคืนเข้าคลัง)', () => {
+    const d = sc('blocked').db
+    expect(W(d, 'service').map(w => [w.key, w.title])).toEqual([['job:j1', 'คืนเครื่องที่ติดตั้งไม่ได้เข้า LBS Inventory ก่อนปิดงาน']])
+    expect(W(d, 'owner').map(w => w.key)).toEqual(['job:j1'])
+  })
+})
+
+describe('รีวิวเฟส 3 · ข้อ 3 — เวลาที่ว่าง/ผิดรูปไม่ทำให้หน้าล่ม', () => {
+  it('bkkDate: ค่าว่าง/ผิดรูป = "" (ไม่ throw RangeError)', () => {
+    expect(bkkDate('2026-11-22T20:00:00.000Z')).toBe('2026-11-23')
+    expect(bkkDate('')).toBe('')
+    expect(bkkDate('not-a-date')).toBe('')
+    expect(bkkDate(undefined as unknown as string)).toBe('')
+  })
+  it('myWork: ของคืนที่ไม่มีเวลาขอ ยังขึ้นได้ (ค้าง 0 วัน)', () => {
+    const d: DB = { ...sc('ready').db,
+      stockReturns: [{ id: 'sr', requestId: 'r1', jobId: 'j1', itemId: 'i1', kind: 'return', qty: 1, status: 'pending', requestedAt: '' }] }
+    expect(() => myWork(d, USERS.purchasing, TODAY)).not.toThrow()
+    expect(myWork(d, USERS.purchasing, TODAY)).toEqual([expect.objectContaining({ key: 'ret:sr', waitingDays: 0 })])
+  })
+})
+
+describe('รีวิวเฟส 3 · ข้อ 4 — ตัวกรองหน้า Jobs ใช้กติกาเดียวกับป้าย "ของฉัน"', () => {
+  const row = (over: Partial<Job> = {}) => { const j = job(over); const d = db({ jobs: [j] }); return { job: j, status: 'draft' as const, d: jobDelivery(d, j, TODAY) } }
+  it('"เฉพาะงานของฉัน": ใบเก่าที่ไม่มีผู้เปิด (ownsJob = ของทุกคน) ต้องอยู่ในรายการ · ใบของ Project คนอื่นไม่อยู่', () => {
+    expect(jobListMatches(row(), 'all', true, USERS.owner)).toBe(true)
+    expect(jobListMatches(row({ openedBy: undefined }), 'all', true, USERS.other)).toBe(true)
+    expect(jobListMatches(row(), 'all', true, USERS.other)).toBe(false)
+    expect(jobListMatches(row(), 'all', false, USERS.other)).toBe(true)
+  })
+  it('ตัวกรองสถานะเดิมไม่เปลี่ยน: active ไม่รวมงานจบ · at_risk ใช้ d.atRisk · สถานะตรงตัว', () => {
+    expect(jobListMatches({ ...row(), status: 'installed' }, 'active', false, USERS.owner)).toBe(false)
+    expect(jobListMatches(row(), 'active', false, USERS.owner)).toBe(true)
+    expect(jobListMatches(row(), 'draft', false, USERS.owner)).toBe(true)
+    expect(jobListMatches(row(), 'allocated', false, USERS.owner)).toBe(false)
+    const r = row()
+    expect(jobListMatches({ ...r, d: { ...r.d, atRisk: true } }, 'at_risk', false, USERS.owner)).toBe(true)
+    expect(jobListMatches({ ...r, d: { ...r.d, atRisk: false } }, 'at_risk', false, USERS.owner)).toBe(false)
   })
 })

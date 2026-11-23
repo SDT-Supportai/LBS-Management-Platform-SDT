@@ -538,6 +538,60 @@ button.gate-off { opacity: .62; cursor: not-allowed; }
 .confirm-summary ul { margin-left: 20px; display: flex; flex-direction: column; gap: 3px; }
 @media print { .next-step, .pending-box { break-inside: avoid; } }
 
+/* รายการเลือก 1 จากหลายรายการพร้อมช่องค้นหา (เฟส 3 · สลับ LBS) */
+.pick-list { margin-top: 6px; max-height: 240px; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; }
+.pick-row { display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: center; padding: 7px 10px; cursor: pointer; border-top: 1px solid var(--border-soft); }
+.pick-row:first-child { border-top: 0; }
+.pick-row.on { background: var(--primary-soft); }
+.pick-row input { width: auto; margin: 0; }
+
+/* สรุปติดด้านล่างของฟอร์มทีละขั้น (เฟส 3) — ซ้ายสุดของแถบปุ่ม · มือถือขึ้นบรรทัดเต็มเหนือปุ่ม */
+.modal-foot-summary { margin-right: auto; align-self: center; font-size: 13px; color: var(--text-2); }
+@media (max-width: 640px) { .modal-foot-summary { flex: 1 1 100%; } }
+
+/* ---- หน้ารออนุมัติ (เฟส 3) ---- */
+.filter-chips { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin: 4px 0 14px; }
+.chip { border-radius: 999px; padding: 4px 12px; font-size: 13px; min-height: 32px; }
+.chip.on { background: var(--primary); border-color: var(--primary); color: #fff; }
+.chip-n { display: inline-block; min-width: 18px; margin-left: 4px; padding: 0 5px; border-radius: 999px;
+  background: var(--amber-soft); color: var(--amber); font-size: 11.5px; font-weight: 700; text-align: center; }
+.chip.on .chip-n { background: rgba(255, 255, 255, .25); color: #fff; }
+.chip-check { display: inline-flex; align-items: center; gap: 6px; margin-left: 6px; cursor: pointer; font-size: 13px; }
+.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0 0 12px; }
+.facts dt { color: var(--muted); font-size: 13px; }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 640px) { .facts { grid-template-columns: 1fr; gap: 2px; } .facts dd { margin-bottom: 6px; } }
+.approval-warn { background: var(--red-soft); border: 1px solid var(--red-line); color: var(--red); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; }
+.approval-outcome { background: var(--primary-soft); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; }
+.approval-comments { margin-top: 14px; border-top: 1px solid var(--border-soft); padding-top: 12px; }
+.approval-comments-head { font-weight: 600; margin-bottom: 8px; color: var(--text); }
+.approval-comment { margin-bottom: 8px; padding-left: 10px; border-left: 3px solid var(--border); }
+
+/* การ์ด Dashboard: ตัวเลขเป็นลิงก์ไปหน้าที่กรองไว้แล้ว (เฟส 3) — คงหน้าตาตัวเลขเดิม ขีดเส้นใต้ตอนชี้ */
+.card .value a { color: inherit; text-decoration: none; }
+.card .value a:hover { text-decoration: underline; }
+
+/* ---- กล่องงานของฉัน (เฟส 3) ---- */
+.mywork-count { display: inline-block; min-width: 22px; padding: 0 7px; margin-left: 4px; border-radius: 999px;
+  background: var(--primary); color: #fff; font-size: 12px; text-align: center; vertical-align: 2px; }
+.mywork-list { list-style: none; margin: 0; padding: 0; }
+.mywork-item { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 4px 14px; align-items: center;
+  padding: 10px 16px; border-top: 1px solid var(--border); border-left: 3px solid transparent; }
+.mywork-item.tone-red { border-left-color: var(--red); }
+.mywork-item.tone-amber { border-left-color: var(--amber); }
+.mywork-item.tone-blue { border-left-color: var(--primary); }
+.mywork-title { display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: baseline; }
+.mywork-job { font-size: 12.5px; color: var(--text-2); }
+.mywork-detail { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.mywork-when { font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
+.mywork-when.is-late { color: var(--red); font-weight: 600; }
+.mywork-go { white-space: nowrap; font-weight: 600; }
+.mywork-more > summary { padding: 8px 16px; cursor: pointer; color: var(--primary); border-top: 1px solid var(--border); }
+@media (max-width: 640px) {
+  .mywork-item { grid-template-columns: minmax(0, 1fr) auto; }
+  .mywork-when { grid-column: 1; }
+}
+
 /* ---------- misc ---------- */
 /* ตัวแก้ไขรายเครื่อง (Serial.LVB + Serial.OM) */
 .unit-rows { max-height: 300px; overflow-y: auto; }

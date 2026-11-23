@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { correctionFromRow } from './remote'
+import { correctionFromRow, mapApproval } from './remote'
 import type { DB, Job, AccessoryRequest, AccReqStatus, LbsUnit } from '../types'
 import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, ACC_STATUS_LABEL } from '../ui/format'
 import {
-  effectiveQty, poCostSummary, jobMaterialValue, jobLbsCost, jobBudgetSummary,
+  effectiveQty, poCostSummary, jobMaterialValue, jobLbsCost, jobBudgetSummary, stockSummary, prSnapshotChanges,
   deriveJobStatus, jobDueDate, jobDaysLeft, jobAllocatedQty,
   unitIssueBlockReason, accIssueBlockReason, jobPendingIssueAccessories, jobIssuePlan,
   issueJobLbs, issueJobAccessory, cancelJob,
@@ -3159,5 +3159,52 @@ describe('review รอบ 1 — ข้อเล็ก', () => {
     expect(correctionFromRow({ kind: 'swap_serial', unit_ids: ['a', 'b'] })).toEqual({ kind: 'swap_serial', unitIds: ['a', 'b'] })
     expect(correctionFromRow({ kind: 'install_date', unit_id: 'a', installed_date: '2026-09-04' }))
       .toEqual({ kind: 'install_date', unitId: 'a', installedDate: '2026-09-04' })
+  })
+})
+
+// เฟส 3 (2026-11-23): Dashboard ต้องบอกว่าเครื่องที่ยังไม่มี Contract No. ดึงเข้า Job ไม่ได้ (0084)
+describe('stockSummary — เครื่องที่ดึงเข้า Job ได้จริง', () => {
+  it('noContract = เครื่องในคลังที่ยังไม่มี Contract No. (ดึงไม่ได้) · drawable = ถึงคลังแล้ว + มีสัญญา', () => {
+    const d = db({ lbsUnits: [
+      unit({ id: 'a', contractNo: 'C-1', planPoReceiptDate: '2026-01-01' }),   // ถึงคลัง + มีสัญญา = ดึงได้
+      unit({ id: 'b', planPoReceiptDate: '2026-01-01' }),                       // ถึงคลัง ไม่มีสัญญา
+      unit({ id: 'c', planPoReceiptDate: '2099-01-01' }),                       // รอเข้าคลัง ไม่มีสัญญา
+      unit({ id: 'd', contractNo: 'C-2', status: 'allocated', jobId: 'j1' }),   // ดึงไปแล้ว ไม่นับ
+    ] })
+    expect(stockSummary(d, 's1')).toMatchObject({ onHand: 2, pending: 1, noContract: 2, drawable: 1 })
+  })
+})
+
+// รีวิวเฟส 3 ข้อ 1 — LIVE: payload.snapshot (0093) ต้องถูกแปลงจากแถวฐานข้อมูล ไม่งั้นหน้ารออนุมัติไม่เคยเตือน "คำขอล้าสมัย"
+describe('mapApproval — แถว approval_requests จริง (LIVE)', () => {
+  // รูปแถวตามที่ rpc_request_approval (0093) บันทึก: jsonb_build_object('id', 'qty', 'unit_price') · numeric ใน jsonb มาเป็น number
+  const row = {
+    id: 'ap1', req_type: 'create_pr', job_id: 'j1', status: 'pending', requested_by: 'u1', requested_at: '2026-11-23T03:00:00Z',
+    payload: { request_ids: ['r1', 'r2', 'r3'], snapshot: [
+      { id: 'r1', qty: 4, unit_price: 250 },
+      { id: 'r2', qty: '10.5', unit_price: null },
+      { id: 'r3', qty: 2, unit_price: '' },          // NULLIF(s->>'unit_price','') ฝั่ง SQL = ไม่มีราคา
+    ] },
+  }
+  it('แปลง snapshot เป็น { id, qty: number, unitPrice: number | null }', () => {
+    expect(mapApproval(row).payload.snapshot).toEqual([
+      { id: 'r1', qty: 4, unitPrice: 250 },
+      { id: 'r2', qty: 10.5, unitPrice: null },
+      { id: 'r3', qty: 2, unitPrice: null },
+    ])
+  })
+  it('คำขอเก่าก่อน 0093 (ไม่มี snapshot) = undefined — ไม่ตรวจล้าสมัย (ตรงกับ SQL jsonb_typeof = array)', () => {
+    expect(mapApproval({ ...row, payload: { request_ids: ['r1'] } }).payload.snapshot).toBeUndefined()
+  })
+  it('ใช้กับ prSnapshotChanges ได้จริง: แก้จำนวนหลังส่งคำขอ → ล้าสมัย · ไม่แก้ → สด', () => {
+    const items = [{ id: 'i1', code: 'A', name: 'ลูกถ้วย', itemType: 'accessory' as const, uom: 'ea', stockableCentrally: false }]
+    const reqs = (qty: number) => [
+      req({ id: 'r1', itemId: 'i1', qtyRequested: qty, unitPrice: 250 }),
+      req({ id: 'r2', itemId: 'i1', qtyRequested: 10.5 }),
+      req({ id: 'r3', itemId: 'i1', qtyRequested: 2 }),
+    ]
+    const a = mapApproval(row)
+    expect(prSnapshotChanges(db({ items, accessoryRequests: reqs(4) }), a)).toEqual([])
+    expect(prSnapshotChanges(db({ items, accessoryRequests: reqs(6) }), a)).toEqual(['ลูกถ้วย'])
   })
 })

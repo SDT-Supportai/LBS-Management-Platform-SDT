@@ -14,9 +14,10 @@ import type { DB, Job, User, Department, ApprovalRequest, ApprovalType, JobStatu
 import { PERMISSIONS, can, ownsJob } from './permissions'
 import {
   deriveJobStatus, jobDelivery, jobInstallSummary, jobIssuePlan, jobEtaBlockReason, jobWarrantyStarted,
-  jobCancelBlockReason, pendingPurchasingReqs, todayIso, type JobDelivery,
+  jobCancelBlockReason, jobIsFieldActive, daysBetweenIso, pendingPurchasingReqs, todayIso, prSnapshotChanges, correctionLabel,
+  type JobDelivery,
 } from './logic'
-import { APPROVAL_TYPE_LABEL, DEPT_LABEL } from '../ui/format'
+import { APPROVAL_TYPE_LABEL, DEPT_LABEL, fmtDate } from '../ui/format'
 
 // ---------------- Gate: กดได้ / กดไม่ได้เพราะอะไร / ใครทำได้ ----------------
 export type Gate =
@@ -246,6 +247,8 @@ export interface NextStep {
   waiting?: ApprovalRequest
   /** คำขอที่รอพิจารณาทั้งหมดของงาน (แสดงเป็นป้ายแยก) */
   pending: ApprovalRequest[]
+  /** ขั้นนี้คือคิวจัดซื้อ (pr = PR รอออก PO · po = PO รอรับของ) — งานของฉันใช้รายการคิวแทน ไม่ให้ซ้ำ */
+  queue?: 'pr' | 'po'
 }
 
 /** ประเภทคำขอที่หยุดงานทั้งใบ — รอผลก่อนค่อยทำขั้นอื่น */
@@ -293,7 +296,7 @@ export function jobNextStep(db: DB, job: Job, today = todayIso()): NextStep {
   return { ...base, ...rest }
 }
 
-interface RawStep { title: string; detail: string; who: Department[]; due?: string; dueLabel?: string; action?: ApprovalType[] }
+interface RawStep { title: string; detail: string; who: Department[]; due?: string; dueLabel?: string; action?: ApprovalType[]; queue?: 'pr' | 'po' }
 
 function rawNextStep(db: DB, job: Job, d: JobDelivery, today: string): RawStep {
   if (job.terminalStatus === 'cancelled') return { title: 'ยกเลิกแล้ว', detail: 'ไม่มีงานค้างในใบนี้', who: [] }
@@ -373,8 +376,8 @@ function procurementStep(db: DB, job: Job): RawStep | null {
   const prSent = reqs.filter(r => r.status === 'pr_sent').length
   const poOrdered = reqs.filter(r => r.status === 'po_ordered').length
   if (noPr > 0) return { title: 'ขออนุมัติออก PR', detail: `วัสดุ ${noPr} รายการยังไม่ได้ออก PR`, who: ['project'], action: ['create_pr'] }
-  if (prSent > 0) return { title: 'ออก PO', detail: `PR ส่งแล้ว ${prSent} รายการ รอ Purchasing ออก PO`, who: ['purchasing'] }
-  if (poOrdered > 0) return { title: 'รับของตาม PO', detail: `รอรับของ ${poOrdered} รายการ`, who: ['purchasing'] }
+  if (prSent > 0) return { title: 'ออก PO', detail: `PR ส่งแล้ว ${prSent} รายการ รอ Purchasing ออก PO`, who: ['purchasing'], queue: 'pr' }
+  if (poOrdered > 0) return { title: 'รับของตาม PO', detail: `รอรับของ ${poOrdered} รายการ`, who: ['purchasing'], queue: 'po' }
   return null
 }
 
@@ -417,4 +420,264 @@ export function isMyTurn(step: Pick<NextStep, 'who'>, user: User | null, job?: J
   if (user.department === 'admin') return true
   if (!step.who.includes(user.department)) return false
   return !job || ownsJob(user, job)
+}
+
+// ---------------- งานของฉัน (เฟส 3 · 2026-11-23) ----------------
+/** 1 สิ่งที่รอผู้ใช้คนนี้ — ต้องทำอะไร · งานไหน · ค้างกี่วัน · ไปทำที่ไหน */
+export interface WorkItem {
+  /** job:<jobId> · appr:<requestId> · pr:<prId> · po:<poId> · ret:<stockReturnId> */
+  key: string
+  title: string
+  detail: string
+  jobId?: string
+  jobNo?: string
+  customer?: string
+  /** หน้าที่กดไปทำได้ทันที */
+  link: string
+  /** วันที่ต้องทำให้เสร็จ (ถ้ามี) */
+  due?: string
+  dueLabel?: string
+  /** เลยวันที่ต้องทำมาแล้วกี่วัน (0 = ยังไม่เลย) */
+  lateDays: number
+  /** คิวคำขอ/PR/ของคืน: ค้างมาแล้วกี่วันนับจากวันที่ส่งเข้ามา */
+  waitingDays?: number
+  tone: 'red' | 'amber' | 'blue'
+}
+
+/** วันที่ (เวลาไทย) ของ timestamp ISO — คิวนับวันตามปฏิทินที่ผู้ใช้เห็น (ใช้ร่วมงานของฉัน + หน้ารออนุมัติ) */
+//   ค่าว่าง/ผิดรูป = '' (daysBetweenIso นับเป็น 0) — เดิม new Date(NaN).toISOString() throw RangeError ⇒ Dashboard ล่มทั้งหน้า (รีวิวเฟส 3 ข้อ 3)
+export const bkkDate = (iso: string): string => {
+  const t = iso ? Date.parse(iso) : NaN
+  return Number.isNaN(t) ? '' : new Date(t + 7 * 3600_000).toISOString().slice(0, 10)
+}
+
+/**
+ * กล่อง "งานของฉัน" — รวมทุกอย่างที่รอผู้ใช้คนนี้จากทุกหน้า แยกตามแผนก (หลักการข้อ 2 ของแผน)
+ *   ใช้ข้อมูลที่ระบบคำนวณอยู่แล้วเท่านั้น: ขั้นต่อไปของงาน (jobNextStep) + คิวคำขอ/PR/PO/ของคืน
+ *   • Project      = ขั้นต่อไปของงานที่ตัวเองเปิด (0042)
+ *   • Division     = คำขอรอพิจารณา รายใบ (ไม่ใช่คำขอของตัวเอง — มติ D1)
+ *   • Purchasing   = PR รอออก PO · PO รอรับของ · ของคืนรอตรวจรับ (รายใบ)
+ *   • Service      = ขั้นหน้างาน · ของออกแล้วแต่ยังไม่มอบหมายทีม = "มอบหมายทีมช่าง" ก่อน
+ *   • Manage       = ทุกอย่างข้างบน (ทำแทนได้ทุกขั้น) · VIP = ไม่มี (ดูภาพรวม/ให้ความเห็นเท่านั้น)
+ * ขั้นต่อไปของงานที่มีรายการคิวครอบอยู่แล้ว (รอ Division / ออก PO / รับของ) ไม่ขึ้นซ้ำ
+ */
+export function myWork(db: DB, user: User | null, today = todayIso()): WorkItem[] {
+  if (!user || user.department === 'vip') return []
+  const isManage = user.department === 'admin'
+  const items: WorkItem[] = []
+  const late = (due?: string) => due && due < today ? daysBetweenIso(due, today) : 0
+  const tone = (lateDays: number, waitingDays = 0): WorkItem['tone'] => lateDays > 0 ? 'red' : waitingDays >= 7 ? 'amber' : 'blue'
+  const jobOf = (id: string) => db.jobs.find(j => j.id === id)
+  const jobInfo = (id: string) => { const j = jobOf(id); return { jobId: id, jobNo: j?.jobNo, customer: j?.customerName } }
+  const nameOf = (id?: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
+
+  // ---- คิวจัดซื้อ (Purchasing/Manage) ----
+  const doesPurchasing = can(user, 'purchasing.manage')
+  const queuedJobs = { pr: new Set<string>(), po: new Set<string>() }
+  if (doesPurchasing) {
+    for (const pr of db.prs.filter(x => x.status === 'pending')) {
+      const waitingDays = daysBetweenIso(bkkDate(pr.createdAt), today)
+      queuedJobs.pr.add(pr.jobId)
+      items.push({
+        key: `pr:${pr.id}`, title: 'ออก PO', ...jobInfo(pr.jobId), link: '/purchasing',
+        detail: `${pr.prNo} · ${pr.requestIds.length} รายการ · ส่งโดย ${nameOf(pr.createdBy)}`,
+        lateDays: 0, waitingDays, tone: tone(0, waitingDays),
+      })
+    }
+    for (const po of db.pos.filter(x => x.status === 'issued')) {
+      const lateDays = late(po.expectedDate)
+      queuedJobs.po.add(po.jobId)
+      items.push({
+        key: `po:${po.id}`, title: 'รับของตาม PO', ...jobInfo(po.jobId), link: '/purchasing',
+        detail: `${po.poNo} · ${po.supplierName}`, due: po.expectedDate, dueLabel: 'กำหนดส่งของ',
+        lateDays, tone: tone(lateDays),
+      })
+    }
+  }
+  const receivesReturns = can(user, 'stockReturn.receive')
+  const queuedReturnJobs = new Set<string>()
+  if (receivesReturns) {
+    for (const r of db.stockReturns.filter(x => x.status === 'pending')) {
+      queuedReturnJobs.add(r.jobId)
+      const waitingDays = daysBetweenIso(bkkDate(r.requestedAt), today)
+      const item = db.items.find(i => i.id === r.itemId)
+      items.push({
+        key: `ret:${r.id}`, title: 'ตรวจรับของคืน', ...jobInfo(r.jobId), link: '/master',
+        detail: `${item?.name ?? 'วัสดุ'} ${r.qty} ${item?.uom ?? ''}`.trim() + ` · ส่งโดย ${nameOf(r.requestedBy)}`,
+        lateDays: 0, waitingDays, tone: tone(0, waitingDays),
+      })
+    }
+  }
+
+  // ---- คำขอรอพิจารณา (Division/Manage) — คนขอกับคนอนุมัติต้องเป็นคนละคน (D1) ----
+  const decides = can(user, 'approval.decide')
+  const queuedApprovalJobs = new Set<string>()
+  if (decides) {
+    for (const r of db.approvalRequests.filter(x => x.status === 'pending' && x.requestedBy !== user.id)) {
+      queuedApprovalJobs.add(r.jobId)
+      const waitingDays = daysBetweenIso(bkkDate(r.requestedAt), today)
+      items.push({
+        key: `appr:${r.id}`, title: `พิจารณาคำขอ: ${APPROVAL_TYPE_LABEL[r.type]}`, ...jobInfo(r.jobId),
+        link: `/approvals?id=${r.id}`, detail: `ส่งโดย ${nameOf(r.requestedBy)}`,
+        lateDays: 0, waitingDays, tone: tone(0, waitingDays),
+      })
+    }
+  }
+
+  // ---- ขั้นต่อไปของงานที่ถึงคิวผู้ใช้คนนี้ ----
+  for (const job of db.jobs) {
+    if (job.terminalStatus === 'installed' || job.terminalStatus === 'cancelled') continue
+    const step = jobNextStep(db, job, today)
+    if (!isMyTurn(step, user, job)) continue
+    if (step.waiting && decides) continue                                  // อยู่ในคิวคำขอแล้ว
+    if (step.queue && queuedJobs[step.queue].has(job.id)) continue         // อยู่ในคิว PR/PO แล้ว
+    // 🔴 รีวิวเฟส 3 ข้อ 2: ขั้น "เคลียร์เรื่องค้างก่อนปิดงาน" ใส่ Division/Purchasing ไว้เพราะคำขอ/ของคืนที่ค้าง
+    //    ถ้าส่วนของผู้ใช้คนนี้อยู่ในคิวรายใบครบแล้ว ไม่ต้องขึ้นรายการงานซ้ำ (ส่วนที่ไม่มีคิว เช่น เครื่องติดตั้งไม่ได้ ยังขึ้น)
+    const mine = isManage ? step.who : step.who.filter(dep => dep === user.department)
+    const covered = (dep: Department) =>
+      (dep === 'sales' && queuedApprovalJobs.has(job.id)) || (dep === 'purchasing' && queuedReturnJobs.has(job.id))
+    if (mine.length > 0 && mine.every(covered)) continue
+    const fieldStep = step.who.includes('service') && (user.department === 'service' || isManage)
+    // ยังไม่มีทีม = ต้องมอบหมายก่อนเฉพาะเมื่องานหน้างานยังอยู่ข้างหน้า (รอออกไซต์/กำลังติดตั้ง/เลยวันนัด)
+    //   ติดตั้งครบแล้ว (รอปิด/รอเคลียร์) ไม่ต้องมีทีมแล้ว — ขึ้นขั้นปิดงานตามปกติ
+    const fieldAhead = ['awaiting_visit', 'installing', 'visit_overdue'].includes(jobDelivery(db, job, today).state)
+    const unassigned = fieldStep && fieldAhead && jobIsFieldActive(db, job) && !db.jobAssignments.some(a => a.jobId === job.id)
+    const lateDays = late(step.due)
+    items.push({
+      key: `job:${job.id}`, ...jobInfo(job.id),
+      title: unassigned ? 'มอบหมายทีมช่าง' : step.title,
+      detail: unassigned ? `ของออกหน้างานแล้ว แต่ยังไม่มีทีม · ขั้นถัดไป: ${step.title}` : step.detail,
+      link: fieldStep ? '/service' : `/jobs/${job.id}`,
+      due: step.due, dueLabel: step.dueLabel, lateDays, tone: tone(lateDays),
+    })
+  }
+
+  // เลยกำหนดก่อน (เลยมากก่อน) → มีวันกำหนด (ใกล้ก่อน) → ค้างนานก่อน
+  return items.sort((a, b) =>
+    (b.lateDays - a.lateDays)
+    || (a.due ? 0 : 1) - (b.due ? 0 : 1)
+    || (a.due && b.due ? a.due.localeCompare(b.due) : 0)
+    || (b.waitingDays ?? 0) - (a.waitingDays ?? 0))
+}
+
+// ---------------- ตัวกรองหน้า Jobs (เฟส 3) ----------------
+export type JobListFilter = 'all' | 'active' | 'at_risk' | JobStatus
+
+/**
+ * แถวนี้อยู่ในรายการตามตัวกรองไหม — "เฉพาะงานของฉัน" ใช้ ownsJob ตัวเดียวกับป้าย "ของฉัน / 🔒 ของคนอื่น"
+ * 🔴 รีวิวเฟส 3 ข้อ 4: เดิมเทียบ openedBy === user.id ⇒ ใบเก่าที่ไม่มีผู้เปิด (ทำได้ทุกคน · ป้าย "ของฉัน") หายจากรายการ
+ */
+export function jobListMatches(
+  row: { job: Job; status: JobStatus; d: Pick<JobDelivery, 'atRisk'> },
+  filter: JobListFilter, mineOnly: boolean, user: User | null,
+): boolean {
+  const byStatus = filter === 'all' ? true
+    : filter === 'active' ? row.status !== 'installed' && row.status !== 'cancelled'
+    : filter === 'at_risk' ? row.d.atRisk          // ไม่ใช่สถานะงาน แต่เป็น "ใบที่ต้องลงมือวันนี้"
+    : row.status === filter
+  return byStatus && (!mineOnly || ownsJob(user, row.job))
+}
+
+// ---------------- ข้อมูลตัดสินใจของคำขอ (เฟส 3 · Approval Queue) ----------------
+export interface ApprovalFacts {
+  /** ข้อเท็จจริงที่ Division ต้องเห็นก่อนตัดสิน เรียงตามลำดับที่ควรอ่าน */
+  facts: { label: string; value: string }[]
+  /** ออก PR: มูลค่ารวมจากสำเนา ณ ตอนขอ (เฉพาะรายการที่มีราคา) · unpriced = จำนวนรายการที่ยังไม่มีราคา */
+  money?: { total: number; unpriced: number }
+  /** ออก PR: วัสดุที่ถูกแก้หลังส่งคำขอ — อนุมัติไม่ได้ (คำขอล้าสมัย 0093) · ว่าง = สดอยู่ */
+  stale: string[]
+  /** ผลที่จะเกิดถ้าอนุมัติ (และถ้าไม่อนุมัติ สำหรับคำขอที่หยุดงานทั้งใบ) */
+  outcome: string
+}
+
+const num = (n: number) => n.toLocaleString('th-TH')
+
+/**
+ * ข้อมูลตัดสินใจตามประเภทคำขอ — แผน: "Serial ที่จะเบิกจริง · คู่ที่สลับ · ยอดเงินหรือ 'ยังไม่มีราคา'"
+ * อ่านจาก payload ที่เก็บ ณ ตอนขอ (0093) — ไม่ใช่สภาพปัจจุบันของงาน (Division ตัดสินสิ่งที่ถูกขอ)
+ */
+export function approvalFacts(db: DB, r: ApprovalRequest, today = todayIso()): ApprovalFacts {
+  const job = db.jobs.find(j => j.id === r.jobId)
+  const p = r.payload
+  const unitOf = (id?: string) => db.lbsUnits.find(u => u.id === id)
+  const sn = (id?: string) => unitOf(id)?.serialLvb ?? '?'
+  const facts: ApprovalFacts['facts'] = []
+  let money: ApprovalFacts['money']
+  const reason = () => { if (p.reason?.trim()) facts.push({ label: 'เหตุผล', value: p.reason.trim() }) }
+
+  switch (r.type) {
+    case 'create_pr': {
+      const ids = p.requestIds ?? []
+      const lines = ids.map(id => {
+        const a = db.accessoryRequests.find(x => x.id === id)
+        const snap = p.snapshot?.find(s => s.id === id)
+        const qty = snap?.qty ?? a?.qtyRequested ?? 0
+        const price = snap ? snap.unitPrice : a?.unitPrice ?? null
+        const item = db.items.find(i => i.id === a?.itemId)
+        return { qty, price, text: `${item?.name ?? 'รายการที่ถูกลบ'} ×${num(qty)} ${item?.uom ?? ''}`.trimEnd() }
+      })
+      facts.push({ label: 'รายการ', value: lines.map(l => l.price === null ? `${l.text} (ยังไม่มีราคา)` : `${l.text} @ ${num(l.price)}`).join(' · ') || '-' })
+      money = {
+        total: lines.reduce((s, l) => s + (l.price === null ? 0 : l.price * l.qty), 0),
+        unpriced: lines.filter(l => l.price === null).length,
+      }
+      break
+    }
+    case 'issue_job': {
+      const ids = p.unitIds ?? []
+      facts.push(ids.length
+        ? { label: `LBS ที่จะเบิก (${ids.length} เครื่อง)`, value: ids.map(sn).join(', ') }
+        : { label: 'LBS ที่จะเบิก', value: 'ทุกเครื่องที่พร้อม ณ ตอนอนุมัติ (คำขอก่อน 0059)' })
+      if (p.startDate) {
+        const range = !p.endDate || p.endDate === p.startDate ? fmtDate(p.startDate) : `${fmtDate(p.startDate)} – ${fmtDate(p.endDate)}`
+        facts.push({ label: 'นัดติดตั้ง', value: [range, p.location].filter(Boolean).join(' · ') })
+      }
+      if (p.note?.trim()) facts.push({ label: 'หมายเหตุ', value: p.note.trim() })
+      break
+    }
+    case 'swap_lbs': {
+      const a = unitOf(p.swapAllocatedUnitId), b = unitOf(p.swapStockUnitId)
+      const pair = (u?: typeof a) => u ? `${u.serialLvb}/${u.serialOm}` : '?'
+      facts.push({ label: 'สลับ', value: `${pair(a)} (บน Job) ↔ ${pair(b)} (คลัง)` })
+      // 0056: ต้นทุนย้ายตามเลข Serial — ผู้อนุมัติต้องเห็นตัวเลขที่จะเปลี่ยน
+      if (a && b && a.unitCost !== b.unitCost)
+        facts.push({ label: 'ต้นทุน LBS ของงาน', value: `${a.unitCost === undefined ? 'ไม่มีราคา' : num(a.unitCost)} → ${b.unitCost === undefined ? 'ไม่มีราคา' : num(b.unitCost)} บาท` })
+      reason()
+      break
+    }
+    case 'cancel_job': {
+      reason()
+      const back = db.lbsUnits.filter(u => u.jobId === r.jobId && u.status === 'allocated').length
+      facts.push({ label: 'LBS คืนสต็อก', value: `${back} เครื่อง` })
+      facts.push({ label: 'วัสดุที่รับแล้ว', value: p.receivedToCentral ? 'คืนเข้าสต็อกกลาง' : 'ไม่คืนเข้าสต็อกกลาง' })
+      break
+    }
+    case 'revert_install':
+    case 'return_lbs': {
+      const ids = p.unitIds ?? []
+      facts.push({ label: `เครื่อง (${ids.length})`, value: ids.map(id => {
+        if (r.type === 'return_lbs') return sn(id)
+        const row = db.unitInstallations.filter(x => x.unitId === id && x.outcome === 'installed')
+          .sort((x, y) => y.performedAt.localeCompare(x.performedAt))[0]
+        return `${sn(id)}${row?.installedDate ? ` (ติดตั้ง ${fmtDate(row.installedDate)})` : ''}`
+      }).join(', ') || '-' })
+      reason()
+      break
+    }
+    case 'correct_closeout':
+      if (p.correction) facts.push({ label: 'ขอแก้', value: `${correctionLabel(db, p.correction)} (งานยังปิดอยู่)` })
+      reason()
+      break
+    case 'reopen_job':
+      reason()
+      break
+  }
+
+  // ผลถ้าอนุมัติ — คำขอที่หยุดงานทั้งใบบอก "ถ้าไม่อนุมัติ" ด้วย (ขั้นงานปกติที่จะทำต่อ)
+  const stepTitle = job ? rawNextStep(db, job, jobDelivery(db, job, today), today).title : '-'
+  return {
+    facts, money,
+    stale: r.type === 'create_pr' && r.status === 'pending' ? prSnapshotChanges(db, r) : [],
+    outcome: job ? approvalOutcome(r.type, job, stepTitle) : '-',
+  }
 }

@@ -1,11 +1,12 @@
 import { Fragment, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { approvalCommentsOf, correctionLabel } from '../data/logic'
+import { approvalCommentsOf, daysBetweenIso, todayIso } from '../data/logic'
+import { approvalFacts, bkkDate } from '../data/flow'
 import { Modal, useToast, useTryAction } from '../ui/components'
 import { supabase } from '../lib/supabase'
-import { APPROVAL_TYPE_LABEL, APPROVAL_STATUS_LABEL, DEPT_LABEL, fmtDate, fmtDateTime } from '../ui/format'
-import type { ApprovalRequest, DB } from '../types'
+import { APPROVAL_TYPE_LABEL, APPROVAL_STATUS_LABEL, DEPT_LABEL, fmtBaht, fmtDateTime } from '../ui/format'
+import type { ApprovalRequest, ApprovalType } from '../types'
 
 // โชว์ LINE User ID แบบปิดบางส่วน — พอให้ยืนยันว่าเชื่อมเครื่องไหน แต่ไม่เผยค่าเต็ม
 function maskLineId(id?: string): string {
@@ -13,93 +14,40 @@ function maskLineId(id?: string): string {
   return id.length <= 10 ? id : `${id.slice(0, 6)}…${id.slice(-4)}`
 }
 
-// แถบความเห็น (VIP ↔ Division) ใต้คำขอแต่ละใบ — อ่านได้ทุกแผนก, เขียนได้เฉพาะ VIP/Division/Manage
-// ⚠️ ต้องประกาศ "นอก" ApprovalsPage — ถ้าประกาศในฟังก์ชัน React จะได้ component type ใหม่ทุก render
-//    → unmount/remount ทั้ง subtree ทุกครั้งที่พิมพ์ → textarea เสีย focus ทีละตัวอักษร (พิมพ์ไม่ได้จริง)
-function CommentThread({
-  r, cols, db, canComment, isVip, commentBox, setCommentBox, openComments, setOpenComments, sendComment,
-}: {
-  r: ApprovalRequest; cols: number; db: DB
-  canComment: boolean; isVip: boolean
-  commentBox: Record<string, string>
-  setCommentBox: React.Dispatch<React.SetStateAction<Record<string, string>>>
-  openComments: Record<string, boolean>
-  setOpenComments: React.Dispatch<React.SetStateAction<Record<string, boolean>>>
-  sendComment: (requestId: string) => void
-}) {
-  const list = approvalCommentsOf(db, r.id)
-  const open = openComments[r.id] ?? list.length > 0    // มีความเห็นแล้ว = กางให้เห็นเลย
-  if (list.length === 0 && !canComment) return null
-  return (
-    <tr>
-      <td colSpan={cols} style={{ background: 'var(--bg-soft, #fafbfc)', paddingTop: 8 }}>
-        <button className="small" onClick={() => setOpenComments(p => ({ ...p, [r.id]: !open }))}>
-          {open ? '▾' : '▸'} 💬 ความเห็นผู้บริหาร (VIP) {list.length > 0 && <b>· {list.length}</b>}
-        </button>
-        {open && (
-          <div style={{ marginTop: 8 }}>
-            {list.length === 0 && <div className="muted" style={{ marginBottom: 8 }}>ยังไม่มีความเห็น</div>}
-            {list.map(c => {
-              const author = db.users.find(u => u.id === c.authorId)
-              return (
-                <div key={c.id} style={{ marginBottom: 8, paddingLeft: 10, borderLeft: '3px solid var(--border)' }}>
-                  <div className="muted" style={{ fontSize: 12 }}>
-                    <b style={{ color: 'var(--text)' }}>{author?.fullName ?? '-'}</b>
-                    {author && <span className="badge blue" style={{ marginLeft: 6 }}>{DEPT_LABEL[author.department]}</span>}
-                    {' '}· {fmtDateTime(c.createdAt)}
-                  </div>
-                  <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
-                </div>
-              )
-            })}
-            {canComment && (
-              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 6 }}>
-                <textarea rows={2} style={{ flex: 1 }}
-                  value={commentBox[r.id] ?? ''}
-                  onChange={e => setCommentBox(p => ({ ...p, [r.id]: e.target.value }))}
-                  placeholder={isVip
-                    ? 'ความเห็น/ข้อสั่งการถึง Division เช่น "อนุมัติได้ แต่ให้ต่อรองราคากับซัพก่อน"'
-                    : 'ตอบกลับความเห็นของผู้บริหาร'} />
-                <button className="primary small" disabled={!(commentBox[r.id] ?? '').trim()}
-                  onClick={() => sendComment(r.id)}>ส่งความเห็น</button>
-              </div>
-            )}
-          </div>
-        )}
-      </td>
-    </tr>
-  )
-}
+// ปุ่มกรองครบทุกประเภท (เฟส 3) — ลำดับตามความถี่ที่ Division เจอ
+const TYPES: ApprovalType[] = ['create_pr', 'issue_job', 'swap_lbs', 'cancel_job', 'return_lbs', 'revert_install', 'reopen_job', 'correct_closeout']
 
-// หน้ารออนุมัติ (Division approval inbox)
-// - division/admin: เห็นปุ่มอนุมัติ/ตีกลับ
-// - project: เห็นสถานะคำขอของตัวเอง (อ่านอย่างเดียว)
+/**
+ * หน้ารออนุมัติ — เฟส 3 (2026-11-23): 3 มุมมอง ข้อมูลตัดสินใจอยู่ในรายละเอียด
+ *   • Division/Manage (approval.decide) = ตัดสิน — **อนุมัติได้เฉพาะในรายละเอียด** (ไม่มีปุ่มบนแถว · เห็นข้อมูลครบก่อนกด)
+ *   • VIP = ให้ความเห็น (ไม่มีอำนาจอนุมัติ)
+ *   • Project/แผนกอื่น = ติดตามคำขอ — Project เริ่มที่ "คำขอของฉัน"
+ * กล่องเดียวสลับโหมด: รายละเอียด → ตีกลับ (กรอกเหตุผล) — ไม่ซ้อนกล่อง · ?id=<คำขอ> เปิดรายละเอียดตรง (ลิงก์จากงานของฉัน)
+ * ความเห็น (VIP ↔ Division) แยกจากเหตุผลตีกลับ (เหตุผลตีกลับ = แจ้ง Project · ความเห็น = ประกอบการตัดสิน)
+ */
 export default function ApprovalsPage() {
   const { db, user, act, mode } = useStore()
   const { show } = useToast()
   const tryAction = useTryAction()
-  const navigate = useNavigate()
-  const [rejectTarget, setRejectTarget] = useState<ApprovalRequest | null>(null)
-  const [rejectReason, setRejectReason] = useState('')
-  const [openJob, setOpenJob] = useState<Record<string, boolean>>({})   // ประวัติต่อ Job (เริ่มซ่อน)
+  const [params, setParams] = useSearchParams()
+  const today = todayIso()
   const canDecide = can(user, 'approval.decide')
   // ความเห็นบนคำขอ (0050) — VIP (ผู้บริหาร) ฝากความเห็นให้ Division · Division ตอบกลับได้
   const canComment = can(user, 'approval.comment')
   const isVip = user?.department === 'vip'
-  const [commentBox, setCommentBox] = useState<Record<string, string>>({})   // ร่างความเห็นต่อคำขอ
-  const [openComments, setOpenComments] = useState<Record<string, boolean>>({})
-  const sendComment = async (requestId: string) => {
-    const body = (commentBox[requestId] ?? '').trim()
-    if (!body) return
-    if (await tryAction(
-      () => act.addApprovalComment({ requestId, body }),
-      isVip ? 'ส่งความเห็นถึง Division แล้ว' : 'บันทึกความเห็นแล้ว — แจ้ง VIP ให้ทราบ',
-    )) setCommentBox(p => ({ ...p, [requestId]: '' }))
-  }
+  const isProject = user?.department === 'project'
+  const view: 'decide' | 'comment' | 'track' = canDecide ? 'decide' : isVip ? 'comment' : 'track'
+
+  const [typeFilter, setTypeFilter] = useState<ApprovalType | 'all'>('all')
+  const [mineOnly, setMineOnly] = useState(isProject)            // Project เริ่มที่คำขอของตัวเอง
+  const [openJob, setOpenJob] = useState<Record<string, boolean>>({})   // ประวัติต่อ Job (เริ่มซ่อน)
+  const [rejecting, setRejecting] = useState(false)
+  const [rejectReason, setRejectReason] = useState('')
+  const [comment, setComment] = useState('')
+
   // เชื่อมบัญชี LINE (รับคำขอ + กดอนุมัติจากแชท 1:1) — เฉพาะผู้อนุมัติ โหมด LIVE
   const [lineCode, setLineCode] = useState<string | null>(null)
   const [lineBusy, setLineBusy] = useState(false)
-  // สถานะเชื่อมบัญชี LINE ของผู้ใช้ที่ login อยู่ (อ่านจาก profiles.line_user_id)
   const lineLinked = !!user?.lineUserId
   const genLineCode = async () => {
     if (!supabase) return
@@ -113,82 +61,46 @@ export default function ApprovalsPage() {
     }
     setLineBusy(false)
   }
-  const toggleJob = (id: string) => setOpenJob(p => ({ ...p, [id]: !p[id] }))
 
   const jobOf = (id: string) => db.jobs.find(j => j.id === id)
   const userName = (id?: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
+  const waited = (r: ApprovalRequest) => daysBetweenIso(bkkDate(r.requestedAt), today)   // นับแบบเดียวกับงานของฉัน
 
-  const pending = db.approvalRequests.filter(r => r.status === 'pending')
-  const decided = db.approvalRequests.filter(r => r.status !== 'pending').slice().reverse()
+  // ---- รายละเอียดที่เปิดอยู่ (?id=) ----
+  const openId = params.get('id')
+  const selected = openId ? db.approvalRequests.find(r => r.id === openId) : undefined
+  const openReq = (id: string) => {
+    setRejecting(false); setRejectReason(''); setComment('')
+    setParams(p => { const n = new URLSearchParams(p); n.set('id', id); return n })
+  }
+  const closeReq = () => {
+    setRejecting(false); setRejectReason(''); setComment('')
+    setParams(p => { const n = new URLSearchParams(p); n.delete('id'); return n }, { replace: true })
+  }
+
+  const inScope = (r: ApprovalRequest) =>
+    (typeFilter === 'all' || r.type === typeFilter) && (!mineOnly || r.requestedBy === user?.id)
+  const allPending = db.approvalRequests.filter(r => r.status === 'pending')
+  const pending = allPending.filter(inScope)
+  const decided = db.approvalRequests.filter(r => r.status !== 'pending' && inScope(r)).slice().reverse()
   // จัดกลุ่มประวัติการตัดสินแยกตาม Job (คงลำดับล่าสุดก่อน)
   const decidedGroups: [string, ApprovalRequest[]][] = (() => {
     const m = new Map<string, ApprovalRequest[]>()
     decided.forEach(r => { const a = m.get(r.jobId) ?? []; a.push(r); m.set(r.jobId, a) })
     return [...m.entries()]
   })()
+  const countOf = (t: ApprovalType) => allPending.filter(r => r.type === t && (!mineOnly || r.requestedBy === user?.id)).length
 
-  // สรุปเนื้อหาคำขอต่อ type ให้ division เห็นข้อมูลก่อนตัดสิน
-  const payloadSummary = (r: ApprovalRequest): string => {
-    if (r.type === 'create_pr') {
-      const n = r.payload.requestIds?.length ?? 0
-      const names = (r.payload.requestIds ?? [])
-        .map(id => db.accessoryRequests.find(a => a.id === id))
-        .filter(Boolean)
-        .map(a => `${db.items.find(i => i.id === a!.itemId)?.name ?? '?'} ×${a!.qtyRequested}`)
-      return `${n} รายการ: ${names.join(', ') || '-'}`
-    }
-    if (r.type === 'issue_job') {
-      const range = r.payload.startDate === r.payload.endDate
-        ? fmtDate(r.payload.startDate)
-        : `${fmtDate(r.payload.startDate)} – ${fmtDate(r.payload.endDate)}`
-      return `ติดตั้ง ${range} ที่ ${r.payload.location ?? '-'}${r.payload.note ? ` — ${r.payload.note}` : ''}`
-    }
-    if (r.type === 'swap_lbs') {
-      const a = db.lbsUnits.find(u => u.id === r.payload.swapAllocatedUnitId)
-      const b = db.lbsUnits.find(u => u.id === r.payload.swapStockUnitId)
-      const sn = (u?: typeof a) => u ? `${u.serialLvb}/${u.serialOm}` : '?'
-      return `สลับ ${sn(a)} (บน Job) ↔ ${sn(b)} (คลัง) · เหตุผล: ${r.payload.reason ?? '-'}`
-    }
-    if (r.type === 'revert_install') {
-      // 0090: บอกเครื่อง + วันที่ที่ยืนยันไว้ — ผู้อนุมัติต้องเห็นว่ากำลังยกเลิกผลของเครื่องไหน
-      const units = (r.payload.unitIds ?? []).map(id => {
-        const u = db.lbsUnits.find(x => x.id === id)
-        const row = db.unitInstallations.filter(x => x.unitId === id && x.outcome === 'installed')
-          .sort((a, b) => b.performedAt.localeCompare(a.performedAt))[0]
-        return `${u?.serialLvb ?? '?'}${row?.installedDate ? ` (ติดตั้ง ${fmtDate(row.installedDate)})` : ''}`
-      })
-      return `${units.length} เครื่อง: ${units.join(', ')} → กลับเป็นรอติดตั้ง (หลักฐานเดิมเก็บในประวัติ) · เหตุผล: ${r.payload.reason ?? '-'}`
-    }
-    if (r.type === 'return_lbs') {
-      // 0094: Division ต้องเห็นว่าเครื่องไหนกลับเข้าคลัง และทำไมติดตั้งไม่ได้
-      const units = (r.payload.unitIds ?? []).map(id => db.lbsUnits.find(x => x.id === id)?.serialLvb ?? '?')
-      return `${units.length} เครื่อง: ${units.join(', ')} → กลับเข้า LBS Inventory · เหตุผล: ${r.payload.reason ?? '-'}`
-    }
-    if (r.type === 'correct_closeout' && r.payload.correction)
-      return `${correctionLabel(db, r.payload.correction)} (งานยังปิดอยู่) · เหตุผล: ${r.payload.reason ?? '-'}`
-    return `เหตุผล: ${r.payload.reason ?? '-'}${r.payload.receivedToCentral ? ' (วัสดุที่รับแล้วคืนเข้าสต็อกกลาง)' : ''}`
-  }
-
-  // props ที่ CommentThread ต้องใช้ — รวมไว้ชุดเดียวให้จุดเรียกสั้น
-  const threadProps = { db, canComment, isVip, commentBox, setCommentBox, openComments, setOpenComments, sendComment }
+  const openLabel = view === 'decide' ? 'พิจารณา →' : view === 'comment' ? 'ให้ความเห็น →' : 'ดู →'
 
   return (
     <div>
       <div className="page-title">Awaiting Approval</div>
       <div className="page-sub">
-        คำขอจากงานโครงการที่รอ Division พิจารณา — ออก PR · เบิกให้ Service · ยกเลิก Job · สลับ LBS · เปิดงานใหม่ · ยกเลิกผลติดตั้ง
-        {canDecide ? ' · อนุมัติแล้วระบบดำเนินการให้ทันที' : ' · ติดตามสถานะคำขอของแผนกคุณที่นี่'}
-        {isVip && ' · คุณคือผู้บริหาร (VIP): รีวิวคำขอแล้วฝากความเห็นได้ทุกใบ — Division จะได้รับแจ้งทันที (อำนาจอนุมัติยังอยู่ที่ Division)'}
+        {view === 'decide' && 'คำขอจากงานโครงการที่รอคุณพิจารณา — เปิดรายละเอียดเพื่อดูข้อมูลครบแล้วจึงอนุมัติ/ตีกลับ · อนุมัติแล้วระบบดำเนินการให้ทันที'}
+        {view === 'comment' && 'คุณคือผู้บริหาร (VIP): เปิดคำขอเพื่อดูข้อมูลแล้วฝากความเห็นถึง Division ได้ทุกใบ — อำนาจอนุมัติยังอยู่ที่ Division'}
+        {view === 'track' && 'ติดตามสถานะคำขอที่ส่งให้ Division พิจารณา — คำสั่งยังไม่มีผลจนกว่าจะอนุมัติ'}
       </div>
-      {isVip && (
-        <div className="panel">
-          <div className="panel-body muted">
-            👑 <b>โหมดผู้บริหาร (VIP)</b> — ดูข้อมูลได้ทุกหน้าแบบอ่านอย่างเดียว ·
-            ที่หน้านี้ให้ความเห็นบนคำขอแต่ละใบได้ (ใต้แต่ละแถว) ความเห็นจะแสดงคู่คำขอให้ Division เห็นก่อนตัดสิน
-            และเก็บไว้เป็นหลักฐานหลังตัดสินแล้ว
-          </div>
-        </div>
-      )}
 
       {canDecide && mode === 'supabase' && (
         <div className="panel">
@@ -233,64 +145,68 @@ export default function ApprovalsPage() {
         </div>
       )}
 
+      {/* ตัวกรอง: ครบทุกประเภท + คำขอของฉัน */}
+      <div className="filter-chips" role="group" aria-label="กรองตามประเภทคำขอ">
+        <button className={`chip${typeFilter === 'all' ? ' on' : ''}`} onClick={() => setTypeFilter('all')}>
+          ทั้งหมด <span className="chip-n">{TYPES.reduce((n, t) => n + countOf(t), 0)}</span>
+        </button>
+        {TYPES.map(t => (
+          <button key={t} className={`chip${typeFilter === t ? ' on' : ''}`} onClick={() => setTypeFilter(t)}>
+            {APPROVAL_TYPE_LABEL[t]} {countOf(t) > 0 && <span className="chip-n">{countOf(t)}</span>}
+          </button>
+        ))}
+        {user && (
+          <label className="chip-check">
+            <input type="checkbox" checked={mineOnly} onChange={e => setMineOnly(e.target.checked)} />
+            <span>เฉพาะคำขอของฉัน</span>
+          </label>
+        )}
+      </div>
+
       <div className="panel">
         <div className="panel-head"><h3>รอตัดสิน ({pending.length})</h3></div>
         <div className="table-scroll">
           <table>
             <thead>
               <tr>
-                <th>ประเภท</th><th>Job No.</th><th>รายละเอียด</th><th>ผู้ขอ</th><th>ขอเมื่อ</th>
-                {canDecide && <th style={{ textAlign: 'right' }}>ตัดสิน</th>}
+                <th>ประเภท</th><th>Job No.</th><th>สรุป</th><th>ผู้ขอ</th><th>รอมาแล้ว</th><th></th>
               </tr>
             </thead>
             <tbody>
               {pending.length === 0 && (
-                <tr><td colSpan={canDecide ? 6 : 5}><div className="empty">ไม่มีคำขอค้างอนุมัติ</div></td></tr>
+                <tr><td colSpan={6}><div className="empty">
+                  {mineOnly ? 'ไม่มีคำขอของคุณที่รอพิจารณา' : 'ไม่มีคำขอค้างอนุมัติ'}
+                </div></td></tr>
               )}
               {pending.map(r => {
                 const job = jobOf(r.jobId)
                 const cmts = approvalCommentsOf(db, r.id)
+                const f = approvalFacts(db, r, today)
+                const w = waited(r)
                 return (
-                  <Fragment key={r.id}>
-                  <tr>
+                  <tr key={r.id} className="clickable" onClick={() => openReq(r.id)}>
                     <td>
                       <span className="badge blue">{APPROVAL_TYPE_LABEL[r.type]}</span>
-                      {cmts.length > 0 && (
-                        <div><span className="badge amber" title="มีความเห็นจากผู้บริหาร/Division">💬 {cmts.length}</span></div>
-                      )}
+                      {cmts.length > 0 && <div><span className="badge amber" title="มีความเห็นจากผู้บริหาร/Division">💬 {cmts.length}</span></div>}
                     </td>
-                    <td>
-                      <a style={{ cursor: 'pointer', color: 'var(--primary)', fontWeight: 600 }}
-                        onClick={() => navigate(`/jobs/${r.jobId}`)}>{job?.jobNo ?? '-'}</a>
-                      <div className="muted">{job?.customerName}</div>
+                    <td><b>{job?.jobNo ?? '-'}</b><div className="muted">{job?.customerName}</div></td>
+                    <td style={{ maxWidth: 360 }}>
+                      {f.facts[0] ? <><span className="muted">{f.facts[0].label}:</span> {f.facts[0].value}</> : <span className="muted">-</span>}
+                      {f.money && <div className="muted">มูลค่า {fmtBaht(f.money.total)}{f.money.unpriced > 0 && ` · ยังไม่มีราคา ${f.money.unpriced} รายการ`}</div>}
+                      {f.stale.length > 0 && <div><span className="badge red">⚠️ รายการถูกแก้หลังส่งคำขอ</span></div>}
                     </td>
-                    <td style={{ maxWidth: 340 }}>{payloadSummary(r)}</td>
                     <td>{userName(r.requestedBy)}</td>
-                    <td>{fmtDateTime(r.requestedAt)}</td>
-                    {canDecide && r.requestedBy === user?.id && (
-                      // 0093 (มติ D1): คนขอกับคนอนุมัติต้องเป็นคนละคน — DB ปฏิเสธอยู่แล้ว ไม่ต้องให้กดแล้วเจอ error
-                      <td style={{ textAlign: 'right' }}>
-                        <span className="badge neutral" title="คนขอกับคนอนุมัติต้องเป็นคนละคน">
-                          คำขอของคุณเอง — รอ Division พิจารณา
-                        </span>
-                      </td>
-                    )}
-                    {canDecide && r.requestedBy !== user?.id && (
-                      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                        <button className="success small" style={{ marginRight: 6 }}
-                          onClick={() => tryAction(() => act.approveRequest({ requestId: r.id }),
-                            `อนุมัติ${APPROVAL_TYPE_LABEL[r.type]} ${job?.jobNo ?? ''} แล้ว — ระบบทำรายการให้เรียบร้อย`)}>
-                          ✔ อนุมัติ
-                        </button>
-                        <button className="danger small"
-                          onClick={() => { setRejectReason(''); setRejectTarget(r) }}>
-                          ✖ ตีกลับ
-                        </button>
-                      </td>
-                    )}
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <span className={w >= 3 ? 'badge amber' : 'muted'}>{w > 0 ? `${w} วัน` : 'วันนี้'}</span>
+                      <div className="muted" style={{ fontSize: 11 }}>{fmtDateTime(r.requestedAt)}</div>
+                    </td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <button className={`small${view === 'decide' && r.requestedBy !== user?.id ? ' primary' : ''}`}
+                        onClick={e => { e.stopPropagation(); openReq(r.id) }}>
+                        {view === 'decide' && r.requestedBy === user?.id ? 'ดู →' : openLabel}
+                      </button>
+                    </td>
                   </tr>
-                  <CommentThread r={r} cols={canDecide ? 6 : 5} {...threadProps} />
-                  </Fragment>
                 )
               })}
             </tbody>
@@ -309,7 +225,7 @@ export default function ApprovalsPage() {
         const rejected = list.filter(r => r.status === 'rejected').length
         return (
           <div className="panel" key={jobId}>
-            <div className="panel-head" style={{ cursor: 'pointer' }} onClick={() => toggleJob(jobId)}>
+            <div className="panel-head" style={{ cursor: 'pointer' }} onClick={() => setOpenJob(p => ({ ...p, [jobId]: !p[jobId] }))}>
               <h3>
                 {openJob[jobId] ? '▾' : '▸'} {jobOf(jobId)?.jobNo ?? '-'}{' '}
                 <span className="muted" style={{ fontWeight: 400 }}>{jobOf(jobId)?.customerName}</span>
@@ -326,24 +242,23 @@ export default function ApprovalsPage() {
                     <tr><th>ประเภท</th><th>สถานะ</th><th>ผู้ขอ</th><th>ผู้ตัดสิน</th><th>ตัดสินเมื่อ</th></tr>
                   </thead>
                   <tbody>
-                    {list.map(r => (
-                      <Fragment key={r.id}>
-                        <tr>
-                          <td>{APPROVAL_TYPE_LABEL[r.type]}</td>
-                          <td>
-                            <span className={`badge ${r.status === 'approved' ? 'green' : 'red'}`}>
-                              {APPROVAL_STATUS_LABEL[r.status]}
-                            </span>
-                            {r.rejectReason && <div className="muted">เหตุผล: {r.rejectReason}</div>}
-                          </td>
-                          <td>{userName(r.requestedBy)}</td>
-                          <td>{userName(r.decidedBy)}</td>
-                          <td>{fmtDateTime(r.decidedAt)}</td>
-                        </tr>
-                        {/* ความเห็นผู้บริหารยังอยู่คู่กับคำขอหลังตัดสินแล้ว — เป็นหลักฐานประกอบการตัดสิน */}
-                        <CommentThread r={r} cols={5} {...threadProps} />
-                      </Fragment>
-                    ))}
+                    {list.map(r => {
+                      const cmts = approvalCommentsOf(db, r.id).length
+                      return (
+                        <Fragment key={r.id}>
+                          <tr className="clickable" onClick={() => openReq(r.id)}>
+                            <td>{APPROVAL_TYPE_LABEL[r.type]}{cmts > 0 && <span className="badge amber" style={{ marginLeft: 6 }}>💬 {cmts}</span>}</td>
+                            <td>
+                              <span className={`badge ${r.status === 'approved' ? 'green' : 'red'}`}>{APPROVAL_STATUS_LABEL[r.status]}</span>
+                              {r.rejectReason && <div className="muted">เหตุผล: {r.rejectReason}</div>}
+                            </td>
+                            <td>{userName(r.requestedBy)}</td>
+                            <td>{userName(r.decidedBy)}</td>
+                            <td>{fmtDateTime(r.decidedAt)}</td>
+                          </tr>
+                        </Fragment>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -352,26 +267,130 @@ export default function ApprovalsPage() {
         )
       })}
 
-      {rejectTarget && (
-        <Modal title={`ตีกลับคำขอ${APPROVAL_TYPE_LABEL[rejectTarget.type]} — ${jobOf(rejectTarget.jobId)?.jobNo ?? ''}`}
-          onClose={() => setRejectTarget(null)}>
-          <label className="field">
-            <span>เหตุผลที่ตีกลับ (แจ้งกลับ Project)</span>
-            <textarea rows={3} value={rejectReason} onChange={e => setRejectReason(e.target.value)}
-              placeholder="เช่น ข้อมูลนัดติดตั้งไม่ตรงกับลูกค้า / งบประมาณยังไม่อนุมัติ" />
-          </label>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-            <button onClick={() => setRejectTarget(null)}>ยกเลิก</button>
-            <button className="danger"
-              onClick={async () => {
-                if (await tryAction(() => act.rejectApprovalRequest({ requestId: rejectTarget.id, reason: rejectReason }),
-                  'ตีกลับคำขอและแจ้ง Project แล้ว')) setRejectTarget(null)
-              }}>
-              ยืนยันตีกลับ
-            </button>
-          </div>
+      {openId && !selected && (
+        <Modal title="ไม่พบคำขอ" onClose={closeReq} footer={<button onClick={closeReq}>ปิด</button>}>
+          <div className="muted">คำขอนี้ไม่มีอยู่แล้ว (อาจถูกลบหรือลิงก์ไม่ถูกต้อง)</div>
         </Modal>
       )}
+      {selected && (() => {
+        const r = selected
+        const job = jobOf(r.jobId)
+        const f = approvalFacts(db, r, today)
+        const cmts = approvalCommentsOf(db, r.id)
+        const own = r.requestedBy === user?.id
+        const mayDecide = canDecide && r.status === 'pending' && !own
+        const label = APPROVAL_TYPE_LABEL[r.type]
+        const approve = async () => {
+          if (await tryAction(() => act.approveRequest({ requestId: r.id }),
+            `อนุมัติ${label} ${job?.jobNo ?? ''} แล้ว — ระบบทำรายการให้เรียบร้อย`)) closeReq()
+        }
+        const reject = async () => {
+          if (await tryAction(() => act.rejectApprovalRequest({ requestId: r.id, reason: rejectReason }),
+            'ตีกลับคำขอและแจ้ง Project แล้ว')) closeReq()
+        }
+        const sendComment = async () => {
+          if (await tryAction(() => act.addApprovalComment({ requestId: r.id, body: comment.trim() }),
+            isVip ? 'ส่งความเห็นถึง Division แล้ว' : 'บันทึกความเห็นแล้ว — แจ้ง VIP ให้ทราบ')) setComment('')
+        }
+        return (
+          <Modal size="wide" onClose={closeReq}
+            title={rejecting ? `ตีกลับคำขอ${label} — ${job?.jobNo ?? ''}` : `${label} — ${job?.jobNo ?? '-'}`}
+            subtitle={<>ส่งโดย {userName(r.requestedBy)} · {fmtDateTime(r.requestedAt)} · <span className={`badge ${r.status === 'pending' ? 'amber' : r.status === 'approved' ? 'green' : 'red'}`}>{APPROVAL_STATUS_LABEL[r.status]}</span></>}
+            onBack={rejecting ? () => setRejecting(false) : undefined} backLabel="← กลับไปรายละเอียด"
+            dirty={(rejecting && !!rejectReason.trim()) || !!comment.trim()}
+            footer={rejecting ? <>
+              <button onClick={() => setRejecting(false)}>กลับ</button>
+              <button className="danger" disabled={!rejectReason.trim()} onClick={reject}>ยืนยันตีกลับ</button>
+            </> : mayDecide ? <>
+              <button onClick={closeReq}>ปิด</button>
+              <button className="danger" onClick={() => setRejecting(true)}>✖ ตีกลับ</button>
+              <button className="success" disabled={f.stale.length > 0} onClick={approve}
+                title={f.stale.length > 0 ? 'คำขอล้าสมัย — รายการถูกแก้หลังส่งคำขอ ต้องตีกลับให้ส่งใหม่' : undefined}>
+                ✔ อนุมัติ
+              </button>
+            </> : <button onClick={closeReq}>ปิด</button>}>
+            {rejecting ? (
+              <>
+                <div className="muted" style={{ marginBottom: 10 }}>
+                  เหตุผลนี้<b>แจ้งกลับ Project</b> และเก็บคู่กับคำขอ — แยกจากความเห็นผู้บริหาร
+                </div>
+                <label className="field">
+                  <span>เหตุผลที่ตีกลับ *</span>
+                  <textarea rows={3} autoFocus value={rejectReason} onChange={e => setRejectReason(e.target.value)}
+                    placeholder="เช่น ข้อมูลนัดติดตั้งไม่ตรงกับลูกค้า / งบประมาณยังไม่อนุมัติ" />
+                </label>
+              </>
+            ) : (
+              <>
+                {f.stale.length > 0 && (
+                  <div className="approval-warn" role="alert">
+                    ⚠️ <b>คำขอล้าสมัย — อนุมัติไม่ได้</b>: รายการถูกแก้หลังส่งคำขอ ({f.stale.join(', ')}) · ตีกลับแล้วให้ Project ส่งคำขอใหม่
+                  </div>
+                )}
+                <dl className="facts">
+                  <dt>งาน</dt>
+                  <dd>
+                    {job ? <Link to={`/jobs/${job.id}`}>{job.jobNo} →</Link> : '-'}
+                    {job && <span className="muted"> · {job.customerName}</span>}
+                  </dd>
+                  {f.facts.map(x => <Fragment key={x.label}><dt>{x.label}</dt><dd>{x.value}</dd></Fragment>)}
+                  {f.money && (
+                    <>
+                      <dt>มูลค่ารวม</dt>
+                      <dd>
+                        <b>{fmtBaht(f.money.total)}</b>
+                        {f.money.unpriced > 0 && <span className="badge amber" style={{ marginLeft: 6 }}>ยังไม่มีราคา {f.money.unpriced} รายการ</span>}
+                      </dd>
+                    </>
+                  )}
+                </dl>
+                {r.status === 'pending' ? (
+                  <div className="approval-outcome"><b>ผลที่จะเกิด</b> — {f.outcome}</div>
+                ) : (
+                  <div className="approval-outcome">
+                    <b>{APPROVAL_STATUS_LABEL[r.status]}</b> โดย {userName(r.decidedBy)} · {fmtDateTime(r.decidedAt)}
+                    {r.rejectReason && <div>เหตุผลที่ตีกลับ (แจ้ง Project): {r.rejectReason}</div>}
+                  </div>
+                )}
+                {own && canDecide && r.status === 'pending' && (
+                  <div className="muted" style={{ marginTop: 8 }}>
+                    คำขอของคุณเอง — รอ Division พิจารณา (คนขอกับคนอนุมัติต้องเป็นคนละคน · มติ D1)
+                  </div>
+                )}
+
+                {/* ความเห็นผู้บริหาร — ประวัติเต็ม · แยกจากเหตุผลตีกลับ */}
+                <div className="approval-comments">
+                  <div className="approval-comments-head">💬 ความเห็นผู้บริหาร (VIP ↔ Division) · {cmts.length}</div>
+                  {cmts.length === 0 && <div className="muted">ยังไม่มีความเห็น</div>}
+                  {cmts.map(c => {
+                    const author = db.users.find(u => u.id === c.authorId)
+                    return (
+                      <div key={c.id} className="approval-comment">
+                        <div className="muted" style={{ fontSize: 12 }}>
+                          <b style={{ color: 'var(--text)' }}>{author?.fullName ?? '-'}</b>
+                          {author && <span className="badge blue" style={{ marginLeft: 6 }}>{DEPT_LABEL[author.department]}</span>}
+                          {' '}· {fmtDateTime(c.createdAt)}
+                        </div>
+                        <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
+                      </div>
+                    )
+                  })}
+                  {canComment && (
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 6 }}>
+                      <textarea rows={2} style={{ flex: 1 }} value={comment} onChange={e => setComment(e.target.value)}
+                        aria-label="ความเห็น"
+                        placeholder={isVip
+                          ? 'ความเห็น/ข้อสั่งการถึง Division เช่น "อนุมัติได้ แต่ให้ต่อรองราคากับซัพก่อน"'
+                          : 'ตอบกลับความเห็นของผู้บริหาร'} />
+                      <button className="primary small" disabled={!comment.trim()} onClick={sendComment}>ส่งความเห็น</button>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </Modal>
+        )
+      })()}
     </div>
   )
 }

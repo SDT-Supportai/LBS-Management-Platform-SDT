@@ -121,6 +121,7 @@ export default function JobDetailPage() {
   const job = db.jobs.find(j => j.id === jobId)
   const [modal, setModal] = useState<'draw' | 'return' | 'accessory' | 'issue' | 'cancel' | 'edit' | 'budget' | 'swap' | null>(null)
   const [swapForm, setSwapForm] = useState({ allocatedUnitId: '', stockUnitId: '', reason: '' })
+  const [swapQuery, setSwapQuery] = useState('')   // เฟส 3: ค้นหาเครื่องในคลัง (คลังมีหลายร้อยเครื่อง — dropdown ยาวเลือกไม่ได้)
   const [budgetOpen, setBudgetOpen] = useState(false)   // ตาราง 7 หมวด (Item 4: เริ่มซ่อน)
   const { ask: askPrompt, element: promptEl } = usePrompt()      // แทน window.prompt (ชุด B)
   const { ask: askConfirm, element: confirmEl } = useConfirm()   // แทน window.confirm (ชุด B)
@@ -1252,7 +1253,8 @@ export default function JobDetailPage() {
               <GateButton className="small" gate={A('swap_lbs').gate}
                 onClick={() => {
                   const firstAlloc = allocatedUnits.find(u => u.status === 'allocated')
-                  setSwapForm({ allocatedUnitId: firstAlloc?.id ?? '', stockUnitId: inStockUnits[0]?.id ?? '', reason: '' })
+                  setSwapForm({ allocatedUnitId: firstAlloc?.id ?? '', stockUnitId: '', reason: '' })
+                  setSwapQuery('')
                   setModal('swap')
                 }}>
                 🔁 {A('swap_lbs').label}
@@ -1362,7 +1364,9 @@ export default function JobDetailPage() {
               <th style={{ textAlign: 'right' }}>ราคา/หน่วย</th>
               <th style={{ textAlign: 'right' }}>ตัดเข้างาน</th>
               <th style={{ textAlign: 'right' }}>ถึงหน้างานแล้ว</th>
-              <th>Phase Budget</th><th>แหล่ง</th><th>สถานะ</th><th>ทำเบิก-Epicor</th><th>PR / PO</th><th></th>
+              <th>Phase Budget</th><th>แหล่ง</th><th>สถานะ</th>
+              <th title="ธงกระทบยอดกับ ERP — Purchasing เป็นผู้บันทึก (ไม่กระทบสถานะของ/การเบิก)">ทำเบิก-Epicor <span className="muted" style={{ fontWeight: 400 }}>(Purchasing)</span></th>
+              <th>PR / PO</th><th></th>
             </tr></thead>
             <tbody>
               {accReqs.length === 0 && <tr><td colSpan={14}><div className="empty">ยังไม่มีรายการวัสดุ</div></td></tr>}
@@ -1707,6 +1711,10 @@ export default function JobDetailPage() {
       {modal === 'draw' && (
         <Modal title="ดึง LBS เข้า Job (เลือกรายเครื่อง)" size="xl" onClose={close} dirty={picked.size > 0}
           footer={<>
+            <span className="modal-foot-summary" role="status">
+              {picked.size === 0 ? `ยังไม่ได้เลือก · ดึงได้อีก ${drawCap} เครื่อง`
+                : <>เลือก <b>{picked.size}</b> เครื่อง{pickedPending > 0 && <> · <span style={{ color: 'var(--amber, #d97706)' }}>ยังไม่เข้าคลัง {pickedPending}</span></>} · เหลือดึงได้อีก {drawCap - picked.size}</>}
+            </span>
             <button onClick={close}>ยกเลิก</button>
             <button className="primary" disabled={picked.size === 0}
               onClick={async () => { if (await tryAction(() => act.drawLbs({ jobId: job.id, stockId: drawStock, unitIds: [...picked] }), `ดึง LBS ${picked.size} เครื่องเข้า ${job.jobNo} แล้ว`)) close() }}>
@@ -1861,11 +1869,39 @@ export default function JobDetailPage() {
                 {allocatable.map(u => <option key={u.id} value={u.id}>{u.serialLvb} / {u.serialOm} · {stockOf(u.projectStockId)?.stockNo}</option>)}
               </select>
             </label>
-            <label className="field"><span>เครื่องในคลัง (เอาเลขมาสลับ · คงค่าจาก Project Stock)</span>
-              <select value={swapForm.stockUnitId} onChange={e => setSwapForm({ ...swapForm, stockUnitId: e.target.value })}>
-                {inStockUnits.map(u => <option key={u.id} value={u.id}>{u.serialLvb} / {u.serialOm} · {stockOf(u.projectStockId)?.stockNo}</option>)}
-              </select>
-            </label>
+            {(() => {
+              // เฟส 3: ค้นหาด้วย Serial LVB/OM · Stock No. · Contract No. — เดิมเป็น dropdown ทุกเครื่องในคลัง (หลายร้อยรายการ)
+              const q = swapQuery.trim().toLowerCase()
+              const cands = inStockUnits.filter(u => !q || [u.serialLvb, u.serialOm, stockOf(u.projectStockId)?.stockNo, u.contractNo]
+                .some(x => x?.toLowerCase().includes(q)))
+              const shown = cands.slice(0, 50)
+              return (
+                <div style={{ marginBottom: 14 }}>
+                  {/* label ครอบแค่หัวข้อ + ช่องค้นหา — แถว radio เป็น <label> ของตัวเอง (label ซ้อน label = HTML ผิด) */}
+                  <label className="field" style={{ marginBottom: 0 }}><span>เครื่องในคลัง (เอาเลขมาสลับ · คงค่าจาก Project Stock)</span>
+                    <input type="search" value={swapQuery} onChange={e => setSwapQuery(e.target.value)}
+                      placeholder="ค้นหา Serial LVB / OM · Stock No. · Contract No." aria-label="ค้นหาเครื่องในคลัง" />
+                  </label>
+                  {/* radio แทน <select size> — listbox ที่ค่าว่างไฮไลต์แถวแรกไว้ แล้วคลิกแถวนั้นไม่เกิด onChange (เลือกไม่ได้) */}
+                  <div className="pick-list" role="radiogroup" aria-label="เครื่องในคลัง">
+                    {shown.map(u => (
+                      <label key={u.id} className={`pick-row${swapForm.stockUnitId === u.id ? ' on' : ''}`}>
+                        <input type="radio" name="swap-stock-unit" checked={swapForm.stockUnitId === u.id}
+                          onChange={() => setSwapForm({ ...swapForm, stockUnitId: u.id })} />
+                        <span className="mono">{u.serialLvb} / {u.serialOm}</span>
+                        <span className="muted">{stockOf(u.projectStockId)?.stockNo}{u.contractNo ? ` · ${u.contractNo}` : ''}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <span className="muted" style={{ fontSize: 12 }} role="status">
+                    {cands.length === 0 ? 'ไม่พบเครื่องที่ตรงกับคำค้น'
+                      : cands.length > shown.length ? `พบ ${cands.length} เครื่อง — แสดง ${shown.length} แรก พิมพ์เพิ่มเพื่อกรอง`
+                      : `พบ ${cands.length} จาก ${inStockUnits.length} เครื่องในคลัง`}
+                    {!swapForm.stockUnitId && ' · ยังไม่ได้เลือกเครื่อง'}
+                  </span>
+                </div>
+              )
+            })()}
           </div>
           {a && b && (
             <div className="budget-profit" style={{ marginBottom: 12 }}>
@@ -2283,14 +2319,16 @@ export default function JobDetailPage() {
             <button onClick={close}>ยกเลิก</button>
             <button className="primary"
               onClick={async () => {
-                const { salePrice, planCoord, ...rest } = editForm
+                const { salePrice: _sale, planCoord, ...rest } = editForm
                 const sites = rest.lbsQtyRequired > 1 ? editSites : []
                 // parseLatLng/sitesToApi โยน error ถ้าพิกัดใช้ไม่ได้ → ต้องอยู่ใน tryAction ให้จับได้
                 if (await tryAction(() => {
                   const c = parseLatLng(planCoord)
                   return act.updateJob({
                     jobId: job.id, ...rest,
-                    budgetSalePrice: toBudgetNum(salePrice), budgetCosts: costFormToApi(editCosts),
+                    // เฟส 3: ฟอร์มนี้ไม่แก้งบแล้ว — updateJob/rpc_update_job เขียนงบทับเสมอ จึงส่งค่าเดิมผ่านไป
+                    //   (แปลงไป-กลับแบบเดียวกับตอนเปิดฟอร์มเดิม = ค่าที่บันทึกไม่เปลี่ยน)
+                    budgetSalePrice: job.budgetSalePrice, budgetCosts: costFormToApi(costFormFromJob(job.budgetCosts)),
                     installSites: sitesToApi(sites), planLat: c?.lat, planLng: c?.lng,
                   })
                 }, 'บันทึกแล้ว')) close()
@@ -2330,12 +2368,9 @@ export default function JobDetailPage() {
               <InstallSitesEditor sites={editSites} onChange={setEditSites} max={editForm.lbsQtyRequired - 1} />
             </div>
           )}
-          <div className="budget-legend">Project Budget</div>
-          <BudgetFields
-            sale={editForm.salePrice} costs={editCosts}
-            onSale={v => setEditForm({ ...editForm, salePrice: v })}
-            onCosts={setEditCosts}
-          />
+          <div className="muted" style={{ fontSize: 12.5 }}>
+            งบประมาณ (ราคาขาย + 7 หมวด) แก้ที่ปุ่ม <b>แก้ไขงบประมาณ</b> ในแผง Project Budget — ฟอร์มนี้ไม่แตะตัวเลขงบ
+          </div>
         </Modal>
       )}
 

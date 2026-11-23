@@ -4213,21 +4213,27 @@ function assertNotOwnRequest(req: ApprovalRequest, actor: User): void {
     throw new Error('คำขอนี้คุณเป็นผู้ส่งเอง — ต้องให้ผู้อนุมัติคนอื่นพิจารณา (รอ Division พิจารณา)')
 }
 
-/** 0093: ออก PR — จำนวน/ราคาที่ Division เห็นตอนขอ ต้องตรงกับตอนอนุมัติ (คำขอเก่าก่อน 0093 ไม่มี snapshot = ข้าม) */
-function assertPrSnapshotFresh(db: DB, req: ApprovalRequest): void {
+/**
+ * 0093: ออก PR — รายการที่ถูกแก้ (จำนวน/ราคา) หรือถูกลบหลังส่งคำขอ · คืนชื่อวัสดุ (ว่าง = สดอยู่)
+ * คำขอเก่าก่อน 0093 ไม่มี snapshot = ข้าม · ใช้ร่วม approveRequest (บล็อก) กับหน้ารออนุมัติ (เตือนก่อนกด — เฟส 3)
+ */
+export function prSnapshotChanges(db: DB, req: ApprovalRequest): string[] {
   const snap = req.payload.snapshot
-  if (!snap?.length) return
-  const changed = snap.filter(s => {
+  if (!snap?.length) return []
+  return snap.filter(s => {
     const r = db.accessoryRequests.find(x => x.id === s.id)
     return !r || r.qtyRequested !== s.qty || (r.unitPrice ?? null) !== s.unitPrice
+  }).map(s => {
+    const r = db.accessoryRequests.find(x => x.id === s.id)
+    return db.items.find(i => i.id === r?.itemId)?.name ?? 'รายการที่ถูกลบ'
   })
-  if (changed.length > 0) {
-    const names = changed.map(s => {
-      const r = db.accessoryRequests.find(x => x.id === s.id)
-      return db.items.find(i => i.id === r?.itemId)?.name ?? 'รายการที่ถูกลบ'
-    })
+}
+
+/** 0093: ออก PR — จำนวน/ราคาที่ Division เห็นตอนขอ ต้องตรงกับตอนอนุมัติ */
+function assertPrSnapshotFresh(db: DB, req: ApprovalRequest): void {
+  const names = prSnapshotChanges(db, req)
+  if (names.length > 0)
     throw new Error(`คำขอล้าสมัย — รายการถูกแก้หลังส่งคำขอ (${names.join(', ')}) · กรุณาตีกลับแล้วให้ Project ส่งคำขอใหม่`)
-  }
 }
 
 export function approveRequest(db: DB, actor: User, p: { requestId: string }): DB {
@@ -4724,7 +4730,11 @@ export function stockSummary(db: DB, stockId: string) {
   const inStock = units.filter(u => u.status === 'in_stock')
   const pending = inStock.filter(u => unitStockState(u, today) === 'pending').length
   const unknown = inStock.filter(u => unitStockState(u, today) === 'unknown').length
+  // 0084: ดึงเข้า Job ได้เฉพาะเครื่องที่มี Contract No. แล้ว — Dashboard ต้องไม่เรียก On Hand ว่า "พร้อมดึง" ทั้งก้อน (เฟส 3)
+  const hasContract = (u: LbsUnit) => !!u.contractNo?.trim()
   return {
+    noContract: inStock.filter(u => !hasContract(u)).length,                // ในคลังแต่ยังไม่มีสัญญา = ดึงไม่ได้
+    drawable: inStock.filter(u => hasContract(u) && unitStockState(u, today) === 'on_hand').length,
     total: units.length,
     available: inStock.length,
     pending,                                    // in_stock แต่ ETA ยังไม่ถึง — ของอยู่ระหว่างขนส่ง

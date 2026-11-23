@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { useStore, can } from '../data/StoreContext'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useStore, can, ownsJob } from '../data/StoreContext'
+import { jobNextStep, isMyTurn, deptNames, jobListMatches } from '../data/flow'
 import { deriveJobStatus, jobStatusPhase, jobAllocatedQty, jobDelivery, todayIso, parseLatLng, DUE_WARN_DAYS } from '../data/logic'
 import { BudgetFields, CoordInput, DeliveryBadge, InstallSitesEditor, JobStatusBadge, Modal, toBudgetNum, useTryAction, emptyCostForm, costFormToApi, sitesToApi, type CostForm, type InstallSite } from '../ui/components'
 import { fmtDate, JOB_STATUS_LABEL } from '../ui/format'
@@ -12,7 +13,11 @@ export default function JobsPage() {
   const { db, user, act } = useStore()
   const navigate = useNavigate()
   const tryAction = useTryAction()
-  const [filter, setFilter] = useState<(typeof FILTERS)[number]>('active')
+  // เฟส 3: ตัวกรองอยู่ใน URL (?f=) — การ์ด Dashboard ลิงก์มาหน้าที่กรองไว้แล้ว · กดย้อนกลับได้ตัวกรองเดิม
+  const [params, setParams] = useSearchParams()
+  const fParam = params.get('f') as (typeof FILTERS)[number] | null
+  const filter: (typeof FILTERS)[number] = fParam && FILTERS.includes(fParam) ? fParam : 'active'
+  const setFilter = (f: (typeof FILTERS)[number]) => setParams(p => { const n = new URLSearchParams(p); n.set('f', f); return n }, { replace: true })
   const [mineOnly, setMineOnly] = useState(false)   // 0042: กรองเฉพาะงานที่ตัวเองเปิด
   const [showCreate, setShowCreate] = useState(false)
   // planCoord = พิกัดจุดติดตั้งที่ 1 (0060) — เก็บเป็นข้อความ "lat, lng" แปลงตอน submit
@@ -28,14 +33,10 @@ export default function JobsPage() {
   // เรียงตาม "กำหนดส่ง" ใกล้สุดก่อน (sync Dashboard Job List) — งานที่ยังไม่ระบุกำหนดไปท้ายรายการ
   // งานที่จบแล้ว (installed/cancelled) ไม่มีอะไรต้องเร่ง → เรียงใหม่→เก่าตามเดิม
   // 0075: เรียง/เตือนจาก jobDelivery ตัวเดียวกับ Dashboard — ห้ามคำนวณ daysLeft < 0 เองอีก
-  const allJobs = db.jobs.map(j => ({ job: j, status: deriveJobStatus(db, j), d: jobDelivery(db, j, today) }))
+  const allJobs = db.jobs.map(j => ({ job: j, status: deriveJobStatus(db, j), d: jobDelivery(db, j, today), step: jobNextStep(db, j, today) }))
   const jobs = allJobs
-    .filter(({ status, d }) =>
-      filter === 'all' ? true
-      : filter === 'active' ? status !== 'installed' && status !== 'cancelled'
-      : filter === 'at_risk' ? d.atRisk          // ไม่ใช่สถานะงาน แต่เป็น "ใบที่ต้องลงมือวันนี้"
-      : status === filter)
-    .filter(({ job }) => !mineOnly || job.openedBy === user?.id)
+    // เฟส 3: ตัวกรองสถานะ + "เฉพาะงานของฉัน" (ownsJob — กติกาเดียวกับป้าย) อยู่ที่ flow.ts มีเทสต์
+    .filter(row => jobListMatches(row, filter, mineOnly, user))
     .reverse()
     .sort((a, b) => {
       const done = (s: typeof a.status) => s === 'installed' || s === 'cancelled'
@@ -118,13 +119,13 @@ export default function JobsPage() {
           <table>
             <thead>
               <tr>
-                <th>Job No.</th><th>ลูกค้า / Scope</th><th>ผู้รับผิดชอบ</th><th>สถานที่ติดตั้ง</th><th>กำหนดส่ง</th><th>สถานะกำหนดส่ง</th>
+                <th>Job No.</th><th>ลูกค้า / Scope</th><th>ขั้นต่อไป · ใคร</th><th>ผู้รับผิดชอบ</th><th>สถานที่ติดตั้ง</th><th>กำหนดส่ง</th><th>สถานะกำหนดส่ง</th>
                 <th>LBS (ดึงแล้ว/Scope)</th><th>สถานะ</th>
               </tr>
             </thead>
             <tbody>
-              {jobs.length === 0 && <tr><td colSpan={8}><div className="empty">ไม่มี Job ในสถานะนี้</div></td></tr>}
-              {jobs.map(({ job, status, d }) => {
+              {jobs.length === 0 && <tr><td colSpan={9}><div className="empty">ไม่มี Job ในสถานะนี้</div></td></tr>}
+              {jobs.map(({ job, status, d, step }) => {
                 // 0059: jobAllocatedQty นับ allocated + issued แล้ว — ไม่ต้องแยกเคสตามสถานะอีก
                 //   (workaround เดิมมีเพราะฟังก์ชันนับแค่ allocated ทำให้งานที่เบิกแล้วโชว์ 0/N)
                 const allocated = jobAllocatedQty(db, job.id)
@@ -132,9 +133,18 @@ export default function JobsPage() {
                   <tr key={job.id} className="clickable" onClick={() => navigate(`/jobs/${job.id}`)}>
                     <td><b>{job.jobNo}</b></td>
                     <td>{job.customerName}<div className="muted">{job.scope}</div></td>
+                    {/* เฟส 3: ขั้นต่อไปของทุกงานจากหน้ารายการ — ไม่ต้องเปิดทีละงาน · คอลัมน์ที่ 3 ให้เห็นโดยไม่ต้องเลื่อนตาราง */}
+                    <td style={{ minWidth: 170 }}>
+                      <b style={{ fontSize: 13 }}>{step.title}</b>
+                      {isMyTurn(step, user, job) && <span className="badge blue" style={{ marginLeft: 6 }}>ถึงคิวคุณ</span>}
+                      {step.who.length > 0 && <div className="muted" style={{ fontSize: 12 }}>👤 {deptNames(step.who)}</div>}
+                    </td>
                     <td>
                       {job.openedBy ? userOf(job.openedBy) : <span className="muted">ไม่ระบุ</span>}
-                      {isProject && job.openedBy === user?.id && <span className="badge green" style={{ marginLeft: 6 }}>ของฉัน</span>}
+                      {/* เฟส 3: ป้ายตามสิทธิ์จริง (ownsJob — ใบเก่าที่ไม่มีผู้เปิด = ทำได้ทุกคน) ไม่ใช่เทียบ id ตรง ๆ */}
+                      {isProject && (ownsJob(user, job)
+                        ? <span className="badge green" style={{ marginLeft: 6 }}>ของฉัน</span>
+                        : <span className="badge neutral" style={{ marginLeft: 6 }} title="ดูข้อมูลได้ครบ แต่ทำรายการได้เฉพาะผู้เปิดงาน (หรือ Manage)">🔒 ของคนอื่น</span>)}
                     </td>
                     <td>{job.installLocation || '-'}{job.installSites?.length ? <span className="badge blue" style={{ marginLeft: 6 }}>+{job.installSites.length} จุด</span> : null}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
@@ -183,6 +193,7 @@ export default function JobsPage() {
             <button className="primary" onClick={submit}>เปิด Job</button>
           </>}
         >
+          <div className="budget-legend">1 · ข้อมูลงาน</div>
           <label className="field"><span>Job No. * (กรอกเลขงานเอง — ห้ามซ้ำ)</span>
             <input className="mono" value={form.jobNo} onChange={e => setForm({ ...form, jobNo: e.target.value })} placeholder="เช่น JOB-2026-0005" />
           </label>
@@ -197,6 +208,11 @@ export default function JobsPage() {
           <label className="field"><span>Scope งาน</span>
             <textarea rows={2} value={form.scope} onChange={e => setForm({ ...form, scope: e.target.value })} placeholder="ติดตั้ง LBS สถานีย่อย 4 จุด" />
           </label>
+          <label className="field"><span>จำนวน LBS ตาม Scope (เครื่อง) *</span>
+            <input type="number" min={1} value={form.lbsQtyRequired}
+              onChange={e => setForm({ ...form, lbsQtyRequired: Number(e.target.value) })} />
+          </label>
+          <div className="budget-legend">2 · จุดติดตั้ง</div>
           <div className="row">
             <label className="field"><span>สถานที่ติดตั้ง{form.lbsQtyRequired > 1 ? ' (จุดที่ 1)' : ''}</span>
               <input value={form.installLocation} onChange={e => setForm({ ...form, installLocation: e.target.value })} />
@@ -208,17 +224,13 @@ export default function JobsPage() {
               <input type="date" value={form.requiredDate} onChange={e => setForm({ ...form, requiredDate: e.target.value })} />
             </label>
           </div>
-          <label className="field"><span>จำนวน LBS ตาม Scope (เครื่อง) *</span>
-            <input type="number" min={1} value={form.lbsQtyRequired}
-              onChange={e => setForm({ ...form, lbsQtyRequired: Number(e.target.value) })} />
-          </label>
           {form.lbsQtyRequired > 1 && (
             <div style={{ marginBottom: 4 }}>
               <div className="muted" style={{ marginBottom: 6 }}>จุดติดตั้งเพิ่มเติม (ติดตั้งหลายจุดได้เมื่อมี LBS มากกว่า 1 เครื่อง)</div>
               <InstallSitesEditor sites={installSites} onChange={setInstallSites} max={form.lbsQtyRequired - 1} />
             </div>
           )}
-          <div className="budget-legend">Project Budget</div>
+          <div className="budget-legend">3 · Project Budget (ราคาขาย + ต้นทุน 7 หมวด)</div>
           <BudgetFields
             sale={form.salePrice} costs={costs}
             onSale={v => setForm({ ...form, salePrice: v })}
