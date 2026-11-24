@@ -315,14 +315,15 @@ export default function StandardsPage() {
         {canManage ? ' · คุณมีสิทธิ์เพิ่ม/แก้ไข' : ' · เพิ่ม/แก้ไขได้เฉพาะ Project / Division / Manage'}
       </div>
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-        <button className={tab === 'price' ? 'primary' : ''} onClick={() => setTab('price')}>
+      {/* ธีม Glass รอบ 2: แท็บแคปซูลตามแบบ (เดิมปุ่ม primary/ธรรมดา) — พฤติกรรมเหมือนเดิม */}
+      <div className="subtabs seg">
+        <button className={tab === 'price' ? 'on' : ''} onClick={() => setTab('price')}>
           💰 Standard Price list ({prices.length})
         </button>
-        <button className={tab === 'drawing' ? 'primary' : ''} onClick={() => setTab('drawing')}>
+        <button className={tab === 'drawing' ? 'on' : ''} onClick={() => setTab('drawing')}>
           📐 Standard Drawing ({drawings.length})
         </button>
-        <button className={tab === 'bom' ? 'primary' : ''} onClick={() => setTab('bom')}>
+        <button className={tab === 'bom' ? 'on' : ''} onClick={() => setTab('bom')}>
           📋 Standard BOM List ({boms.length})
         </button>
       </div>
@@ -353,7 +354,7 @@ export default function StandardsPage() {
                   )}
                   {prices.map(d => (
                     <tr key={d.id}>
-                      <td className="mono">{d.priceNo || '-'}</td>
+                      <td className="mono" style={{ fontWeight: 700 }}>{d.priceNo || '-'}</td>
                       <td>{d.title}<div className="muted">{d.description || ''}</div></td>
                       <td>
                         {d.fileUrl
@@ -422,7 +423,7 @@ export default function StandardsPage() {
                     const files = stdDrawingFiles(d)
                     return (
                     <tr key={d.id}>
-                      <td className="mono">{d.drawingNo || '-'}</td>
+                      <td className="mono" style={{ fontWeight: 700 }}>{d.drawingNo || '-'}</td>
                       <td>{d.title}<div className="muted">{d.description || ''}</div></td>
                       <td>
                         {files.length === 0 && <span className="badge amber">ยังไม่แนบไฟล์</span>}
@@ -486,8 +487,8 @@ export default function StandardsPage() {
                 <div className="panel-head">
                   <h3>
                     {b.bomNo && <span className="mono">{b.bomNo} · </span>}{b.title}
-                    <span className="badge blue" style={{ marginLeft: 8 }}>{lines.length} รายการ</span>
-                    {total !== undefined && <span className="badge neutral" style={{ marginLeft: 6 }}>ประมาณการ {fmtBaht(total)}</span>}
+                    <span className="badge neutral" style={{ marginLeft: 8 }}>{lines.length} รายการ</span>
+                    {total !== undefined && <span className="badge violet" style={{ marginLeft: 6 }}>ประมาณการ {fmtBaht(total)}</span>}
                     {unlinked > 0 && <span className="badge amber" style={{ marginLeft: 6 }}>ยังไม่ผูกฐานข้อมูล {unlinked}</span>}
                   </h3>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

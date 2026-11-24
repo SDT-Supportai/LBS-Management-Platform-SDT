@@ -11,6 +11,7 @@ import {
 import { draftPhotoKey, putDraftPhoto, getDraftPhoto, deleteDraftPhoto, pruneDraftPhotos } from '../ui/draftPhotos'
 import { compressImage } from '../ui/photo'
 import { AssignTeamModal } from '../ui/AssignTeamModal'
+import { UnitEvidenceCard } from '../ui/UnitEvidenceCard'
 import type { ServiceIssueKind } from '../data/logic'
 
 const ISSUE_KIND: Record<ServiceIssueKind, { label: string; cls: string }> = {
@@ -754,6 +755,11 @@ export default function ServicePage() {
                 🏁 ปิดงาน ({s.installed}/{s.total})
               </button>
             </>}>
+            {/* ธีม Glass (canvas หน้า 7): หัว = ป้ายติดตั้งครบ x/y + ลูกค้า · สถานที่ — การ์ดรายเครื่องด้านล่าง */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <span className={`badge ${s.total > 0 && s.installed === s.total ? 'green' : 'neutral'}`}>ติดตั้งแล้ว {s.installed}/{s.total} เครื่อง</span>
+              {s.blocked > 0 && <span className="badge red">ติดตั้งไม่ได้ {s.blocked}</span>}
+            </div>
             <p className="muted" style={{ marginBottom: 12 }}>
               {unitJob.customerName} · 📍 {unitJob.issueLocation || unitJob.installLocation || '-'} — ยืนยันทีละเครื่อง
               พร้อม Check-in GPS + รูปถ่ายของเครื่องนั้น ๆ
@@ -763,10 +769,10 @@ export default function ServicePage() {
                 <><br />แสดงเฉพาะ <b>{s.outTotal} เครื่องที่เบิกออกมาแล้ว</b> · อีก <b>{s.waiting} เครื่อง</b> รอ Project เบิกให้ในรอบถัดไป</>
               )}
             </p>
-            <div className="table-scroll">
-              <table>
-                <thead><tr><th>Serial (LVB / OM)</th><th>จุดติดตั้ง</th><th>สถานะ</th><th></th></tr></thead>
-                <tbody>
+            {/* ธีม Glass (canvas หน้า 7): เดิมเป็นตาราง → การ์ดหลักฐานรายเครื่อง (รูปย่อ · วันที่ · ช่าง · GPS · บันทึก)
+                สถานะ/ปุ่ม/เงื่อนไขสิทธิ์ ยกมาจากตารางเดิมทั้งชุด ไม่เปลี่ยน — การ์ด (UnitEvidenceCard) แสดงผลอย่างเดียว */}
+            <div className="unit-ev-sec">หลักฐานรายเครื่อง</div>
+            <div className="unit-ev-list">
                   {unitsOut(unitJob.id).map(u => {
                     const st = unitInstallState(db, u.id)
                     const r = lastInstallRow(u.id)
@@ -777,15 +783,19 @@ export default function ServicePage() {
                     // 0086: งานหลายจุด — ช่างต้องรู้ว่าเครื่องนี้ไปสถานีไหน กำหนดวันไหน
                     const site = unitJobSite(db, u)
                     return (
-                      <tr key={u.id}>
-                        <td className="mono">{u.serialLvb}<div className="muted mono">{u.serialOm}</div></td>
-                        <td>
+                      <UnitEvidenceCard key={u.id} serialLvb={u.serialLvb} serialOm={u.serialOm}
+                        evidence={st === 'installed' && r ? {
+                          date: r.installedDate, lat: r.checkinLat, lng: r.checkinLng, photoUrl: r.photoUrl, note: r.note,
+                          by: r.installedByMemberId ? memberFullName(db, r.installedByMemberId) : undefined,
+                        } : undefined}
+                        photoLabel={st === 'blocked' ? 'ติดตั้งไม่ได้' : 'รอติดตั้ง'}
+                        site={<>
                           📍 {site ? `จุดที่ ${site.no} · ${site.location || '-'}` : '-'}
                           {site?.lat != null && site?.lng != null && <> · <a href={mapsUrl(site.lat, site.lng)} target="_blank" rel="noreferrer">🧭 นำทาง</a></>}
                           {site?.requiredDate && <div className="muted" style={{ fontSize: 12 }}>กำหนด {fmtDate(site.requiredDate)}</div>}
-                        </td>
-                        <td>
-                          {st === 'installed' && <span className="badge green">✅ ติดตั้งแล้ว {fmtDate(r?.installedDate)}</span>}
+                        </>}
+                        status={<>
+                          {st === 'installed' && <span className="badge green">✅ ติดตั้งแล้ว</span>}
                           {st === 'blocked' && <><span className="badge red">⚠️ ติดตั้งไม่ได้</span><div className="muted">{r?.reason}</div></>}
                           {st === 'pending' && <span className="badge neutral">รอติดตั้ง</span>}
                           {/* 0090: ผลเดิมถูกยกเลิก (Division อนุมัติแล้ว) — บอกช่างว่าทำไมเครื่องนี้กลับมารอติดตั้ง */}
@@ -800,8 +810,8 @@ export default function ServicePage() {
                           {returnPending && (
                             <div><span className="badge amber" title={returnReq?.payload.reason}>⏳ ขอคืนเข้าคลัง — รอ Division พิจารณา</span></div>
                           )}
-                        </td>
-                        <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        </>}
+                        actions={<>
                           {/* 0090: ยืนยันผิดเครื่อง → ขอยกเลิกผล (ไม่แก้ตรง · ต้องผ่าน Division) */}
                           {/* 0091: Project ขอได้เฉพาะงานที่ตัวเองเปิด (DB ตรวจซ้ำที่ rpc_request_revert_install) */}
                           {/* 0094 (มติ Q1): ติดตั้งไม่ได้ → ขอคืนเข้า LBS Inventory (ต้องคืนก่อนปิดงาน · ไม่มีตัดจำหน่าย) */}
@@ -833,12 +843,9 @@ export default function ServicePage() {
                               )}
                             </>
                           )}
-                        </td>
-                      </tr>
+                        </>} />
                     )
                   })}
-                </tbody>
-              </table>
             </div>
           </Modal>
         )

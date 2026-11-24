@@ -1184,6 +1184,29 @@ PGlite harness: สร้างบัญชี Manage ตั้งต้น (`ro
 เทสต์: เพิ่ม 11 · รวม 499 · ตาราง `docs/dept-status-matrix.md` เพิ่มฉาก "Draft — ในคลังไม่มีเครื่องที่มี Contract No." · fixture เดิม 2 ตัวที่ถือว่า Project ดึงได้ เติมเครื่องว่าง (`spare`) ให้ตรงสมมติฐาน
 ทดสอบบนเดโม (2026-11-24): ใบเบิกบางส่วน + เครื่องติดตั้งไม่ได้ → ปุ่มขอคืน 2 จุด 🔒 + เหตุผล · Service งานของฉัน "มอบหมายทีมช่าง" ตรงเมนู 1 Unassigned · ล้าง Contract No. เครื่องว่าง → Division งานของฉันลิงก์ `/stocks?f=no_contract` · Project หน้า Job ขั้นต่อไปเป็น Division + ปุ่มดึง 🔒 · console ไม่มี error
 
+### 11.8 ธีม LBS Glass UI (2026-11-24) — CSS ล้วน ไม่แตะ logic
+แบบ: canvas "LBS Glass UI" (claude.ai/artifact/KKMjErSWtoCEhN5KJTDWcA) หน้า 02–15 = **กระจกโทนสว่าง** (มีแค่ Login ที่เป็นพื้นเข้ม)
+- token (`:root`): `--bg` #eef2fb ตามแบบ · `--glass-bg/-line/-shadow` · `--surface` (เดิมถูกอ้างแต่ไม่เคยนิยาม) · `--muted` #64748b → **#52617a** (เดิม 4.24:1 บนพื้นใหม่ · 4.37:1 บน --primary-soft ตก AA อยู่แล้ว → ตอนนี้ ≥4.5 ทุกพื้น)
+- หัวข้อธีมท้าย `styles.css`: พื้นไล่สีนิ่ง (ไม่เคลื่อน · มือถือ background-attachment: scroll) · `.card/.panel/.next-step` แผงกระจกมุม 16px · sidebar/topbar/หัวมือถือ กรมท่า #14224f → #0b1433 · ปุ่มหลักไล่สีน้ำเงิน→คราม · Popup มุม 20px เฉพาะจอ >640px · พิมพ์ = ขาวล้วน ขอบ #999
+- 🔴 **ตั้งใจไม่ใส่ `backdrop-filter` ที่แผง** (แบบใส่ blur(18px) ทุกแผง): แผนที่ (`.map-wrap`) อยู่ใน `.panel` · พิสูจน์บนเดโม: ใส่ blur ให้แผงชั่วคราว → แผนที่ "เต็มจอ" เหลือ 986×135 ติดในกรอบแผง · เอาออก → 1280×800 · Popup ที่ลอง 4 จุดวาดนอกแผง แต่ไม่มี portal รับประกัน · blur อยู่ได้เฉพาะ Popup / แผงหน้า Dashboard (ของเดิม) / Login — ด่านใน `theme.test.ts`
+- แก้ตามทาง: ชื่อแอปบนหัวมือถือ (`.mobile-header b`) เป็นตัวเข้มบนพื้นกรมท่ามาตลอด (กฎ `b { color: var(--text) }` ทับ) → ขาว
+- ยังไม่ทำ (ต้องตัดสินใจ): ส่วนที่แบบมีแต่แอปไม่มี — กล่องงานค้างระหว่างแผนก (Dashboard) · ค้นหาทั้งระบบ Ctrl K · เมนูกระโดดในหน้า Job · Export ใน Audit · เส้นทางของเครื่อง (Inventory)
+
+เทสต์: `theme.test.ts` 9 (อ่าน styles.css ตรง) · รวม 508
+ทดสอบบนเดโม (2026-11-24): Dashboard / Jobs / Job Detail / LBS Inventory / Site Installation · Popup 4 จุดคลุมเต็มจอ · แผนที่เต็มจอ 1280×800 · จอ 375px ไม่ล้น 7 หน้า (หน้า Users ล้นเพราะป้าย "Demo (localStorage)…" ที่ขึ้นเฉพาะเดโม — มีมาก่อน) · ⚠️ console มี warning `<div>` ใน `<option>` ใน Popup หน้า Job Detail (มีมาก่อน ไม่เกี่ยวกับธีม)
+- แก้แล้ว (2026-11-24): warning `<div>` ใน `<option>` = option "เบิกจากคลังคงเหลือ" ในกล่อง "+ เพิ่มวัสดุ" (JobDetailPage) → ข้อความล้วน · ด่าน `optionText.test.ts` (อ่าน .tsx ทุกไฟล์ด้วย TS parser)
+
+### 11.9 ธีม LBS Glass UI รอบ 2 (2026-11-24) — ชิ้นส่วนรายหน้า เฉพาะหน้าที่ไม่มี Flow
+หน้า: Audit · Warranty · Standards · Map · Material Master · Users (DevSettings) — className/CSS ล้วน ไม่แตะข้อมูล/สิทธิ์/state
+- สีป้ายรวมไว้ที่ `src/ui/tone.ts` (เทสต์ `tone.test.ts`): Audit ประเภทข้อมูล (อนุมัติ เหลือง · PR/PO เขียว · คลัง ฟ้า · งวดเงิน ม่วง · อื่นเทา — ไม่ใช้แดงทั้งประเภท) · แผนก (Division ม่วง · Project ฟ้า · Purchasing เหลือง · Service เขียว · Manage เทา · VIP ม่วง) · ประวัติคลัง (เบิก แดง · รับเข้า เขียว · ปรับ/ย้อน เหลือง · ตั้งต้น เทา) · รอตรวจรับ (ช่างคืน เขียว · โอน/คืน ฟ้า) · วิธีจัดหา (คลัง ฟ้า · สั่งซื้อ ม่วง) · เอกสารรับมอบ PAC เขียว
+- CSS ใหม่ท้าย `styles.css`: `.badge.violet` · `input.search-input` (แว่นขยายเป็น background-image) · `.panel.accent-amber` · `.subtabs.seg` (แท็บแคปซูล — hover ต้อง `:not(.on):not(.active)` ไม่งั้นชี้แล้วแท็บที่เลือกกลายเป็นขาว · เจอบนเดโม) · `.chk-chip` (checkbox ในชิป สีตาม `:has(:checked)`) · `.card .value .of` · `.map-box` มุม 16px · `tr.row-off`
+- ไม่ทำตามแบบ: หมุดแผนที่สีอ่อนลง (ตัวเลขขาวไม่ผ่าน AA) · จุดกะพริบ/หมุดเด้ง · ฟีเจอร์ที่แบบมีแต่แอปไม่มี (chips กรอง+จำนวน, Export Audit, แบ่งหน้า, ค้นหาใน Standards/Users, avatar, drawer รายละเอียด)
+เทสต์: `theme.test.ts` +6 · `tone.test.ts` 7 · `optionText.test.ts` 2 · รวม 523
+ทดสอบบนเดโม (2026-11-24, Manage): 6 หน้าแสดงผลถูก · แท็บ Standards สลับได้ · ชิปแผนที่ติ๊กได้ · popup ประวัติคลังเปิด/ปิดได้
+- เพิ่ม (2026-11-24): **Service (Installation) → Popup "หลักฐาน/ยืนยันติดตั้งรายเครื่อง"** (หน้านี้มี Flow — แตะแค่ส่วนแสดงผล) ตาราง → การ์ดตาม canvas หน้า 7: `src/ui/UnitEvidenceCard.tsx` (รูปย่อกดเปิดเต็ม ผ่าน `safeHttpUrl` · วันที่ · ช่าง · GPS · บันทึก) · ป้ายสถานะ/ปุ่ม/เงื่อนไขสิทธิ์ยกจากตารางเดิมทั้งชุดผ่าน slot `status`/`actions` · หัว Popup มีป้าย "ติดตั้งแล้ว x/y" · จอ ≤560px รูปขึ้นบน · ไม่ทำ: checklist "พร้อมปิดงานหรือยัง" + ส่วนทีม/ออกหน้างาน ในแบบ (แตะ Flow) · เทสต์ `UnitEvidenceCard.test.tsx` 4 + theme 1 · รวม 528 · เดโม: JOB-2026-0004 เดสก์ท็อป + 375px ไม่ล้น
+- เพิ่ม (2026-11-24): **Dashboard — การ์ด KPI + Job List แบบ Glass** ตาม canvas หน้า 2 (ไม่แตะ MyWorkPanel/Flow): 5 การ์ด → 4 (`.kpi-grid` auto-fit ≥270px) · ชิ้น `src/ui/kpi.tsx` (StackBar กว้างตามสัดส่วนของทั้งหมด ไม่ยืดเต็ม · KpiLegend · ProgressRing ครบ = เขียว+ถูก) · ตัวเลข/ลิงก์ชุดเดิมทั้งหมด · คำเตือนที่แบบไม่มี ขึ้นเป็น `.kpi-notes` เมื่อมีค่า · Job List: Job No.+ลูกค้าคอลัมน์เดียว · LBS ชิดขวา เขียว=ดึงครบ/น้ำตาล=ยังไม่ครบ · เทสต์ `kpi.test.tsx` 7 + theme 1 · รวม 536 · เดโม: 823px 2 คอลัมน์ · 1440px 4 คอลัมน์ ไม่ล้น
+- เพิ่ม (2026-11-24): **Dashboard — LBS Stock Balance แบบการ์ด Glass** (เดิมตาราง 8 คอลัมน์เหนือ Job List) → `src/ui/StockBalance.tsx` วางเคียง Job List (`.dash-split` 2 : 1 · จอแคบเรียงลง) ตามแบบ · แถวต่อคลัง = ชื่อ + ยอด + แถบส่วนประกอบ (On Hand เขียว · Pending เหลือง · ไม่ระบุ ETA เทา · ถูกดึงเข้า Job ม่วง · เบิกแล้ว ฟ้า — ต่างจากแบบที่เป็นแถบสีเดียวบอกสัดส่วนคลัง) + บรรทัดตัวเลขที่มีค่า (ไม่มี Contract No. แดง) · สรุป 5 ช่องแถวเดียว · Job List ช่อง 10px + ป้ายตัดบรรทัดได้ (ไม่งั้นแคบลงแล้วเลื่อนข้าง LBS หลุด) · เทสต์ `StockBalance.test.tsx` 4 + theme 1 · รวม 541 · เดโม 1440px เคียงกันไม่เลื่อนข้าง · 375px เรียงลงไม่ล้น
+
 ## 12. Gotchas / ข้อควรระวัง
 
 

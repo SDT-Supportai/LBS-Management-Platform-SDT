@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { useStore, can } from '../data/StoreContext'
 import { Modal, useConfirm, usePrompt, useToast, useTryAction } from '../ui/components'
 import { fmtBaht, fmtDateTime, DEPT_LABEL } from '../ui/format'
+import { movementTone, returnKindTone, procurementTone } from '../ui/tone'
 import {
   type Cell, type NumKind, type ReportCol, type SumTable,
   SHEET_SUMMARY, SHEET_GUIDE, buildWorkbook, dataSheet, dataSheetName,
@@ -590,7 +591,7 @@ export default function MasterDataPage() {
       {/* ---------------- 0080: รอตรวจรับเข้าคลัง (คำขอคืน/โอน/ช่างคืน จาก Job) ----------------
           เฟส 4: ย้ายขึ้นบนสุดของหน้า (เดิมอยู่ใต้ค้นหา + ฐานข้อมูลวัสดุ) · Purchasing/Manage เห็นเสมอ (ว่าง = ✅ ไม่มี) */}
       {(pendingReturns.length > 0 || canReceive) && (
-        <div className="panel">
+        <div className={pendingReturns.length > 0 ? 'panel accent-amber' : 'panel'}>
           <div className="panel-head">
             <h3>📥 รอตรวจรับเข้าคลัง ({pendingReturns.length})
               <span className="muted" style={{ fontWeight: 400 }}> · ของที่ Job ขอคืน — ยอดคลังยังไม่เพิ่มจนกว่า Purchasing จะนับของและรับเข้า</span>
@@ -619,7 +620,7 @@ export default function MasterDataPage() {
                         {jb?.terminalStatus === 'cancelled' && <div><span className="badge red">Job ยกเลิกแล้ว</span></div>}
                       </td>
                       <td>{it?.name ?? '-'}<div className="muted mono" style={{ fontSize: 11 }}>{it?.epicorCode ?? it?.code}</div></td>
-                      <td><span className={`badge ${s.kind === 'field_return' ? 'blue' : 'neutral'}`}>{STOCK_RETURN_LABEL[s.kind]}</span></td>
+                      <td><span className={`badge ${returnKindTone(s.kind)}`}>{STOCK_RETURN_LABEL[s.kind]}</span></td>
                       <td style={{ textAlign: 'right' }}><b>{s.qty}</b> {uom}</td>
                       <td style={{ textAlign: 'right' }}>{fmtBaht(s.unitCost)}</td>
                       <td className="muted">{db.users.find(u => u.id === s.requestedBy)?.fullName ?? '-'}</td>
@@ -674,7 +675,7 @@ export default function MasterDataPage() {
         <div className="panel-head">
           <h3>ค้นหาวัสดุ</h3>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <input style={{ width: 300 }} value={search} onChange={e => setSearch(e.target.value)}
+            <input className="search-input" style={{ width: 300 }} value={search} onChange={e => setSearch(e.target.value)}
               placeholder="ชื่ออุปกรณ์ / รหัส Epicor / Lot No." />
             {term && <button className="small" onClick={() => setSearch('')} title="ล้างคำค้น">✕ ล้าง</button>}
             <span className="muted">
@@ -725,9 +726,8 @@ export default function MasterDataPage() {
                     <td className="mono">{i.epicorCode || '-'}</td>
                     <td>{i.name}</td>
                     <td>{i.uom}</td>
-                    <td>{i.stockableCentrally
-                      ? <span className="badge green">เก็บคลังคงเหลือ</span>
-                      : <span className="badge amber">สั่งซื้อเท่านั้น</span>}</td>
+                    <td><span className={`badge ${procurementTone(i.stockableCentrally)}`}>
+                      {i.stockableCentrally ? 'เก็บคลังคงเหลือ' : 'สั่งซื้อเท่านั้น'}</span></td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       {canMaster && <>
                         <button className="small" onClick={() => openEditItem(i)}>แก้ไข</button>{' '}
@@ -791,7 +791,7 @@ export default function MasterDataPage() {
         {stockOpen && <div className="table-scroll">
           <table>
             <thead>
-              <tr><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>Lot No.</th><th>คงเหลือ</th><th>ต้นทุนถัวเฉลี่ย</th><th>มูลค่า</th><th></th></tr>
+              <tr><th>รหัส Epicor</th><th>ชื่ออุปกรณ์</th><th>Lot No.</th><th>คงเหลือ</th><th style={{ textAlign: 'right' }}>ต้นทุนถัวเฉลี่ย</th><th style={{ textAlign: 'right' }}>มูลค่า</th><th></th></tr>
             </thead>
             <tbody>
               {stockItems.length === 0 && (
@@ -814,8 +814,8 @@ export default function MasterDataPage() {
                     <td>{i.name}</td>
                     <td className="mono">{lot || <span className="muted">-</span>}</td>
                     <td><b>{qty}</b> <span className="muted">{i.uom}</span></td>
-                    <td>{avg > 0 ? fmtBaht(avg) : <span className="muted">-</span>}</td>
-                    <td>{avg > 0 ? fmtBaht(qty * avg) : <span className="muted">-</span>}</td>
+                    <td style={{ textAlign: 'right' }}>{avg > 0 ? fmtBaht(avg) : <span className="muted">-</span>}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{avg > 0 ? fmtBaht(qty * avg) : <span className="muted">-</span>}</td>
                     <td style={{ whiteSpace: 'nowrap', textAlign: 'right' }}>
                       <button className="small" style={{ marginRight: 6 }} onClick={() => openLedger(i)}>📜 ประวัติ</button>
                       {canStock && <button className="small" style={{ marginRight: 6 }} title="แก้ Lot No. โดยไม่แตะยอดคงเหลือ" onClick={() => editLot(i)}>🏷 Lot</button>}
@@ -865,7 +865,7 @@ export default function MasterDataPage() {
                   <tr key={m.id} className={reversedBy ? 'muted' : undefined}>
                     <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(m.performedAt)}</td>
                     <td>
-                      <span className="badge neutral">{MOVEMENT_LABEL[m.type] ?? m.type}</span>
+                      <span className={`badge ${movementTone(m.type)}`}>{MOVEMENT_LABEL[m.type] ?? m.type}</span>
                       {reversedBy && <div><span className="badge amber" title={`ย้อนเมื่อ ${fmtDateTime(reversedBy.performedAt)}`}>↩️ ถูกย้อนแล้ว</span></div>}
                       {orig && <div className="muted" style={{ fontSize: 11 }}>ย้อนรายการ {fmtDateTime(orig.performedAt)}</div>}
                     </td>

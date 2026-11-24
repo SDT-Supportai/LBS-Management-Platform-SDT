@@ -4,6 +4,7 @@ import { useStore, can } from '../data/StoreContext'
 import { deptPermissionLabels, userOpenWork, userEditBlock } from '../data/admin'
 import { Modal, useConfirm, useToast, useTryAction } from '../ui/components'
 import { DEPT_LABEL } from '../ui/format'
+import { deptTone } from '../ui/tone'
 import { supabase } from '../lib/supabase'
 import type { Department, User } from '../types'
 
@@ -180,10 +181,10 @@ export default function DevSettingsPage() {
             <thead><tr><th>ชื่อ</th><th>อีเมล</th><th>แผนก</th><th>สถานะ</th><th></th></tr></thead>
             <tbody>
               {db.users.map(u => (
-                <tr key={u.id}>
+                <tr key={u.id} className={u.isActive ? undefined : 'row-off'}>
                   <td>{u.fullName}{u.id === user?.id && <span className="badge neutral" style={{ marginLeft: 6 }}>คุณ</span>}</td>
-                  <td>{u.email}</td>
-                  <td><span className="badge blue">{DEPT_LABEL[u.department]}</span></td>
+                  <td className="mono">{u.email}</td>
+                  <td><span className={`badge ${deptTone(u.department)}`}>{DEPT_LABEL[u.department]}</span></td>
                   <td>{u.isActive ? <span className="badge green">ใช้งานได้</span> : <span className="badge red">ปิดการใช้งาน</span>}</td>
                   <td>{canMaster && <button className="small" onClick={() => openEditUser(u)}>แก้ไข</button>}</td>
                 </tr>

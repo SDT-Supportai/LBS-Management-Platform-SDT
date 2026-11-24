@@ -9,6 +9,7 @@ import type { Job, JobWarranty, CloseoutFileKind, AcceptanceType } from '../type
 import { Modal, readAsDataUrl, useConfirm, useToast, useTryAction } from '../ui/components'
 import { CloseoutForm, initCloseoutDraft, closeoutMissing, buildCloseoutInput, openCloseoutFile, type CloseoutDraft } from '../ui/CloseoutForm'
 import { fmtDate, fmtDateTime } from '../ui/format'
+import { acceptanceTone } from '../ui/tone'
 import { supabase } from '../lib/supabase'
 import { uploadServiceDoc, removeServiceDocs } from '../data/remote'
 import { warrantyRowMatches, warrantyMatches, warrantyCounts, WARRANTY_URGENT_DAYS, docTypeForJob, type WarrantyFilter } from '../data/field'
@@ -138,7 +139,7 @@ export default function WarrantyPage() {
         รับงานจาก <b>ปิดงานติดตั้ง</b> → ติดตามระยะประกัน (งานติดตั้ง + ตัวเครื่อง LBS) → รับแจ้งซ่อม (S.O.) → รายงานซ่อมเสร็จ (S.R.)
       </div>
 
-      <div className="subtabs">
+      <div className="subtabs seg">
         <button className={tab === 'period' ? 'on' : ''} onClick={() => setTab('period')}>🛡️ Warranty Period ({rows.length})</button>
         <button disabled title="เฟส 2 — รับแจ้งซ่อม + S.O. No. อัตโนมัติ">🧰 Repair Requests <span className="badge neutral">เฟส 2</span></button>
         <button disabled title="เฟส 3 — รายงานซ่อมเสร็จ + S.R. No. อัตโนมัติ">📝 Service Reports <span className="badge neutral">เฟส 3</span></button>
@@ -146,7 +147,8 @@ export default function WarrantyPage() {
 
       {tab === 'period' && (
         <>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+          {/* ธีม Glass รอบ 2: แถบสรุป + ตัวกรองอยู่ในแผงกระจกตามแบบ (เนื้อในเหมือนเดิม) */}
+          <div className="panel"><div className="panel-body" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <span className="badge green">LBS ในประกัน {counts.lbs.active}</span>
             <span className="badge amber" title={`ใกล้หมดภายใน ${WARRANTY_URGENT_DAYS} วัน: LBS ${counts.lbs.urgent} เครื่อง`}>
               LBS ใกล้หมด ≤ 90 วัน {counts.lbs.expiring}{counts.lbs.urgent > 0 && ` (≤${WARRANTY_URGENT_DAYS} วัน ${counts.lbs.urgent})`}
@@ -159,7 +161,7 @@ export default function WarrantyPage() {
             )}
             {missing.length > 0 && <span className="badge amber">ปิดงานแล้วแต่ยังไม่มี Warranty {missing.length} Job</span>}
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <input placeholder="ค้นหา Job / ลูกค้า / Serial / เลขเอกสาร" value={q} onChange={e => setQ(e.target.value)} style={{ width: 280 }} />
+              <input className="search-input" placeholder="ค้นหา Job / ลูกค้า / Serial / เลขเอกสาร" value={q} onChange={e => setQ(e.target.value)} style={{ width: 280 }} />
               <select value={filter} style={{ width: 'auto' }} onChange={e => setFilter(e.target.value as Filter)}>
                 <option value="all">ทุกสถานะ</option>
                 <option value="active">ในประกัน</option>
@@ -172,7 +174,7 @@ export default function WarrantyPage() {
                 วันเริ่มนับ {sortAsc ? 'เก่า → ใหม่ ↑' : 'ใหม่ → เก่า ↓'}
               </button>
             </div>
-          </div>
+          </div></div>
 
           <div className="panel">
             <div className="table-scroll">
@@ -193,7 +195,7 @@ export default function WarrantyPage() {
                       <td style={{ whiteSpace: 'nowrap' }}><Link to={`/jobs/${job.id}`}><b>{job.jobNo}</b></Link></td>
                       <td>{job.customerName}<div className="muted" style={{ fontSize: 12 }}>{job.installLocation}</div></td>
                       <td style={{ whiteSpace: 'nowrap' }}>
-                        <span className="badge blue">{accLabel(job.acceptanceType)}</span>
+                        <span className={`badge ${acceptanceTone(job.acceptanceType)}`}>{accLabel(job.acceptanceType)}</span>
                         {job.acceptanceDocNo && <span className="mono" style={{ marginLeft: 6 }}>{job.acceptanceDocNo}</span>}
                         <div className="muted" style={{ fontSize: 12 }}>วันที่ลงนาม {fmtDate(job.acceptanceDate)}</div>
                         {/* เอกสารรับมอบอื่นที่แนบตามมา (เช่น PAC หลังปิดด้วย Handover) */}
@@ -234,7 +236,7 @@ export default function WarrantyPage() {
 
           {/* งานที่ปิดก่อน 0079 — ไม่มีข้อมูล ต้องบันทึกย้อนหลัง ไม่งั้นแจ้งซ่อม (เฟส 2) หา ref ไม่เจอ */}
           {missing.length > 0 && (
-            <div className="panel">
+            <div className="panel accent-amber">
               <div className="panel-head"><h3>ปิดงานแล้วแต่ยังไม่มีเอกสารรับมอบ / Warranty ({missing.length})</h3></div>
               <div className="panel-body muted" style={{ paddingBottom: 0 }}>
                 งานที่ปิดก่อนมีระบบ Warranty — บันทึกย้อนหลังเพื่อให้ขึ้นในตารางด้านบนและใช้อ้างอิงตอนรับแจ้งซ่อม
@@ -296,7 +298,7 @@ export default function WarrantyPage() {
               <div key={kind} style={{ marginBottom: 14 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                   <b>{CLOSEOUT_FILE_LABEL[kind]}</b>
-                  {kind === 'acceptance' && <span className="muted" style={{ fontSize: 12 }}>ปิดงานด้วย <span className="badge blue">{accLabel(filesJob.acceptanceType)}</span></span>}
+                  {kind === 'acceptance' && <span className="muted" style={{ fontSize: 12 }}>ปิดงานด้วย <span className={`badge ${acceptanceTone(filesJob.acceptanceType)}`}>{accLabel(filesJob.acceptanceType)}</span></span>}
                   {canEdit && (
                     <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
                       {kind === 'acceptance' && (

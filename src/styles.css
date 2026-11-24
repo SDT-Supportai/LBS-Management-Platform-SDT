@@ -11,15 +11,23 @@
       อาการล้าตาเวลาจ้องตารางยาว ๆ (slate-900 บน slate-50 = ~15:1 อ่านสบายกว่า)
    ===================================================================== */
 :root {
-  --bg: #f8fafc;               /* slate-50  — พื้นหลังหน้า */
+  /* ธีม LBS Glass UI (2026-11-24): พื้นตามแบบ canvas หน้า 02–15 — เดิม #f8fafc (slate-50) */
+  --bg: #eef2fb;               /* พื้นหลังหน้า (ฟ้าอมม่วงอ่อน) */
   --panel: #ffffff;
+  --surface: #ffffff;          /* เดิมถูกอ้าง (.today-card / .mp-detail / .btn-like) แต่ไม่เคยนิยาม */
+  /* แผงกระจก: ขาวโปร่ง + ขอบขาว + เงานุ่ม — ⚠️ ไม่ใช้ backdrop-filter ที่แผง (ดูหัวข้อธีมท้ายไฟล์) */
+  --glass-bg: rgba(255, 255, 255, .86);
+  --glass-line: rgba(255, 255, 255, .95);
+  --glass-shadow: 0 0 0 1px rgba(30, 41, 90, .05), 0 10px 30px rgba(30, 41, 90, .08), inset 0 1px 0 rgba(255, 255, 255, .9);
   --border: #e2e8f0;           /* slate-200 — เส้นขอบหลัก */
   --border-soft: rgba(226, 232, 240, .8);   /* slate-200/80 — ขอบการ์ด */
   --line: #f1f5f9;             /* slate-100 — เส้นคั่นในตาราง (จางกว่าขอบการ์ด) */
   --stripe: rgba(248, 250, 252, .7);        /* slate-50/70 — แถบเว้นแถบ */
   --text: #0f172a;             /* slate-900 — Title */
   --text-2: #334155;           /* slate-700 — เนื้อความ/ปุ่ม secondary */
-  --muted: #64748b;            /* slate-500 — Subtitle */
+  /* ธีม Glass: เดิม #64748b (slate-500) = 4.24:1 บนพื้นใหม่ · 4.37:1 บน --primary-soft (ตก AA อยู่แล้ว)
+     #52617a ผ่าน ≥4.5:1 ทุกพื้น รวมกลางแสงพื้นหลัง (theme.test.ts) และยังจางกว่า --text-2 ชัด */
+  --muted: #52617a;            /* Subtitle */
   --muted-2: #94a3b8;          /* slate-400 — ข้อความรอง/placeholder */
   --primary: #2563eb;          /* blue-600 */
   --primary-hover: #1d4ed8;    /* blue-700 */
@@ -1128,3 +1136,277 @@ body.is-busy button.danger { opacity: .55; pointer-events: none; cursor: progres
 .subtabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 8px 12px; }
 .subtabs button.on { border-bottom-color: var(--primary); color: var(--primary); font-weight: 600; }
 .subtabs button:disabled { opacity: .55; cursor: not-allowed; }
+
+/* =====================================================================
+   ธีม LBS Glass UI (2026-11-24) — ตามแบบ canvas "LBS Glass UI" หน้า 02–15 (กระจกโทนสว่าง)
+   ชั้นหน้าตาล้วน: ไม่แตะ logic/โครงหน้า · อยู่ท้ายไฟล์เพื่อทับค่าเดิม · token อยู่ใน :root ด้านบน
+   เทสต์: src/ui/theme.test.ts
+
+   🔴 ตั้งใจไม่ทำตามแบบ 1 จุด: แบบใส่ backdrop-filter: blur(18px) ทุกแผง — ที่นี่ "ไม่ใส่"
+      Popup ทุกตัวไม่ได้ใช้ portal (วาดอยู่ในแผง) · backdrop-filter ทำให้ position:fixed ของลูกยึดกับแผง
+      แทนหน้าจอ ⇒ Popup ถูกตัดในกรอบแผง · แผนที่เต็มจอหลุดตำแหน่ง · มือถือช่างต้อง blur ทุกแผง (กระตุก)
+      หน้าตากระจกได้จาก พื้นขาวโปร่ง .86 + ขอบขาว + เงานุ่ม บนพื้นไล่สีนิ่ง (พื้นเบลออยู่แล้ว blur ซ้ำมองไม่ต่าง)
+      ⇒ blur ยังอยู่เฉพาะ Popup (เฟส 2) และแผงหน้า Dashboard (ของเดิม · ไม่มี Popup ซ้อน)
+   ไม่ทำ: แสงพื้นหลังเคลื่อนไหวทั้งแอป (เฉพาะ Dashboard ตามเดิม) · แอนิเมชันบนตัวเลข · ธีมมืด
+   ===================================================================== */
+
+/* พื้นหน้า: สีตามแบบ + แสงฟ้า/ม่วงอ่อนแบบนิ่ง (ไม่เคลื่อน = ไม่กินแรงเครื่อง) — มุมขวาบน / ซ้ายกลางหน้าเหมือนแบบ */
+body {
+  background:
+    radial-gradient(620px 520px at calc(100% + 80px) -120px, rgba(185, 200, 255, .35), transparent 70%),
+    radial-gradient(560px 480px at 12% 620px, rgba(221, 208, 255, .32), transparent 70%),
+    var(--bg);
+  background-attachment: fixed;
+}
+/* มือถือ: background-attachment: fixed ทำให้เลื่อนจอกระตุกบน iOS/Android → เลื่อนตามหน้า */
+@media (max-width: 860px) { body { background-attachment: scroll; } }
+
+/* แผงกระจก — การ์ด · แผง · แถบขั้นต่อไป (หน้า Dashboard ยังใช้ .93 + blur ของเดิมเพราะ selector เฉพาะกว่า) */
+.card, .panel, .next-step {
+  background: var(--glass-bg);
+  border-color: var(--glass-line);
+  box-shadow: var(--glass-shadow);
+  border-radius: 16px;
+}
+.next-step { border-left-color: var(--muted-2); }          /* แถบสีซ้ายยังบอกโทน (tone-* ทับต่อ) */
+.panel-head { border-bottom-color: rgba(15, 23, 42, .07); }
+th { background: rgba(248, 250, 252, .8); color: #475569; }
+/* หัวตาราง/แถวหัวที่ติดบนเวลาเลื่อน ต้องทึบ ไม่งั้นแถวข้างใต้โผล่ทะลุ */
+.issue-row-head { background: #fff; }
+.public-kpi, .today-card, .mp-detail { border-radius: 14px; }
+
+/* sidebar / แถบบน / หัวมือถือ — กรมท่าตามแบบ (เดิมโทน slate #1a2436 → #101828) */
+.sidebar {
+  background: linear-gradient(180deg, #14224f 0%, #0b1433 100%);
+  box-shadow: 8px 0 30px rgba(11, 20, 51, .18);
+}
+.sidebar nav a.active {
+  background: linear-gradient(135deg, rgba(59, 130, 246, .55), rgba(99, 102, 241, .45));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .24), 0 4px 16px rgba(37, 99, 235, .28);
+}
+.topbar { background: linear-gradient(90deg, #14224f 0%, #1e3a8a 55%, #2b6cb0 100%); }
+@media (max-width: 860px) { .mobile-header { background: linear-gradient(90deg, #14224f, #0b1433); } }
+/* ชื่อแอปบนหัวมือถือ — กฎ b { color: var(--text) } ทับสีขาวของหัว ⇒ ตัวเข้มบนพื้นกรมท่า (มีมาก่อนธีม · เจอตอนตรวจ 375px) */
+.mobile-header b { color: #fff; }
+
+/* ปุ่ม/ช่องกรอก — มุมมนขึ้นตามแบบ · ปุ่มหลักไล่สีน้ำเงิน→คราม */
+button { border-radius: 10px; }
+button.primary {
+  background: linear-gradient(135deg, #2563eb, #4f46e5); border-color: transparent;
+  box-shadow: 0 6px 14px rgba(37, 99, 235, .22);
+}
+button.primary:hover { background: linear-gradient(135deg, #1d4ed8, #4338ca); border-color: transparent; }
+input, select, textarea { border-radius: 10px; }
+
+/* Popup — มุมมนตามแบบเฉพาะจอใหญ่ (มือถือยังเต็มจอ มุมเหลี่ยม ตามเฟส 2) */
+@media (min-width: 641px) { .modal { border-radius: 20px; } }
+.notif-dropdown { border-radius: 16px; }
+
+/* พิมพ์: กระดาษขาวล้วน — ไม่มีพื้นไล่สี ไม่มีแผงโปร่ง/เงา (สรุปโครงการ PDF อ่านชัด ไม่เปลืองหมึก) */
+@media print {
+  body { background: #fff !important; }
+  /* border-color: ธีมด้านบนตั้งขอบขาว (ทับกฎพิมพ์เดิม #999 เพราะมาทีหลัง) — บนกระดาษต้องเห็นกรอบ */
+  .panel, .card, .next-step { background: #fff !important; box-shadow: none !important; border-radius: 8px; border-color: #999; }
+  th { background: #f1f5f9; }
+}
+
+/* =====================================================================
+   ธีม LBS Glass UI รอบ 2 (2026-11-24) — ชิ้นส่วนรายหน้าตาม canvas (หน้า 9 / 11 / 12 / 13 / 14 / 15)
+   ใช้เฉพาะหน้าที่ไม่มี Flow: Audit · Warranty · Standards · Map · Material Master · Users
+   หน้าตาล้วน: className / CSS เท่านั้น ไม่แตะข้อมูล สิทธิ์ state — สีป้ายอยู่ใน src/ui/tone.ts
+   ไม่ทำตามแบบ: หมุดแผนที่สีอ่อนกว่า (#16a34a ตัวเลขขาว 11px ไม่ผ่าน AA) · จุดกะพริบ/หมุดเด้ง (ห้าม animation วน)
+   ===================================================================== */
+
+/* ป้ายสีม่วง — เดิมมีแค่ .badge.allocated ที่ใช้ token ม่วง */
+.badge.violet { background: var(--violet-soft); color: var(--violet); border-color: var(--violet-line); }
+
+/* ช่องค้นหามีแว่นขยาย — CSS ล้วน (ไม่ต้องห่อ JSX) · คงเป็น type="text" (type="search" มีปุ่ม ✕ / Esc ของเบราว์เซอร์) */
+input.search-input {
+  padding-left: 36px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM21 21l-5-5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: 12px 50%; background-size: 16px 16px;
+}
+
+/* แผงเตือน (ของค้าง / เอกสารยังไม่ครบ) — ขอบซ้ายเหลืองตามแบบ */
+.panel.accent-amber { border-left: 4px solid #f59e0b; }
+
+/* แท็บแบบแคปซูล — modifier ของ .subtabs (หน้าอื่นที่ใช้ .subtabs เดิมไม่เปลี่ยน) */
+.subtabs.seg {
+  display: inline-flex; max-width: 100%; gap: 4px; padding: 4px;
+  border: 1px solid rgba(255, 255, 255, .9); border-radius: 16px;
+  background: rgba(255, 255, 255, .55); box-shadow: 0 2px 10px rgba(30, 41, 90, .06);
+}
+.subtabs.seg button {
+  min-height: 38px; padding: 0 14px; border: 0; border-radius: 12px;
+  background: none; color: var(--text-2); font-weight: 600; box-shadow: none;
+}
+/* hover เฉพาะแท็บที่ไม่ได้เลือก — ถ้าไม่กัน .on/.active กฎนี้ specificity สูงกว่า ⇒ ชี้เมาส์แท็บที่เลือกแล้วกลายเป็นขาว (เจอบนเดโม) */
+.subtabs.seg button:not(.on):not(.active):not(:disabled):hover { background: rgba(255, 255, 255, .85); color: var(--text); }
+.subtabs.seg button.on, .subtabs.seg button.active {
+  background: linear-gradient(135deg, #2563eb, #4f46e5); color: #fff;
+  box-shadow: 0 6px 14px rgba(37, 99, 235, .22);
+}
+.subtabs.seg button.on .badge, .subtabs.seg button.active .badge { background: rgba(255, 255, 255, .2); color: #fff; border-color: transparent; }
+
+/* ชิปตัวกรอง — <label class="chk-chip"><input type=checkbox> ข้อความ</label> · สีตาม :checked (ไม่ต้องแก้ state) */
+.chk-chip {
+  display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 0 12px;
+  border-radius: 999px; border: 1px solid rgba(15, 23, 42, .1); background: rgba(255, 255, 255, .8);
+  font-size: 12.5px; font-weight: 600; color: var(--text-2); white-space: nowrap; cursor: pointer;
+  transition: background .2s ease, border-color .2s ease, color .2s ease;
+}
+.chk-chip:hover { background: #fff; }
+.chk-chip:has(:checked) { background: var(--primary-soft); border-color: rgba(37, 99, 235, .35); color: #1e40af; }
+.chk-chip:has(:focus-visible) { outline: 3px solid var(--primary); outline-offset: 2px; }
+
+/* การ์ดตัวเลข: ส่วน "/ทั้งหมด" เล็กลงตามแบบ (หน้า Map) */
+.card .value .of { font-size: 14px; font-weight: 500; letter-spacing: 0; }
+/* แผนที่มุมมนเท่าแผง (เต็มจอยังเหลี่ยม — กฎ .map-wrap.expanded .map-box เฉพาะกว่า) */
+.map-box { border-radius: 16px; }
+/* ผู้ใช้ที่ปิดการใช้งาน — จางลง (ป้ายสถานะแดงยังบอกชัด) */
+tr.row-off > td { opacity: .7; }
+
+@media (prefers-reduced-motion: reduce) { .chk-chip { transition: none; } }
+
+/* การ์ดหลักฐานติดตั้งรายเครื่อง (Service Installation · Popup รายเครื่อง) — canvas หน้า 7
+   ชิ้น: src/ui/UnitEvidenceCard.tsx · อยู่ใน Popup จึงไม่มี backdrop-filter (Popup blur ให้แล้ว) */
+.unit-ev-list { display: flex; flex-direction: column; gap: 10px; }
+.unit-ev-sec { font-size: 11.5px; letter-spacing: .06em; font-weight: 700; color: #475569; margin: 4px 0 8px; }
+.unit-ev {
+  display: grid; grid-template-columns: 140px 1fr; gap: 12px; padding: 12px;
+  border-radius: 16px; background: rgba(255, 255, 255, .75); border: 1px solid rgba(15, 23, 42, .06);
+  box-shadow: 0 2px 10px rgba(30, 41, 90, .05);
+}
+.unit-ev-photo {
+  height: 120px; border-radius: 12px; overflow: hidden;
+  background: linear-gradient(135deg, #dbeafe, #e0e7ff 50%, #dcfce7);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; color: #1e3a8a; text-align: center;
+}
+.unit-ev-photo span { padding: 0 8px; }
+.unit-ev-photo a { display: block; width: 100%; height: 100%; }
+.unit-ev-photo img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.unit-ev-photo a:focus-visible { outline: 3px solid var(--primary); outline-offset: -3px; }
+.unit-ev-body { min-width: 0; }
+.unit-ev-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.unit-ev-serial { font-weight: 700; font-size: 13.5px; }
+.unit-ev-status { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; text-align: right; }
+.unit-ev-kv { display: grid; grid-template-columns: 96px 1fr; gap: 5px 12px; font-size: 13px; margin: 8px 0 0; }
+.unit-ev-kv dt { color: #475569; }
+.unit-ev-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.unit-ev-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; align-items: center; margin-top: 10px; }
+.unit-ev-actions:empty { display: none; }   /* ไม่มีปุ่มสำหรับสิทธิ์นี้ = ไม่เว้นที่ว่าง */
+.unit-ev-actions button { margin-right: 0 !important; }   /* ปุ่มเดิมมี marginRight จากสมัยอยู่ในตาราง — ใช้ gap แทน */
+@media (max-width: 560px) {
+  .unit-ev { grid-template-columns: 1fr; }
+  .unit-ev-photo { height: 160px; }
+  .unit-ev-status { align-items: flex-start; text-align: left; }
+}
+
+/* =====================================================================
+   Dashboard — การ์ด KPI + Job List แบบ Glass (2026-11-24) ตาม canvas หน้า 2
+   ชิ้น: src/ui/kpi.tsx · ตัวเลขมาจากที่มาเดิมใน DashboardPage (ไม่แตะ Flow / MyWorkPanel)
+   พื้นกระจก + blur มาจาก .dash .card เดิม (ห้ามใส่ backdrop-filter เพิ่ม — theme.test.ts)
+   ===================================================================== */
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 16px; margin-bottom: 22px; }
+.dash .card.kpi-card {
+  display: flex; flex-direction: column; gap: 10px; padding: 18px 20px; border-radius: 22px;
+  box-shadow: 0 10px 30px rgba(30, 41, 90, .10), inset 0 1px 0 rgba(255, 255, 255, .9);
+  transition: transform .25s ease, box-shadow .25s ease;
+}
+.dash .card.kpi-card:hover { transform: translateY(-3px); box-shadow: 0 18px 38px rgba(30, 41, 90, .14), inset 0 1px 0 rgba(255, 255, 255, .9); }
+.kpi-label { font-size: 11.5px; letter-spacing: .08em; font-weight: 700; text-transform: uppercase; }
+.kpi-label.blue { color: #1e40af; } .kpi-label.violet { color: #5b21b6; }
+.kpi-label.amber { color: #92400e; } .kpi-label.green { color: #166534; }
+.kpi-big { font-size: 40px; font-weight: 700; line-height: 1; letter-spacing: -.02em; color: var(--text); }
+.kpi-big a { color: inherit; text-decoration: none; }
+.kpi-big a:hover { text-decoration: underline; }
+.kpi-unit { font-size: 15px; font-weight: 500; color: #475569; letter-spacing: 0; }
+.kpi-bar { display: flex; gap: 3px; height: 12px; border-radius: 999px; overflow: hidden; background: rgba(15, 23, 42, .07); }
+.kpi-seg { display: block; height: 100%; min-width: 6px; }
+.kpi-seg.green { background: linear-gradient(90deg, #4ade80, #16a34a); }
+.kpi-seg.amber { background: linear-gradient(90deg, #fbbf24, #f59e0b); }
+.kpi-seg.violet { background: linear-gradient(90deg, #a78bfa, #7c3aed); }
+.kpi-seg.blue { background: linear-gradient(90deg, #60a5fa, #2563eb); }
+.kpi-seg.red { background: linear-gradient(90deg, #f87171, #dc2626); }
+.kpi-legend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; font-size: 12.5px; color: #334155; }
+.kpi-li { display: flex; align-items: center; gap: 6px; color: inherit; text-decoration: none; min-width: 0; }
+a.kpi-li:hover { color: var(--primary); }
+.kpi-num { margin-left: auto; color: var(--text); }
+.kpi-num.amber { color: #92400e; } .kpi-num.red { color: #b91c1c; } .kpi-num.blue { color: #1e40af; } .kpi-num.green { color: #15803d; }
+.kpi-dot { flex: none; width: 9px; height: 9px; border-radius: 3px; }
+.kpi-dot.green { background: #16a34a; } .kpi-dot.amber { background: #f59e0b; } .kpi-dot.violet { background: #7c3aed; }
+.kpi-dot.blue { background: #2563eb; } .kpi-dot.red { background: #dc2626; }
+/* บรรทัดเตือนเพิ่มเติม (ของเดิมที่แบบไม่มี) — ขึ้นเฉพาะเมื่อมีค่า */
+.kpi-notes { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.kpi-notes a { font-weight: 600; }
+.kpi-foot { margin-top: auto; font-size: 13px; font-weight: 600; }
+.kpi-tiles { display: flex; gap: 12px; }
+.kpi-tile {
+  flex: 1; min-width: 0; padding: 10px 12px; border-radius: 14px; text-decoration: none; color: inherit;
+  background: rgba(255, 255, 255, .7); border: 1px solid rgba(15, 23, 42, .06);
+}
+a.kpi-tile:hover { background: #fff; }
+.kpi-tile b { display: block; font-size: 30px; line-height: 1; color: #15803d; }
+.kpi-tile b.warn { color: #b45309; }
+.kpi-tile span { display: block; font-size: 12px; color: #475569; margin-top: 4px; }
+.kpi-ok { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: #15803d; }
+.kpi-ok.warn { color: #b45309; }
+.kpi-ring-wrap { display: flex; align-items: center; gap: 16px; }
+.kpi-ring { flex: none; }
+.kpi-ring-track { stroke: rgba(15, 23, 42, .08); }
+.kpi-ring-bar { stroke: #2563eb; }
+.kpi-ring-bar.done { stroke: #16a34a; }
+.kpi-ring-check { stroke: #15803d; }
+.kpi-ring-val { font-size: 36px; font-weight: 700; line-height: 1; color: var(--text); }
+.kpi-ring-val.done { color: #15803d; }
+.kpi-ring-val small { font-size: 18px; color: #475569; font-weight: 600; }
+
+/* Job List — เส้นคั่นแถว ไม่มีแถบเว้นแถว/เส้นตั้ง · Job No. + ลูกค้าคอลัมน์เดียว · LBS ชิดขวา */
+.dash .job-list-tb tbody tr:nth-child(even) { background: none; }
+.dash .job-list-tb th { background: none; font-size: 12px; }
+.job-list-tb td { vertical-align: top; }
+/* เคียง Stock Balance แล้วคอลัมน์แคบลง — ช่องแคบตามแบบ (10px) + ป้ายสถานะตัดบรรทัดได้ ไม่ให้ตารางเลื่อนข้างจนคอลัมน์ LBS หลุด */
+.job-list-tb th, .job-list-tb td { padding: 10px; }
+.job-list-tb td .badge { white-space: normal; }
+.job-list-tb tbody tr { transition: background .15s ease; }
+.job-list-tb tbody tr:hover { background: rgba(255, 255, 255, .75); }
+.job-list-tb .due { font-weight: 600; white-space: nowrap; }
+.job-list-tb .due .muted { font-weight: 400; }
+.job-list-tb .job-no { font-weight: 700; }
+.job-list-tb .cust { font-size: 12px; color: #475569; margin-top: 2px; }
+.lbs-count { text-align: right; font-weight: 700; white-space: nowrap; }
+.lbs-count.ok { color: #15803d; }
+.lbs-count.short { color: #92400e; }
+
+@media (prefers-reduced-motion: reduce) { .dash .card.kpi-card, .job-list-tb tbody tr { transition: none; } .dash .card.kpi-card:hover { transform: none; } }
+
+/* Dashboard — LBS Stock Balance แบบการ์ด Glass (canvas หน้า 2) · ชิ้น src/ui/StockBalance.tsx
+   วางเคียง Job List (2 : 1) ตามแบบ · จอแคบ (< ~960px ของพื้นที่เนื้อหา) เรียงลงใต้ Job List */
+.dash-split { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; margin-bottom: 18px; }
+.dash-split > .dash-main { flex: 2 1 620px; min-width: 0; }
+.dash-split > .dash-side { flex: 1 1 320px; min-width: 0; }
+.dash-split .panel { margin-bottom: 0; }
+.dash .panel.stock-bal { border-radius: 22px; }
+.kpi-seg.gray { background: linear-gradient(90deg, #cbd5e1, #94a3b8); }
+.kpi-dot.gray { background: #94a3b8; }
+.sb-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11.5px; color: #475569; margin-bottom: 12px; }
+.sb-legend > span { display: inline-flex; align-items: center; gap: 5px; }
+.sb-rows { display: flex; flex-direction: column; gap: 14px; }
+.sb-row { display: flex; flex-direction: column; gap: 6px; }
+.sb-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 13px; }
+.sb-total { white-space: nowrap; color: #475569; }
+.sb-total b { color: var(--text); font-size: 14px; }
+.sb-row .kpi-bar { height: 10px; }
+.sb-note { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 12px; color: #475569; }
+.sb-note .sb-amber { color: #92400e; font-weight: 600; }
+.sb-note .sb-warn { color: #b91c1c; font-weight: 600; }
+.sb-tiles {
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px;   /* 5 ช่องแถวเดียวเสมอ (auto-fit ทำให้ช่องสุดท้ายตกบรรทัด) */
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(15, 23, 42, .08); text-align: center;
+}
+.sb-tiles > div { display: flex; flex-direction: column; gap: 2px; }
+.sb-tiles span { font-size: 11px; color: #475569; line-height: 1.35; }
+.sb-tile-n { font-size: 18px; font-weight: 700; color: var(--text); }
+.sb-tile-n.red { color: #b91c1c; } .sb-tile-n.green { color: #15803d; } .sb-tile-n.amber { color: #92400e; }
+.sb-tile-n.violet { color: #5b21b6; } .sb-tile-n.blue { color: #1e40af; }

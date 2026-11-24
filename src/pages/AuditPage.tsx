@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
 import { fmtDateTime, DEPT_LABEL } from '../ui/format'
 import { Modal } from '../ui/components'
+import { auditEntityTone } from '../ui/tone'
 import { supabase } from '../lib/supabase'
 import { fetchAuditLogs } from '../data/remote'
 import {
@@ -82,7 +83,7 @@ export default function AuditPage() {
             </select>
           </label>
           <label className="field" style={{ margin: 0, flex: '1 1 220px' }}><span>คำค้น</span>
-            <input placeholder="Job No., Serial, PO, ชื่อรายการ..." value={form.q ?? ''} onChange={e => setForm({ ...form, q: e.target.value })} />
+            <input className="search-input" placeholder="Job No., Serial, PO, ชื่อรายการ..." value={form.q ?? ''} onChange={e => setForm({ ...form, q: e.target.value })} />
           </label>
           <button type="submit" className="primary" disabled={rangeBad || loading}>{loading ? 'กำลังค้น…' : '🔍 ค้นหา'}</button>
           {applied && <button type="button" onClick={clear}>ล้างตัวกรอง</button>}
@@ -107,8 +108,8 @@ export default function AuditPage() {
                 <tr key={a.id} className="clickable" onClick={() => setDetail(a)}>
                   <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(a.createdAt)}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>{userOf(a.actorId)?.fullName ?? '-'}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>{AUDIT_ENTITY_LABEL[a.entityType] ?? a.entityType}</td>
-                  <td><span className="badge neutral mono">{a.action}</span></td>
+                  <td style={{ whiteSpace: 'nowrap' }}><span className={`badge ${auditEntityTone(a.entityType)}`}>{AUDIT_ENTITY_LABEL[a.entityType] ?? a.entityType}</span></td>
+                  <td className="muted mono" style={{ fontSize: 12 }}>{a.action}</td>
                   <td>{a.detail}</td>
                 </tr>
               ))}
@@ -133,7 +134,7 @@ export default function AuditPage() {
               <tr><th>เวลา</th><td>{fmtDateTime(detail.createdAt)}</td></tr>
               <tr><th>ผู้ทำรายการ</th><td>{userOf(detail.actorId)?.fullName ?? '-'}
                 {userOf(detail.actorId) && <span className="muted"> · {DEPT_LABEL[userOf(detail.actorId)!.department]}</span>}</td></tr>
-              <tr><th>ประเภทข้อมูล</th><td>{AUDIT_ENTITY_LABEL[detail.entityType] ?? detail.entityType} <span className="muted mono">({detail.entityType})</span></td></tr>
+              <tr><th>ประเภทข้อมูล</th><td><span className={`badge ${auditEntityTone(detail.entityType)}`}>{AUDIT_ENTITY_LABEL[detail.entityType] ?? detail.entityType}</span> <span className="muted mono">({detail.entityType})</span></td></tr>
               <tr><th>รหัสข้อมูล</th><td className="mono" style={{ overflowWrap: 'anywhere' }}>{detail.entityId}</td></tr>
               <tr><th>Action</th><td><span className="badge neutral mono">{detail.action}</span></td></tr>
               <tr><th>รายละเอียด</th><td style={{ whiteSpace: 'pre-wrap' }}>{detail.detail || '-'}</td></tr>

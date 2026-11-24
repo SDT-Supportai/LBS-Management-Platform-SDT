@@ -173,7 +173,7 @@ export default function MapTrackingPage() {
       <div className="cards" style={{ marginBottom: 14 }}>
         <div className="card">
           <div className="label">จุดติดตั้งบนแผนที่</div>
-          <div className="value">{pins.length}<span className="muted">/{allPins.length}</span></div>
+          <div className="value">{pins.length}<span className="muted of">/{allPins.length}</span></div>
           <div className="hint">ราย Serial {unitPins.length} · ระดับงาน {jobPins.length} · ตามแผน {planPins.length}</div>
         </div>
         <div className="card">
@@ -183,7 +183,7 @@ export default function MapTrackingPage() {
         </div>
         <div className="card">
           <div className="label">ติดตั้งไม่ได้</div>
-          <div className="value">{blockedCount}</div>
+          <div className="value" style={blockedCount === 0 ? { color: 'var(--green)' } : undefined}>{blockedCount}</div>
           <div className="hint">
             {blockedCount > 0
               ? <>หมุดสีแดง · <Link to="/service">ดูเหตุผลที่หน้า Site Installation →</Link></>
@@ -202,18 +202,19 @@ export default function MapTrackingPage() {
         <div className="panel-head">
           <h3>แผนที่</h3>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-            <input style={{ width: 220 }} value={search} onChange={e => setSearch(e.target.value)}
+            <input className="search-input" style={{ width: 280 }} value={search} onChange={e => setSearch(e.target.value)}
               placeholder="ค้น Job No. / Serial / ลูกค้า / สถานที่" />
-            <label style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
+            {/* ธีม Glass รอบ 2: ตัวกรองเป็นชิป (checkbox เดิมอยู่ข้างใน · สีเปลี่ยนตาม :checked) */}
+            <label className="chk-chip">
               <input type="checkbox" checked={onlyBlocked} onChange={e => setOnlyBlocked(e.target.checked)} />
               เฉพาะที่ติดตั้งไม่ได้
             </label>
-            <label style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}
+            <label className="chk-chip"
               title="งานเก่าก่อนเฟส B ยืนยันติดตั้งทีเดียวทั้งใบ จึงมีแต่พิกัดระดับงาน">
               <input type="checkbox" checked={showJobLevel} onChange={e => setShowJobLevel(e.target.checked)} />
               รวมเช็คอินระดับงาน ({jobPins.length})
             </label>
-            <label style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}
+            <label className="chk-chip"
               title="พิกัดจุดติดตั้งที่กรอกไว้ตอนเปิด Job — ใช้วางแผนเส้นทางทีมช่างก่อนออกไซต์">
               <input type="checkbox" checked={showPlan} onChange={e => setShowPlan(e.target.checked)} />
               รวมจุดตามแผน ({planPins.length})
