@@ -8,6 +8,7 @@ import {
 import { DeliveryBadge, JobStatusBadge, useTryAction } from '../ui/components'
 import { MyWorkPanel } from '../ui/flow'
 import { myWork, purchasingCounts } from '../data/flow'
+import { jobNeedsTeam } from '../data/field'
 import { fmtDate, fmtDateTime, DEPT_LABEL } from '../ui/format'
 import type { JobStatus } from '../types'
 
@@ -62,7 +63,7 @@ export default function DashboardPage() {
   const svc = issuedJobs.reduce((acc, j) => {
     const s = jobInstallSummary(db, j.id)
     acc.units += s.outTotal; acc.installed += s.outInstalled; acc.blocked += s.outBlocked
-    if (!db.jobAssignments.some(a => a.jobId === j.id)) acc.unassigned++
+    if (jobNeedsTeam(db, j)) acc.unassigned++          // เฟส 5: กติกาเดียวทุกหน้า (ติดตั้งครบแล้วไม่นับ)
     return acc
   }, { units: 0, installed: 0, blocked: 0, unassigned: 0 })
   const recent = db.auditLogs.slice(0, 10)
@@ -150,7 +151,7 @@ export default function DashboardPage() {
           <div className="value">{svc.installed}<span className="muted">/{svc.units} เครื่อง</span></div>
           <div className="hint">
             {svc.unassigned > 0
-              ? <Link to="/service"><b style={{ color: 'var(--danger)' }}>ยังไม่มอบหมายทีม {svc.unassigned} งาน</b></Link>
+              ? <Link to="/scheduling"><b style={{ color: 'var(--danger)' }}>ยังไม่มอบหมายทีม {svc.unassigned} งาน</b></Link>
               : `${issuedJobs.length} งานรอติดตั้ง`}
             {svc.blocked > 0 && <> · ติดตั้งไม่ได้ {svc.blocked} เครื่อง</>}
             {' '}· <Link to="/scheduling">ตารางทีม →</Link>

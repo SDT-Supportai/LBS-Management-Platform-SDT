@@ -2,6 +2,7 @@ import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { useStore, can } from './data/StoreContext'
 import { purchasingCounts } from './data/flow'
+import { unassignedJobs as unassignedOf } from './data/field'
 import { ErrorBoundary, ToastProvider, useConfirm, useTryAction } from './ui/components'
 import { DEPT_LABEL, fmtDateTime } from './ui/format'
 import LoginPage, { GlassBackdrop } from './pages/LoginPage'
@@ -52,8 +53,8 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   // ความเห็นผู้บริหาร (0050) ที่แปะอยู่บนคำขอซึ่งยังไม่ตัดสิน — Division ควรเห็นก่อนกดอนุมัติ
   const pendingComments = db.approvalComments.filter(c => !!c.requestId && pendingIds.has(c.requestId)).length
   // งานที่เบิกแล้วแต่ยังไม่มอบหมายทีม (เฟส C)
-  const unassignedJobs = db.jobs.filter(j =>
-    jobIsFieldActive(db, j) && !db.jobAssignments.some(a => a.jobId === j.id)).length
+  // เฟส 5: กติกาเดียวทุกหน้า (jobNeedsTeam) — งานที่ติดตั้งครบแล้ว (รอปิด) ไม่นับ
+  const unassignedJobs = unassignedOf(db).length
   // ปัญหางานบริการที่ยังไม่ปิดงาน — เตือนที่เมนู Service
   const openServiceIssues = serviceIssues(db).filter(i => !i.jobClosed).length
   // จำนวนจุดที่มีพิกัดบนแผนที่ (เช็คอินราย Serial) — นับเครื่องที่มีพิกัด ไม่ใช่จำนวนแถว log

@@ -1,8 +1,11 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
-import { jobDelivery, jobInstallSummary, jobIsFieldActive, memberSchedule, jobTeam } from '../data/logic'
+import { jobDelivery, jobInstallSummary, memberSchedule, jobTeam, bangkokTodayIso } from '../data/logic'
+import { unassignedJobs, memberDeleteBlock, scheduleAgenda } from '../data/field'
 import { DeliveryBadge, Modal, useConfirm, useTryAction } from '../ui/components'
+import { GateButton } from '../ui/flow'
+import { AssignTeamModal } from '../ui/AssignTeamModal'
 import { fmtDate } from '../ui/format'
 import type { TeamMember } from '../types'
 
@@ -50,6 +53,8 @@ export default function ServiceSchedulingPage() {
   const [modal, setModal] = useState<'create' | 'edit' | null>(null)
   const [target, setTarget] = useState<TeamMember | null>(null)
   const [form, setForm] = useState(EMPTY_FORM)
+  const [assignFor, setAssignFor] = useState<string | null>(null)   // เฟส 5: มอบหมายทีมจากหน้านี้ได้เลย
+  const [agendaDays, setAgendaDays] = useState(14)
 
   const members = [...db.teamMembers].sort((a, b) =>
     Number(b.isActive) - Number(a.isActive) || a.firstName.localeCompare(b.firstName))
@@ -63,8 +68,10 @@ export default function ServiceSchedulingPage() {
     .sort((a, b) => firstVisit(a).localeCompare(firstVisit(b)))
   const freeMembers = memberRows.filter(x => x.s.active.length === 0)
   // 0071: รวมงานที่เบิกบางส่วน — ของออกไปแล้วต้องมีทีมรับผิดชอบ ไม่ใช่รอจนใบครบ
-  const issuedJobs = db.jobs.filter(j => jobIsFieldActive(db, j))
-  const unassigned = issuedJobs.filter(j => !db.jobAssignments.some(a => a.jobId === j.id))
+  // เฟส 5: กติกาเดียวทุกหน้า (jobNeedsTeam) — งานที่ติดตั้งครบแล้วไม่นับ (มอบหมายไม่ได้แล้ว · เดิมค้างตลอดไป)
+  const unassigned = unassignedJobs(db)
+  const assignJob = assignFor ? db.jobs.find(j => j.id === assignFor) : undefined
+  const agenda = scheduleAgenda(db, bangkokTodayIso(), agendaDays)
   // user แผนก service ให้เลือกผูกบัญชี (คนที่ยังไม่ถูกผูก + คนที่ผูกกับ record นี้อยู่)
   const linkableUsers = db.users.filter(u =>
     (u.department === 'service' || u.department === 'admin') &&
@@ -91,9 +98,9 @@ export default function ServiceSchedulingPage() {
 
   return (
     <>
-      <div className="page-title">Service &amp; Scheduling</div>
+      <div className="page-title">Assignment &amp; Schedule</div>
       <div className="page-sub">
-        ทะเบียนทีมช่างติดตั้ง + ตารางงานรายบุคคล — มอบหมายทีมได้ที่หน้า <Link to="/service">Service (Installation)</Link>
+        ทะเบียนทีมช่างติดตั้ง · มอบหมายทีม · นัดติดตั้งรายวัน · ตารางงานรายบุคคล — ยืนยันติดตั้งที่หน้า <Link to="/service">Site Installation</Link>
       </div>
 
       <div className="panel">
@@ -136,14 +143,21 @@ export default function ServiceSchedulingPage() {
                     {canManage && (
                       <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                         <button className="small" style={{ marginRight: 6 }} onClick={() => openEdit(m)}>แก้ไข</button>
-                        <button className="small danger"
-                          onClick={async () => {
-                            if (await askConfirm({
-                              title: `ลบ ${m.firstName} ${m.lastName} ออกจากทะเบียนช่าง`,
-                              description: <>ช่างคนนี้จะเลือกมอบหมายงานใหม่ไม่ได้อีก · <b>ประวัติการติดตั้งที่เคยบันทึกไว้ยังอยู่ครบ</b> · ระบบจะไม่ให้ลบถ้ายังถูกมอบหมายงานที่ค้างอยู่</>,
-                              confirmLabel: 'ลบออกจากทะเบียน',
-                            })) tryAction(() => act.deleteTeamMember({ memberId: m.id }), 'ลบช่างออกจากทะเบียนแล้ว')
-                          }}>ลบ</button>
+                        {/* เฟส 5: กติกาเดียวกับ deleteTeamMember (memberDeleteBlock) — ลบไม่ได้ = ปุ่มบอกเหตุผลก่อนกด
+                            เดิมข้อความยืนยันบอกว่า "ประวัติยังอยู่ · ลบไม่ได้ถ้ามีงานค้าง" แต่กติกาจริงคือเคยถูกมอบหมาย/มีประวัติ = ลบไม่ได้เลย */}
+                        {(() => {
+                          const block = memberDeleteBlock(db, m.id)
+                          return (
+                            <GateButton className="small danger" reason="tooltip" gate={block ? { ok: false, reason: block } : { ok: true }}
+                              onClick={async () => {
+                                if (await askConfirm({
+                                  title: `ลบ ${m.firstName} ${m.lastName} ออกจากทะเบียนช่าง`,
+                                  description: <>ช่างคนนี้ยังไม่เคยถูกมอบหมายงานและไม่มีประวัติติดตั้ง — ลบออกจากทะเบียนถาวร · บันทึกใน Audit Log</>,
+                                  confirmLabel: 'ลบออกจากทะเบียน',
+                                })) tryAction(() => act.deleteTeamMember({ memberId: m.id }), 'ลบช่างออกจากทะเบียนแล้ว')
+                              }}>ลบ</GateButton>
+                          )
+                        })()}
                       </td>
                     )}
                   </tr>
@@ -159,7 +173,7 @@ export default function ServiceSchedulingPage() {
           <div className="panel-head"><h3>⚠️ งานที่เบิกแล้วแต่ยังไม่มอบหมายทีม ({unassigned.length})</h3></div>
           <div className="table-scroll">
             <table className="dense">
-              <thead><tr><th>Job No.</th><th>ลูกค้า / สถานที่</th><th>นัดติดตั้ง</th><th>สถานะกำหนดส่ง</th><th>ติดตั้ง</th></tr></thead>
+              <thead><tr><th>Job No.</th><th>ลูกค้า / สถานที่</th><th>นัดติดตั้ง</th><th>สถานะกำหนดส่ง</th><th>ติดตั้ง</th>{canManage && <th></th>}</tr></thead>
               <tbody>
                 {unassigned.map(j => {
                   const s = jobInstallSummary(db, j.id)
@@ -172,6 +186,7 @@ export default function ServiceSchedulingPage() {
                       <td>{j.installStartDate ? `${fmtDate(j.installStartDate)} – ${fmtDate(j.installEndDate)}` : '-'}</td>
                       <td><DeliveryBadge d={jobDelivery(db, j)} /></td>
                       <td><span className="badge neutral">{s.installed}/{s.total}</span></td>
+                      {canManage && <td style={{ textAlign: 'right' }}><button className="small primary" onClick={() => setAssignFor(j.id)}>👷 มอบหมายทีม</button></td>}
                     </tr>
                   )
                 })}
@@ -180,6 +195,41 @@ export default function ServiceSchedulingPage() {
           </div>
         </div>
       )}
+
+      {/* เฟส 5 — นัดติดตั้งรายวันจากข้อมูลจริง (ช่วงนัดของงาน + วันที่บันทึกเลื่อนนัด) */}
+      <div className="panel">
+        <div className="panel-head">
+          <h3>📅 นัดติดตั้ง {agendaDays} วันข้างหน้า
+            <span className="muted" style={{ fontWeight: 400 }}> · จากช่วงนัดติดตั้งของงาน + การเลื่อนนัดที่บันทึกไว้</span></h3>
+          <select value={agendaDays} style={{ width: 'auto' }} onChange={e => setAgendaDays(Number(e.target.value))} aria-label="จำนวนวัน">
+            <option value={7}>7 วัน</option><option value={14}>14 วัน</option><option value={30}>30 วัน</option>
+          </select>
+        </div>
+        {agenda.length === 0 ? <div className="panel-body muted">ไม่มีนัดติดตั้งในช่วงนี้</div> : (
+          <ul className="agenda">
+            {agenda.map(day => (
+              <li key={day.date}>
+                <div className="agenda-date">{fmtDate(day.date)}</div>
+                <div className="agenda-items">
+                  {day.items.map((it, i) => {
+                    const team = jobTeam(db, it.jobId)
+                    return (
+                      <div key={i} className={`agenda-item kind-${it.kind}`}>
+                        {it.kind === 'rescheduled' ? '⏰ เลื่อนนัด' : '🔧 ติดตั้ง'} <Link to={`/jobs/${it.jobId}`}><b>{it.jobNo}</b></Link> · {it.customer}
+                        {it.detail && <span className="muted"> · {it.detail}</span>}
+                        {/* รีวิวเฟส 5 #3: แดงเฉพาะงานที่ยังต้องมอบหมาย (jobNeedsTeam) — ติดตั้งครบ/ยังไม่เบิกของ มอบหมายไม่ได้ */}
+                        {it.kind === 'install' && (team.length
+                          ? <span className="muted"> · 👷 {team.map(t => t.member.firstName).join(', ')}</span>
+                          : it.needsTeam ? <span style={{ color: 'var(--danger)' }}> · ยังไม่มีทีม</span> : null)}
+                      </div>
+                    )
+                  })}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
       {/* 🔴 ตารางเดียวสำหรับทุกคน · ช่างเป็น "แถวหัวกลุ่ม" (2026-09-22)
           เดิมเป็น 1 panel + 1 ตารางต่อช่าง 1 คน ⇒ หัวตารางซ้ำทุกคน · คอลัมน์เหลื่อมกัน
@@ -298,8 +348,26 @@ export default function ServiceSchedulingPage() {
               <span>ใช้งาน (ติ๊กออก = ปิดใช้งาน — ต้องไม่มีงานรอติดตั้งค้าง)</span>
             </label>
           )}
+          {/* เฟส 5: งานที่ช่างคนนี้รับผิดชอบอยู่ — ลิงก์ไปหน้างาน (ดู/แก้ในกล่องเดียว ไม่ต้องไปหาในตาราง) */}
+          {modal === 'edit' && target && (() => {
+            const ms = memberSchedule(db, target.id)
+            return (
+              <div style={{ marginTop: 6 }}>
+                <div className="muted" style={{ fontSize: 12.5, marginBottom: 4 }}>งานที่รับผิดชอบอยู่ ({ms.active.length}) · ปิดแล้ว {ms.doneCount} งาน · ติดตั้งสะสม {ms.unitsInstalled} เครื่อง</div>
+                {ms.active.length === 0 ? <span className="muted">ไม่มีงานค้าง</span> : (
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {ms.active.map(j => (
+                      <li key={j.id}><Link to={`/jobs/${j.id}`} onClick={() => setModal(null)}>{j.jobNo}</Link> · {j.customerName}
+                        {j.installStartDate && <span className="muted"> · นัด {fmtDate(j.installStartDate)}</span>}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )
+          })()}
         </Modal>
       )}
+      {assignJob && <AssignTeamModal job={assignJob} onClose={() => setAssignFor(null)} />}
       {confirmEl}
     </>
   )

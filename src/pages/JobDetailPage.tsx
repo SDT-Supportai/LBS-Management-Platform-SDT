@@ -9,6 +9,7 @@ import { CorrectionModal } from '../ui/CorrectionModal'
 import { jobActions, jobNextStep, pendingApprovals, type JobActionKey } from '../data/flow'
 import { GateButton, NextStepBar, PendingBadge } from '../ui/flow'
 import { prStatusLabel } from '../data/flow'
+import { jobNeedsTeam } from '../data/field'
 import { accStatusLabel, accStatusBadge, accBlockNeedsDetail, EPICOR_TXN, COST_CATEGORIES, PAYMENT_TYPE_LABEL, DEPT_LABEL, JOB_STATUS_LABEL, fmtBaht, fmtDate, fmtDateTime } from '../ui/format'
 import {
   type Cell, type NumKind, type ReportCol, type SumTable,
@@ -782,7 +783,7 @@ export default function JobDetailPage() {
             </div>
             <div style={{ marginTop: 4 }}>
               👷 {team.length === 0
-                ? <span style={{ color: 'var(--danger)' }}>ยังไม่มอบหมายทีม</span>
+                ? (jobNeedsTeam(db, job) ? <span style={{ color: 'var(--danger)' }}>ยังไม่มอบหมายทีม</span> : <span className="muted">ไม่มีทีม (งานหน้างานจบแล้ว)</span>)
                 : team.map(t => `${t.member.firstName} ${t.member.lastName}${t.assignment.isLead ? ' (หัวหน้า)' : ''} · ${t.member.phone}`).join(' | ')}
             </div>
             <div className="muted">

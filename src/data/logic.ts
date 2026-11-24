@@ -3351,6 +3351,13 @@ export function confirmUnitInstall(
   if (unitInstallState(db, p.unitId) === 'installed')
     throw new Error(`${unit.serialLvb} ยืนยันติดตั้งไปแล้ว`)
   if (!p.installedDate) throw new Error('กรุณาระบุวันที่ติดตั้งจริง')
+  // 🔴 เฟส 5 (sync 0098): วันที่ติดตั้งในอนาคตไม่ได้ (เวลาไทย) — เดิมไม่มีด่านเลยทั้ง UI/logic/SQL
+  if (p.installedDate.slice(0, 10) > bangkokTodayIso())
+    throw new Error(`วันที่ติดตั้ง ${p.installedDate} เป็นวันในอนาคต — ใส่วันที่ติดตั้งจริง`)
+  // 🔴 เฟส 5 (sync 0098): มีคำขอคืนเข้า LBS Inventory ค้างอยู่ = ยืนยันติดตั้งไม่ได้ — เดิมยืนยันได้
+  //   แล้วตอน Division อนุมัติคืน ระบบปฏิเสธ (ติดตั้งแล้ว คืนไม่ได้) → คำขอค้าง = ปิดงานไม่ได้
+  if (db.approvalRequests.some(r => r.status === 'pending' && r.type === 'return_lbs' && (r.payload.unitIds ?? []).includes(p.unitId)))
+    throw new Error(`${unit.serialLvb} มีคำขอคืนเข้า LBS Inventory รอ Division พิจารณา — ยืนยันติดตั้งไม่ได้ (ให้ Division ตีกลับคำขอก่อนถ้าติดตั้งได้แล้วจริง)`)
   if (p.checkinLat === undefined || p.checkinLng === undefined)
     throw new Error('ต้อง Check-in ตำแหน่งของเครื่องนี้ก่อนยืนยัน')
   if (!p.photoUrl) throw new Error('ต้องแนบรูปถ่ายของเครื่องนี้ก่อนยืนยัน')
@@ -3851,13 +3858,20 @@ export function updateTeamMember(
 }
 
 // ลบได้เฉพาะช่างที่ยังไม่เคยถูกใช้งาน (ไม่มีมอบหมาย/ไม่มีประวัติติดตั้ง) — ที่เหลือใช้ปิดใช้งาน
+/** ลบช่างได้ไหม — เหตุผลที่ลบไม่ได้ (null = ลบได้) · ใช้ร่วม deleteTeamMember กับปุ่มลบ (เฟส 5: บอกก่อนกด) */
+export function memberDeleteBlock(db: DB, memberId: string): string | null {
+  if (db.jobAssignments.some(a => a.memberId === memberId))
+    return 'ช่างคนนี้เคยถูกมอบหมายงาน ลบไม่ได้ (คงประวัติ) — ใช้ปิดใช้งานแทน'
+  if (db.unitInstallations.some(r => r.installedByMemberId === memberId))
+    return 'ช่างคนนี้มีประวัติติดตั้ง ลบไม่ได้ (คงประวัติ) — ใช้ปิดใช้งานแทน'
+  return null
+}
+
 export function deleteTeamMember(db: DB, actor: User, p: { memberId: string }): DB {
   const m = db.teamMembers.find(x => x.id === p.memberId)
   if (!m) throw new Error('ไม่พบช่างในทะเบียน')
-  if (db.jobAssignments.some(a => a.memberId === p.memberId))
-    throw new Error('ช่างคนนี้เคยถูกมอบหมายงาน ลบไม่ได้ (คงประวัติ) — ใช้ปิดใช้งานแทน')
-  if (db.unitInstallations.some(r => r.installedByMemberId === p.memberId))
-    throw new Error('ช่างคนนี้มีประวัติติดตั้ง ลบไม่ได้ (คงประวัติ) — ใช้ปิดใช้งานแทน')
+  const block = memberDeleteBlock(db, p.memberId)
+  if (block) throw new Error(block)
   const next: DB = { ...db, teamMembers: db.teamMembers.filter(x => x.id !== p.memberId) }
   return audit(next, actor, 'team_member', p.memberId, 'delete_team_member',
     `ลบช่าง ${m.firstName} ${m.lastName} ออกจากทะเบียน`)

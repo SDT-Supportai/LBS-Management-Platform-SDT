@@ -3,9 +3,9 @@ import { Link } from 'react-router-dom'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { useStore } from '../data/StoreContext'
-import { fmtDate, fmtDateTime } from '../ui/format'
-import { memberFullName, inThailand, deriveJobStatus } from '../data/logic'
-import { JOB_STATUS_LABEL } from '../ui/format'
+import { fmtDate } from '../ui/format'
+import { buildMapPins, groupPins, unpinnedBlocked, nextFit, type Pin, type FitState } from '../data/mapPins'
+import { mapsUrl } from '../data/field'
 
 // =============================================================================
 // Map Tracking — ประเทศไทย (2026-08-23)
@@ -30,41 +30,8 @@ const TH_CENTER: [number, number] = [13.5, 100.9]
 const TH_ZOOM = 6
 // inThailand ย้ายไปอยู่ logic.ts (0060) — ใช้ร่วมกับฝั่ง validate ตอนกรอกพิกัด แหล่งความจริงเดียว
 
-type Pin = {
-  key: string
-  lat: number
-  lng: number
-  /**
-   * unit = Check-in ราย Serial (unit_installations) · job = Check-in ระดับงาน (jobs.install_checkin_*)
-   * plan = จุดติดตั้ง "ตามแผน" (jobs.plan_lat/lng + install_sites[].lat/lng — 0060) ยังไม่ได้ติดตั้ง
-   */
-  level: 'unit' | 'job' | 'plan'
-  outcome: 'installed' | 'blocked' | 'planned'
-  jobId: string
-  jobNo: string
-  customer: string
-  location: string
-  serial?: string
-  serialOm?: string
-  siteNo?: number          // plan: จุดที่เท่าไรของงาน
-  statusLabel?: string     // plan: สถานะงานตอนนี้ (ยังไม่ติดตั้ง)
-  date?: string
-  by?: string
-  photoUrl?: string
-  note?: string
-}
-
-/** หมุดที่พิกัดเดียวกัน (ปัดทศนิยม 5 ตำแหน่ง ≈ 1 เมตร) รวมเป็นหมุดเดียว ไม่งั้นทับกันอ่านไม่ออก */
-function groupPins(pins: Pin[]) {
-  const m = new Map<string, Pin[]>()
-  pins.forEach(p => {
-    const k = `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`
-    const arr = m.get(k) ?? []
-    arr.push(p)
-    m.set(k, arr)
-  })
-  return [...m.values()]
-}
+/** คีย์กลุ่มหมุด (พิกัดเดียวกัน ปัด 5 ตำแหน่ง) — ใช้เลือกหมุดจากแผนที่/ตาราง */
+const coordKey = (p: { lat: number; lng: number }) => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`
 
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!))
@@ -80,69 +47,14 @@ export default function MapTrackingPage() {
   const [expanded, setExpanded] = useState(false)          // ขยายแผนที่เต็มจอ
   const [search, setSearch] = useState('')
   const [onlyBlocked, setOnlyBlocked] = useState(false)
+  // เฟส 5: เลือกตามหมุด → กล่องรายละเอียดใต้แผนที่ (ไม่บังแผนที่ · มือถือใช้ได้) แทน popup ทับหมุด
+  const [selected, setSelected] = useState<string | null>(null)
+  const fitRef = useRef<FitState | null>(null)
 
-  const userOf = (id?: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
-
-  // ---- รวบพิกัดจาก 2 แหล่ง ----
-  const allPins = useMemo<Pin[]>(() => {
-    const out: Pin[] = []
-
-    // 1) ราย Serial — เอาแถวล่าสุดต่อเครื่อง (unitInstallations เป็น log หลายแถวต่อเครื่องได้)
-    const latestByUnit = new Map<string, typeof db.unitInstallations[number]>()
-    db.unitInstallations.forEach(r => {
-      const cur = latestByUnit.get(r.unitId)
-      if (!cur || r.performedAt > cur.performedAt) latestByUnit.set(r.unitId, r)
-    })
-    latestByUnit.forEach(r => {
-      if (r.outcome === 'reverted' || r.outcome === 'returned') return  // 0090/0094: ผลถูกยกเลิก / คืนเข้าคลังแล้ว = ไม่มีหมุด
-      if (r.checkinLat == null || r.checkinLng == null) return          // blocked ไม่บังคับเช็คอิน
-      if (!inThailand(r.checkinLat, r.checkinLng)) return
-      const unit = db.lbsUnits.find(u => u.id === r.unitId)
-      const job = db.jobs.find(j => j.id === r.jobId)
-      if (!job) return
-      out.push({
-        key: `u:${r.id}`, lat: r.checkinLat, lng: r.checkinLng, level: 'unit',
-        outcome: r.outcome, jobId: job.id, jobNo: job.jobNo, customer: job.customerName,
-        location: job.issueLocation || job.installLocation || '-',
-        serial: unit?.serialLvb, serialOm: unit?.serialOm,
-        date: r.installedDate ?? r.performedAt,
-        by: r.installedByMemberId ? memberFullName(db, r.installedByMemberId) : userOf(r.performedBy),
-        photoUrl: r.photoUrl, note: r.reason || r.note,
-      })
-    })
-
-    // 2) ระดับงาน (งานเก่าก่อน 0035) — ข้ามงานที่มีหมุดราย Serial อยู่แล้ว กันหมุดซ้อน
-    const jobsWithUnitPins = new Set(out.map(p => p.jobId))
-    db.jobs.forEach(j => {
-      if (j.installCheckinLat == null || j.installCheckinLng == null) return
-      if (jobsWithUnitPins.has(j.id)) return
-      if (!inThailand(j.installCheckinLat, j.installCheckinLng)) return
-      out.push({
-        key: `j:${j.id}`, lat: j.installCheckinLat, lng: j.installCheckinLng, level: 'job',
-        outcome: 'installed', jobId: j.id, jobNo: j.jobNo, customer: j.customerName,
-        location: j.issueLocation || j.installLocation || '-',
-        date: j.installedAt, by: userOf(j.installConfirmedBy),
-        photoUrl: j.installPhotoUrl, note: j.installNote,
-      })
-    })
-    // 3) จุดติดตั้ง "ตามแผน" (0060) — งานที่ยังไม่ปิด/ไม่ถูกยกเลิก
-    //    ใช้วางแผนเส้นทางทีมช่างก่อนออกไซต์ · หมุดจะถูกแทนที่ด้วยหมุดจริงเมื่อเช็คอินแล้ว
-    db.jobs.forEach(j => {
-      if (j.terminalStatus === 'installed' || j.terminalStatus === 'cancelled') return
-      const statusLabel = JOB_STATUS_LABEL[deriveJobStatus(db, j)]
-      const push = (lat: number | undefined, lng: number | undefined, siteNo: number, loc: string, due?: string) => {
-        if (lat == null || lng == null || !inThailand(lat, lng)) return
-        out.push({
-          key: `p:${j.id}:${siteNo}`, lat, lng, level: 'plan', outcome: 'planned',
-          jobId: j.id, jobNo: j.jobNo, customer: j.customerName,
-          location: loc || '-', siteNo, date: due, statusLabel,
-        })
-      }
-      push(j.planLat, j.planLng, 1, j.installLocation, j.requiredDate)
-      ;(j.installSites ?? []).forEach((s, i) => push(s.lat, s.lng, i + 2, s.location, s.requiredDate))
-    })
-    return out
-  }, [db])
+  // ---- หมุดทั้งหมด — เฟส 5 ย้ายไป src/data/mapPins.ts (มีเทสต์) ----
+  //   แก้ในนั้น: เครื่องติดตั้งไม่ได้ขึ้นหมุดแดงที่จุดตามแผน · แถวเวลาเท่ากันแถวหลังชนะ · หมุดแผนของจุดที่ติดตั้งครบหายไป ·
+  //   งานหลายจุดบอกสถานที่ของจุดที่เครื่องอยู่ · ลิงก์รูปกัน javascript: · งานยกเลิกไม่มีหมุด
+  const allPins = useMemo<Pin[]>(() => buildMapPins(db), [db])
 
   // ⚠️ Leaflet คำนวณ tile จากขนาดกล่องตอน init — เปลี่ยนขนาดด้วย CSS แล้วไม่บอกมัน
   //    จะได้แผนที่เทาครึ่งจอ (บั๊กคลาสสิกของ Leaflet) → ต้องเรียก invalidateSize ทุกครั้งที่ย่อ/ขยาย
@@ -203,9 +115,10 @@ export default function MapTrackingPage() {
       const n = g.length
       // ลำดับความสำคัญของสี: ติดตั้งไม่ได้ (แดง) > ติดตั้งแล้ว (เขียว) > ตามแผน (โปร่ง)
       const cls = blocked ? 'mp-pin blocked' : allPlan ? 'mp-pin plan' : 'mp-pin'
+      const isSel = selected === coordKey(g[0])
       const icon = L.divIcon({
         className: 'mp-pin-wrap',
-        html: `<span class="${cls}">${n > 1 ? n : ''}</span>`,
+        html: `<span class="${cls}${isSel ? ' selected' : ''}">${n > 1 ? n : ''}</span>`,
         iconSize: [26, 26], iconAnchor: [13, 13],
       })
       // hover = Job No. (สิ่งที่ผู้ใช้ขอ) · คลิก = รายละเอียดเต็ม
@@ -216,45 +129,37 @@ export default function MapTrackingPage() {
       const tip = jobNos.length === 1
         ? `<b>${esc(jobNos[0])}</b>${tipTail}`
         : `<b>${jobNos.map(esc).join(' · ')}</b> (${n} จุด)`
-      const body = g.map(p => `
-        <div class="mp-row">
-          <div><b>${esc(p.jobNo)}</b> · ${esc(p.customer)}</div>
-          <div class="mp-sub">${esc(p.location)}</div>
-          <div class="mp-sub">
-            ${p.level === 'unit'
-              ? `Serial <span class="mp-mono">${esc(p.serial ?? '-')}</span>${p.serialOm ? ` / <span class="mp-mono">${esc(p.serialOm)}</span>` : ''}`
-              : p.level === 'plan'
-                ? `จุดติดตั้งที่ ${p.siteNo} ตามแผน`
-                : 'เช็คอินระดับงาน (ก่อนแยกราย Serial)'}
-          </div>
-          <div class="mp-sub">${p.level === 'plan'
-            // "กำหนดตามแผน" = วันที่ของ "จุดติดตั้งนี้" ที่กรอกตอนเปิดงาน — ไม่ใช่กำหนดส่งที่มีผลของทั้งใบ
-            // (การขยายกำหนดส่ง 0075 เป็นระดับ Job · เขียนว่า "กำหนด" เฉย ๆ จะขัดกับตัวเลขบนหน้า Job)
-            ? `📌 ยังไม่ติดตั้ง · ${esc(p.statusLabel ?? '-')}${p.date ? ` · กำหนดตามแผน ${esc(fmtDate(p.date))}` : ''}`
-            : `${p.outcome === 'blocked' ? '⚠️ ติดตั้งไม่ได้' : '✅ ติดตั้งแล้ว'} ${p.date ? esc(fmtDate(p.date)) : ''} · ${esc(p.by ?? '-')}`}</div>
-          ${p.note ? `<div class="mp-sub">📝 ${esc(p.note)}</div>` : ''}
-          ${p.photoUrl ? `<div class="mp-sub"><a href="${esc(p.photoUrl)}" target="_blank" rel="noreferrer">🖼️ รูปหน้างาน</a></div>` : ''}
-          <div class="mp-sub"><a href="#/jobs/${esc(p.jobId)}">เปิดหน้า Job →</a></div>
-        </div>`).join('')
-
       L.marker([g[0].lat, g[0].lng], { icon })
         .bindTooltip(tip, { direction: 'top', offset: [0, -12] })
-        .bindPopup(`<div class="mp-pop">${body}</div>`, { maxWidth: 320 })
+        .on('click', () => setSelected(coordKey(g[0])))
         .addTo(layer)
     })
 
-    if (groups.length > 0) {
-      map.fitBounds(L.latLngBounds(groups.map(g => [g[0].lat, g[0].lng] as [number, number])).pad(0.25),
-        { maxZoom: 12 })
-    } else {
+    // เฟส 5: ปรับมุมมองเฉพาะครั้งแรกที่มีหมุด / ตอนเปลี่ยนตัวกรอง — เดิม fit ทุกครั้งที่ข้อมูลเปลี่ยน
+    //   (พิมพ์ค้นหาทีละตัว · ข้อมูลรีเฟรช) ⇒ ตำแหน่ง/ซูมที่ผู้ใช้เลื่อนไว้รีเซ็ตตลอด
+    //   รีวิวเฟส 5 #10: หมุดชุดแรกมาทีหลัง (ข้อมูลยังโหลดตอนเปิดหน้า) ก็ซูมไปที่หมุด — กติกาอยู่ที่ nextFit (มีเทสต์)
+    const fit = nextFit(fitRef.current, [search.trim(), showJobLevel, showPlan, onlyBlocked].join('|'), groups.length)
+    fitRef.current = fit.state
+    if (fit.action === 'bounds') {
+      map.fitBounds(L.latLngBounds(groups.map(g => [g[0].lat, g[0].lng] as [number, number])).pad(0.25), { maxZoom: 12 })
+    } else if (fit.action === 'center') {
       map.setView(TH_CENTER, TH_ZOOM)
     }
-  }, [pins])
+  }, [pins, selected, search, showJobLevel, showPlan, onlyBlocked])
+
+  const selectedGroup = selected ? groupPins(pins).find(g => coordKey(g[0]) === selected) : undefined
+  const focusPin = (p: Pin) => {
+    setSelected(coordKey(p))
+    mapRef.current?.setView([p.lat, p.lng], Math.max(mapRef.current.getZoom(), 14))
+    boxRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
 
   const unitPins = allPins.filter(p => p.level === 'unit')
   const jobPins = allPins.filter(p => p.level === 'job')
   const planPins = allPins.filter(p => p.level === 'plan')
   const blockedCount = pins.filter(p => p.outcome === 'blocked').length
+  // เฟส 5: ติดตั้งไม่ได้แต่ไม่มีพิกัดให้ปักหมุดเลย — บอกจำนวนไว้ ไม่ให้แผนที่ดูเหมือนไม่มีปัญหา
+  const unpinned = useMemo(() => unpinnedBlocked(db), [db])
 
   return (
     <>
@@ -262,7 +167,7 @@ export default function MapTrackingPage() {
       <div className="page-sub">
         <b>ติดตั้งแล้ว</b> = ตำแหน่งจริงจากการ Check-in ราย Serial ตอน Service ยืนยันหน้างาน ·
         <b>ตามแผน</b> = พิกัดจุดติดตั้งที่กรอกไว้ตอนเปิด Job (ยังไม่ได้ติดตั้ง) —
-        ชี้ที่หมุดเพื่อดู <b>Job No.</b> · คลิกเพื่อดูรายละเอียด
+        ชี้ที่หมุดเพื่อดู <b>Job No.</b> · คลิกหมุด/แถวในตารางเพื่อดูรายละเอียดใต้แผนที่
       </div>
 
       <div className="cards" style={{ marginBottom: 14 }}>
@@ -282,8 +187,14 @@ export default function MapTrackingPage() {
           <div className="hint">
             {blockedCount > 0
               ? <>หมุดสีแดง · <Link to="/service">ดูเหตุผลที่หน้า Site Installation →</Link></>
-              : 'ไม่มีจุดที่ติดตั้งไม่สำเร็จ'}
+              : unpinned.length > 0 ? 'ไม่มีหมุดแดงบนแผนที่' : 'ไม่มีจุดที่ติดตั้งไม่สำเร็จ'}
           </div>
+          {unpinned.length > 0 && (
+            <div className="hint" style={{ color: 'var(--amber)' }}
+              title={unpinned.map(u => `${u.jobNo} · ${u.serial}${u.reason ? ` — ${u.reason}` : ''}`).join('\n')}>
+              ⚠️ อีก {unpinned.length} เครื่องไม่มีพิกัด (ไม่มีเช็คอิน/พิกัดแผน) — {[...new Set(unpinned.map(u => u.jobNo))].join(', ')}
+            </div>
+          )}
         </div>
       </div>
 
@@ -323,6 +234,39 @@ export default function MapTrackingPage() {
               — ไม่ทำลาย/สร้าง map instance ใหม่ หมุดกับตำแหน่งที่เลื่อนไว้จึงไม่รีเซ็ต */}
           <div className={`map-wrap${expanded ? ' expanded' : ''}`}>
             <div ref={boxRef} className="map-box" />
+            {selectedGroup && (
+              <div className={`mp-detail${expanded ? ' sheet' : ''}`} role="region" aria-label="รายละเอียดหมุด">
+                <div className="mp-detail-head">
+                  <b>{selectedGroup.length > 1 ? `${selectedGroup.length} จุดที่ตำแหน่งนี้` : selectedGroup[0].jobNo}</b>
+                  <span style={{ display: 'flex', gap: 6 }}>
+                    <a className="small" href={mapsUrl(selectedGroup[0].lat, selectedGroup[0].lng)} target="_blank" rel="noreferrer">🧭 นำทาง</a>
+                    <button className="small" onClick={() => setSelected(null)} aria-label="ปิดรายละเอียด">✕</button>
+                  </span>
+                </div>
+                {selectedGroup.map(p => (
+                  <div key={p.key} className="mp-detail-row">
+                    <div><Link to={`/jobs/${p.jobId}`}><b>{p.jobNo}</b></Link> · {p.customer}</div>
+                    <div className="muted">{p.siteNo ? `จุดที่ ${p.siteNo} · ` : ''}{p.location}</div>
+                    <div className="muted">
+                      {p.level === 'unit'
+                        ? <>Serial <span className="mono">{p.serial ?? '-'}</span>{p.serialOm && <> / <span className="mono">{p.serialOm}</span></>}</>
+                        : p.level === 'plan' ? `จุดติดตั้งตามแผน · ${p.statusLabel ?? '-'}` : 'เช็คอินระดับงาน (ก่อนแยกราย Serial)'}
+                    </div>
+                    <div>
+                      {p.level === 'plan'
+                        // "กำหนดตามแผน" = วันที่ของจุดนี้ที่กรอกตอนเปิดงาน — ไม่ใช่กำหนดส่งที่มีผลของทั้งใบ (0075)
+                        ? <span>📌 ยังไม่ติดตั้ง{p.date && <> · กำหนดตามแผน {fmtDate(p.date)}</>}</span>
+                        : p.outcome === 'blocked'
+                          ? <span style={{ color: 'var(--danger)' }}>⚠️ ติดตั้งไม่ได้{p.reason && <> — เหตุผล: {p.reason}</>}</span>
+                          : <span>✅ ติดตั้งแล้ว {p.date ? fmtDate(p.date) : ''} · {p.by ?? '-'}</span>}
+                    </div>
+                    {p.approx && <div className="muted" style={{ fontSize: 12 }}>📍 ตำแหน่งโดยประมาณ (จุดติดตั้งตามแผน — ไม่มีเช็คอิน)</div>}
+                    {p.note && <div className="muted">📝 {p.note}</div>}
+                    {p.photoUrl && <div><a href={p.photoUrl} target="_blank" rel="noreferrer">🖼️ รูปหน้างาน</a></div>}
+                  </div>
+                ))}
+              </div>
+            )}
             {expanded && (
               <div className="map-exit">
                 <span className="muted">{pins.length} จุด{search.trim() ? ` · กรอง "${search.trim()}"` : ''}</span>
@@ -351,8 +295,8 @@ export default function MapTrackingPage() {
                 {pins.slice()
                   .sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''))
                   .map(p => (
-                    <tr key={p.key}>
-                      <td><Link to={`/jobs/${p.jobId}`}><b>{p.jobNo}</b></Link><div className="muted">{p.customer}</div></td>
+                    <tr key={p.key} className={`clickable${selected === coordKey(p) ? ' row-selected' : ''}`} onClick={() => focusPin(p)}>
+                      <td><Link to={`/jobs/${p.jobId}`} onClick={e => e.stopPropagation()}><b>{p.jobNo}</b></Link><div className="muted">{p.customer}</div></td>
                       <td className="mono">
                         {p.level === 'unit'
                           ? <>{p.serial ?? '-'}<div className="muted mono">{p.serialOm}</div></>
@@ -364,13 +308,13 @@ export default function MapTrackingPage() {
                       <td>{p.level === 'plan'
                         ? <><span className="badge blue">📌 ตามแผน</span><div className="muted">{p.statusLabel}</div></>
                         : p.outcome === 'blocked'
-                          ? <span className="badge red">⚠️ ติดตั้งไม่ได้</span>
+                          ? <><span className="badge red">⚠️ ติดตั้งไม่ได้</span>{p.reason && <div className="muted" style={{ fontSize: 12 }}>{p.reason}</div>}</>
                           : <span className="badge green">✅ ติดตั้งแล้ว</span>}</td>
-                      <td style={{ whiteSpace: 'nowrap' }}>{p.date ? fmtDate(p.date) : '-'}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>{p.date ? <>{p.level === 'plan' && <span className="muted">กำหนดตามแผน </span>}{fmtDate(p.date)}</> : '-'}</td>
                       <td className="muted">{p.by ?? '-'}</td>
                       <td className="muted mono" style={{ whiteSpace: 'nowrap' }}>
-                        <a href={`https://www.google.com/maps?q=${p.lat},${p.lng}`} target="_blank" rel="noreferrer">
-                          📍 {p.lat.toFixed(5)}, {p.lng.toFixed(5)}
+                        <a href={`https://www.google.com/maps?q=${p.lat},${p.lng}`} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}>
+                          📍 {p.lat.toFixed(5)}, {p.lng.toFixed(5)}{p.approx && ' (ประมาณ)'}
                         </a>
                         {p.photoUrl && <> · <a href={p.photoUrl} target="_blank" rel="noreferrer">🖼️</a></>}
                       </td>
@@ -380,7 +324,7 @@ export default function MapTrackingPage() {
             </table>
           </div>
           <div className="panel-body muted">
-            อัปเดตล่าสุดจากข้อมูลยืนยันติดตั้ง — {fmtDateTime(new Date().toISOString())}
+            จากข้อมูลยืนยันติดตั้งที่โหลดล่าสุด — กด ↻ Refresh บนแถบด้านบนเพื่อดึงใหม่
           </div>
         </div>
       )}

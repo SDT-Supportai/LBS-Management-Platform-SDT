@@ -1,8 +1,16 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can, ownsJob } from '../data/StoreContext'
 import { jobCloseReason } from '../data/flow'
-import { closeoutFiles, deriveJobStatus, jobDelivery, jobInstallSummary, jobIsFieldActive, qtyOutToField, effectiveQty, unitInstallState, unitJobSite, pendingRevertRequest, jobTeam, memberFullName, serviceIssues } from '../data/logic'
+import { closeoutFiles, deriveJobStatus, jobDelivery, jobInstallSummary, jobIsFieldActive, qtyOutToField, effectiveQty, unitInstallState, unitJobSite, pendingRevertRequest, jobTeam, memberFullName, serviceIssues, bangkokTodayIso } from '../data/logic'
+import {
+  todayFieldJobs, jobNeedsTeam, distanceMeters, gpsQuality, mapsUrl, safeHttpUrl,
+  DRAFT_STORE_KEY, LEGACY_DRAFT_KEY, parseDraftStore, serializeDraftStore, putDraft, removeDraft, getDraft,
+  draftHasContent, resumableDraft, createLatestGuard, type DraftStore,
+} from '../data/field'
+import { draftPhotoKey, putDraftPhoto, getDraftPhoto, deleteDraftPhoto, pruneDraftPhotos } from '../ui/draftPhotos'
+import { compressImage } from '../ui/photo'
+import { AssignTeamModal } from '../ui/AssignTeamModal'
 import type { ServiceIssueKind } from '../data/logic'
 
 const ISSUE_KIND: Record<ServiceIssueKind, { label: string; cls: string }> = {
@@ -44,6 +52,8 @@ export default function ServicePage() {
   const [installedDate, setInstalledDate] = useState('')
   const [note, setNote] = useState('')
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null)
+  const [, setDraftTick] = useState(0)                                // วาดใหม่หลังล้างแบบร่าง (อ่านจาก localStorage)
+  const [accuracy, setAccuracy] = useState<number | null>(null)   // เฟส 5: ±m ของ GPS (ไม่เก็บลง DB — โชว์/เตือนเท่านั้น)
   const [locating, setLocating] = useState(false)
   const [photo, setPhoto] = useState<{ file: File; preview: string } | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -62,8 +72,6 @@ export default function ServicePage() {
   const [closing, setClosing] = useState(false)
   // มอบหมายทีม (เฟส C)
   const [assignFor, setAssignFor] = useState<string | null>(null)
-  const [assignIds, setAssignIds] = useState<string[]>([])
-  const [assignLead, setAssignLead] = useState('')
   const [installerId, setInstallerId] = useState('')   // ช่างที่ลงมือติดตั้งเครื่องนี้
   // เลื่อน/ติดปัญหาหน้างาน (เฟส A)
   const [visitFor, setVisitFor] = useState<string | null>(null)
@@ -115,15 +123,21 @@ export default function ServicePage() {
   // เหตุผลที่ปิดงานยังไม่ได้ — ตัวเดียวกับ Job Detail/แถบขั้นต่อไป (เฟส 2 ย้ายไป src/data/flow.ts) · '' = ปิดได้
   const closeReason = (_jobId: string, s: ReturnType<typeof jobInstallSummary>) => jobCloseReason(s)
   const canCloseNow = (_jobId: string, s: ReturnType<typeof jobInstallSummary>) => s.canClose
-  // วัสดุที่ยังค้างจัดซื้อ (รวมของที่ซื้อเพิ่มหลังเบิก — 0037) ใช้เตือนตอนปิดงาน
-  const outstandingProcurement = (jobId: string) => db.accessoryRequests.filter(r =>
-    r.jobId === jobId && (r.status === 'pending' || r.status === 'pr_sent' || r.status === 'po_ordered'))
   // แถวยืนยันล่าสุดของเครื่อง (ใช้โชว์หลักฐาน/เหตุผล)
   //   เวลาเท่ากัน = แถวที่ต่อท้ายทีหลังชนะ (ตรงกับ unitInstallState — 0090 reverted ต้องชนะแถวที่มันยกเลิก)
   const lastInstallRow = (unitId: string) =>
     db.unitInstallations.reduce<typeof db.unitInstallations[number] | undefined>(
       (best, r) => r.unitId === unitId && (!best || r.performedAt >= best.performedAt) ? r : best, undefined)
 
+  // เฟส 5: พิกัดนำทางของงาน — จุดติดตั้งของเครื่องที่ยังรอยืนยันก่อน · ไม่มี = จุดที่ 1 ตามแผน
+  const jobSitesWithCoords = (j: typeof db.jobs[number]): { lat: number; lng: number } | null => {
+    for (const u of unitsOut(j.id)) {
+      if (unitInstallState(db, u.id) === 'installed') continue
+      const s = unitJobSite(db, u)
+      if (s?.lat != null && s?.lng != null) return { lat: s.lat, lng: s.lng }
+    }
+    return j.planLat != null && j.planLng != null ? { lat: j.planLat, lng: j.planLng } : null
+  }
   const unitJob = unitJobId ? db.jobs.find(j => j.id === unitJobId) : null
   const stepUnit = step ? db.lbsUnits.find(u => u.id === step.unitId) : null
   const closeJob = closeFor ? db.jobs.find(j => j.id === closeFor) : null
@@ -139,20 +153,34 @@ export default function ServicePage() {
   const lastVisit = (jobId: string) =>
     db.siteVisits.filter(v => v.jobId === jobId).sort((a, b) => b.performedAt.localeCompare(a.performedAt))[0]
 
+  // รีวิวเฟส 5 #6: GPS รอได้ถึง 15 วิ — ผลของคำขอเก่า (ฟอร์มเครื่องก่อน / กดกลับไปแล้ว) ไม่ทับฟอร์มปัจจุบัน
+  const gpsGuard = useRef(createLatestGuard()).current
+  const restoreGuard = useRef(createLatestGuard()).current
   const captureLocation = () => {
     if (!navigator.geolocation) { show('อุปกรณ์นี้ไม่รองรับการระบุตำแหน่ง', true); return }
+    const t = gpsGuard.next()
     setLocating(true)
     navigator.geolocation.getCurrentPosition(
-      pos => { setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude }); setLocating(false) },
-      err => { show(`ระบุตำแหน่งไม่สำเร็จ: ${err.message} — เปิดสิทธิ์ Location ให้เบราว์เซอร์`, true); setLocating(false) },
+      pos => {
+        if (!gpsGuard.isCurrent(t)) return
+        setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude })
+        setAccuracy(Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : null)
+        setLocating(false)
+      },
+      err => {
+        if (!gpsGuard.isCurrent(t)) return
+        show(`ระบุตำแหน่งไม่สำเร็จ: ${err.message} — เปิดสิทธิ์ Location ให้เบราว์เซอร์`, true); setLocating(false)
+      },
       { enableHighAccuracy: true, timeout: 15000 },
     )
   }
 
   const pickPhoto = async (file?: File) => {
     if (!file) return
-    if (!file.type.startsWith('image/')) { show('กรุณาเลือกไฟล์รูปภาพ', true); return }
-    setPhoto({ file, preview: await readAsDataUrl(file) })
+    if (!file.type.startsWith('image/') && !/\.(heic|heif)$/i.test(file.name)) { show('กรุณาเลือกไฟล์รูปภาพ', true); return }
+    // เฟส 5: ย่อด้านยาว ≤1600 px เป็น JPEG ก่อน — เน็ตหน้างานส่งไว · HEIC เปิดได้ทุกเบราว์เซอร์ · demo ไม่เต็มพื้นที่
+    const c = await compressImage(file)
+    setPhoto({ file: c.file, preview: c.dataUrl })
   }
 
   // LIVE: อัปโหลดเข้า Supabase Storage คืน public URL · demo: เก็บ data URL ตรงๆ
@@ -167,33 +195,33 @@ export default function ServicePage() {
   }
 
   // เปิดฟอร์มยืนยันเครื่อง — reset หลักฐานทุกครั้ง (หลักฐานต่อเครื่อง ห้ามใช้ซ้ำ)
-  const openUnitConfirm = (unitId: string) => {
-    setInstalledDate(new Date().toISOString().slice(0, 10))
-    setNote(''); setCoords(null); setPhoto(null)
-    // default = หัวหน้าทีมของงานนี้ (ถ้ามี) — แก้ได้
-    const lead = unitJobId ? jobTeam(db, unitJobId).find(t => t.assignment.isLead) : undefined
-    setInstallerId(lead?.member.id ?? '')
+  //   เฟส 5: วันที่ตั้งต้น = วันนี้เวลาไทย (เดิม UTC ⇒ 00:00–06:59 ได้เมื่อวาน) · กู้แบบร่างที่ค้างในเครื่อง ·
+  //   ไม่มีแบบร่าง = ขอ GPS ทันทีที่เปิด (ช่างไม่ต้องกดเอง — ยืนข้างเครื่องอยู่แล้ว)
+  const openUnitConfirm = async (unitId: string, jobId = unitJobId) => {
+    const today = bangkokTodayIso()
+    gpsGuard.invalidate(); setLocating(false)
+    const seq = restoreGuard.next()
+    const draft = getDraft(readStore(), unitId, user?.id, today)
+    const lead = jobId ? jobTeam(db, jobId).find(t => t.assignment.isLead) : undefined
+    setInstalledDate(draft?.installedDate ?? today)
+    setNote(draft?.note ?? '')
+    setCoords(draft?.lat != null && draft?.lng != null ? { lat: draft.lat, lng: draft.lng } : null)
+    setAccuracy(draft?.accuracy ?? null)
+    setInstallerId(draft?.memberId ?? lead?.member.id ?? '')
+    setPhoto(null)
     setStep({ unitId, mode: 'confirm' })
+    if (!draft || draft.lat == null) captureLocation()
+    // รูปของร่างอยู่ IndexedDB (#8) — โหลดเสร็จช้ากว่าการเปิดฟอร์ม: เปิดเครื่องอื่น/กดกลับไปแล้ว = ไม่ใส่
+    if (draft?.hasPhoto && user) {
+      const blob = await getDraftPhoto(draftPhotoKey(user.id, unitId))
+      if (blob && restoreGuard.isCurrent(seq)) {
+        const file = new File([blob], `${unitId}.jpg`, { type: blob.type || 'image/jpeg' })
+        try { const preview = await readAsDataUrl(file); if (restoreGuard.isCurrent(seq)) setPhoto({ file, preview }) } catch { /* รูปเสีย = ถ่ายใหม่ */ }
+      }
+    }
   }
 
-  const openAssign = (jobId: string) => {
-    const team = jobTeam(db, jobId)
-    setAssignIds(team.map(t => t.member.id))
-    setAssignLead(team.find(t => t.assignment.isLead)?.member.id ?? '')
-    setAssignFor(jobId)
-  }
-  const toggleAssign = (id: string) => setAssignIds(prev => {
-    const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
-    if (!next.includes(assignLead)) setAssignLead('')
-    return next
-  })
-  const submitAssign = async () => {
-    if (!assignFor) return
-    const ok = await tryAction(
-      () => act.assignJobTeam({ jobId: assignFor, memberIds: assignIds, leadMemberId: assignLead || undefined }),
-      assignIds.length === 0 ? 'ยกเลิกมอบหมายทีมแล้ว' : `มอบหมายทีม ${assignIds.length} คนแล้ว`)
-    if (ok) setAssignFor(null)
-  }
+  const openAssign = (jobId: string) => setAssignFor(jobId)   // เฟส 5: กล่องมอบหมายทีมใช้ร่วมกับหน้า Schedule
   const openUnitBlock = (unitId: string) => { setBlockReason(''); setStep({ unitId, mode: 'block' }) }
 
   // 0090 — คำขอยกเลิกผลติดตั้งที่ค้างอยู่ของ Job (มีได้ใบเดียวต่อ Job)
@@ -205,9 +233,9 @@ export default function ServicePage() {
   }
   const pendingReturn = (jobId: string) =>
     db.approvalRequests.find(r => r.jobId === jobId && r.type === 'return_lbs' && r.status === 'pending')
-  const openReturn = (jobId: string, unitId: string) => {
+  const openReturn = (jobId: string, unitId: string | string[]) => {
     setUnitJobId(null); setStep(null)                       // ไม่ซ้อน 2 popup
-    setReturnIds([unitId]); setReturnReason(''); setReturnFor(jobId)
+    setReturnIds(Array.isArray(unitId) ? unitId : [unitId]); setReturnReason(''); setReturnFor(jobId)
   }
   const submitReturn = async () => {
     if (!returnFor) return
@@ -223,7 +251,55 @@ export default function ServicePage() {
       `ส่งคำขอยกเลิกผลติดตั้ง ${revertIds.length} เครื่องแล้ว — รอ Division พิจารณา`)
     if (ok) setRevertFor(null)
   }
-  const backToList = () => { setStep(null); setCoords(null); setPhoto(null) }
+  // ---- แบบร่างยืนยันติดตั้ง (เฟส 5) — ข้อมูลไม่หายเมื่อเปิดกล้องแล้วหน้าโหลดใหม่ / เน็ตหลุด / ปิดกล่องไปก่อน ----
+  //   รีวิวเฟส 5: เก็บรายเครื่อง (#1) · GPS อัตโนมัติอย่างเดียวไม่นับเป็นร่าง (#4) · ตัวร่างเล็ก (localStorage · หน่วง 400 ms
+  //   + บันทึกทันทีตอนหน้าถูกซ่อน เช่น เปิดกล้อง) รูปแยกไป IndexedDB เขียนเฉพาะตอนรูปเปลี่ยน (#8) · ผูกผู้ใช้ (#9)
+  function readStore(): DraftStore { try { return parseDraftStore(localStorage.getItem(DRAFT_STORE_KEY)) } catch { return {} } }
+  const writeStore = (st: DraftStore) => { try { localStorage.setItem(DRAFT_STORE_KEY, serializeDraftStore(st)) } catch { /* เต็ม/ปิดไว้ = ไม่เก็บ */ } }
+  const clearDraft = (unitId: string) => {
+    writeStore(removeDraft(readStore(), unitId))
+    if (user) void deleteDraftPhoto(draftPhotoKey(user.id, unitId))
+    setDraftTick(t => t + 1)
+  }
+  // ครั้งแรกที่เปิดหน้า: ลบร่างแบบเก่า (ช่องเดียว) + รูปที่ไม่มีร่างแล้ว
+  useEffect(() => {
+    try { localStorage.removeItem(LEGACY_DRAFT_KEY) } catch { /* ไม่มี */ }
+    const keep = new Set(Object.values(readStore()).map(d => d.userId ? draftPhotoKey(d.userId, d.unitId) : ''))
+    void pruneDraftPhotos(keep)
+  }, [])
+  const pendingSave = useRef<(() => void) | null>(null)
+  useEffect(() => {
+    if (step?.mode !== 'confirm' || !user) return
+    if (!draftHasContent({ hasPhoto: !!photo, note })) return   // GPS ที่จับเองอย่างเดียว = ยังไม่ได้กรอกอะไร
+    const unitId = step.unitId, userId = user.id
+    const save = () => {
+      pendingSave.current = null
+      writeStore(putDraft(readStore(), {
+        unitId, userId, installedDate, lat: coords?.lat, lng: coords?.lng, accuracy: accuracy ?? undefined,
+        memberId: installerId || undefined, note: note || undefined, hasPhoto: !!photo, savedAt: '',
+      }, new Date().toISOString()))
+    }
+    pendingSave.current = save
+    const t = window.setTimeout(save, 400)
+    return () => window.clearTimeout(t)
+  }, [step, installedDate, coords, accuracy, installerId, note, photo, user])
+  useEffect(() => {
+    // เปิดกล้องบนมือถือ = หน้าถูกซ่อน (และอาจถูกปิดทิ้ง) — บันทึกที่ค้างหน่วงอยู่ทันที
+    const flush = () => { if (document.visibilityState === 'hidden') pendingSave.current?.() }
+    document.addEventListener('visibilitychange', flush)
+    return () => document.removeEventListener('visibilitychange', flush)
+  }, [])
+  // รูปเขียนแยก เฉพาะตอนรูปเปลี่ยน (ไม่ใช่ทุกตัวอักษรที่พิมพ์)
+  useEffect(() => {
+    if (step?.mode !== 'confirm' || !user || !photo) return
+    void putDraftPhoto(draftPhotoKey(user.id, step.unitId), photo.file)
+  }, [photo, step, user])
+  // แบบร่างที่ค้างจากรอบก่อน — โชว์แถบ "ทำต่อ" บนสุด · ไม่ชวนเครื่องที่ยืนยันไม่ได้แล้ว (#5)
+  const pendingDraft = !canConfirm || step ? null : resumableDraft(db, readStore(), user?.id, bangkokTodayIso())
+  const backToList = () => {
+    gpsGuard.invalidate(); restoreGuard.invalidate(); pendingSave.current = null
+    setLocating(false); setStep(null); setCoords(null); setAccuracy(null); setPhoto(null)
+  }
 
   const submitUnitConfirm = async () => {
     if (!step || !unitJobId || !coords || !photo) return
@@ -237,7 +313,7 @@ export default function ServicePage() {
           installedByMemberId: installerId || undefined,
         }),
         `ยืนยันติดตั้ง ${stepUnit?.serialLvb ?? ''} แล้ว`)
-      if (ok) backToList()
+      if (ok) { clearDraft(step.unitId); backToList() }
     } catch (e) {
       show(e instanceof Error ? e.message : String(e), true)
     }
@@ -249,7 +325,7 @@ export default function ServicePage() {
     const ok = await tryAction(
       () => act.blockUnitInstall({ unitId: step.unitId, reason: blockReason }),
       `บันทึกว่า ${stepUnit?.serialLvb ?? ''} ติดตั้งไม่ได้ + แจ้ง Project แล้ว`)
-    if (ok) backToList()
+    if (ok) { clearDraft(step.unitId); backToList() }    // #5: บันทึกติดตั้งไม่ได้แล้ว ไม่ต้องชวนยืนยันต่อ
   }
 
   // อัปโหลดไฟล์แนบปัญหา — LIVE: เข้า Storage · demo: เก็บ data URL
@@ -353,6 +429,51 @@ export default function ServicePage() {
         </div>
       )}
 
+      {pendingDraft && (
+        <div className="draft-banner" role="status">
+          <span>📝 มีข้อมูลยืนยันติดตั้ง <b className="mono">{pendingDraft.unit.serialLvb}</b> ที่ยังไม่บันทึก
+            <span className="muted"> · เก็บไว้ในเครื่องนี้เมื่อ {fmtDateTime(pendingDraft.d.savedAt)}</span></span>
+          <span style={{ display: 'flex', gap: 6 }}>
+            <button className="small primary" onClick={() => { setUnitJobId(pendingDraft.jobId); openUnitConfirm(pendingDraft.unit.id, pendingDraft.jobId) }}>ทำต่อ</button>
+            <button className="small" onClick={() => { clearDraft(pendingDraft.unit.id); show('ล้างข้อมูลที่ค้างแล้ว') }}>ล้าง</button>
+          </span>
+        </div>
+      )}
+
+      {/* เฟส 5 — งานของฉันวันนี้: การ์ดใหญ่ใช้บนมือถือ (ช่างที่ผูกบัญชีเห็นเฉพาะงานของทีมตัวเอง) */}
+      {canConfirm && (() => {
+        const todays = todayFieldJobs(db, user, bangkokTodayIso())
+        return (
+          <div className="panel">
+            <div className="panel-head"><h3>📍 งานของฉันวันนี้ ({todays.length})
+              <span className="muted" style={{ fontWeight: 400 }}> · ถึงวันนัดแล้ว ยังมีเครื่องรอยืนยัน</span></h3></div>
+            {todays.length === 0 ? <div className="panel-body muted">ไม่มีงานที่ถึงวันนัดวันนี้</div> : (
+              <div className="today-list">
+                {todays.map(({ job: j, overdueDays, pendingUnits }) => {
+                  const site = jobSitesWithCoords(j)
+                  return (
+                    <div key={j.id} className={`today-card${overdueDays > 0 ? ' is-late' : ''}`}>
+                      <div className="today-head">
+                        <b>{j.jobNo}</b>
+                        {overdueDays > 0 ? <span className="badge red">เลยวันนัด {overdueDays} วัน</span>
+                          : <span className="badge blue">นัดถึง {fmtDate(j.installEndDate || j.installStartDate)}</span>}
+                      </div>
+                      <div>{j.customerName}</div>
+                      <div className="muted">📍 {j.issueLocation || j.installLocation || '-'} · รอยืนยัน {pendingUnits} เครื่อง</div>
+                      <div className="today-actions">
+                        <button className="primary" onClick={() => { setStep(null); setUnitJobId(j.id) }}>🔧 ยืนยันรายเครื่อง</button>
+                        {site && <a className="btn-like" href={mapsUrl(site.lat, site.lng)} target="_blank" rel="noreferrer">🧭 นำทาง</a>}
+                        {j.contactPhone && <a className="btn-like" href={`tel:${j.contactPhone.replace(/[^0-9+]/g, '')}`}>📞 โทรลูกค้า</a>}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )
+      })()}
+
       <div className="panel">
         <div className="panel-head"><h3>รอ Project เบิกให้ ({ready.length})</h3></div>
         <div className="table-scroll">
@@ -406,8 +527,10 @@ export default function ServicePage() {
                       )}
                     </td>
                     <td>{j.customerName}
+                      {j.contactPhone && <> · <a href={`tel:${j.contactPhone.replace(/[^0-9+]/g, '')}`}>📞 {j.contactPhone}</a></>}
                       <div className="muted">
                         📍 {j.issueLocation || j.installLocation || '-'}
+                        {(() => { const c = jobSitesWithCoords(j); return c && <> · <a href={mapsUrl(c.lat, c.lng)} target="_blank" rel="noreferrer">🧭 นำทาง</a></> })()}
                         {j.installStartDate && <> · 📅 นัดติดตั้ง <b>{fmtDate(j.installStartDate)} – {fmtDate(j.installEndDate)}</b></>}
                       </div>
                       {/* 0075 — สถานะกำหนดส่งเทียบกำหนดที่มีผล (ไม่ใช่ requiredDate ดิบ) */}
@@ -420,8 +543,9 @@ export default function ServicePage() {
                       )})()}
                       {(() => {
                         const team = jobTeam(db, j.id)
+                        // เฟส 5: ติดตั้งครบแล้วไม่ต้องมีทีม — ไม่ขึ้นแดง (มอบหมายก็ไม่ได้แล้ว)
                         return team.length === 0
-                          ? <div className="muted" style={{ color: 'var(--danger)' }}>👷 ยังไม่มอบหมายทีม</div>
+                          ? (jobNeedsTeam(db, j) ? <div className="muted" style={{ color: 'var(--danger)' }}>👷 ยังไม่มอบหมายทีม</div> : null)
                           : <div className="muted">👷 {team.map(t =>
                               `${t.member.firstName} ${t.member.lastName}${t.assignment.isLead ? ' (หัวหน้า)' : ''}`).join(', ')}</div>
                       })()}</td>
@@ -515,6 +639,22 @@ export default function ServicePage() {
                           {pendingRevert(j.id) && (
                             <span className="badge amber" style={{ marginRight: 6 }}>⏳ ขอยกเลิกผลติดตั้ง — รอ Division พิจารณา</span>
                           )}
+                          {pendingReturn(j.id) && (
+                            <span className="badge amber" style={{ marginRight: 6 }}>⏳ ขอคืนเข้าคลัง — รอ Division พิจารณา</span>
+                          )}
+                          {/* เฟส 5: เครื่องติดตั้งไม่ได้ต้องคืนเข้าคลังก่อนปิดงาน (0094) — บอกบนแถวพร้อมปุ่ม (เดิมอยู่ใน tooltip/ในกล่องรายเครื่อง) */}
+                          {(() => {
+                            const blockedIds = unitsOut(j.id).filter(u => unitInstallState(db, u.id) === 'blocked').map(u => u.id)
+                            if (blockedIds.length === 0 || pendingReturn(j.id)) return null
+                            return (
+                              <div className="row-cta">
+                                ⚠️ ติดตั้งไม่ได้ {blockedIds.length} เครื่อง — ต้องขอคืนเข้า LBS Inventory ก่อนปิดงาน
+                                {canRequestRevert && ownsJob(user, j) && (
+                                  <button className="small" style={{ marginLeft: 6 }} onClick={() => openReturn(j.id, blockedIds)}>📦 ขอคืนเข้าคลัง</button>
+                                )}
+                              </div>
+                            )
+                          })()}
                           {canCloseJob && (
                             <button className="small success" style={{ marginRight: 6 }}
                               disabled={!canCloseNow(j.id, s)} title={closeReason(j.id, s)}
@@ -524,7 +664,7 @@ export default function ServicePage() {
                           )}
                           {canConfirm && !done && <button className="small" onClick={() => openVisit(j.id)}>เลื่อน/ติดปัญหา</button>}
                           {/* ติดตั้งครบแต่ปิดไม่ได้ (เช่น วัสดุค้างเบิก) — บอกเหตุผลตรง ๆ ไม่ต้องไปชี้ tooltip */}
-                          {done && canCloseJob && !canCloseNow(j.id, s) && (
+                          {s.unitsDone && canCloseJob && !canCloseNow(j.id, s) && (
                             <div className="muted" style={{ marginTop: 4, fontSize: 11.5, whiteSpace: 'normal', maxWidth: 360 }}>
                               {closeReason(j.id, s)}
                             </div>
@@ -569,7 +709,7 @@ export default function ServicePage() {
                         return (
                           <div key={u.id} className="muted">
                             <span className="mono">{u.serialLvb}</span>{' '}
-                            {r.photoUrl && <a href={r.photoUrl} target="_blank" rel="noreferrer">🖼️</a>}{' '}
+                            {safeHttpUrl(r.photoUrl) && <a href={safeHttpUrl(r.photoUrl)} target="_blank" rel="noreferrer">🖼️</a>}{' '}
                             {r.checkinLat != null && r.checkinLng != null && (
                               <a href={`https://www.google.com/maps?q=${r.checkinLat},${r.checkinLng}`} target="_blank" rel="noreferrer">
                                 📍 {r.checkinLat.toFixed(5)}, {r.checkinLng.toFixed(5)}
@@ -637,6 +777,7 @@ export default function ServicePage() {
                         <td className="mono">{u.serialLvb}<div className="muted mono">{u.serialOm}</div></td>
                         <td>
                           📍 {site ? `จุดที่ ${site.no} · ${site.location || '-'}` : '-'}
+                          {site?.lat != null && site?.lng != null && <> · <a href={mapsUrl(site.lat, site.lng)} target="_blank" rel="noreferrer">🧭 นำทาง</a></>}
                           {site?.requiredDate && <div className="muted" style={{ fontSize: 12 }}>กำหนด {fmtDate(site.requiredDate)}</div>}
                         </td>
                         <td>
@@ -672,7 +813,11 @@ export default function ServicePage() {
                               ↩️ ขอยกเลิกผลติดตั้ง
                             </button>
                           )}
-                          {st !== 'installed' && canConfirm && (
+                          {/* เฟส 5 (0098): ระหว่างรอ Division พิจารณาคืนเข้าคลัง ยืนยันติดตั้งไม่ได้ — เดิมกดได้แล้วคำขอค้าง ปิดงานไม่ได้ */}
+                          {st !== 'installed' && canConfirm && returnPending && (
+                            <span className="muted" style={{ fontSize: 12 }}>ยืนยันไม่ได้ระหว่างรอคืนเข้าคลัง</span>
+                          )}
+                          {st !== 'installed' && canConfirm && !returnPending && (
                             <>
                               <button className="small success" style={{ marginRight: 6 }}
                                 onClick={() => openUnitConfirm(u.id)}>
@@ -714,7 +859,7 @@ export default function ServicePage() {
             </div>
           </div>
           <label className="field"><span>วันที่ติดตั้งจริง *</span>
-            <input type="date" value={installedDate} onChange={e => setInstalledDate(e.target.value)} />
+            <input type="date" value={installedDate} max={bangkokTodayIso()} onChange={e => setInstalledDate(e.target.value)} />
           </label>
 
           <label className="field"><span>Check-in ตำแหน่งของเครื่องนี้ (GPS) *</span></label>
@@ -723,9 +868,26 @@ export default function ServicePage() {
               {locating ? 'กำลังระบุ...' : coords ? '📍 ระบุตำแหน่งใหม่' : '📍 Check-in ตำแหน่ง'}
             </button>
             {coords
-              ? <span className="badge green">{coords.lat.toFixed(5)}, {coords.lng.toFixed(5)}</span>
-              : <span className="muted">ยังไม่ได้ Check-in</span>}
+              ? <span className={`badge ${accuracy == null ? 'green' : gpsQuality(accuracy) === 'poor' ? 'red' : gpsQuality(accuracy) === 'fair' ? 'amber' : 'green'}`}>
+                  {coords.lat.toFixed(5)}, {coords.lng.toFixed(5)}{accuracy != null && ` · ±${Math.round(accuracy)} m`}
+                </span>
+              : <span className="muted">{locating ? 'กำลังหาตำแหน่ง…' : 'ยังไม่ได้ Check-in'}</span>}
           </div>
+          {/* เฟส 5: เตือนพิกัดหยาบ (มักมาจากเสาสัญญาณ) + ห่างจากจุดติดตั้งตามแผน */}
+          {coords && accuracy != null && gpsQuality(accuracy) === 'poor' && (
+            <div className="gps-warn">⚠️ ความแม่นยำต่ำ (±{Math.round(accuracy)} m) — ออกไปที่โล่ง รอสักครู่แล้วกด "ระบุตำแหน่งใหม่"</div>
+          )}
+          {coords && (() => {
+            const site = unitJobSite(db, stepUnit)
+            if (site?.lat == null || site?.lng == null) return null
+            const m = distanceMeters(coords, { lat: site.lat, lng: site.lng })
+            return (
+              <div className={m > 500 ? 'gps-warn' : 'muted'} style={{ marginBottom: 12, fontSize: 12.5 }}>
+                {m > 500 ? '⚠️ ' : ''}ห่างจากจุดที่ {site.no} ตามแผน {m >= 1000 ? `${(m / 1000).toFixed(1)} กม.` : `${Math.round(m)} ม.`}
+                {m > 500 && ' — ตรวจว่าอยู่ถูกจุด/ถูกเครื่อง'}
+              </div>
+            )
+          })()}
 
           <label className="field"><span>รูปถ่ายเครื่องนี้หน้างาน *</span>
             <input type="file" accept="image/*" capture="environment"
@@ -750,55 +912,15 @@ export default function ServicePage() {
           <label className="field"><span>บันทึกของเครื่องนี้ (ผลการทดสอบ ฯลฯ)</span>
             <textarea rows={2} value={note} onChange={e => setNote(e.target.value)} placeholder="test energize ผ่าน" />
           </label>
+          <div className="muted" style={{ fontSize: 12 }}>
+            💾 ข้อมูลที่กรอก (รวมรูปที่ย่อแล้ว) เก็บไว้ในเครื่องนี้ให้อัตโนมัติ — หน้าโหลดใหม่ตอนเปิดกล้อง/เน็ตหลุด แล้วกลับมาทำต่อได้
+            {' '}<button className="link-btn" onClick={() => { pendingSave.current = null; clearDraft(stepUnit.id); setCoords(null); setAccuracy(null); setPhoto(null); setNote('') }}>ล้างข้อมูลที่กรอก</button>
+          </div>
         </Modal>
       )}
 
-      {/* มอบหมายทีมให้งาน (เฟส C) */}
-      {assignJob && (
-        <Modal title={`มอบหมายทีม — ${assignJob.jobNo}`} onClose={() => setAssignFor(null)}
-          footer={<>
-            <button onClick={() => setAssignFor(null)}>ยกเลิก</button>
-            <button className="success" onClick={submitAssign}>
-              {assignIds.length === 0 ? 'ยกเลิกมอบหมายทั้งหมด' : `บันทึก (${assignIds.length} คน)`}
-            </button>
-          </>}>
-          <p className="muted" style={{ marginBottom: 12 }}>
-            {assignJob.customerName} · 📍 {assignJob.issueLocation || assignJob.installLocation || '-'}
-            {assignJob.installStartDate && <> · 📅 {fmtDate(assignJob.installStartDate)} – {fmtDate(assignJob.installEndDate)}</>}
-          </p>
-          {activeMembers.length === 0 ? (
-            <div className="empty">ยังไม่มีช่างในทะเบียน — เพิ่มที่หน้า Service &amp; Scheduling ก่อน</div>
-          ) : (
-            <>
-              <div className="table-scroll">
-                <table>
-                  <thead><tr><th>เลือก</th><th>ชื่อ - สกุล</th><th>ตำแหน่ง / เบอร์</th><th>หัวหน้าทีม</th></tr></thead>
-                  <tbody>
-                    {activeMembers.map(m => (
-                      <tr key={m.id}>
-                        <td>
-                          <input type="checkbox" checked={assignIds.includes(m.id)}
-                            onChange={() => toggleAssign(m.id)} />
-                        </td>
-                        <td><b>{m.firstName} {m.lastName}</b></td>
-                        <td className="muted">{m.position} · <span className="mono">{m.phone}</span></td>
-                        <td>
-                          <input type="radio" name="lead" checked={assignLead === m.id}
-                            disabled={!assignIds.includes(m.id)}
-                            onChange={() => setAssignLead(m.id)} />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <p className="muted" style={{ marginTop: 10 }}>
-                มอบหมายเป็น <b>แผนงาน</b> — ไม่ได้จำกัดสิทธิ์การยืนยันติดตั้ง (ผู้บันทึกในระบบยังเป็นบัญชีที่ login)
-              </p>
-            </>
-          )}
-        </Modal>
-      )}
+      {/* มอบหมายทีมให้งาน (เฟส C · เฟส 5 ย้ายเป็นชิ้นกลาง src/ui/AssignTeamModal.tsx) */}
+      {assignJob && <AssignTeamModal job={assignJob} onClose={() => setAssignFor(null)} />}
 
       {/* ฟอร์มติดตั้งไม่ได้ */}
       {stepUnit && step?.mode === 'block' && (
@@ -928,21 +1050,7 @@ export default function ServicePage() {
               <br />
               หลังปิดงาน Job จะเป็นสถานะ <b>Installed</b> (terminal) และแจ้ง Project อัตโนมัติ
             </p>
-            {s.blocked > 0 && (
-              <div className="panel" style={{ marginBottom: 12 }}>
-                <div className="panel-body" style={{ color: 'var(--danger)' }}>
-                  ⚠️ ยังมีเครื่องที่ติดตั้งไม่ได้ {s.blocked} เครื่อง — ปิดงานได้ แต่จะถูกบันทึกไว้ในประวัติและแจ้ง Project
-                </div>
-              </div>
-            )}
-            {outstandingProcurement(closeJob.id).length > 0 && (
-              <div className="panel" style={{ marginBottom: 12 }}>
-                <div className="panel-body" style={{ color: 'var(--danger)' }}>
-                  ⚠️ ยังมีวัสดุค้างจัดซื้อ {outstandingProcurement(closeJob.id).length} รายการ (PR/PO ยังไม่จบ) —
-                  ปิดงานได้ แต่หลังปิดจะ<b>เพิ่มรายการหรือออก PR ใหม่ไม่ได้อีก</b> (รับของ/แก้ราคาจริงยังทำได้)
-                </div>
-              </div>
-            )}
+            {/* เฟส 5: ตัดคำเตือน "ติดตั้งไม่ได้/วัสดุค้าง — ปิดงานได้" ออก — ขัดกติกา 0094 (ทั้งสองข้อเป็นเรื่องค้างก่อนปิด) */}
             {/* ①② เอกสารรับมอบ + Warranty (0079) — บังคับทั้งหมด */}
             {closeDraft && (
               <CloseoutForm db={db} job={closeJob} draft={closeDraft} onChange={setCloseDraft}

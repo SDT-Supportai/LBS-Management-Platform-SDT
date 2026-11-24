@@ -549,6 +549,38 @@ button.gate-off { opacity: .62; cursor: not-allowed; }
 .modal-foot-summary { margin-right: auto; align-self: center; font-size: 13px; color: var(--text-2); }
 @media (max-width: 640px) { .modal-foot-summary { flex: 1 1 100%; } }
 
+/* ---- Site Installation มือถือ (เฟส 5) ---- */
+.draft-banner { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between;
+  background: var(--amber-soft); border: 1px solid var(--amber-line); border-radius: 12px; padding: 10px 14px; margin-bottom: 14px; }
+.today-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; padding: 4px 16px 14px; }
+.today-card { border: 1px solid var(--border); border-left: 4px solid var(--primary); border-radius: 12px; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 4px; background: var(--surface, #fff); }
+.today-card.is-late { border-left-color: var(--red); }
+.today-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.today-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.today-actions > * { min-height: 44px; flex: 1 1 auto; justify-content: center; }
+.btn-like { display: inline-flex; align-items: center; padding: 6px 12px; border: 1px solid var(--border); border-radius: 10px;
+  text-decoration: none; color: var(--text-2); font-weight: 600; background: var(--surface, #fff); }
+.gps-warn { color: var(--red); background: var(--red-soft); border-radius: 8px; padding: 6px 10px; margin-bottom: 12px; font-size: 12.5px; }
+.row-cta { margin-top: 6px; color: var(--red); font-size: 12px; white-space: normal; max-width: 360px; }
+
+/* ---- Map: กล่องรายละเอียดหมุด (เฟส 5) — ใต้แผนที่ · เต็มจอ = แผ่นล่าง ---- */
+.mp-detail { margin-top: 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface, #fff); padding: 10px 14px; }
+.mp-detail.sheet { position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 1000; max-height: 45%; overflow-y: auto;
+  margin: 0; box-shadow: 0 10px 30px rgba(15, 23, 42, .25); }
+.mp-detail-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.mp-detail-row { padding: 8px 0; border-top: 1px solid var(--border-soft); font-size: 13px; display: flex; flex-direction: column; gap: 2px; }
+.mp-pin.selected { outline: 3px solid var(--primary); outline-offset: 2px; }
+tr.row-selected > td { background: var(--primary-soft); }
+
+/* ---- นัดติดตั้งรายวัน (เฟส 5) ---- */
+.agenda { list-style: none; margin: 0; padding: 0 16px 10px; }
+.agenda > li { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 4px 14px; padding: 8px 0; border-top: 1px solid var(--border-soft); }
+.agenda-date { font-weight: 600; color: var(--text); white-space: nowrap; }
+.agenda-item { font-size: 13px; padding: 2px 0; }
+.agenda-item.kind-rescheduled { color: var(--amber); }
+@media (max-width: 640px) { .agenda > li { grid-template-columns: 1fr; } }
+
 /* ---- คิวงาน Purchasing (เฟส 4) ---- */
 .queue-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0 20px; padding: 4px 16px 12px; }
 .queue-head { font-weight: 600; color: var(--text); padding: 8px 0 6px; }

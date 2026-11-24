@@ -1327,6 +1327,16 @@ describe('งานหน้าไซต์รายเครื่อง (0071)
   })
   const proof = { installedDate: '2026-07-01', checkinLat: 13.75, checkinLng: 100.5, photoUrl: 'x.jpg' }
 
+  it('🔴 เฟส 5: วันที่ติดตั้งในอนาคตไม่ได้ (LIVE = 0098)', () => {
+    expect(() => confirmUnitInstall(partial(), svc, { unitId: 'a', ...proof, installedDate: '2999-01-01' })).toThrow(/อนาคต/)
+  })
+
+  it('🔴 เฟส 5: เครื่องที่มีคำขอคืนเข้า LBS Inventory รอ Division พิจารณา ยืนยันติดตั้งไม่ได้ (เดิมยืนยันได้ → คำขอค้าง ปิดงานไม่ได้)', () => {
+    const d0: DB = { ...partial(), approvalRequests: [{ id: 'ap', type: 'return_lbs', jobId: 'j1', payload: { unitIds: ['a'], reason: 'x' },
+      status: 'pending', requestedBy: 'u2', requestedAt: '2026-07-01T00:00:00.000Z' }] }
+    expect(() => confirmUnitInstall(d0, svc, { unitId: 'a', ...proof })).toThrow(/คำขอคืน/)
+  })
+
   it('ใบยังไม่ครบ แต่เครื่องที่เบิกออกไปแล้ว ยืนยันติดตั้งได้', () => {
     const d0 = partial()
     expect(d0.jobs[0].terminalStatus).toBeNull()            // ใบยังไม่ปิด

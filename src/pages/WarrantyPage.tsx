@@ -11,6 +11,7 @@ import { CloseoutForm, initCloseoutDraft, closeoutMissing, buildCloseoutInput, o
 import { fmtDate, fmtDateTime } from '../ui/format'
 import { supabase } from '../lib/supabase'
 import { uploadServiceDoc, removeServiceDocs } from '../data/remote'
+import { warrantyRowMatches, warrantyMatches, warrantyCounts, WARRANTY_URGENT_DAYS, docTypeForJob, type WarrantyFilter } from '../data/field'
 
 // =============================================================================
 // Service (Warranty) — เมนูต่อจาก Site Installation (0079 เฟส 1)
@@ -31,7 +32,7 @@ function WarrantyBadge({ w, today }: { w: Pick<JobWarranty, 'startDate' | 'endDa
 }
 const accLabel = (t?: string) => ACCEPTANCE_TYPES.find(x => x.value === t)?.label ?? '-'
 
-type Filter = 'all' | WarrantyState
+type Filter = WarrantyFilter   // เฟส 5: + 'urgent' (≤30 วัน)
 
 export default function WarrantyPage() {
   const { db, user, act } = useStore()
@@ -51,7 +52,12 @@ export default function WarrantyPage() {
   const [filesJobId, setFilesJobId] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   // แนบเอกสารรับมอบเพิ่ม (เช่น PAC ที่มาหลังปิดงานด้วย Handover) ต้องบอกว่าไฟล์เป็นเอกสารอะไร
-  const [addDocType, setAddDocType] = useState<AcceptanceType>('PAC')
+  // 🔴 เฟส 5: เริ่มว่างทุกครั้งที่เปิดเอกสารของงาน — ต้องเลือกเองก่อนแนบ (เดิมตั้ง PAC ไว้และค้างข้ามงาน
+  //    ⇒ แนบ Handover โดยไม่เปลี่ยนตัวเลือก = บันทึกเป็น PAC แล้วนับเป็นหลักฐาน PAC)
+  //    รีวิวเฟส 5 #2: เก็บคู่กับงาน — เปิดงานอื่น = ว่างเสมอ ไม่ว่าจะปิดกล่องทางไหน (เดิมปุ่ม "ปิด" ด้านล่างไม่ล้าง)
+  const [docSel, setDocSel] = useState<{ jobId: string; type: AcceptanceType | '' } | null>(null)
+  const addDocType = docTypeForJob(docSel, filesJobId)
+  const setAddDocType = (type: AcceptanceType | '') => setDocSel(filesJobId ? { jobId: filesJobId, type } : null)
 
   const closed = db.jobs.filter(j => j.terminalStatus === 'installed')
   const withWarranty = closed.filter(j => jobWarranties(db, j.id).some(w => w.kind === 'installation'))
@@ -64,22 +70,23 @@ export default function WarrantyPage() {
     const lbs = ws.filter(w => w.kind === 'lbs')
       .map(w => ({ w, unit: db.lbsUnits.find(u => u.id === w.unitId) }))
       .sort((a, b) => (a.unit?.serialLvb ?? '').localeCompare(b.unit?.serialLvb ?? ''))
-    const states = [inst, ...lbs.map(x => x.w)].map(w => warrantyStatus(w, today).state)
-    return { job, inst, lbs, states }
+    return { job, inst, lbs }
   })
 
   const text = q.trim().toLowerCase()
   const shown = rows
-    .filter(r => filter === 'all' || r.states.includes(filter))
+    // เฟส 5: ตัวกรองกับป้ายนับใช้กติกาเดียวกัน (warrantyRowMatches/warrantyCounts — ดูทั้งงานติดตั้งและ LBS)
+    .filter(r => warrantyRowMatches({ inst: r.inst, lbs: r.lbs.map(x => x.w) }, filter, today))
     .filter(r => !text || [r.job.jobNo, r.job.customerName, r.job.installLocation, r.job.acceptanceDocNo,
       ...r.lbs.flatMap(x => [x.unit?.serialLvb, x.unit?.serialOm])]
       .some(s => s?.toLowerCase().includes(text)))
     .sort((a, b) => (sortAsc ? 1 : -1) * a.inst.startDate.localeCompare(b.inst.startDate)
       || a.job.jobNo.localeCompare(b.job.jobNo))
 
-  // นับรายเครื่อง (LBS) — ตัวเลขที่ทีม Service ใช้วางแผนรับแจ้งซ่อม
-  const unitCount = (s: WarrantyState) => rows.reduce((n, r) =>
-    n + r.lbs.filter(x => warrantyStatus(x.w, today).state === s).length, 0)
+  // นับรายเครื่อง (LBS) + ประกันงานติดตั้งรายงาน — ตัวเลขที่ทีม Service ใช้วางแผนรับแจ้งซ่อม
+  const counts = warrantyCounts(rows.map(r => ({ inst: r.inst, lbs: r.lbs.map(x => x.w) })), today)
+  /** เฟส 5: กรองอยู่ = โชว์เฉพาะเครื่องที่เข้าเงื่อนไข (เดิมโชว์ทุกเครื่องในแถว) */
+  const unitShown = (w: JobWarranty) => warrantyMatches(w, filter, today)
 
   const openEdit = (job: Job) => { setDraft(initCloseoutDraft(db, job)); setEditJobId(job.id) }
   const editJob = db.jobs.find(j => j.id === editJobId)
@@ -108,11 +115,15 @@ export default function WarrantyPage() {
     for (const f of picked) {
       if (f.size > maxMb * 1024 * 1024) { show(`${f.name}: ไฟล์ใหญ่เกิน ${maxMb} MB`, true); continue }
       if (!isAllowedDocFile(f.type)) { show(`${f.name}: รับเฉพาะ PDF และรูปภาพ`, true); continue }
+      let uploaded: string | undefined
       try {
         const filePath = supabase ? await uploadServiceDoc(supabase, job.id, f) : await readAsDataUrl(f)
+        if (supabase) uploaded = filePath
         await act.addCloseoutFile({ jobId: job.id, kind, docType: kind === 'acceptance' ? docType : undefined, fileName: f.name, filePath, mimeType: f.type, sizeBytes: f.size })
         ok++
       } catch (err) {
+        // เฟส 5: อัปโหลดแล้วแต่บันทึกไม่ผ่าน (เช่น งานถูกเปิดใหม่) = ลบไฟล์ใน Storage ทิ้ง ไม่ให้ค้างเป็นไฟล์กำพร้า
+        if (uploaded && supabase) await removeServiceDocs(supabase, [uploaded]).catch(() => undefined)
         show(err instanceof Error ? err.message : `แนบ ${f.name} ไม่สำเร็จ`, true)
       }
     }
@@ -136,9 +147,16 @@ export default function WarrantyPage() {
       {tab === 'period' && (
         <>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-            <span className="badge green">LBS ในประกัน {unitCount('active')}</span>
-            <span className="badge amber">ใกล้หมด ≤ 90 วัน {unitCount('expiring')}</span>
-            <span className="badge red">หมดประกัน {unitCount('expired')}</span>
+            <span className="badge green">LBS ในประกัน {counts.lbs.active}</span>
+            <span className="badge amber" title={`ใกล้หมดภายใน ${WARRANTY_URGENT_DAYS} วัน: LBS ${counts.lbs.urgent} เครื่อง`}>
+              LBS ใกล้หมด ≤ 90 วัน {counts.lbs.expiring}{counts.lbs.urgent > 0 && ` (≤${WARRANTY_URGENT_DAYS} วัน ${counts.lbs.urgent})`}
+            </span>
+            <span className="badge red">LBS หมดประกัน {counts.lbs.expired}</span>
+            {(counts.installation.expiring > 0 || counts.installation.expired > 0) && (
+              <span className="badge amber" title="ประกันงานติดตั้ง (รายงาน)">
+                งานติดตั้ง: ใกล้หมด {counts.installation.expiring}{counts.installation.urgent > 0 && ` (≤${WARRANTY_URGENT_DAYS} วัน ${counts.installation.urgent})`} · หมด {counts.installation.expired}
+              </span>
+            )}
             {missing.length > 0 && <span className="badge amber">ปิดงานแล้วแต่ยังไม่มี Warranty {missing.length} Job</span>}
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               <input placeholder="ค้นหา Job / ลูกค้า / Serial / เลขเอกสาร" value={q} onChange={e => setQ(e.target.value)} style={{ width: 280 }} />
@@ -146,6 +164,7 @@ export default function WarrantyPage() {
                 <option value="all">ทุกสถานะ</option>
                 <option value="active">ในประกัน</option>
                 <option value="expiring">ใกล้หมด (≤ 90 วัน)</option>
+                <option value="urgent">ใกล้หมดมาก (≤ {WARRANTY_URGENT_DAYS} วัน)</option>
                 <option value="expired">หมดประกันแล้ว</option>
                 <option value="not_started">ยังไม่เริ่ม</option>
               </select>
@@ -176,7 +195,7 @@ export default function WarrantyPage() {
                       <td style={{ whiteSpace: 'nowrap' }}>
                         <span className="badge blue">{accLabel(job.acceptanceType)}</span>
                         {job.acceptanceDocNo && <span className="mono" style={{ marginLeft: 6 }}>{job.acceptanceDocNo}</span>}
-                        <div className="muted" style={{ fontSize: 12 }}>{fmtDate(job.acceptanceDate)}</div>
+                        <div className="muted" style={{ fontSize: 12 }}>วันที่ลงนาม {fmtDate(job.acceptanceDate)}</div>
                         {/* เอกสารรับมอบอื่นที่แนบตามมา (เช่น PAC หลังปิดด้วย Handover) */}
                         {(() => {
                           const more = [...new Set(closeoutFiles(db, job.id, 'acceptance').map(f => f.docType)
@@ -189,16 +208,19 @@ export default function WarrantyPage() {
                         <div><WarrantyBadge w={inst} today={today} /></div>
                       </td>
                       <td>
-                        {lbs.map(({ w, unit }) => (
+                        {lbs.filter(({ w }) => unitShown(w)).map(({ w, unit }) => (
                           <div key={w.id} style={{ fontSize: 12, marginBottom: 4 }}>
                             <span className="mono">{unit?.serialLvb ?? '-'}</span>{' '}
                             <span className="muted">{fmtDate(w.startDate)} – {fmtDate(w.endDate)}</span>{' '}
                             <WarrantyBadge w={w} today={today} />
                           </div>
                         ))}
+                        {filter !== 'all' && lbs.some(({ w }) => !unitShown(w)) && (
+                          <div className="muted" style={{ fontSize: 11 }}>+ อีก {lbs.filter(({ w }) => !unitShown(w)).length} เครื่องที่ไม่เข้าเงื่อนไข</div>
+                        )}
                       </td>
                       <td style={{ whiteSpace: 'nowrap' }}>
-                        <button className="small" onClick={() => setFilesJobId(job.id)}>
+                        <button className="small" onClick={() => { setDocSel(null); setFilesJobId(job.id) }}>
                           📎 เอกสาร ({closeoutFiles(db, job.id).length})
                         </button>
                         {canEdit && <button className="small" style={{ marginLeft: 6 }} onClick={() => openEdit(job)}>✏️ แก้ไข</button>}
@@ -279,15 +301,29 @@ export default function WarrantyPage() {
                     <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
                       {kind === 'acceptance' && (
                         <select value={addDocType} style={{ width: 'auto' }} title="ไฟล์ที่จะแนบเป็นเอกสารประเภทไหน"
-                          onChange={e => setAddDocType(e.target.value as AcceptanceType)}>
+                          aria-label="ประเภทเอกสารรับมอบ" onChange={e => setAddDocType(e.target.value as AcceptanceType | '')}>
+                          <option value="">— เลือกประเภทเอกสาร —</option>
                           {ACCEPTANCE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                         </select>
                       )}
-                      <label className="small" style={{ cursor: 'pointer' }}>
-                        <span className="badge neutral">{uploading ? 'กำลังอัปโหลด…' : '+ แนบเพิ่ม'}</span>
-                        <input type="file" multiple accept="application/pdf,image/*" style={{ display: 'none' }} disabled={uploading}
-                          onChange={async e => { await addFiles(filesJob, kind, e.target.files, addDocType); e.target.value = '' }} />
-                      </label>
+                      {(() => {
+                        // เฟส 5: เอกสารรับมอบต้องเลือกประเภทก่อน — ปุ่มแนบปิดพร้อมบอกเหตุผล
+                        const needType = kind === 'acceptance' && !addDocType
+                        return (
+                          <label className="small" style={{ cursor: needType ? 'not-allowed' : 'pointer' }}
+                            title={needType ? 'เลือกประเภทเอกสารก่อนแนบ' : undefined}>
+                            <span className="badge neutral" style={needType ? { opacity: 0.55 } : undefined}>
+                              {uploading ? 'กำลังอัปโหลด…' : needType ? '🔒 เลือกประเภทก่อน' : '+ แนบเพิ่ม'}
+                            </span>
+                            <input type="file" multiple accept="application/pdf,image/*" style={{ display: 'none' }} disabled={uploading || needType}
+                              onChange={async e => {
+                                await addFiles(filesJob, kind, e.target.files, kind === 'acceptance' ? (addDocType || undefined) : undefined)
+                                e.target.value = ''
+                                if (kind === 'acceptance') setAddDocType('')
+                              }} />
+                          </label>
+                        )
+                      })()}
                     </div>
                   )}
                 </div>
