@@ -1997,11 +1997,10 @@ export default function JobDetailPage() {
           )}
           <label className="field"><span>จะเบิกจากคลัง หรือ สั่งซื้อ?</span>
             <select value={accForm.source} onChange={e => setAccForm({ ...accForm, source: e.target.value as typeof accForm.source })}>
+              {/* <option> รับได้แค่ข้อความล้วน — ห้ามใส่ <div>/<b> (React เตือน validateDOMNesting) */}
               <option value="central_stock" disabled={selAccStockQty <= 0}>
-                เบิกจากคลังคงเหลือ {selAccStockQty > 0 ? `(มี ${selAccStockQty} ${selAccItem?.uom ?? ''})` : '(ไม่มีของในคลัง)'}
-                <div className="muted" style={{ fontWeight: 400 }}>
-                  ⏱️ ยอดคลัง<b>ลดทันทีที่กดปุ่มนี้</b> (ไม่ใช่ตอนเบิกให้ Service) — ของมาอยู่ในมือ Job แล้ว
-                </div>
+                {`เบิกจากคลังคงเหลือ ${selAccStockQty > 0 ? `(มี ${selAccStockQty} ${selAccItem?.uom ?? ''})` : '(ไม่มีของในคลัง)'}`
+                  + ' ⏱️ ยอดคลังลดทันทีที่กดปุ่มนี้ (ไม่ใช่ตอนเบิกให้ Service) — ของมาอยู่ในมือ Job แล้ว'}
               </option>
               <option value="purchasing">สั่งซื้อผ่าน Purchasing (ออก PR → PO)</option>
             </select>
