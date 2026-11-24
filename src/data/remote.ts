@@ -9,6 +9,7 @@ import type {
   PublicShareLink, PublicStockView,
 } from '../types'
 import type { CloseoutInput, CloseoutFileInput } from './logic'
+import { auditRangeIso, auditTypesFor, type AuditFilter } from './audit'
 
 // ---------------------------------------------------------------
 // Supabase adapter: โหลดข้อมูลทั้งชุดเป็น DB shape เดียวกับ demo mode
@@ -395,6 +396,31 @@ export async function fetchMovements(sb: SupabaseClient, opts: { itemId?: string
     out.push(...rows.map(mapStockMovement))
     if (rows.length < size) return out
   }
+}
+
+/**
+ * เฟส 6 — ค้น Audit Log ที่ฐานข้อมูล (เดิมหน้า Audit กรองแค่ 500 รายการล่าสุดที่โหลดตอนเปิดแอป)
+ *   ช่วงวันที่เป็นเวลาไทย (auditRangeIso) · ข้อความค้นใน detail/action · หน้าละ `limit` แถว (ขอเกิน 1 เพื่อรู้ว่ามีต่อ)
+ *   ตัด , ( ) % * \ " ออกจากคำค้น — เป็นอักขระพิเศษของตัวกรอง or ของ PostgREST (ใส่มาแล้วคำค้นพัง/กรองผิด)
+ */
+export async function fetchAuditLogs(sb: SupabaseClient, f: AuditFilter, page: { limit: number; before?: string }): Promise<{ logs: AuditLog[]; hasMore: boolean }> {
+  let query = sb.from('audit_logs').select('*')
+  const range = auditRangeIso(f.from, f.to)
+  if (range.gte) query = query.gte('created_at', range.gte)
+  if (range.lt) query = query.lt('created_at', range.lt)
+  // รีวิวเฟส 6 #2: หน้าถัดไปอ้างเวลาของแถวสุดท้าย (≤ — แถวเวลาเดียวกันตัดซ้ำที่ createAuditSearch) ไม่ใช่ offset
+  if (page.before) query = query.lte('created_at', page.before)
+  if (f.actorId) query = query.eq('actor_id', f.actorId)
+  // รีวิวเฟส 6 #5: ชนิดที่ใช้ชื่อเดียวกัน (วัสดุของ Job 2 ชนิด · ผู้ใช้ user/profile) ค้นพร้อมกัน
+  if (f.entityType) query = query.in('entity_type', auditTypesFor(f.entityType))
+  const q = (f.q ?? '').replace(/[,()%*\\"]/g, ' ').replace(/\s+/g, ' ').trim()
+  // รีวิวเฟส 6 #3: คำค้นเป็น UUID = ค้นรหัสข้อมูลด้วย (entity_id เป็น uuid — ilike ใช้ไม่ได้ ต้อง eq)
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(q) ? q.toLowerCase() : null
+  if (q) query = query.or(`${uuid ? `entity_id.eq.${uuid},` : ''}detail.ilike.%${q}%,action.ilike.%${q}%`)
+  const { data, error } = await query.order('created_at', { ascending: false }).order('id', { ascending: false }).range(0, page.limit)
+  if (error) throw new Error(`ค้น Audit Log ไม่สำเร็จ: ${error.message}`)
+  const rows = (data ?? []) as Row[]
+  return { logs: rows.slice(0, page.limit).map(mapAudit), hasMore: rows.length > page.limit }
 }
 
 /**

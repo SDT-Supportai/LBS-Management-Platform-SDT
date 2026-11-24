@@ -1,5 +1,7 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useStore, can } from '../data/StoreContext'
+import { deptPermissionLabels, userOpenWork, userEditBlock } from '../data/admin'
 import { Modal, useConfirm, useToast, useTryAction } from '../ui/components'
 import { DEPT_LABEL } from '../ui/format'
 import { supabase } from '../lib/supabase'
@@ -7,14 +9,12 @@ import type { Department, User } from '../types'
 
 const DEPTS: Department[] = ['sales', 'project', 'purchasing', 'service', 'admin', 'vip']
 
-// คำอธิบายสิทธิ์ต่อแผนก — โชว์ใต้ dropdown ตอนเพิ่ม/แก้ผู้ใช้ (กันตั้งแผนกผิดโดยไม่รู้ผลกระทบ)
-const DEPT_HINT: Record<Department, string> = {
-  sales: 'Division — อนุมัติ/ตีกลับคำขอของ Project · จัดการคลัง LBS (สร้าง/รับเข้า/แก้ข้อมูลรายเครื่อง)',
-  project: 'Project — เปิด/แก้ Job ของตัวเอง · ดึง LBS · ขอวัสดุ · ขออนุมัติ (ทำเองไม่ได้ ต้องผ่าน Division)',
-  purchasing: 'Purchasing — ออก PO จาก PR · รับของ · บันทึกราคาจริง · ฐานข้อมูลวัสดุ (เพิ่ม/แก้/ลบ Accessory · Import/Export Excel · ปรับยอดคลังคงเหลือ)',
-  service: 'Service — ยืนยันติดตั้งรายเครื่อง · ทะเบียนทีมช่าง · มอบหมายงาน',
-  admin: 'Manage — ทำได้ทุกอย่าง + ข้ามขั้นอนุมัติ · จัดการผู้ใช้/Dev Settings',
-  vip: 'VIP (ผู้บริหารสูงสุด) — ดูได้ทุกหน้าแบบอ่านอย่างเดียว · ให้ความเห็นบนคำขอที่ Awaiting Approval เพื่อแจ้ง Division (ไม่มีสิทธิ์แก้ข้อมูลใดๆ)',
+// เฟส 6: ป้ายสิทธิ์ใต้ช่อง "แผนก" สร้างจากตารางสิทธิ์จริง (deptPermissionLabels ← permissions.ts)
+//   เดิมเขียนคำอธิบายมือต่อแผนก ⇒ เพิ่ม/ย้ายสิทธิ์แล้วป้ายไม่ตาม · ทุกแผนกดูได้ทุกหน้า (อ่านอย่างเดียว) อยู่แล้ว
+const DEPT_NOTE: Partial<Record<Department, string>> = {
+  project: 'ทำได้เฉพาะ Job ที่ตัวเองเปิด · คำขอต้องรอ Division พิจารณา',
+  admin: 'ทำได้ทุกอย่างในระบบ',
+  vip: 'ดูได้ทุกหน้าแบบอ่านอย่างเดียว',
 }
 
 export default function DevSettingsPage() {
@@ -31,6 +31,7 @@ export default function DevSettingsPage() {
     groupMembers: number | null; groupError: string | null   // push เข้ากลุ่มหักโควตาต่อสมาชิก 1 คน
   } | null>(null)
   const [loadingQuota, setLoadingQuota] = useState(false)
+  const [quotaError, setQuotaError] = useState<string | null>(null)
 
   // ---- จัดการผู้ใช้งาน (ย้ายมาจาก Material Database) ----
   const [userModal, setUserModal] = useState<'create' | 'edit' | null>(null)
@@ -39,7 +40,26 @@ export default function DevSettingsPage() {
 
   const openCreateUser = () => { setUserForm({ email: '', fullName: '', department: 'project', password: '', isActive: true }); setUserTarget(null); setUserModal('create') }
   const openEditUser = (u: User) => { setUserForm({ email: u.email, fullName: u.fullName, department: u.department, password: '', isActive: u.isActive }); setUserTarget(u); setUserModal('edit') }
+  // เฟส 6: ปิดบัญชี / ย้ายแผนก — บอกงานและคำขอที่ค้างของบัญชีนั้นก่อน แล้วถามยืนยัน
+  const editingSelf = userModal === 'edit' && userTarget?.id === user?.id
+  const openWork = userModal === 'edit' && userTarget ? userOpenWork(db, userTarget.id) : null
+  const deactivating = userModal === 'edit' && !!userTarget?.isActive && !userForm.isActive
+  const movingDept = userModal === 'edit' && !!userTarget && userForm.department !== userTarget.department
+  // รีวิวเฟส 6 #6: กติกาเดียวกับ updateUser — ทำไม่ได้ = บอกเหตุผลและปิดปุ่มบันทึกก่อน (เดิมถามยืนยันแล้วค่อยเจอ error)
+  const editBlock = userModal === 'edit' && userTarget && user
+    ? userEditBlock(db, user, userTarget, { department: userForm.department, isActive: userForm.isActive }) : null
   const submitUser = async () => {
+    if (editBlock) return
+    if (userModal === 'edit' && userTarget && (deactivating || movingDept) && openWork && openWork.total > 0) {
+      const ok = await askConfirm({
+        title: deactivating ? `ปิดใช้งานบัญชี ${userTarget.fullName}` : `ย้ายแผนก ${userTarget.fullName}`,
+        description: <>บัญชีนี้ยังมีงานค้าง {openWork.total} รายการ (Job ที่เปิดไว้ {openWork.jobs.length} · คำขอรอ Division พิจารณา {openWork.requests.length}
+          {openWork.member ? <> · งานช่างที่ถืออยู่ {openWork.memberJobs.length}</> : null}) — งานเหล่านี้ไม่ถูกย้ายให้ใครอัตโนมัติ ·
+          {deactivating ? ' บัญชีจะ login ไม่ได้ทันที' : ' สิทธิ์จะเปลี่ยนตามแผนกใหม่ทันที'}</>,
+        confirmLabel: deactivating ? 'ปิดใช้งานบัญชี' : 'ย้ายแผนก',
+      })
+      if (!ok) return
+    }
     const emailChanged = userForm.email.trim().toLowerCase() !== userTarget?.email.toLowerCase()
     const ok = userModal === 'create'
       ? await tryAction(() => act.createUser(userForm), 'เพิ่มผู้ใช้แล้ว')
@@ -52,7 +72,17 @@ export default function DevSettingsPage() {
     if (ok) setUserModal(null)
   }
 
-  const save = () => tryAction(async () => { await updateSettings(form) }, 'บันทึกการตั้งค่าแล้ว (สวิตช์ LINE มีผลทุกเครื่อง)')
+  const save = async () => {
+    // เฟส 6: เปิด/ปิดส่ง LINE มีผลทุกเครื่องทันที — ถามยืนยันก่อน (เดิมติ๊กแล้วบันทึกเลย)
+    if (form.lineEnabled !== settings.lineEnabled && !await askConfirm({
+      title: form.lineEnabled ? 'เปิดส่งการแจ้งเตือนเข้า LINE group' : 'ปิดส่งการแจ้งเตือนเข้า LINE group',
+      description: form.lineEnabled
+        ? <>ทุกเหตุการณ์ข้ามแผนกจะถูกส่งเข้ากลุ่ม LINE <b>จากทุกเครื่องทันที</b> และหักโควตา Messaging API ต่อสมาชิกกลุ่ม</>
+        : <>จะ<b>หยุดส่ง LINE จากทุกเครื่องทันที</b> — การแจ้งเตือนในแอปยังทำงานตามปกติ</>,
+      confirmLabel: form.lineEnabled ? 'เปิดส่ง LINE' : 'ปิดส่ง LINE',
+    })) return
+    await tryAction(async () => { await updateSettings(form) }, 'บันทึกการตั้งค่าแล้ว (สวิตช์ LINE มีผลทุกเครื่อง)')
+  }
 
   const testLine = async () => {
     setTesting(true)
@@ -82,7 +112,7 @@ export default function DevSettingsPage() {
   }
 
   const checkQuota = async () => {
-    setLoadingQuota(true)
+    setLoadingQuota(true); setQuotaError(null)
     try {
       const endpoint = form.lineEndpoint.replace(/line-notify\/?$/, 'line-quota')
       const headers: Record<string, string> = {}
@@ -99,11 +129,14 @@ export default function DevSettingsPage() {
         })
       } else {
         setQuota(null)
-        show(data?.error ? `ตรวจโควตาไม่สำเร็จ: ${data.error}` : `endpoint ตอบกลับ ${r.status} — เช็ค env / deploy Pages Function`, true)
+        setQuotaError(data?.error ? `ตรวจโควตาไม่สำเร็จ: ${data.error}`
+          // ได้ 200 แต่ไม่ใช่ JSON = ได้หน้าเว็บกลับมา (ไม่มี Pages Function — เช่น localhost) · เดิมขึ้น "ตอบกลับ 200" ชวนงง
+          : r.ok && !data ? 'ไม่พบ Pages Function /line-quota (ได้หน้าเว็บกลับมา) — บน localhost ใช้ npx wrangler pages dev dist หรือ deploy ก่อน'
+          : `endpoint ตอบกลับ ${r.status} — เช็ค env / deploy Pages Function`)
       }
     } catch {
       setQuota(null)
-      show('เรียก endpoint ไม่ได้ — บน localhost ยังไม่มี Pages Function (ใช้ npx wrangler pages dev dist หรือ deploy ก่อน)', true)
+      setQuotaError('เรียก endpoint ไม่ได้ — บน localhost ยังไม่มี Pages Function (ใช้ npx wrangler pages dev dist หรือ deploy ก่อน)')
     }
     setLoadingQuota(false)
   }
@@ -129,7 +162,7 @@ export default function DevSettingsPage() {
 
   return (
     <>
-      <div className="page-title">Dev Settings <span className="badge amber">DEV</span></div>
+      <div className="page-title">Users &amp; System Settings</div>
       <div className="page-sub">
         เครื่องมือสำหรับการพัฒนา/ทดสอบระบบ — โหมดปัจจุบัน:{' '}
         {mode === 'demo'
@@ -148,7 +181,7 @@ export default function DevSettingsPage() {
             <tbody>
               {db.users.map(u => (
                 <tr key={u.id}>
-                  <td>{u.fullName}</td>
+                  <td>{u.fullName}{u.id === user?.id && <span className="badge neutral" style={{ marginLeft: 6 }}>คุณ</span>}</td>
                   <td>{u.email}</td>
                   <td><span className="badge blue">{DEPT_LABEL[u.department]}</span></td>
                   <td>{u.isActive ? <span className="badge green">ใช้งานได้</span> : <span className="badge red">ปิดการใช้งาน</span>}</td>
@@ -188,7 +221,9 @@ export default function DevSettingsPage() {
             <button onClick={checkQuota} disabled={loadingQuota}>{loadingQuota ? 'กำลังตรวจ...' : '📊 ตรวจโควตา Messaging API'}</button>
           </div>
 
-          {quota && (() => {
+          {loadingQuota && <div className="muted" style={{ marginTop: 14 }}>⏳ กำลังตรวจโควตา…</div>}
+          {quotaError && !loadingQuota && <div className="gps-warn" style={{ marginTop: 14, maxWidth: 460 }}>⚠️ {quotaError}</div>}
+          {quota && !loadingQuota && (() => {
             const unlimited = quota.type !== 'limited' || quota.limit === null
             const limit = quota.limit ?? 0
             const pct = unlimited || limit === 0 ? 0 : Math.min(100, Math.round((quota.used / limit) * 100))
@@ -274,7 +309,7 @@ export default function DevSettingsPage() {
         <Modal title={userModal === 'create' ? 'เพิ่มผู้ใช้' : `แก้ไข ${userTarget?.fullName}`} onClose={() => setUserModal(null)}
           footer={<>
             <button onClick={() => setUserModal(null)}>ยกเลิก</button>
-            <button className="primary" onClick={submitUser}>บันทึก</button>
+            <button className="primary" onClick={submitUser} disabled={!!editBlock} title={editBlock ?? undefined}>บันทึก</button>
           </>}>
           <label className="field"><span>ชื่อ-นามสกุล *</span>
             <input value={userForm.fullName} onChange={e => setUserForm({ ...userForm, fullName: e.target.value })} />
@@ -285,7 +320,9 @@ export default function DevSettingsPage() {
           </label>
           <div className="row">
             <label className="field"><span>แผนก</span>
-              <select value={userForm.department} onChange={e => setUserForm({ ...userForm, department: e.target.value as Department })}>
+              <select value={userForm.department} disabled={editingSelf}
+                title={editingSelf ? 'เปลี่ยนแผนกของบัญชีตัวเองไม่ได้ — ให้ Manage อีกคนเปลี่ยนให้' : undefined}
+                onChange={e => setUserForm({ ...userForm, department: e.target.value as Department })}>
                 {DEPTS.map(d => <option key={d} value={d}>{DEPT_LABEL[d]}</option>)}
               </select>
             </label>
@@ -293,15 +330,37 @@ export default function DevSettingsPage() {
               <input type="password" value={userForm.password} onChange={e => setUserForm({ ...userForm, password: e.target.value })} />
             </label>
           </div>
-          <div className="muted" style={{ marginTop: -4, marginBottom: 10 }}>
-            สิทธิ์ของแผนกที่เลือก: {DEPT_HINT[userForm.department]}
+          {editingSelf && (
+            <div className="muted" style={{ marginTop: -4, marginBottom: 8, fontSize: 12.5 }}>
+              🔒 บัญชีของคุณเอง: เปลี่ยนแผนก/ปิดใช้งานไม่ได้ (กันล็อกตัวเองออกจากระบบ) — ให้ Manage อีกคนทำให้
+            </div>
+          )}
+          <div style={{ marginTop: -4, marginBottom: 10 }}>
+            <div className="muted" style={{ fontSize: 12.5, marginBottom: 4 }}>
+              สิทธิ์ของแผนก {DEPT_LABEL[userForm.department]} (จากตารางสิทธิ์ของระบบ){DEPT_NOTE[userForm.department] ? ` · ${DEPT_NOTE[userForm.department]}` : ''}:
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {deptPermissionLabels(userForm.department).map(l => <span key={l} className="badge blue" style={{ fontWeight: 500 }}>{l}</span>)}
+              {deptPermissionLabels(userForm.department).length === 0 && <span className="muted">ดูได้อย่างเดียว</span>}
+            </div>
           </div>
           {userModal === 'edit' && (
             <label className="field" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <input type="checkbox" style={{ width: 'auto' }} checked={userForm.isActive}
+              <input type="checkbox" style={{ width: 'auto' }} checked={userForm.isActive} disabled={editingSelf}
                 onChange={e => setUserForm({ ...userForm, isActive: e.target.checked })} />
               <span style={{ margin: 0 }}>เปิดใช้งานบัญชี</span>
             </label>
+          )}
+          {editBlock && <div className="gps-warn" style={{ marginTop: 4 }}>🔒 {editBlock}</div>}
+          {!editBlock && (deactivating || movingDept) && openWork && openWork.total > 0 && (
+            <div className="gps-warn" style={{ marginTop: 4 }}>
+              <b>⚠️ บัญชีนี้ยังมีงานค้าง — ไม่ถูกย้ายให้ใครอัตโนมัติ</b>
+              {openWork.jobs.length > 0 && <div style={{ marginTop: 4 }}>Job ที่เปิดไว้และยังไม่จบ ({openWork.jobs.length}):{' '}
+                {openWork.jobs.slice(0, 8).map((j, i) => <span key={j.id}>{i > 0 && ', '}<Link to={`/jobs/${j.id}`} onClick={() => setUserModal(null)}>{j.jobNo}</Link></span>)}
+                {openWork.jobs.length > 8 && ` และอีก ${openWork.jobs.length - 8}`}</div>}
+              {openWork.requests.length > 0 && <div>คำขอที่ส่งไว้ รอ Division พิจารณา: {openWork.requests.length} รายการ (<Link to="/approvals" onClick={() => setUserModal(null)}>ดูคำขอ</Link>)</div>}
+              {openWork.member && openWork.memberJobs.length > 0 && <div>ผูกกับช่าง {openWork.member.firstName} {openWork.member.lastName} — ถืองานอยู่ {openWork.memberJobs.length} งาน (<Link to="/scheduling" onClick={() => setUserModal(null)}>ดูตารางทีม</Link>)</div>}
+            </div>
           )}
         </Modal>
       )}

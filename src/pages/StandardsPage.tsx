@@ -591,9 +591,10 @@ export default function StandardsPage() {
         <Modal
           title={`Import Excel → ${importPreview.bomTitle}`}
           size="wide"
-          onClose={() => setImportPreview(null)}
+          locked={importing}
+          onClose={() => { if (!importing) setImportPreview(null) }}
           footer={<>
-            <button onClick={() => setImportPreview(null)}>ยกเลิก</button>
+            <button disabled={importing} onClick={() => setImportPreview(null)}>ยกเลิก</button>
             <button className="primary"
               disabled={importing || importPreview.errors.length > 0 || importPreview.rows.length === 0}
               onClick={runBomImport}>

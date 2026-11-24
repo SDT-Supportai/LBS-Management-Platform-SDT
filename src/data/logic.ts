@@ -7,6 +7,7 @@ import type {
   PublicShareLink, PublicStockView, StdDrawing, StdDrawingFile,
   AcceptanceType, CloseoutFileKind, JobWarranty, StockReturnKind, StockReturnRequest, StockMovement,
 } from '../types'
+import { userEditBlock } from './admin'
 
 // ---------------------------------------------------------------
 // Business logic ทั้งหมดเป็น pure function: รับ DB เดิม คืน DB ใหม่
@@ -4719,6 +4720,10 @@ export function updateUser(
   const target = db.users.find(u => u.id === p.userId)
   if (!target) throw new Error('ไม่พบผู้ใช้')
   if (p.userId === actor.id && !p.isActive) throw new Error('ปิดการใช้งานบัญชีตัวเองไม่ได้')
+  // 🔴 เฟส 6 (sync 0099): เปลี่ยนแผนกตัวเองไม่ได้ (เดิมกันแค่ปิดบัญชี ⇒ Manage ลดตัวเองแล้วล็อกตัวเองออก) ·
+  //   ต้องเหลือ Manage ที่ใช้งานได้อย่างน้อย 1 บัญชี — กติกาอยู่ที่ userEditBlock (หน้าจอใช้ตัวเดียวกัน บอกก่อนกด)
+  const block = userEditBlock(db, actor, target, { department: p.department, isActive: p.isActive })
+  if (block) throw new Error(block)
   // แก้อีเมลได้ (= อีเมลที่ใช้ login) — เว้น undefined = ไม่เปลี่ยน (ฟีเจอร์ 2026-07-19, Manage เท่านั้น)
   const email = p.email?.trim().toLowerCase()
   if (email !== undefined) {
