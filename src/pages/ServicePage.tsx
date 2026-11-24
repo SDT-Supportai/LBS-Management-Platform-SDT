@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore, can, ownsJob } from '../data/StoreContext'
 import { jobCloseReason } from '../data/flow'
-import { closeoutFiles, deriveJobStatus, jobDelivery, jobInstallSummary, jobIsFieldActive, qtyOutToField, effectiveQty, unitInstallState, unitJobSite, pendingRevertRequest, jobTeam, memberFullName, serviceIssues, bangkokTodayIso } from '../data/logic'
+import { closeoutFiles, deriveJobStatus, jobDelivery, jobInstallSummary, jobIsFieldActive, qtyOutToField, effectiveQty, unitInstallState, unitJobSite, pendingRevertRequest, lbsReturnBlockReason, jobTeam, memberFullName, serviceIssues, bangkokTodayIso } from '../data/logic'
 import {
   todayFieldJobs, jobNeedsTeam, distanceMeters, gpsQuality, mapsUrl, safeHttpUrl,
   DRAFT_STORE_KEY, LEGACY_DRAFT_KEY, parseDraftStore, serializeDraftStore, putDraft, removeDraft, getDraft,
@@ -646,11 +646,15 @@ export default function ServicePage() {
                           {(() => {
                             const blockedIds = unitsOut(j.id).filter(u => unitInstallState(db, u.id) === 'blocked').map(u => u.id)
                             if (blockedIds.length === 0 || pendingReturn(j.id)) return null
+                            // รีวิว Flow ข้อ 1 (มติ 2026-11-24): ใบยังเบิกไม่ครบ = ยังขอคืนไม่ได้ — ปุ่มจาง + เหตุผล (เดิมกดได้แล้วเจอ error ทางตัน)
+                            const notYet = lbsReturnBlockReason(j)
                             return (
                               <div className="row-cta">
                                 ⚠️ ติดตั้งไม่ได้ {blockedIds.length} เครื่อง — ต้องขอคืนเข้า LBS Inventory ก่อนปิดงาน
+                                {notYet && <> (ขอคืนได้หลังเบิกของที่เหลือครบใบ)</>}
                                 {canRequestRevert && ownsJob(user, j) && (
-                                  <button className="small" style={{ marginLeft: 6 }} onClick={() => openReturn(j.id, blockedIds)}>📦 ขอคืนเข้าคลัง</button>
+                                  <button className="small" style={{ marginLeft: 6 }} onClick={() => openReturn(j.id, blockedIds)}
+                                    disabled={!!notYet} title={notYet ?? undefined}>{notYet ? '🔒 ' : ''}📦 ขอคืนเข้าคลัง</button>
                                 )}
                               </div>
                             )
@@ -803,8 +807,9 @@ export default function ServicePage() {
                           {/* 0094 (มติ Q1): ติดตั้งไม่ได้ → ขอคืนเข้า LBS Inventory (ต้องคืนก่อนปิดงาน · ไม่มีตัดจำหน่าย) */}
                           {st === 'blocked' && canRequestRevert && ownsJob(user, unitJob) && !returnReq && (
                             <button className="small" style={{ marginRight: 6 }} onClick={() => openReturn(unitJob.id, u.id)}
-                              title="เครื่องนี้ติดตั้งไม่ได้ — ส่งคำขอให้ Division ตรวจรับกลับเข้า LBS Inventory">
-                              📦 ขอคืนเข้าคลัง
+                              disabled={!!lbsReturnBlockReason(unitJob)}
+                              title={lbsReturnBlockReason(unitJob) ?? 'เครื่องนี้ติดตั้งไม่ได้ — ส่งคำขอให้ Division ตรวจรับกลับเข้า LBS Inventory'}>
+                              {lbsReturnBlockReason(unitJob) ? '🔒 ' : ''}📦 ขอคืนเข้าคลัง
                             </button>
                           )}
                           {st === 'installed' && canRequestRevert && ownsJob(user, unitJob) && !revertReq && (

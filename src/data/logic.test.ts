@@ -25,7 +25,7 @@ import {
   jobDelivery, jobEffectiveDue, jobDueExtensions, extendJobDue, deleteJobDueExtension, jobDeliveredDate, memberSchedule,
   addJobPayment, updateJobPayment, addPaymentFile, deletePaymentFile, paymentFiles, paymentFileCount, deleteJobPayment, jobInstallComplete,
   requestRevertInstall, revertUnitInstall, requestApproval, approveRequest, rejectApprovalRequest, unitInstallDate,
-  updateJobBudget, addAccessoryRequest, jobCloseBlockers, requestReturnLbs, requestCloseoutCorrection, reopenJob, jobWarrantyStarted,
+  updateJobBudget, addAccessoryRequest, jobCloseBlockers, requestReturnLbs, lbsReturnBlockReason, jobCancelBlockReason, requestCloseoutCorrection, reopenJob, jobWarrantyStarted,
   createStdDrawing, updateStdDrawing, stdDrawingFiles, MAX_STD_DRAWING_FILES, jobStatusPhase,
   setJobCloseout, addCloseoutFile, deleteCloseoutFile, warrantyEndFor, warrantyStatus, addMonthsIso, type CloseoutInput,
 } from './logic'
@@ -3398,5 +3398,64 @@ describe('fetchMovements — โหลดประวัติเคลื่อ
     const { client, calls } = stub()
     expect((await fetchMovements(client as never, { pageSize: 10 })).length).toBe(5)
     expect(calls[0].eq).toBeUndefined()
+  })
+})
+
+// =============================================================================
+// รีวิว Flow งานทีม LBS ทั้งระบบ (2026-11-24)
+//   ข้อ 1: เครื่องที่เบิกแล้วติดตั้งไม่ได้ ตอนใบยังเบิกไม่ครบ = ทางตัน (ขอคืนไม่ได้ · "คืน LBS กลับสต็อก" ก็คืนไม่ได้)
+//          มติผู้ใช้ 2026-11-24: ไม่ให้คืนจนกว่าจะเบิกครบใบ (คงกติกา 0094 · ไม่มี migration)
+//          ⇒ ปุ่ม/ด่าน/ข้อความต้องบอกเหตุผลจริง "เบิกของที่เหลือให้ครบใบก่อน" ไม่ชี้ไป "คืน LBS กลับสต็อก" ที่คืนไม่ได้
+//   ข้อ 4: jobWarrantyStarted ต้องรับ today (เดิมอ่านนาฬิกาจริง ด่านปุ่มที่ส่ง today มาไม่ตรงกัน)
+// =============================================================================
+describe('รีวิว Flow ทั้งระบบ · ข้อ 1 — คืน LBS ที่ติดตั้งไม่ได้ ตอนใบยังเบิกไม่ครบ', () => {
+  const svc = { id: 'sv', email: 's@x.co', password: '', fullName: 'ช่าง', department: 'service' as const, isActive: true }
+  const div = { id: 'dv', email: 'd@x.co', password: '', fullName: 'Division', department: 'sales' as const, isActive: true }
+  const prj = { id: 'u1', email: 'p@x.co', password: '', fullName: 'Project', department: 'project' as const, isActive: true }
+  const partial = () => db({
+    users: [svc, div, prj],
+    projectStocks: [{ id: 's1', stockNo: 'ST-1', itemId: 'i-lbs', status: 'open' as const, createdBy: 'u1', createdAt: '2026-01-01T00:00:00.000Z' }],
+    jobs: [job({ lbsQtyRequired: 2, terminalStatus: null, installStartDate: '2026-11-01', installEndDate: '2026-11-30', issueLocation: 'A' })],
+    lbsUnits: [
+      unit({ id: 'a', serialLvb: 'LV-A', status: 'issued', jobId: 'j1', contractNo: 'C' }),
+      unit({ id: 'b', serialLvb: 'LV-B', status: 'allocated', jobId: 'j1', contractNo: 'C' }),
+      unit({ id: 'c', serialLvb: 'LV-C', status: 'in_stock', jobId: null, contractNo: 'C' }),
+    ],
+  })
+
+  it('🔴 ใบยังเบิกไม่ครบ: ขอคืนเครื่องที่เบิกแล้วไม่ได้ — เหตุผลบอกให้เบิกของที่เหลือครบใบก่อน (ไม่ชี้ไป "คืน LBS กลับสต็อก")', () => {
+    const d = blockUnitInstall(partial(), svc, { unitId: 'a', reason: 'เครื่องเสีย' })
+    let msg = ''
+    try { requestReturnLbs(d, svc, { jobId: 'j1', unitIds: ['a'], reason: 'เครื่องเสีย' }) } catch (e) { msg = (e as Error).message }
+    expect(msg).toMatch(/เบิกของที่เหลือให้ครบใบก่อน/)
+    expect(msg).not.toMatch(/คืน LBS กลับสต็อก/)
+    void div; void prj; void approveRequest; void drawLbs
+  })
+
+  it('lbsReturnBlockReason: ใบยังไม่ครบ = มีเหตุผล · เบิกครบใบ (issued) = null', () => {
+    const d = partial()
+    expect(lbsReturnBlockReason(d.jobs[0])).toMatch(/ครบใบ/)
+    expect(lbsReturnBlockReason(job({ terminalStatus: 'issued' }))).toBeNull()
+  })
+
+  it('ยังปฏิเสธ: เครื่องที่ยังไม่เบิก (ใช้ "คืน LBS กลับสต็อก" — คืนได้จริง) · Job ที่ยกเลิกแล้ว', () => {
+    expect(() => requestReturnLbs(partial(), svc, { jobId: 'j1', unitIds: ['b'], reason: 'x' })).toThrow(/คืน LBS กลับสต็อก/)
+    const cancelled: DB = { ...partial(), jobs: [job({ terminalStatus: 'cancelled' })] }
+    expect(() => requestReturnLbs(cancelled, svc, { jobId: 'j1', unitIds: ['a'], reason: 'x' })).toThrow(/ยกเลิก/)
+  })
+
+  it('🔴 ยกเลิก Job ที่เบิกออกไปบางส่วน: เหตุผลไม่ชี้ไป "ให้ Service คืนของเข้าคลังก่อน" (คืนแล้วก็ยกเลิกไม่ได้) → แจ้ง Manage', () => {
+    const r = jobCancelBlockReason(partial(), 'j1')!
+    expect(r).not.toMatch(/ให้ Service คืนของเข้าคลังก่อน/)
+    expect(r).toMatch(/Manage/)
+  })
+})
+
+describe('รีวิว Flow ทั้งระบบ · ข้อ 4 — jobWarrantyStarted รับ today', () => {
+  it('ประกันเริ่ม 2026-12-01: ถาม ณ 2026-12-05 = เริ่มแล้ว · ณ 2026-11-20 = ยัง (ไม่ขึ้นกับนาฬิกาจริง)', () => {
+    const d = db({ jobs: [job({ terminalStatus: 'installed' })],
+      jobWarranties: [{ id: 'w', jobId: 'j1', kind: 'installation', startDate: '2026-12-01', endDate: '2027-11-30', createdAt: '' }] })
+    expect(jobWarrantyStarted(d, 'j1', '2026-12-05')).toBe('2026-12-01')
+    expect(jobWarrantyStarted(d, 'j1', '2026-11-20')).toBeUndefined()
   })
 })

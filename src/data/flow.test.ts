@@ -11,7 +11,8 @@ import {
   JOB_ACTION_ORDER, myWork, approvalFacts, bkkDate, jobListMatches, prsAwaitingPo, posAwaitingGoods, prStatusLabel,
   pendingReceipts, purchasingCounts, stockPanelOpen, type JobActionKey,
 } from './flow'
-import { jobDelivery, jobInstallSummary, jobStatusPhase, memberSchedule } from './logic'
+import { jobDelivery, jobInstallSummary, jobStatusPhase, memberSchedule, jobCancelBlockReason } from './logic'
+import { unassignedJobs } from './field'
 
 const TODAY = '2026-11-23'
 const T = '2026-11-01T03:00:00.000Z'
@@ -62,11 +63,16 @@ const inst = (unitId: string, outcome: UnitInstallation['outcome'], over: Partia
 const db = (over: Partial<DB>): DB => ({ ...EMPTY, users: Object.values(USERS), ...over })
 
 // ---------- สถานการณ์ของงาน 1 ใบ ตลอดเส้นทาง ----------
+/** เครื่องว่างในคลังที่มี Contract No. แล้ว (ดึงเข้า Job ได้ — 0084) */
+const spare = unit('s', { status: 'in_stock', jobId: null, contractNo: 'C-1' })
 const fieldJob = { terminalStatus: 'issued' as const, issuedAt: T, installStartDate: '2026-11-20', installEndDate: '2026-11-30' }
 const SCENARIOS: { key: string; name: string; db: DB }[] = [
-  { key: 'draft', name: 'Draft — ยังไม่ดึง LBS', db: db({ jobs: [job()] }) },
+  { key: 'draft', name: 'Draft — ยังไม่ดึง LBS', db: db({ jobs: [job()], lbsUnits: [spare] }) },
+  { key: 'draft_no_contract', name: 'Draft — ในคลังไม่มีเครื่องที่มี Contract No.', db: db({
+    jobs: [job()], lbsUnits: [unit('x', { status: 'in_stock', jobId: null })],
+  }) },
   { key: 'allocated', name: 'ดึง LBS แล้ว 1/2 เครื่อง', db: db({
-    jobs: [job()], lbsUnits: [unit('a')], allocations: [{ id: 'al', jobId: 'j1', projectStockId: 's1', txnType: 'draw', serialNos: ['LVB-a'], performedBy: 'u-p', performedAt: T }],
+    jobs: [job()], lbsUnits: [unit('a'), spare], allocations: [{ id: 'al', jobId: 'j1', projectStockId: 's1', txnType: 'draw', serialNos: ['LVB-a'], performedBy: 'u-p', performedAt: T }],
   }) },
   { key: 'procuring', name: 'LBS ครบ · วัสดุยังไม่ออก PR', db: db({
     jobs: [job()], lbsUnits: [unit('a'), unit('b'), unit('x', { status: 'in_stock', jobId: null })], accessoryRequests: [acc('r1')],
@@ -435,7 +441,7 @@ describe('รีวิวเฟส 2 · ข้อ 5 — เบิกวัสด
   })
 
   it('LBS ยังไม่ครบ Scope (จัดซื้อเสร็จแล้ว) → "ดึง LBS ให้ครบ Scope" · Project', () => {
-    const d = db({ jobs: [job()], lbsUnits: [unit('a')], accessoryRequests: [issuedAcc] })
+    const d = db({ jobs: [job()], lbsUnits: [unit('a'), spare]   /* มีเครื่องให้ดึง (รีวิว Flow ข้อ 2) */, accessoryRequests: [issuedAcc] })
     expect(jobNextStep(d, J(d), TODAY)).toMatchObject({ title: 'ดึง LBS ให้ครบ Scope', who: ['project'] })
   })
 })
@@ -475,7 +481,7 @@ describe('รีวิวรอบสุดท้าย · ข้อ 1 — ง�
   })
 
   it('LBS ไม่ครบ Scope + PR ส่งแล้ว → "ดึง LBS ให้ครบ Scope" · Project (สถานะจัดซื้อต่อท้าย)', () => {
-    const d = db({ jobs: [job()], lbsUnits: [unit('a')], accessoryRequests: [issuedAcc, prSent] })
+    const d = db({ jobs: [job()], lbsUnits: [unit('a'), spare]   /* มีเครื่องให้ดึง (รีวิว Flow ข้อ 2) */, accessoryRequests: [issuedAcc, prSent] })
     expect(jobNextStep(d, J(d), TODAY)).toMatchObject({
       title: 'ดึง LBS ให้ครบ Scope', who: ['project'], detail: 'ขาดอีก 1 เครื่อง · PR ส่งแล้ว 1 รายการ รอ Purchasing ออก PO',
     })
@@ -496,7 +502,7 @@ describe('รีวิวรอบสุดท้าย · ข้อ 2 — ย�
     for (const who of ['owner', 'manage'] as const) {
       const g = jobAction(d, J(d), USERS[who], 'cancel_job', TODAY).gate
       expect(g.ok, who).toBe(false)
-      if (!g.ok) expect(g.reason).toBe('J-001 เบิกของให้ Service ไปแล้วบางส่วน — ยกเลิกไม่ได้ ให้ Service คืนของเข้าคลังก่อน แล้วให้ Manage จัดการเป็นเคส')
+      if (!g.ok) expect(g.reason).toBe(jobCancelBlockReason(d, 'j1'))
     }
   })
 
@@ -832,5 +838,76 @@ describe('รีวิวเฟส 4 · ข้อ 3 — ตัวกรองไ
     expect(stockPanelOpen('s1', { ...base, filterOn: false, openStock: 's1' })).toBe(true)
     expect(stockPanelOpen('s1', { ...base, hasMatches: false })).toBe(false)
     expect(stockPanelOpen('s1', { ...base, hasMatches: false, openStock: 's1' })).toBe(true)
+  })
+})
+
+// =============================================================================
+// รีวิว Flow งานทีม LBS ทั้งระบบ (2026-11-24)
+//   ข้อ 2: ขั้น "Division กรอก Contract No." ไม่ขึ้นในคิวใคร — Job ขึ้นให้ Project ดึงทั้งที่ไม่มีเครื่องให้ดึง
+//   ข้อ 3: "มอบหมายทีมช่าง" ในงานของฉัน ใช้กติกาคนละชุดกับป้ายเมนู (jobNeedsTeam)
+//   ข้อ 4: ด่านเปิดงานใหม่/ขอแก้ข้อมูล อ่านนาฬิกาจริง ไม่ใช้ today ที่ส่งมา
+// =============================================================================
+describe('รีวิว Flow ทั้งระบบ (2026-11-24)', () => {
+  const noContract = sc('draft_no_contract').db
+
+  it('ข้อ 2: ไม่มีเครื่องว่างที่มี Contract No. → ขั้นต่อไปเป็นของ Division · ปุ่มดึงบอกเหตุผล · งานของฉันของ Division ลิงก์ไปกรองคลัง', () => {
+    expect(jobNextStep(noContract, J(noContract), TODAY)).toMatchObject({ title: 'รอ Division เตรียม LBS ที่มี Contract No.', who: ['sales'] })
+    const g = jobAction(noContract, J(noContract), USERS.owner, 'draw_lbs', TODAY).gate
+    expect(g.ok).toBe(false)
+    if (!g.ok) expect(g.reason).toContain('Contract No.')
+    expect(myWork(noContract, USERS.division, TODAY)).toEqual([expect.objectContaining({ key: 'job:j1', link: '/stocks?f=no_contract' })])
+    expect(myWork(noContract, USERS.owner, TODAY)).toEqual([])
+  })
+
+  it('ข้อ 2: ดึงไปบางส่วนแล้ว ที่เหลือไม่มีเครื่องให้ดึง → Division เช่นกัน', () => {
+    const d = db({ jobs: [job()], lbsUnits: [unit('a')] })
+    expect(jobNextStep(d, J(d), TODAY)).toMatchObject({ who: ['sales'] })
+  })
+
+  it('ข้อ 2: มีเครื่องที่มี Contract No. (คลังเปิด) → Project ดึงได้ตามเดิม · คลังที่ปิดแล้วไม่นับ', () => {
+    const d = sc('draft').db
+    expect(jobNextStep(d, J(d), TODAY)).toMatchObject({ title: 'ดึง LBS เข้างาน', who: ['project'] })
+    expect(jobAction(d, J(d), USERS.owner, 'draw_lbs', TODAY).gate.ok).toBe(true)
+    const closed: DB = { ...d, projectStocks: [{ id: 's1', stockNo: 'ST-1', itemId: 'i', status: 'closed', createdBy: 'u', createdAt: T }] }
+    expect(jobNextStep(closed, J(closed), TODAY)).toMatchObject({ who: ['sales'] })
+  })
+
+  it('ข้อ 3: "มอบหมายทีมช่าง" ในงานของฉันของ Service ตรงกับป้ายเมนู (jobNeedsTeam) ทุกฉาก', () => {
+    // ใบเบิกบางส่วน: เครื่องที่ออกไปติดตั้งครบแล้ว · อีกเครื่องรอเบิกรอบสอง · ยังไม่มีทีม
+    const d = db({ jobs: [job({ installStartDate: '2026-11-20', installEndDate: '2026-11-30' })],
+      lbsUnits: [unit('a', { status: 'issued' }), unit('b')], unitInstallations: [inst('a', 'installed')] })
+    // 🔴 ฉากที่สองกติกาต่างกันจริง: ติดตั้งไม่ได้ 1 + อีกเครื่องที่ออกไปแล้วยังรอติดตั้ง · ไม่มีทีม
+    //    (ตัวอย่างเดิมในรีวิว "เบิกบางส่วน" ไม่ต่าง — เครื่องที่ยังไม่เบิกนับเป็นรอติดตั้ง สถานะยังเป็น installing)
+    const blockedPending = db({ jobs: [job({ ...fieldJob })],
+      lbsUnits: [unit('a', { status: 'issued' }), unit('b', { status: 'issued' })], unitInstallations: [inst('a', 'blocked')] })
+    const cases: [string, DB][] = [['partial', d], ['blocked_pending', blockedPending], ...SCENARIOS.map(s => [s.key, s.db] as [string, DB])]
+    for (const [key, x] of cases) {
+      const fromMenu = unassignedJobs(x).map(j => `job:${j.id}`)
+      const fromWork = myWork(x, USERS.service, TODAY).filter(w => w.title === 'มอบหมายทีมช่าง').map(w => w.key)
+      expect(fromWork, key).toEqual(fromMenu)
+    }
+    expect(unassignedJobs(d).map(j => j.id)).toEqual(['j1'])
+    expect(unassignedJobs(blockedPending).map(j => j.id)).toEqual(['j1'])
+  })
+
+  it('ข้อ 1: ใบเบิกบางส่วน + เครื่องที่ออกไปติดตั้งไม่ได้ → ปุ่มขอคืนกดไม่ได้พร้อมเหตุผล · ขั้นต่อไปไม่สั่งให้ขอคืนตอนนี้', () => {
+    const d = db({ jobs: [job({ installStartDate: '2026-11-20', installEndDate: '2026-11-30' })],
+      lbsUnits: [unit('a', { status: 'issued' }), unit('b')], unitInstallations: [inst('a', 'blocked')] })
+    for (const who of ['service', 'owner'] as const) {
+      const g = jobAction(d, J(d), USERS[who], 'return_issued_lbs', TODAY).gate
+      expect(g.ok, who).toBe(false)
+      if (!g.ok) expect(g.reason).toMatch(/ครบใบ/)
+    }
+    expect(jobNextStep(d, J(d), TODAY).detail).toMatch(/หลังเบิกของที่เหลือครบใบ/)
+    // เบิกครบใบแล้ว (ฉาก blocked) = ขอคืนได้ตามเดิม
+    expect(gateOf('blocked', 'service', 'return_issued_lbs').ok).toBe(true)
+  })
+
+  it('ข้อ 4: ด่านเปิดงานใหม่/ขอแก้ข้อมูล ใช้ today ที่ส่งเข้ามา', () => {
+    const d = db({ jobs: [job({ ...fieldJob, terminalStatus: 'installed', installedAt: T })],
+      jobWarranties: [{ id: 'w', jobId: 'j1', kind: 'installation', startDate: '2026-12-01', endDate: '2027-11-30', createdAt: T }] })
+    expect(jobAction(d, J(d), USERS.owner, 'reopen_job', '2026-12-05').gate.ok).toBe(false)
+    expect(jobAction(d, J(d), USERS.owner, 'correct_closeout', '2026-12-05').gate.ok).toBe(true)
+    expect(jobAction(d, J(d), USERS.owner, 'reopen_job', '2026-11-20').gate.ok).toBe(true)
   })
 })

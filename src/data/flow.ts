@@ -15,6 +15,7 @@ import { PERMISSIONS, can, ownsJob } from './permissions'
 import {
   deriveJobStatus, jobDelivery, jobInstallSummary, jobIssuePlan, jobEtaBlockReason, jobWarrantyStarted,
   jobCancelBlockReason, jobIsFieldActive, daysBetweenIso, pendingPurchasingReqs, todayIso, prSnapshotChanges, correctionLabel,
+  lbsReturnBlockReason,
   type JobDelivery,
 } from './logic'
 import { APPROVAL_TYPE_LABEL, DEPT_LABEL, PR_STATUS_LABEL, fmtDate } from '../ui/format'
@@ -140,14 +141,16 @@ export function jobActions(db: DB, job: Job, user: User | null, today = todayIso
   const plan = jobIssuePlan(db, job.id, today)
   const canIssueAnything = plan.accReady.length > 0 || (plan.lbsShort === 0 && plan.lbsReady.length > 0)
   const inst = jobInstallSummary(db, job.id)
-  const warrantyStarted = job.terminalStatus === 'installed' ? jobWarrantyStarted(db, job.id) : undefined
+  const warrantyStarted = job.terminalStatus === 'installed' ? jobWarrantyStarted(db, job.id, today) : undefined
   const ask = (label: string) => isManage ? label : `ขออนุมัติ${label}`
 
   const all: JobAction[] = [
     {
       key: 'draw_lbs', label: 'ดึง LBS เข้า Job', approval: false,
       gate: firstBlock(jm, own, notLocked,
-        () => onJob.length >= job.lbsQtyRequired ? no(`ดึงครบ Scope แล้ว (${job.lbsQtyRequired} เครื่อง)`) : OK),
+        () => onJob.length >= job.lbsQtyRequired ? no(`ดึงครบ Scope แล้ว (${job.lbsQtyRequired} เครื่อง)`) : OK,
+        // รีวิว Flow ข้อ 2: ไม่มีเครื่องให้ดึง = บอกก่อนกด (เดิมกดได้แล้วไม่มีเครื่องให้เลือก/เจอ error 0084)
+        () => drawableUnits(db).length === 0 ? no(NO_DRAWABLE) : OK),
     },
     {
       key: 'return_lbs', label: 'คืน LBS กลับสต็อก', approval: false,
@@ -208,6 +211,8 @@ export function jobActions(db: DB, job: Job, user: User | null, today = todayIso
       gate: firstBlock(permGate(user, 'install.revertRequest'), own,
         () => job.terminalStatus === 'installed' || job.terminalStatus === 'cancelled' ? no(terminalText(job)) : OK,
         () => inst.blocked === 0 ? no('ไม่มีเครื่องที่ติดตั้งไม่ได้') : OK,
+        // รีวิว Flow ข้อ 1 (มติ 2026-11-24): ใบยังเบิกไม่ครบ = ขอคืนไม่ได้ — เดิมกดได้แล้วเจอ error ทางตัน
+        () => { const b = lbsReturnBlockReason(job); return b ? no(b) : OK },
         () => pendingGate(db, job.id, 'return_lbs')),
     },
     {
@@ -249,6 +254,8 @@ export interface NextStep {
   pending: ApprovalRequest[]
   /** ขั้นนี้คือคิวจัดซื้อ (pr = PR รอออก PO · po = PO รอรับของ) — งานของฉันใช้รายการคิวแทน ไม่ให้ซ้ำ */
   queue?: 'pr' | 'po'
+  /** หน้าที่ไปทำขั้นนี้ (ไม่ระบุ = หน้า Job) — เช่น Division เตรียม LBS ที่หน้า LBS Inventory */
+  link?: string
 }
 
 /** ประเภทคำขอที่หยุดงานทั้งใบ — รอผลก่อนค่อยทำขั้นอื่น */
@@ -296,7 +303,20 @@ export function jobNextStep(db: DB, job: Job, today = todayIso()): NextStep {
   return { ...base, ...rest }
 }
 
-interface RawStep { title: string; detail: string; who: Department[]; due?: string; dueLabel?: string; action?: ApprovalType[]; queue?: 'pr' | 'po' }
+interface RawStep { title: string; detail: string; who: Department[]; due?: string; dueLabel?: string; action?: ApprovalType[]; queue?: 'pr' | 'po'; link?: string }
+
+// ---------------- เครื่องที่ดึงเข้า Job ได้ (รีวิว Flow ข้อ 2 · 2026-11-24) ----------------
+/** เครื่องว่างในคลังที่มี Contract No. แล้ว และคลังยังไม่ปิด — mirror ด่าน drawLbs (0084 + คลังปิด) */
+export function drawableUnits(db: DB) {
+  return db.lbsUnits.filter(u => u.status === 'in_stock' && !!u.contractNo?.trim()
+    && db.projectStocks.find(s => s.id === u.projectStockId)?.status !== 'closed')
+}
+const NO_DRAWABLE = 'ในคลังไม่มีเครื่องว่างที่มี Contract No. — รอ Division รับเข้าคลัง/กรอก Contract No. ที่ LBS Inventory'
+/** ขั้นต่อไปเมื่อ Project ต้องดึงแต่ไม่มีเครื่องให้ดึง = งานของ Division (ขั้นที่ 1 ของเส้นทางงาน) */
+const divisionPrepStep = (need: number, due: Pick<RawStep, 'due' | 'dueLabel'>): RawStep => ({
+  title: 'รอ Division เตรียม LBS ที่มี Contract No.', who: ['sales'], link: '/stocks?f=no_contract',
+  detail: `ต้องการอีก ${need} เครื่อง · ${NO_DRAWABLE}`, ...due,
+})
 
 function rawNextStep(db: DB, job: Job, d: JobDelivery, today: string): RawStep {
   if (job.terminalStatus === 'cancelled') return { title: 'ยกเลิกแล้ว', detail: 'ไม่มีงานค้างในใบนี้', who: [] }
@@ -316,7 +336,10 @@ function rawNextStep(db: DB, job: Job, d: JobDelivery, today: string): RawStep {
       if (inst.unitsDone && inst.issueComplete && inst.pendingAccessories === 0) return clearanceStep(db, job, inst)
       return {
         title: 'แก้ปัญหาหน้างาน', who: ['project', 'service'], action: ['return_lbs', 'revert_install'],
-        detail: `${d.nextStep} · เครื่องที่ติดตั้งไม่ได้จริงต้องขอคืนเข้า LBS Inventory (Division ตรวจรับ)`,
+        // รีวิว Flow ข้อ 1: ใบยังเบิกไม่ครบ = ยังขอคืนไม่ได้ (มติ 2026-11-24) — ไม่สั่งให้ทำสิ่งที่ทำไม่ได้
+        detail: `${d.nextStep} · ${lbsReturnBlockReason(job)
+          ? 'เครื่องที่ติดตั้งไม่ได้ขอคืนเข้า LBS Inventory ได้หลังเบิกของที่เหลือครบใบ'
+          : 'เครื่องที่ติดตั้งไม่ได้จริงต้องขอคืนเข้า LBS Inventory (Division ตรวจรับ)'}`,
       }
     case 'awaiting_close':
       return { title: 'ปิดงานติดตั้ง', detail: d.nextStep, who: ['service', 'project'], action: ['revert_install'] }
@@ -385,6 +408,8 @@ function preFieldStep(db: DB, job: Job, status: JobStatus, d: JobDelivery, today
   const due = { due: d.due, dueLabel: 'กำหนดส่ง' }
   const onJob = db.lbsUnits.filter(u => u.jobId === job.id && (u.status === 'allocated' || u.status === 'issued')).length
   const short = Math.max(0, job.lbsQtyRequired - onJob)
+  const noneToDraw = drawableUnits(db).length === 0
+  if (status === 'draft' && noneToDraw) return divisionPrepStep(job.lbsQtyRequired, due)
   if (status === 'draft') return { title: 'ดึง LBS เข้างาน', detail: `ดึงเครื่องที่มี Contract No. จาก LBS Inventory ${job.lbsQtyRequired} เครื่อง`, who: ['project'], ...due }
   // 🔴 รีวิวเฟส 2 ข้อ 5: เบิกวัสดุไปบางส่วนแล้ว (partially_issued · ยังไม่มี LBS ออก) ก็มีจัดซื้อค้างได้
   //    เดิมเช็คเฉพาะ procuring_accessory ⇒ ใบแบบนี้ตกไป "รอของถึงคลัง · ไม่มีผู้ต้องทำ" ทั้งที่ Project ต้องขอ PR
@@ -395,6 +420,7 @@ function preFieldStep(db: DB, job: Job, status: JobStatus, d: JobDelivery, today
   const procuring = status === 'procuring_accessory' || status === 'partially_issued'
   if (proc && procuring && projectsTurn(proc)) return { ...proc, detail: withLbsShort(proc.detail, short), ...due }
   if (short > 0 && (status === 'allocated' || procuring)) {
+    if (noneToDraw) { const s = divisionPrepStep(short, due); return { ...s, detail: andProc(s.detail, proc) } }
     return { title: 'ดึง LBS ให้ครบ Scope', detail: andProc(`ขาดอีก ${short} เครื่อง`, proc), who: ['project'], ...due }
   }
   const plan = jobIssuePlan(db, job.id, today)
@@ -409,6 +435,20 @@ function preFieldStep(db: DB, job: Job, status: JobStatus, d: JobDelivery, today
     title: status === 'partially_issued' ? 'เบิกส่วนที่เหลือให้ Service' : 'เบิกให้ Service',
     detail: andProc(d.nextStep, proc), who: ['project'], action: ['issue_job'], ...due,
   }
+}
+
+// ---------------- ยังไม่มอบหมายทีม (กติกาเดียวทุกหน้า) ----------------
+/**
+ * งานนี้ "ต้องมอบหมายทีม" ไหม — ของออกหน้างานแล้ว · ยังไม่มีทีม · ยังมีเครื่องที่ต้องติดตั้ง (รวมที่ค้างคลังรอล็อตถัดไป)
+ * 🔴 ค้างจากเฟส 3: Dashboard / ตารางทีม / ป้ายเมนู นับงานที่ติดตั้งครบแล้ว (รอปิดงาน) ด้วย
+ *    ทั้งที่มอบหมายไม่ได้แล้ว (assignJobTeam กันไว้ที่ assertInstallOpen) ⇒ ตัวเลขค้างตลอดไป
+ * รีวิว Flow ข้อ 3 (2026-11-24): ย้ายจาก field.ts มาที่นี่ ให้งานของฉันใช้ตัวเดียวกับป้ายเมนู (field.ts re-export)
+ */
+export function jobNeedsTeam(db: DB, job: Job): boolean {
+  if (job.terminalStatus === 'installed' || job.terminalStatus === 'cancelled') return false
+  if (!jobIsFieldActive(db, job)) return false
+  if (db.jobAssignments.some(a => a.jobId === job.id)) return false
+  return jobInstallSummary(db, job.id).pending > 0
 }
 
 /**
@@ -527,26 +567,28 @@ export function myWork(db: DB, user: User | null, today = todayIso()): WorkItem[
   for (const job of db.jobs) {
     if (job.terminalStatus === 'installed' || job.terminalStatus === 'cancelled') continue
     const step = jobNextStep(db, job, today)
-    if (!isMyTurn(step, user, job)) continue
-    if (step.waiting && decides) continue                                  // อยู่ในคิวคำขอแล้ว
-    if (step.queue && queuedJobs[step.queue].has(job.id)) continue         // อยู่ในคิว PR/PO แล้ว
-    // 🔴 รีวิวเฟส 3 ข้อ 2: ขั้น "เคลียร์เรื่องค้างก่อนปิดงาน" ใส่ Division/Purchasing ไว้เพราะคำขอ/ของคืนที่ค้าง
-    //    ถ้าส่วนของผู้ใช้คนนี้อยู่ในคิวรายใบครบแล้ว ไม่ต้องขึ้นรายการงานซ้ำ (ส่วนที่ไม่มีคิว เช่น เครื่องติดตั้งไม่ได้ ยังขึ้น)
-    const mine = isManage ? step.who : step.who.filter(dep => dep === user.department)
-    const covered = (dep: Department) =>
-      (dep === 'sales' && queuedApprovalJobs.has(job.id)) || (dep === 'purchasing' && queuedReturnJobs.has(job.id))
-    if (mine.length > 0 && mine.every(covered)) continue
+    // 🔴 รีวิว Flow ข้อ 3 (2026-11-24): "มอบหมายทีมช่าง" ใช้ jobNeedsTeam ตัวเดียวกับป้ายเมนู/ตารางทีม
+    //    เดิมคิดเองจากสถานะ (รอออกไซต์/กำลังติดตั้ง/เลยนัด) ⇒ ใบที่มีเครื่องติดตั้งไม่ได้ + อีกเครื่องรอติดตั้ง
+    //    เมนูขึ้น Unassigned แต่งานของฉันว่าง · ติดตั้งครบแล้ว (รอปิด) jobNeedsTeam = false อยู่แล้ว
+    const unassigned = (user.department === 'service' || isManage) && jobNeedsTeam(db, job)
+    if (!unassigned) {
+      if (!isMyTurn(step, user, job)) continue
+      if (step.waiting && decides) continue                                  // อยู่ในคิวคำขอแล้ว
+      if (step.queue && queuedJobs[step.queue].has(job.id)) continue         // อยู่ในคิว PR/PO แล้ว
+      // 🔴 รีวิวเฟส 3 ข้อ 2: ขั้น "เคลียร์เรื่องค้างก่อนปิดงาน" ใส่ Division/Purchasing ไว้เพราะคำขอ/ของคืนที่ค้าง
+      //    ถ้าส่วนของผู้ใช้คนนี้อยู่ในคิวรายใบครบแล้ว ไม่ต้องขึ้นรายการงานซ้ำ (ส่วนที่ไม่มีคิว เช่น เครื่องติดตั้งไม่ได้ ยังขึ้น)
+      const mine = isManage ? step.who : step.who.filter(dep => dep === user.department)
+      const covered = (dep: Department) =>
+        (dep === 'sales' && queuedApprovalJobs.has(job.id)) || (dep === 'purchasing' && queuedReturnJobs.has(job.id))
+      if (mine.length > 0 && mine.every(covered)) continue
+    }
     const fieldStep = step.who.includes('service') && (user.department === 'service' || isManage)
-    // ยังไม่มีทีม = ต้องมอบหมายก่อนเฉพาะเมื่องานหน้างานยังอยู่ข้างหน้า (รอออกไซต์/กำลังติดตั้ง/เลยวันนัด)
-    //   ติดตั้งครบแล้ว (รอปิด/รอเคลียร์) ไม่ต้องมีทีมแล้ว — ขึ้นขั้นปิดงานตามปกติ
-    const fieldAhead = ['awaiting_visit', 'installing', 'visit_overdue'].includes(jobDelivery(db, job, today).state)
-    const unassigned = fieldStep && fieldAhead && jobIsFieldActive(db, job) && !db.jobAssignments.some(a => a.jobId === job.id)
     const lateDays = late(step.due)
     items.push({
       key: `job:${job.id}`, ...jobInfo(job.id),
       title: unassigned ? 'มอบหมายทีมช่าง' : step.title,
       detail: unassigned ? `ของออกหน้างานแล้ว แต่ยังไม่มีทีม · ขั้นถัดไป: ${step.title}` : step.detail,
-      link: fieldStep ? '/service' : `/jobs/${job.id}`,
+      link: unassigned || fieldStep ? '/service' : step.link ?? `/jobs/${job.id}`,
       due: step.due, dueLabel: step.dueLabel, lateDays, tone: tone(lateDays),
     })
   }

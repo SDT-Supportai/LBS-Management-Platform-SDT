@@ -3265,8 +3265,8 @@ export function jobCloseBlockers(db: DB, jobId: string): string[] {
 }
 
 /** 0094 (มติ Q2): เริ่มนับประกันแล้ว = เปิดงานใหม่ไม่ได้ · ใบเก่าที่ไม่มีประกันยังเปิดได้ */
-export function jobWarrantyStarted(db: DB, jobId: string): string | undefined {
-  const today = bangkokTodayIso()
+/** รีวิว Flow ข้อ 4 (2026-11-24): รับ today — เดิมอ่านนาฬิกาจริง ด่านปุ่มที่ส่ง today มา (flow.ts/เทสต์) จึงไม่ตรงกัน */
+export function jobWarrantyStarted(db: DB, jobId: string, today = bangkokTodayIso()): string | undefined {
   return db.jobWarranties.filter(w => w.jobId === jobId && w.startDate <= today)
     .map(w => w.startDate).sort()[0]
 }
@@ -3978,7 +3978,8 @@ export function jobCancelBlockReason(db: DB, jobId: string): string | null {
     + db.accessoryRequests.filter(r => r.jobId === jobId && qtyIssuedToService(r) > 0).length
   if (issuedOut === 0) return null
   const jobNo = db.jobs.find(j => j.id === jobId)?.jobNo ?? '-'
-  return `${jobNo} เบิกของให้ Service ไปแล้วบางส่วน — ยกเลิกไม่ได้ ให้ Service คืนของเข้าคลังก่อน แล้วให้ Manage จัดการเป็นเคส`
+  // รีวิว Flow ข้อ 1 (2026-11-24): เดิมบอก "ให้ Service คืนของเข้าคลังก่อน" — คืนแล้วก็ยังยกเลิกไม่ได้ (ไม่มีทางทำในระบบ)
+  return `${jobNo} เบิกของให้ Service ไปแล้วบางส่วน — ยกเลิกไม่ได้ เพราะระบบคืนของที่ออกหน้างานแล้วให้เองไม่ได้ · แจ้ง Manage เพื่อจัดการเป็นเคส`
 }
 
 // ยกเลิก Job: auto คืน LBS กลับ Stock เดิมตาม allocation + คืน Accessory สต็อกกลาง
@@ -5182,11 +5183,24 @@ export function stdBomSummary(db: DB, bomId: string) {
 //   ก่อนหน้านี้: เครื่องที่ติดตั้งไม่ได้บนใบที่ปิดแล้วค้างสถานะ "เบิกแล้ว" ตลอด ไม่มีทางกลับคลัง
 //   ไม่มีการตัดจำหน่าย LBS — ทุกเครื่องต้องกลับเข้าคลัง แล้วค่อยดึงไปใช้งานอื่น
 // =============================================================================
+/**
+ * รีวิว Flow ข้อ 1 (มติผู้ใช้ 2026-11-24): ขอคืน LBS ที่เบิกแล้วได้เฉพาะใบที่เบิกครบแล้ว — null = ขอคืนได้
+ *   ใบที่ยังเบิกไม่ครบ (เช่น วัสดุรอ PO) ต้องให้ Project เบิกของที่เหลือก่อน · คงกติกา 0094 (ไม่มี migration)
+ *   ใช้ร่วม: assertReturnableUnits · ปุ่มขอคืน (flow.ts / ServicePage) — เดิมปุ่มกดได้แล้วเจอ error ที่ชี้ไป
+ *   "คืน LBS กลับสต็อก" ซึ่งคืนเครื่องที่เบิกแล้วไม่ได้ = ทางตัน
+ */
+export function lbsReturnBlockReason(job: Job): string | null {
+  if (job.terminalStatus === 'issued' || job.terminalStatus === 'installed') return null
+  if (job.terminalStatus === 'cancelled') return `${job.jobNo} ถูกยกเลิกแล้ว`
+  return `${job.jobNo} ยังเบิกของไม่ครบใบ — Project ต้องเบิกของที่เหลือให้ครบใบก่อน จึงขอคืนเครื่องที่ติดตั้งไม่ได้เข้า LBS Inventory ได้`
+}
+
 function assertReturnableUnits(db: DB, jobId: string, unitIds: string[]): { job: Job; units: LbsUnit[] } {
   const job = db.jobs.find(j => j.id === jobId)
   if (!job) throw new Error('ไม่พบ Job')
-  if (job.terminalStatus !== 'issued' && job.terminalStatus !== 'installed')
-    throw new Error(`${job.jobNo} ยังไม่ได้เบิกให้ Service — ใช้ "คืน LBS กลับสต็อก" ที่หน้า Job`)
+  if (job.terminalStatus === 'cancelled') throw new Error(`${job.jobNo} ถูกยกเลิกแล้ว`)
+  // ตรวจรายเครื่องก่อน: เครื่องที่ยังไม่เบิก = "คืน LBS กลับสต็อก" ใช้ได้จริง · ที่เบิกแล้วค่อยดูว่าใบครบหรือยัง
+  //   (SQL 0094 ตรวจสถานะใบก่อน — ต่างแค่ข้อความ หน้าจอปิดปุ่มด้วย lbsReturnBlockReason จึงไม่ถึง RPC)
   const ids = Array.from(new Set(unitIds))
   if (ids.length === 0) throw new Error('กรุณาเลือกเครื่องที่จะคืน')
   const units = ids.map(id => {
@@ -5197,6 +5211,8 @@ function assertReturnableUnits(db: DB, jobId: string, unitIds: string[]): { job:
       throw new Error(`${u.serialLvb} ติดตั้งแล้ว — คืนไม่ได้ (ถ้าบันทึกผิดใช้ "ขอยกเลิกผลติดตั้ง")`)
     return u
   })
+  const block = lbsReturnBlockReason(job)
+  if (block) throw new Error(block)
   return { job, units }
 }
 

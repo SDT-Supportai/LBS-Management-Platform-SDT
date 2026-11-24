@@ -4,22 +4,12 @@
 // =============================================================================
 import type { DB, Job, User, JobWarranty } from '../types'
 import { jobIsFieldActive, jobInstallSummary, daysBetweenIso, warrantyStatus, addDaysIso, memberDeleteBlock } from './logic'
-import { bkkDate } from './flow'
+import { bkkDate, jobNeedsTeam } from './flow'
 
-export { memberDeleteBlock }
+export { memberDeleteBlock, jobNeedsTeam }
 
 // ---------------- ยังไม่มอบหมายทีม (กติกาเดียวทุกหน้า) ----------------
-/**
- * งานนี้ "ต้องมอบหมายทีม" ไหม — ของออกหน้างานแล้ว · ยังไม่มีทีม · ยังมีเครื่องที่ต้องติดตั้ง (รวมที่ค้างคลังรอล็อตถัดไป)
- * 🔴 ค้างจากเฟส 3: Dashboard / ตารางทีม / ป้ายเมนู นับงานที่ติดตั้งครบแล้ว (รอปิดงาน) ด้วย
- *    ทั้งที่มอบหมายไม่ได้แล้ว (assignJobTeam กันไว้ที่ assertInstallOpen) ⇒ ตัวเลขค้างตลอดไป
- */
-export function jobNeedsTeam(db: DB, job: Job): boolean {
-  if (job.terminalStatus === 'installed' || job.terminalStatus === 'cancelled') return false
-  if (!jobIsFieldActive(db, job)) return false
-  if (db.jobAssignments.some(a => a.jobId === job.id)) return false
-  return jobInstallSummary(db, job.id).pending > 0
-}
+// jobNeedsTeam ย้ายไปอยู่ที่ flow.ts (รีวิว Flow ข้อ 3 · 2026-11-24) — งานของฉันใช้ตัวเดียวกัน · re-export ด้านบน
 export const unassignedJobs = (db: DB) => db.jobs.filter(j => jobNeedsTeam(db, j))
 
 // ---------------- งานของฉันวันนี้ (Site Installation บนมือถือ) ----------------
