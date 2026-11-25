@@ -3,7 +3,8 @@
 เตรียมไว้เมื่อ 2026-11-25 · ต้นแบบมาจาก ServiceMS Instance 1 (`D:\Claude Code.md\15. DIGITAL & AI AUTOMATION TALENT Service MS\docs\templates\service-letter`)
 
 **สถานะ (2026-11-25):** ผูกระบบครบทั้ง 8 ขั้นแล้ว (ดู HANDOFF 11.11) หน้า `/letters` ใช้ได้ในโหมดเดโม
-⚠️ เหลืออย่างเดียว: **รัน `supabase/migrations/0100_service_letters.sql` บน Supabase จริง** แล้วให้ Manage เพิ่มผู้ลงนามอย่างน้อย 1 คน ระหว่างที่ยังไม่รัน หน้า Letters บน LIVE จะว่าง และกดออกจดหมายแล้วจะได้ error ว่ายังไม่ได้รัน migration
+✅ รัน `supabase/migrations/0100_service_letters.sql` บน Supabase จริงแล้ว (2026-11-25 · ตรวจด้วย anon key: ตาราง + RPC มีครบ และ anon เข้าไม่ได้)
+⚠️ เหลือ: ให้ Manage เพิ่มผู้ลงนามอย่างน้อย 1 คน (ยังไม่มีผู้ลงนาม = ออกจดหมายไม่ได้) แล้วลองออก/พิมพ์/แนบ/ลบ 1 รอบบน LIVE
 
 รอบผูกระบบแก้เพิ่ม 2 จุด (PGlite 59/59):
 - ไม่รับไฟล์แนบ SVG
