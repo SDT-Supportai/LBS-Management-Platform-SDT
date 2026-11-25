@@ -12,6 +12,7 @@ const EMPTY: DB = {
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
   jobPaymentFiles: [], jobDueExtensions: [], jobWarranties: [], jobCloseoutFiles: [], stockReturns: [],
   stdDrawings: [], stdPrices: [], stdBoms: [], stdBomLines: [],
+  serviceLetters: [], serviceLetterFiles: [], letterSigners: [],
 }
 const db = (over: Partial<DB>): DB => ({ ...EMPTY, ...over })
 const job = (over: Partial<Job> = {}): Job => ({

@@ -44,6 +44,11 @@ export const PERMISSIONS: Record<string, Department[]> = {
   //   ⇒ perm นี้ตอนนี้ครบทุกแผนก จึงเหลือความหมายเป็น "ต้อง login ก่อน" · **ยังไม่ลบทิ้ง**
   //     เพราะเป็นจุดเดียวที่ปิดปุ่ม Export ทั้งระบบได้ทีเดียวถ้าภายหลังต้องจำกัดรายแผนกอีก
   'report.exec': ['sales', 'purchasing', 'project', 'service', 'admin', 'vip'],
+  // 0100 — Service Letter (คำตอบผู้ใช้ 2026-11-25): ออกจดหมาย/แนบไฟล์ = Service + Project + Manage
+  //   ลบจดหมาย / ตั้งรายชื่อผู้ลงนาม = Manage · ตัวจริงคือ app_assert_letter / app_assert_dept ฝั่ง DB
+  'letter.manage': ['service', 'project', 'admin'],
+  'letter.delete': ['admin'],
+  'letter.signers': ['admin'],
 }
 
 export function can(user: User | null, perm: keyof typeof PERMISSIONS): boolean {

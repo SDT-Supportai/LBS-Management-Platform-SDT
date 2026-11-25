@@ -1,3 +1,5 @@
+import type { ServiceLetter, ServiceLetterFile, LetterSigner } from './data/letters'
+
 // vip = ผู้บริหารสูงสุด (0050) — ดูได้ทุกหน้า ไม่แก้ข้อมูล · ให้ความเห็นบนคำขออนุมัติเพื่อแจ้ง Division
 export type Department = 'sales' | 'project' | 'purchasing' | 'service' | 'admin' | 'vip'
 
@@ -703,6 +705,10 @@ export interface DB {
   stdPrices: StdPrice[]
   stdBoms: StdBom[]
   stdBomLines: StdBomLine[]
+  // 0100 — Service Letter (PSP-LBS-YYYY-NNN) · ชนิดข้อมูลอยู่ใน data/letters.ts
+  serviceLetters: ServiceLetter[]        // ใหม่ → เก่า (ฉบับล่าสุดอยู่หน้าสุด)
+  serviceLetterFiles: ServiceLetterFile[]
+  letterSigners: LetterSigner[]
 }
 
 export interface AppSettings {

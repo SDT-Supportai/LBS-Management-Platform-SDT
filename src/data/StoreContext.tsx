@@ -1,9 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { DB, User, Department, AppSettings, AppNotification } from '../types'
-import { buildSeedDb } from './seed'
+import { buildSeedDb, DEMO_LETTER_SIGNERS } from './seed'
 import * as L from './logic'
 import { supabase, isSupabaseMode } from '../lib/supabase'
-import { loadAll, remoteActions, createShareLinkRemote, addJobPaymentRemote, markNotificationsRead as remoteMarkRead, setNotificationLineStatus as remoteSetLine } from './remote'
+import { loadAll, remoteActions, createShareLinkRemote, addJobPaymentRemote, createServiceLetterRemote, markNotificationsRead as remoteMarkRead, setNotificationLineStatus as remoteSetLine } from './remote'
 
 const DB_KEY = 'lbs-platform-db-v2'
 const DB_KEY_V1 = 'lbs-platform-db-v1'
@@ -71,6 +71,7 @@ const EMPTY_DB: DB = {
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
   jobPaymentFiles: [], jobDueExtensions: [], jobWarranties: [], jobCloseoutFiles: [], stockReturns: [],
   stdDrawings: [], stdPrices: [], stdBoms: [], stdBomLines: [],
+  serviceLetters: [], serviceLetterFiles: [], letterSigners: [],
 }
 
 // migrate ข้อมูล demo จาก schema เก่า (v1: issued_installed, ไม่มี qtyReceived/notifications)
@@ -120,6 +121,10 @@ function migrateDb(raw: unknown): DB {
     stdPrices: d.stdPrices ?? [],
     stdBoms: d.stdBoms ?? [],
     stdBomLines: d.stdBomLines ?? [],
+    // 0100 — Service Letter · ข้อมูลเดโมเก่ายังไม่มีผู้ลงนาม ⇒ ให้ชุดตัวอย่าง (ไม่งั้นออกจดหมายไม่ได้จนกว่า Manage จะตั้ง)
+    serviceLetters: d.serviceLetters ?? [],
+    serviceLetterFiles: d.serviceLetterFiles ?? [],
+    letterSigners: d.letterSigners ?? DEMO_LETTER_SIGNERS,
   }
 }
 
@@ -247,6 +252,12 @@ export interface StoreActions {
   importStdBomLines: (p: Parameters<typeof L.importStdBomLines>[2]) => MaybePromise
   createUser: (p: Parameters<typeof L.createUser>[2]) => MaybePromise
   updateUser: (p: Parameters<typeof L.updateUser>[2]) => MaybePromise
+  // 0100 — Service Letter · ออกจดหมายคืน id + เลขที่ (เลข LIVE ออกที่ server) ให้หน้าเว็บขึ้นข้อความ/แนบไฟล์ต่อได้ทันที
+  createServiceLetter: (p: Parameters<typeof L.createServiceLetter>[2]) => Promise<{ id: string; letterNo: string }> | { id: string; letterNo: string }
+  deleteServiceLetter: (p: Parameters<typeof L.deleteServiceLetter>[2]) => MaybePromise
+  upsertLetterSigner: (p: Parameters<typeof L.upsertLetterSigner>[2]) => MaybePromise
+  addLetterFile: (p: Parameters<typeof L.addLetterFile>[2]) => MaybePromise
+  deleteLetterFile: (p: Parameters<typeof L.deleteLetterFile>[2]) => MaybePromise
 }
 
 interface StoreValue {
@@ -487,6 +498,20 @@ function DemoProvider({ children }: { children: ReactNode }) {
         importStdBomLines: run('standards.manage', L.importStdBomLines),
         createUser: run('master.manage', L.createUser),
         updateUser: run('master.manage', L.updateUser),
+        // 0100 — Service Letter (ออก/แนบ = Service + Project + Manage · ลบ/ผู้ลงนาม = Manage)
+        createServiceLetter: (p: Parameters<typeof L.createServiceLetter>[2]) => {
+          const actor = requirePerm('letter.manage')
+          const before = dbRef.current
+          const next = L.createServiceLetter(before, actor, p)
+          applyDb(next)
+          dispatchLine(next.notifications.slice(before.notifications.length))
+          const l = next.serviceLetters[0]                 // ฉบับใหม่อยู่หน้าสุด (createLetterDemo)
+          return { id: l.id, letterNo: l.letterNo }
+        },
+        deleteServiceLetter: run('letter.delete', L.deleteServiceLetter),
+        upsertLetterSigner: run('letter.signers', L.upsertLetterSigner),
+        addLetterFile: run('letter.manage', L.addLetterFile),
+        deleteLetterFile: run('letter.manage', L.deleteLetterFile),
       },
     }
   }, [db, user, settings])
@@ -647,6 +672,13 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
       const token = await createShareLinkRemote(sb, p)
       try { await reload() } catch { setStale(true) }
       return token
+    }
+
+    // 0100 — เลขที่ PSP-LBS ออกที่ server (advisory lock) · คืนให้หน้าเว็บขึ้นข้อความ/แนบไฟล์ต่อ
+    act.createServiceLetter = async (p) => {
+      const r = await createServiceLetterRemote(sb, p)
+      try { await reload() } catch { setStale(true) }
+      return r
     }
 
     // หลังขออนุมัติสำเร็จ → ดันการ์ด Flex (ปุ่มอนุมัติ) เข้าแชท 1:1 ผู้อนุมัติ (best-effort, เฉพาะตอนเปิด LINE)

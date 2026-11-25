@@ -21,6 +21,7 @@ const EMPTY: DB = {
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
   jobPaymentFiles: [], jobDueExtensions: [], jobWarranties: [], jobCloseoutFiles: [], stockReturns: [],
   stdDrawings: [], stdPrices: [], stdBoms: [], stdBomLines: [],
+  serviceLetters: [], serviceLetterFiles: [], letterSigners: [],
 }
 const U = (id: string, department: User['department'], isActive = true): User =>
   ({ id, email: `${id}@x.co`, password: 'x', fullName: id, department, isActive })

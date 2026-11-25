@@ -2,7 +2,12 @@
 
 เตรียมไว้เมื่อ 2026-11-25 · ต้นแบบมาจาก ServiceMS Instance 1 (`D:\Claude Code.md\15. DIGITAL & AI AUTOMATION TALENT Service MS\docs\templates\service-letter`)
 
-**สถานะ:** ไฟล์ทั้งหมดในเอกสารนี้**ยังไม่ผูก**กับแอป ไม่มี route ไม่มีเมนู ไม่ได้อยู่ใน `DB` และ migration ยังไม่ได้รัน แอปตอนนี้จึงทำงานเหมือนเดิมทุกอย่าง
+**สถานะ (2026-11-25):** ผูกระบบครบทั้ง 8 ขั้นแล้ว (ดู HANDOFF 11.11) หน้า `/letters` ใช้ได้ในโหมดเดโม
+⚠️ เหลืออย่างเดียว: **รัน `supabase/migrations/0100_service_letters.sql` บน Supabase จริง** แล้วให้ Manage เพิ่มผู้ลงนามอย่างน้อย 1 คน ระหว่างที่ยังไม่รัน หน้า Letters บน LIVE จะว่าง และกดออกจดหมายแล้วจะได้ error ว่ายังไม่ได้รัน migration
+
+รอบผูกระบบแก้เพิ่ม 2 จุด (PGlite 59/59):
+- ไม่รับไฟล์แนบ SVG
+- ลบฉบับล่าสุดแล้ว เลขที่ไม่ถูกนำกลับมาใช้ ใช้ตาราง `letter_no_counters` เพราะฉบับที่ลบอาจส่งถึงผู้รับไปแล้ว
 
 ## คำตอบผู้ใช้ (2026-11-25)
 
@@ -25,7 +30,9 @@
 |---|---|---|
 | `src/data/letters.ts` | ชนิดข้อมูล `ServiceLetter` / `LetterSigner` / `ServiceLetterFile`, `nextLetterNo`, `cleanLetterInput`, `safeSigImage`, `parseTechList`, `canLetter`, `activeSigners`, `warrantyLetterPrefill`, โหมดเดโม `createLetterDemo` / `deleteLetterDemo` / `upsertSignerDemo` | `letters.test.ts` 24 ตัว |
 | `src/ui/letterPdf.ts` | แม่แบบเอกสารพิมพ์ 3 แบบ (Official / Service Official / Warranty), `lbsLetterOrg`, `openPrintWindow` / `writePrintWindow` | `letterPdf.test.ts` 9 ตัว |
-| `supabase/drafts/0100_service_letters.sql` | ตาราง 3 ตาราง (`letter_signers`, `service_letters`, `service_letter_files`), RLS, bucket `letter-docs` (private), RPC 5 ตัว, ตรวจผลท้ายไฟล์ | PGlite (Postgres 16.4) 56/56 · `test_0100_pglite.mjs` · ยังไม่ได้รันบน Supabase จริง |
+| `supabase/migrations/0100_service_letters.sql` | ตาราง 3 ตาราง (`letter_signers`, `service_letters`, `service_letter_files`) + ตัวนับเลข `letter_no_counters`, RLS, bucket `letter-docs` (private), RPC 5 ตัว, ตรวจผลท้ายไฟล์ | PGlite (Postgres 16.4) 59/59 · `supabase/tests/test_0100_pglite.mjs` · ยังไม่ได้รันบน Supabase จริง |
+| `src/data/logic.ts` (ท้ายไฟล์) · `remote.ts` · `StoreContext.tsx` | action โหมดเดโม + LIVE · โหลด 3 ตาราง | `lettersStore.test.ts` 23 ตัว |
+| `src/pages/LettersPage.tsx` · `src/ui/LetterForm.tsx` · `SignaturePad.tsx` · `LetterSignersPanel.tsx` | หน้า Letters · ฟอร์ม 3 แบบ · แผ่นเซ็น · รายชื่อผู้ลงนาม | ตรวจในเดโม (lbs-demo) |
 
 ## ServiceMS เทียบกับ LBS
 
@@ -46,7 +53,7 @@
 ## ขั้นตอนผูกระบบ
 
 1. **ฐานข้อมูล**
-   - ย้าย `supabase/drafts/0100_service_letters.sql` ไปไว้ที่ `supabase/migrations/` ใช้เลขถัดไปจริงตอนนั้น
+   - ✅ ย้ายไป `supabase/migrations/0100_service_letters.sql` แล้ว (0100 เป็นเลขถัดไปจริง)
    - ทดสอบบน PGlite แล้วรันใน SQL Editor
    - เพิ่มผู้ลงนามอย่างน้อย 1 คนก่อนเปิดใช้ (ไม่มีผู้ลงนาม = ออกจดหมายไม่ได้)
    - บันทึกผลใน HANDOFF

@@ -12,6 +12,8 @@ import { fmtDate, fmtDateTime } from '../ui/format'
 import { acceptanceTone } from '../ui/tone'
 import { supabase } from '../lib/supabase'
 import { uploadServiceDoc, removeServiceDocs } from '../data/remote'
+import { canLetter, warrantyLetterPrefill, type LetterInput } from '../data/letters'
+import { LetterFormModal } from '../ui/LetterForm'
 import { warrantyRowMatches, warrantyMatches, warrantyCounts, WARRANTY_URGENT_DAYS, docTypeForJob, type WarrantyFilter } from '../data/field'
 
 // =============================================================================
@@ -41,6 +43,8 @@ export default function WarrantyPage() {
   const { show } = useToast()
   const { ask, element: confirmEl } = useConfirm()
   const canEdit = can(user, 'closeout.manage')
+  const canLetterIssue = canLetter(user, 'manage')
+  const [letterInit, setLetterInit] = useState<LetterInput | null>(null)
   const today = todayIso()
 
   const [tab, setTab] = useState<'period' | 'repair' | 'report'>('period')
@@ -226,6 +230,11 @@ export default function WarrantyPage() {
                           📎 เอกสาร ({closeoutFiles(db, job.id).length})
                         </button>
                         {canEdit && <button className="small" style={{ marginLeft: 6 }} onClick={() => openEdit(job)}>✏️ แก้ไข</button>}
+                        {/* 0100 — คำตอบผู้ใช้ข้อ 6: เติมข้อมูลประกันให้ · แก้ได้ทุกช่องก่อนออกเลข */}
+                        {canLetterIssue && (
+                          <button className="small" style={{ marginLeft: 6 }} title="เปิดฟอร์ม Warranty Letter ที่เติมข้อมูลประกันของงานนี้แล้ว"
+                            onClick={() => setLetterInit(warrantyLetterPrefill(job, db.jobWarranties))}>✉️ ออก Warranty Letter</button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -362,6 +371,10 @@ export default function WarrantyPage() {
             )
           })}
         </Modal>
+      )}
+      {letterInit && (
+        <LetterFormModal initial={letterInit} onClose={() => setLetterInit(null)}
+          onSaved={r => show(`ออก Warranty Letter ${r.letterNo} แล้ว — พิมพ์ได้ที่หน้า Letters`)} />
       )}
       {confirmEl}
     </>

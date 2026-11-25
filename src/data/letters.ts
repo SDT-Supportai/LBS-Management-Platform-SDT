@@ -1,6 +1,6 @@
 // =============================================================================
 // Service Letter — ยกจาก ServiceMS (Instance 1) · เตรียมรวมเข้า LBS (2026-11-25)
-//   ไฟล์นี้ "ยังไม่ผูก" กับ DB / StoreContext / เมนู — ดูขั้นตอนผูกที่ docs/service-letter-integration.md
+//   ผูกระบบแล้ว 2026-11-25: DB (types.ts) · action demo (logic.ts) · LIVE (remote.ts + migration 0100) · หน้า /letters
 //   ต้นฉบับ: D:\Claude Code.md\15. ...\docs\templates\service-letter (frontend/backend/database)
 //
 //   ต่างจาก ServiceMS โดยตั้งใจ:
@@ -17,7 +17,8 @@
 //   6) ปุ่ม "ออก Warranty Letter" ในหน้า Warranty เติมข้อมูลประกันให้ (warrantyLetterPrefill)
 //   เทสต์: letters.test.ts
 // =============================================================================
-import type { User, Department, Job, JobWarranty } from '../types'
+import type { User, Job, JobWarranty } from '../types'
+import { can } from './permissions'
 
 export type LetterCategory = 'GENERAL' | 'SM' | 'WARRANTY'
 export type LetterType = 'EXTERNAL' | 'INTERNAL'
@@ -172,14 +173,20 @@ export function parseTechList(text?: string): { name: string; phone: string }[] 
   })
 }
 
-// สิทธิ์ — ⚠️ ยังไม่ย้ายเข้า permissions.ts (ทำตอนผูกระบบ: 'letter.manage' / 'letter.delete' / 'letter.signers')
-const LETTER_PERMS: Record<'manage' | 'delete' | 'signers', Department[]> = {
-  manage: ['service', 'project', 'admin'],     // คำตอบผู้ใช้ข้อ 1
-  delete: ['admin'],
-  signers: ['admin'],                          // คำตอบผู้ใช้ข้อ 4 — รายชื่อผู้ลงนามที่ Manage ตั้ง
-}
+// สิทธิ์ — อยู่ใน permissions.ts ('letter.manage' / 'letter.delete' / 'letter.signers') ที่เดียว · ที่นี่เป็นทางลัด
+//   คำตอบผู้ใช้ข้อ 1: ออก = Service + Project + Manage · ข้อ 4: รายชื่อผู้ลงนาม = Manage
 export function canLetter(user: User | null, perm: 'manage' | 'delete' | 'signers'): boolean {
-  return !!user && LETTER_PERMS[perm].includes(user.department)
+  return can(user, `letter.${perm}`)
+}
+
+/** ชนิดไฟล์แนบที่รับ — ตรงกับ CHECK service_letter_files_type_ck (0100): PDF / Word / Excel / รูป (ไม่รับ SVG) */
+const LETTER_FILE_MIMES = [
+  'application/pdf', 'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+]
+export function isAllowedLetterFile(mime: string): boolean {
+  return LETTER_FILE_MIMES.includes(mime) || (/^image\//.test(mime) && mime !== 'image/svg+xml')
 }
 
 /** ตัวเลือกใน dropdown ผู้ลงนาม — เฉพาะที่ใช้งาน เรียงตาม sortOrder */
@@ -209,7 +216,9 @@ const bkkDate = (iso: string) => new Date(Date.parse(iso) + 7 * 3600_000).toISOS
 export interface LetterNotify { type: 'letter_issued'; dept: 'project'; jobId: string; message: string }
 
 /** โหมดเดโม — ออกจดหมาย (sync กับ rpc_create_service_letter ใน drafts/0100) */
-export function createLetterDemo(letters: ServiceLetter[], actor: User, input: LetterInput, nowIso: string, signers: LetterSigner[])
+export function createLetterDemo(letters: ServiceLetter[], actor: User, input: LetterInput, nowIso: string, signers: LetterSigner[],
+  /** เลขที่เคยออกแล้ว (รวมฉบับที่ถูกลบ) — เลขไม่ถูกนำกลับมาใช้ · sync letter_no_counters (0100) */
+  issuedNos: string[] = [])
   : { letters: ServiceLetter[]; letter: ServiceLetter; notify?: LetterNotify } {
   if (!canLetter(actor, 'manage')) throw new Error('แผนกของคุณไม่มีสิทธิ์ออกจดหมาย')
   const r = cleanLetterInput(input)
@@ -223,7 +232,7 @@ export function createLetterDemo(letters: ServiceLetter[], actor: User, input: L
     signerName: signer.fullName,
     signerPosition: signer.position,
     id: crypto.randomUUID(),
-    letterNo: nextLetterNo(letters.map(l => l.letterNo), today),
+    letterNo: nextLetterNo([...letters.map(l => l.letterNo), ...issuedNos], today),
     createdBy: actor.id,
     createdAt: nowIso,
   }

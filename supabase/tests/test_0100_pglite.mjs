@@ -1,8 +1,8 @@
 // วิธีรัน (ไม่ได้อยู่ใน devDependencies — ติดตั้งชั่วคราวนอกโปรเจกต์):
 //   mkdir <temp> && cd <temp> && echo {"type":"module"} > package.json && npm i @electric-sql/pglite@0.2.17
-//   copy ไฟล์นี้ไป <temp> แล้ว: node test_0100_pglite.mjs <lbs-platform>/supabase/migrations <lbs-platform>/supabase/drafts/0100_service_letters.sql
-//   ผล 2026-11-25: ผ่าน 56/56 (PostgreSQL 16.4 / PGlite 0.2.17)
-// PGlite harness — ทดสอบ supabase/drafts/0100_service_letters.sql บน Postgres 16 จริง
+//   copy ไฟล์นี้ไป <temp> แล้ว: node test_0100_pglite.mjs <lbs-platform>/supabase/migrations <lbs-platform>/supabase/migrations/0100_service_letters.sql
+//   ผล 2026-11-25: ผ่าน 59/59 (PostgreSQL 16.4 / PGlite 0.2.17) — รอบผูกระบบเพิ่มเคสไฟล์ SVG + เลขไม่ถูกนำกลับมาใช้
+// PGlite harness — ทดสอบ supabase/migrations/0100_service_letters.sql บน Postgres 16 จริง
 //   จำลองเฉพาะส่วน Supabase (auth.uid / storage / roles / publication / default privileges แบบ 0057+0091)
 //   ฟังก์ชัน LBS ที่ร่างเรียกใช้ ดึง "ข้อความจริง" จากไฟล์ migration (ไม่เขียนเลียนแบบ)
 import { PGlite } from '@electric-sql/pglite'
@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const MIG = process.argv[2]           // .../lbs-platform/supabase/migrations
-const DRAFT = process.argv[3]         // .../lbs-platform/supabase/drafts/0100_service_letters.sql
+const DRAFT = process.argv[3]         // .../lbs-platform/supabase/migrations/0100_service_letters.sql
 const readMig = (f) => readFileSync(join(MIG, f), 'utf8')
 function extractFn(file, name) {
   const src = readMig(file)
@@ -184,7 +184,8 @@ r = await addFile('service', L1.id, `letters/${L1.id}/c.pdf`, 'application/pdf',
 r = await addFile('sales', L1.id, `letters/${L1.id}/d.pdf`); ok('sales แนบไฟล์ไม่ได้', r.error && thai(r.error), r.error)
 // [harness fix] เดิมเคส "path อื่น" ส่ง path ที่ถูกต้อง (letters/<id>/z) ⇒ แนบสำเร็จโดยไม่ตั้งใจ
 for (const [name, path, mime, size] of [['path อื่น', `letters/${L2.id}/z.pdf`, 'application/pdf', 1],
-  ['ชนิดไฟล์', `letters/${L1.id}/z.exe`, 'application/x-msdownload', 1], ['ขนาด', `letters/${L1.id}/z.pdf`, 'application/pdf', 99e9]]) {
+  ['ชนิดไฟล์', `letters/${L1.id}/z.exe`, 'application/x-msdownload', 1], ['ขนาด', `letters/${L1.id}/z.pdf`, 'application/pdf', 99e9],
+  ['รูป SVG (มีสคริปต์ได้)', `letters/${L1.id}/z.svg`, 'image/svg+xml', 1]]) {
   // error ที่ผู้ใช้จะเห็น ต้องเป็นภาษาไทย (LBS ไม่มีตัวแปลง error — grep แล้ว)
   r = await addFile('service', L1.id, path, mime, size)
   ok(`แนบไฟล์ผิด (${name}) · error ภาษาไทย`, r.error && thai(r.error), r.error)
@@ -208,6 +209,14 @@ r = await as('service', `DELETE FROM storage.objects WHERE name = 'letters/${L1.
 ok('storage: หลังลบแถวแล้ว ลบไฟล์จริงได้', r.rows?.length === 1, r.error ?? JSON.stringify(r.rows))
 r = await create('service', { ...base, signer_id: S1 })
 ok('ลบแล้วเลขไม่ย้อน/ไม่ชน (ได้ 004)', r.rows?.[0]?.r?.letter_no === `PSP-LBS-${yr}-004`, JSON.stringify(r.rows?.[0]?.r ?? r.error))
+// [ผูกระบบ 2026-11-25] ลบ "ฉบับล่าสุด" แล้วเลขต้องไม่ถูกนำกลับมาใช้ — เลขนั้นอาจส่งถึงผู้รับไปแล้ว
+//   (เดิม MAX+1 จากแถวที่เหลือ ⇒ ลบ 004 แล้วฉบับถัดไปได้ 004 ซ้ำ)
+const L4 = r.rows?.[0]?.r?.id
+await as('admin', `SELECT rpc_delete_service_letter($1) AS p`, [L4])
+r = await create('service', { ...base, signer_id: S1 })
+ok('ลบฉบับล่าสุดแล้ว เลขไม่ถูกนำกลับมาใช้ (ได้ 005 ไม่ใช่ 004)', r.rows?.[0]?.r?.letter_no === `PSP-LBS-${yr}-005`, JSON.stringify(r.rows?.[0]?.r ?? r.error))
+r = await as('admin', `SELECT * FROM letter_no_counters`)
+ok('ตารางตัวนับเลขอ่านตรงไม่ได้ (ภายในระบบ)', /permission denied/i.test(r.error ?? ''), r.error ?? JSON.stringify(r.rows))
 
 const fail = results.filter(x => !x.pass)
 console.log(`\nสรุป: ผ่าน ${results.length - fail.length}/${results.length}`)

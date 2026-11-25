@@ -19,6 +19,7 @@ import PurchasingPage from './pages/PurchasingPage'
 import ServicePage from './pages/ServicePage'
 import ServiceSchedulingPage from './pages/ServiceSchedulingPage'
 import WarrantyPage from './pages/WarrantyPage'
+import LettersPage from './pages/LettersPage'
 import AuditPage from './pages/AuditPage'
 import NotificationsPage from './pages/NotificationsPage'
 import MasterDataPage from './pages/MasterDataPage'
@@ -105,6 +106,8 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
       // 0079 — ต่อจาก Site Installation: รับงานที่ปิดแล้ว → ติดตามประกัน → แจ้งซ่อม
       { to: '/warranty', icon: '🛡️', label: 'Service (Warranty)',
         badge: warrantyExpiring > 0 ? { text: `${warrantyExpiring} ใกล้หมดประกัน`, cls: 'amber' } : undefined },
+      // 0100 — ทะเบียนจดหมาย PSP-LBS (Official / Service Official / Warranty Letter)
+      { to: '/letters', icon: '✉️', label: 'Letters' },
     ] },
     // ทะเบียนทีมช่างยังอยู่ใน ServicePage — เฟส 2 จะย้ายมาที่ /scheduling แล้วแยก 2 เมนูจริง
     { mod: 'Workforce & Scheduling', icon: '👷', items: [
@@ -347,6 +350,7 @@ export default function App() {
               <Route path="/purchasing" element={<PurchasingPage />} />
               <Route path="/service" element={<ServicePage />} />
               <Route path="/warranty" element={<WarrantyPage />} />
+              <Route path="/letters" element={<LettersPage />} />
               <Route path="/scheduling" element={<ServiceSchedulingPage />} />
               <Route path="/approvals" element={<ApprovalsPage />} />
               <Route path="/notifications" element={<NotificationsPage />} />

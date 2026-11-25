@@ -155,6 +155,7 @@ function officialLetter(lt: ServiceLetter, org: LetterOrg, jobNo?: string): stri
   const row = (k: string, v?: string) => v ? `<div class="lrow"><div class="lk">${k}</div><div class="lc">:</div><div class="lv">${esc(v)}</div></div>` : ''
   const typeLabel = lt.letterType === 'INTERNAL' ? 'หนังสือภายใน / Internal Memo' : 'หนังสือภายนอก / Official Letter'
   const logo = safeImgUrl(org.logoUrl)
+  const sig = safeSigImage(lt.sigImage)
   return `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><title>Letter ${esc(lt.letterNo)}</title>
 <style>${BASE_CSS}
   body{color:#16202e;font-size:15px;line-height:1.75}
@@ -178,7 +179,9 @@ function officialLetter(lt: ServiceLetter, org: LetterOrg, jobNo?: string): stri
   .lk{font-weight:700;min-width:96px}.lc{width:8px}.lv{flex:1}
   .body{margin:20px 0;white-space:pre-wrap;text-align:justify;text-indent:48px}
   .close{margin-top:30px;margin-left:auto;width:300px;text-align:center}
-  .close .ty{margin-bottom:60px}
+  .close .ty{margin-bottom:4px}
+  .close img.sig{height:62px;object-fit:contain;display:block;margin:0 auto 2px}
+  .close .sig-space{height:62px;width:220px;margin:0 auto 2px;border-bottom:1px dotted #94a3b8}
   .close .nm{font-weight:700}
   .close .ps{font-size:13.5px;color:#475569}
   .cc{margin-top:34px;font-size:13px;color:#475569;border-top:1px dashed #cbd5e1;padding-top:8px}${PRINT_PAGE('28mm', '15mm')}
@@ -195,6 +198,7 @@ function officialLetter(lt: ServiceLetter, org: LetterOrg, jobNo?: string): stri
       <div class="body">${esc(lt.body)}</div>
       <div class="close">
         <div class="ty">ขอแสดงความนับถือ</div>
+        ${sig ? `<img class="sig" src="${sig}" alt="">` : '<div class="sig-space"></div>'}<!-- [ผูกระบบ] ลายเซ็น 2 แบบเหมือน SM/WARRANTY -->
         <div class="nm">${esc(lt.signerName || '')}</div>
         <div class="ps">${esc(lt.signerPosition || '')}</div>
       </div>

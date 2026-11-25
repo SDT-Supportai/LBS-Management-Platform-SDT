@@ -5,6 +5,7 @@ import { deptPermissionLabels, userOpenWork, userEditBlock } from '../data/admin
 import { Modal, useConfirm, useToast, useTryAction } from '../ui/components'
 import { DEPT_LABEL } from '../ui/format'
 import { deptTone } from '../ui/tone'
+import { LetterSignersPanel } from '../ui/LetterSignersPanel'
 import { supabase } from '../lib/supabase'
 import type { Department, User } from '../types'
 
@@ -193,6 +194,9 @@ export default function DevSettingsPage() {
           </table>
         </div>
       </div>
+
+      {/* 0100 — ผู้ลงนามจดหมาย (Manage ตั้ง · ตัวเลือกในฟอร์มออกจดหมาย) */}
+      <LetterSignersPanel />
 
       <div className="panel">
         <div className="panel-head"><h3>LINE Messaging API — แจ้งเตือนเข้ากลุ่ม</h3></div>

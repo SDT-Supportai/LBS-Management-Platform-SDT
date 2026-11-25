@@ -1,7 +1,8 @@
 -- =====================================================================
--- ⚠️ DRAFT — ยังไม่รันบน Supabase จริง
---    ย้ายไป supabase/migrations/ (เลขถัดไปจริงตอนนั้น) เมื่อผูกระบบตาม docs/service-letter-integration.md
---    ทดสอบบน PGlite (PostgreSQL 16.4) 2026-11-25: ผ่าน 56/56 — test_0100_pglite.mjs ข้างไฟล์นี้
+-- ⚠️ ยังไม่ได้รันบน Supabase จริง — รันใน SQL Editor แล้วเพิ่มผู้ลงนามอย่างน้อย 1 คน (หน้า Users & System Settings)
+--    ผูกระบบแล้ว 2026-11-25 (ย้ายจาก supabase/drafts/) — หน้า /letters · remote.ts · logic.ts (demo)
+--    ทดสอบบน PGlite (PostgreSQL 16.4) 2026-11-25: ผ่าน 59/59 — supabase/tests/test_0100_pglite.mjs
+--      (รอบผูกระบบเพิ่ม: ไม่รับไฟล์ SVG · ลบฉบับล่าสุดแล้วเลขไม่ถูกนำกลับมาใช้ = ตาราง letter_no_counters)
 --      (ฟังก์ชัน LBS ที่เรียกใช้ดึงข้อความจริงจาก migrations · จำลอง auth/storage/roles/default privileges 0057+0091)
 --      รันซ้ำ 2 รอบไม่ error · สิทธิ์ 7 แผนก + บัญชีปิด · เลขรัน · ตรวจค่า 15 แบบ (error ไทยทุกข้อ) · กระดิ่งไม่ส่ง LINE
 --      · เขียนตรง/เรียกฟังก์ชันภายในไม่ได้ · require_active · ไฟล์แนบ · storage policy · ลบ + CASCADE
@@ -100,11 +101,20 @@ CREATE TABLE IF NOT EXISTS service_letter_files (
                   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                   'application/vnd.ms-excel',
                   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    OR mime_type LIKE 'image/%'),
+    OR (mime_type LIKE 'image/%' AND mime_type <> 'image/svg+xml')),   -- SVG มีสคริปต์ได้ (ผูกระบบ 2026-11-25)
   CONSTRAINT service_letter_files_size_ck CHECK (size_bytes > 0 AND size_bytes <= 10 * 1024 * 1024),
   CONSTRAINT service_letter_files_path_ck CHECK (file_path LIKE 'letters/' || letter_id::text || '/%')
 );
 CREATE INDEX IF NOT EXISTS idx_service_letter_files_letter ON service_letter_files(letter_id);
+
+-- ตัวนับเลขที่รายปี (ภายใน — rpc_create_service_letter เท่านั้น) · ลบจดหมายแล้วเลขไม่ถูกนำกลับมาใช้
+--   เพราะฉบับที่ลบอาจส่งถึงผู้รับไปแล้ว ถ้าเลขซ้ำจะมีจดหมาย 2 ฉบับเลขเดียวกันในมือคนละคน
+CREATE TABLE IF NOT EXISTS letter_no_counters (
+  year     TEXT PRIMARY KEY,
+  last_no  INT NOT NULL CHECK (last_no > 0)
+);
+ALTER TABLE letter_no_counters ENABLE ROW LEVEL SECURITY;      -- ไม่มี policy = ผู้ใช้อ่าน/เขียนไม่ได้
+REVOKE ALL ON letter_no_counters FROM PUBLIC, anon, authenticated;
 
 -- ---------- 2) RLS · ปิดเขียนตรง (0057) · require_active (0058/0091) · realtime ----------
 DO $$
@@ -222,7 +232,11 @@ BEGIN
   v_year := to_char(v_today, 'YYYY');
   SELECT COALESCE(MAX((substring(letter_no FROM '(\d+)$'))::int), 0) INTO v_max
     FROM service_letters WHERE letter_no LIKE 'PSP-LBS-' || v_year || '-%';
-  v_no := 'PSP-LBS-' || v_year || '-' || lpad((v_max + 1)::text, 3, '0');
+  -- [ผูกระบบ 2026-11-25] เลขที่ออกแล้วไม่นำกลับมาใช้ แม้ลบฉบับล่าสุด (ตัวนับรายปี · GREATEST กันตัวนับตามหลังแถวจริง)
+  INSERT INTO letter_no_counters (year, last_no) VALUES (v_year, v_max + 1)
+  ON CONFLICT (year) DO UPDATE SET last_no = GREATEST(letter_no_counters.last_no, EXCLUDED.last_no - 1) + 1
+  RETURNING last_no INTO v_max;
+  v_no := 'PSP-LBS-' || v_year || '-' || lpad(v_max::text, 3, '0');
 
   INSERT INTO service_letters (
     letter_no, letter_date, category, letter_type, status, recipient, recipient_org, subject, reference,
@@ -321,7 +335,7 @@ BEGIN
   IF NOT (p_mime_type IN ('application/pdf', 'application/msword',
             'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-          OR p_mime_type LIKE 'image/%') THEN
+          OR (p_mime_type LIKE 'image/%' AND p_mime_type <> 'image/svg+xml')) THEN
     RAISE EXCEPTION 'ชนิดไฟล์ไม่รองรับ — แนบได้เฉพาะ PDF / Word / Excel / รูปภาพ'; END IF;
   IF p_size_bytes IS NULL OR p_size_bytes <= 0 OR p_size_bytes > 10 * 1024 * 1024 THEN
     RAISE EXCEPTION 'ไฟล์ต้องไม่เกิน 10 MB'; END IF;
@@ -369,7 +383,8 @@ BEGIN
   IF is_pub THEN RAISE EXCEPTION '0100: bucket letter-docs เป็น public — เอกสารจะเปิดได้โดยไม่ต้อง login'; END IF;
   IF has_table_privilege('authenticated', 'public.service_letters', 'INSERT')
      OR has_table_privilege('authenticated', 'public.letter_signers', 'INSERT')
-     OR has_table_privilege('authenticated', 'public.letter_signers', 'UPDATE') THEN
+     OR has_table_privilege('authenticated', 'public.letter_signers', 'UPDATE')
+     OR has_table_privilege('authenticated', 'public.letter_no_counters', 'UPDATE') THEN
     RAISE EXCEPTION '0100: authenticated ยังเขียนตาราง service_letters / letter_signers ตรงได้';
   END IF;
   IF has_function_privilege('authenticated', 'public.app_assert_letter()', 'EXECUTE') THEN

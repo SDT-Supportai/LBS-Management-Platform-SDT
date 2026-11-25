@@ -28,6 +28,9 @@ export const PERM_LABEL: Record<PermKey, string> = {
   'accessory.cleanup': 'ล้างรายการวัสดุที่ยกเลิก',
   'standards.manage': 'แก้ Standard Price / Drawing / BOM',
   'report.exec': 'ดาวน์โหลดรายงานผู้บริหาร (Excel)',
+  'letter.manage': 'ออกจดหมาย (PSP-LBS) · แนบไฟล์',
+  'letter.delete': 'ลบจดหมาย',
+  'letter.signers': 'ตั้งรายชื่อผู้ลงนามจดหมาย',
 }
 
 /** สิทธิ์ของแผนก (ตามลำดับในตาราง) — ใช้ทำป้ายในฟอร์มผู้ใช้ */

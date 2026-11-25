@@ -1,5 +1,12 @@
 import type { DB, User, Item } from '../types'
+import type { LetterSigner } from './letters'
 import * as L from './logic'
+
+// ผู้ลงนามจดหมายตัวอย่าง (0100) — ชื่อสมมติ · ข้อมูลเดโมเก่าที่ยังไม่มีรายชื่อจะได้ชุดนี้ตอน migrate
+export const DEMO_LETTER_SIGNERS: LetterSigner[] = [
+  { id: '0b7d2c1e-1a00-4c00-8000-000000000001', fullName: 'ผู้จัดการ ตัวอย่าง', position: 'ผู้จัดการฝ่ายโครงการ', sortOrder: 1, isActive: true },
+  { id: '0b7d2c1e-1a00-4c00-8000-000000000002', fullName: 'หัวหน้า บริการตัวอย่าง', position: 'หัวหน้าแผนกบริการ', sortOrder: 2, isActive: true },
+]
 
 // Demo accounts — password เดียวกันหมด: 1234
 const USERS: User[] = [
@@ -85,6 +92,8 @@ export function buildSeedDb(): DB {
         name: 'Control Cable 25m', qty: 2, uom: 'ม้วน', estUnitCost: 12000,
         note: 'เผื่อความยาวตามระยะจริงหน้างาน' },
     ],
+    // 0100 — Service Letter: ผู้ลงนามตัวอย่าง (ชื่อสมมติ) · จดหมายตัวอย่างสร้างท้ายฟังก์ชัน
+    serviceLetters: [], serviceLetterFiles: [], letterSigners: DEMO_LETTER_SIGNERS,
   }
 
   const sales = USERS[0], project = USERS[1], purchasing = USERS[2]
@@ -236,6 +245,24 @@ export function buildSeedDb(): DB {
     checkinLat: 12.9236, checkinLng: 101.1467,
     photoUrl: 'https://placehold.co/600x400?text=Site+Photo',
     note: 'ติดตั้งวงจรสำรองโรงงาน 1 เสร็จ ทดสอบสวิตช์ผ่าน',
+  })
+
+  // ---- จดหมายตัวอย่าง (0100) — Official Letter ไม่อ้าง Job + Service Official Letter อ้าง JOB-0004 ----
+  db = L.createServiceLetter(db, USERS[4], {
+    category: 'GENERAL', letterType: 'EXTERNAL', letterDate: '2026-07-01',
+    recipient: 'ผู้จัดการแผนกจัดหา', recipientOrg: 'EGAT บางปะกง',
+    subject: 'ขอส่งกำหนดการส่งมอบ 115kV Load Break Switch',
+    reference: 'สัญญาเลขที่ CT-2026-0103', enclosure: 'แผนการส่งมอบ 1 ชุด',
+    body: 'บริษัทฯ ขอส่งกำหนดการส่งมอบ 115kV Load Break Switch จำนวน 2 ชุด ตามสัญญาที่อ้างถึง รายละเอียดตามสิ่งที่ส่งมาด้วย',
+    signerId: DEMO_LETTER_SIGNERS[0].id,
+  })
+  db = L.createServiceLetter(db, svcUser, {
+    category: 'SM', letterDate: '2026-07-02', jobId: job4,
+    recipient: 'นิคมอุตสาหกรรมอมตะซิตี้\nฝ่ายวิศวกรรมไฟฟ้า', attention: 'ผู้จัดการฝ่ายวิศวกรรมไฟฟ้า',
+    subject: 'ขอแจ้งรายชื่อเจ้าหน้าที่เข้าติดตั้ง 115kV Load Break Switch', site: 'อมตะซิตี้ จ.ระยอง',
+    body: 'บริษัทฯ ขอแจ้งรายชื่อเจ้าหน้าที่ที่จะเข้าดำเนินการติดตั้งในวันที่ 5-6 กรกฎาคม 2569 ดังนี้',
+    techList: 'ช่างตัวอย่าง หนึ่ง | 080-000-0001\nช่างตัวอย่าง สอง | 080-000-0002',
+    signerId: DEMO_LETTER_SIGNERS[1].id,
   })
 
   return db

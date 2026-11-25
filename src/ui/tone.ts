@@ -13,6 +13,7 @@ const AUDIT_TONE: Record<string, Tone> = {
   job_payment: 'violet',
   project_stock: 'blue', lbs_unit: 'blue', stock_allocation: 'blue', accessory_stock: 'blue', item: 'blue',
   accessory_request: 'blue', job_accessory_request: 'blue',
+  service_letter: 'violet',     // 0100 — จดหมาย (ผู้ลงนามใช้เทาตามหมวดตั้งค่า)
 }
 /** Audit Log — สีตามหมวดของประเภทข้อมูล (ไม่ใช้แดงกับทั้งประเภท · ไม่รู้จัก = เทา) */
 export const auditEntityTone = (entityType: string): Tone => AUDIT_TONE[entityType] ?? 'neutral'

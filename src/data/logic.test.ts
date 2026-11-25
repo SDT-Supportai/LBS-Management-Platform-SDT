@@ -60,6 +60,7 @@ const EMPTY: DB = {
   teamMembers: [], jobAssignments: [], stockMovements: [], jobPayments: [],
   jobPaymentFiles: [], jobDueExtensions: [], jobWarranties: [], jobCloseoutFiles: [], stockReturns: [],
   stdDrawings: [], stdPrices: [], stdBoms: [], stdBomLines: [],
+  serviceLetters: [], serviceLetterFiles: [], letterSigners: [],
 }
 
 const job = (over: Partial<Job> = {}): Job => ({

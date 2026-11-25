@@ -1410,3 +1410,8 @@ a.kpi-tile:hover { background: #fff; }
 .sb-tile-n { font-size: 18px; font-weight: 700; color: var(--text); }
 .sb-tile-n.red { color: #b91c1c; } .sb-tile-n.green { color: #15803d; } .sb-tile-n.amber { color: #92400e; }
 .sb-tile-n.violet { color: #5b21b6; } .sb-tile-n.blue { color: #1e40af; }
+
+/* 0100 — แผ่นเซ็นอิเล็กทรอนิกส์ (ฟอร์มออกจดหมาย) · พื้นขาวเหมือนกระดาษพิมพ์ · touch-action:none กันหน้าเลื่อนตอนเซ็นบนมือถือ */
+.sig-pad canvas { display: block; width: 100%; max-width: 520px; aspect-ratio: 520 / 170; background: #fff;
+  border: 1px dashed var(--border); border-radius: 8px; touch-action: none; cursor: crosshair; }
+.sig-pad-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; max-width: 520px; margin-top: 6px; font-size: 12px; }

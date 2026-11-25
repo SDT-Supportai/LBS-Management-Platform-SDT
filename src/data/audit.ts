@@ -23,6 +23,7 @@ export const AUDIT_ENTITY_LABEL: Record<string, string> = {
   contract: 'Contract', item: 'วัสดุ', accessory_stock: 'คลังวัสดุ', stock_comment: 'ความเห็นคลัง',
   std_drawing: 'Standard Drawing', std_price: 'Standard Price', std_bom: 'Standard BOM',
   team_member: 'ทีมช่าง', user: 'ผู้ใช้', profile: 'ผู้ใช้', line_bind: 'ผูก LINE', app_settings: 'ตั้งค่าระบบ',
+  service_letter: 'จดหมาย', letter_signer: 'ผู้ลงนามจดหมาย',   // 0100
 }
 
 /**
@@ -125,7 +126,8 @@ export function auditLink(l: AuditLog, db: DB): string | null {
     case 'item': case 'accessory_stock': case 'stock_comment': return '/master'
     case 'std_drawing': case 'std_price': case 'std_bom': return '/standards'
     case 'team_member': return '/scheduling'
-    case 'user': case 'profile': case 'line_bind': case 'app_settings': return '/dev'
+    case 'service_letter': return '/letters'
+    case 'user': case 'profile': case 'line_bind': case 'app_settings': case 'letter_signer': return '/dev'
     default: return null
   }
 }

@@ -9,6 +9,10 @@ import type {
   PublicShareLink, PublicStockView,
 } from '../types'
 import type { CloseoutInput, CloseoutFileInput } from './logic'
+import {
+  cleanLetterInput, LETTER_FILES_BUCKET,
+  type LetterInput, type ServiceLetter, type ServiceLetterFile, type LetterSigner,
+} from './letters'
 import { auditRangeIso, auditTypesFor, type AuditFilter } from './audit'
 
 // ---------------------------------------------------------------
@@ -513,8 +517,96 @@ function closeoutParams(c: CloseoutInput | undefined) {
 const closeoutFileParam = (f: CloseoutFileInput) =>
   ({ kind: f.kind, doc_type: f.docType ?? null, name: f.fileName, path: f.filePath, mime: f.mimeType, size: f.sizeBytes })
 
+// =============================================================================
+// 0100 — Service Letter (PSP-LBS-YYYY-NNN) · ไฟล์แนบใน private bucket letter-docs (path: letters/<letterId>/…)
+// =============================================================================
+export const LETTER_DOCS_BUCKET = LETTER_FILES_BUCKET
+export const uploadLetterDoc = (sb: SupabaseClient, letterId: string, file: File) =>
+  uploadDoc(sb, LETTER_DOCS_BUCKET, `letters/${letterId}`, file)
+export const signedLetterDocUrl = (sb: SupabaseClient, filePath: string) =>
+  signedDocUrl(sb, LETTER_DOCS_BUCKET, filePath)
+export const removeLetterDocs = (sb: SupabaseClient, filePaths: string[]) =>
+  removeDoc(sb, LETTER_DOCS_BUCKET, filePaths)
+
+const optStr = (v: unknown) => (v == null || v === '' ? undefined : String(v))
+const optDate = (v: unknown) => (v == null || v === '' ? undefined : String(v).slice(0, 10))
+export function mapServiceLetter(r: Row): ServiceLetter {
+  return {
+    id: r.id, letterNo: r.letter_no, letterDate: String(r.letter_date).slice(0, 10),
+    category: r.category, letterType: r.letter_type, status: r.status,
+    recipient: r.recipient, recipientOrg: optStr(r.recipient_org), subject: r.subject,
+    reference: optStr(r.reference), enclosure: optStr(r.enclosure), body: r.body, body2: optStr(r.body2),
+    attention: optStr(r.attention), site: optStr(r.site), techList: optStr(r.tech_list),
+    jobId: optStr(r.job_id), cc: optStr(r.cc),
+    signerId: optStr(r.signer_id), signerName: optStr(r.signer_name), signerPosition: optStr(r.signer_position),
+    sigImage: optStr(r.sig_image),
+    warrantyType: optStr(r.warranty_type), warrantyStart: optDate(r.warranty_start), warrantyEnd: optDate(r.warranty_end),
+    warrantyDetail: optStr(r.warranty_detail),
+    createdBy: r.created_by, createdAt: r.created_at,
+  }
+}
+export function mapLetterSigner(r: Row): LetterSigner {
+  return { id: r.id, fullName: r.full_name, position: r.position ?? '', sortOrder: Number(r.sort_order ?? 0), isActive: r.is_active !== false }
+}
+export function mapLetterFile(r: Row): ServiceLetterFile {
+  return {
+    id: r.id, letterId: r.letter_id, filePath: r.file_path, fileName: r.file_name,
+    mimeType: r.mime_type, sizeBytes: Number(r.size_bytes), uploadedBy: r.uploaded_by, uploadedAt: r.uploaded_at,
+  }
+}
+
+/**
+ * ฟอร์ม (camelCase) → p JSONB ของ rpc_create_service_letter (snake_case)
+ *   ผ่าน cleanLetterInput ก่อน = ข้อความ error ไทยเดียวกับโหมดเดโม · ไม่ส่งชื่อ/ตำแหน่งผู้ลงนาม (server ดึงจากตาราง)
+ */
+export function letterRpcPayload(input: LetterInput): Record<string, string> {
+  const r = cleanLetterInput(input)
+  if (!r.ok) throw new Error(r.error)
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(r.value)) {
+    if (v == null || v === '' || k === 'signerName' || k === 'signerPosition') continue
+    out[k.replace(/[A-Z]/g, c => `_${c.toLowerCase()}`)] = String(v)   // recipientOrg → recipient_org · body2 คงเดิม
+  }
+  return out
+}
+
+/** ออกจดหมาย (LIVE) — เลขที่ออกที่ server · คืน id + เลขที่ */
+export async function createServiceLetterRemote(sb: SupabaseClient, input: LetterInput): Promise<{ id: string; letterNo: string }> {
+  const { data, error } = await sb.rpc('rpc_create_service_letter', { p: letterRpcPayload(input) })
+  if (error) throw new Error(error.message)
+  const d = data as { id?: string; letter_no?: string } | null
+  if (!d?.id || !d.letter_no) throw new Error('ออกจดหมายแล้วแต่ไม่ได้เลขที่กลับมา — ยังไม่ได้รัน migration 0100 หรือเปล่า?')
+  return { id: d.id, letterNo: d.letter_no }
+}
+
+/**
+ * ลายเซ็นอิเล็กทรอนิกส์ของจดหมาย 1 ฉบับ — ไม่โหลดมากับรายการ (รูปฉบับละหลายสิบ KB × ทุกฉบับ ทุกครั้งที่ realtime reload)
+ * เรียกตอนกดพิมพ์เท่านั้น · ไม่มี = เว้นที่ให้เซ็นมือ
+ */
+export async function fetchLetterSigImage(sb: SupabaseClient, letterId: string): Promise<string | undefined> {
+  const { data, error } = await sb.from('service_letters').select('sig_image').eq('id', letterId).maybeSingle()
+  if (error) throw new Error(`โหลดลายเซ็นไม่สำเร็จ: ${error.message}`)
+  return optStr(data?.sig_image)
+}
+
+const LETTER_LIST_COLS = [
+  'id', 'letter_no', 'letter_date', 'category', 'letter_type', 'status', 'recipient', 'recipient_org', 'subject',
+  'reference', 'enclosure', 'body', 'body2', 'attention', 'site', 'tech_list', 'job_id', 'cc',
+  'signer_id', 'signer_name', 'signer_position', 'warranty_type', 'warranty_start', 'warranty_end', 'warranty_detail',
+  'created_by', 'created_at',
+].join(',')   // ไม่มี sig_image (ดู fetchLetterSigImage)
+async function qLetters(sb: SupabaseClient): Promise<Row[]> {
+  const { data, error } = await sb.from('service_letters').select(LETTER_LIST_COLS)
+    .order('created_at', { ascending: false }).limit(2000)
+  if (error) {
+    if (/does not exist|schema cache|PGRST205/i.test(error.message)) return []   // ยังไม่รัน 0100
+    throw new Error(`โหลด service_letters ไม่สำเร็จ: ${error.message}`)
+  }
+  return (data ?? []) as unknown as Row[]
+}
+
 export async function loadAll(sb: SupabaseClient): Promise<DB> {
-  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, approvalComments, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, prices, boms, bomLines, shareLinks, unitFiles, paymentFiles, dueExts, warranties, closeoutFiles, stockReturns] =
+  const [profiles, items, stocks, units, jobs, allocs, accStock, accReqs, prs, pos, approvals, approvalComments, audits, notifs, reads, visits, unitInstalls, members, assigns, movements, payments, drawings, prices, boms, bomLines, shareLinks, unitFiles, paymentFiles, dueExts, warranties, closeoutFiles, stockReturns, letters, letterFiles, signers] =
     await Promise.all([
       q(sb, 'profiles'),
       q(sb, 'items', { col: 'code', limit: 10000 }),
@@ -551,6 +643,9 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
       qOptional(sb, 'job_warranties', { col: 'start_date' }),              // 0079 — Warranty
       qOptional(sb, 'job_closeout_files', { col: 'uploaded_at', asc: false }), // 0079 — เอกสารรับมอบ
       qOptional(sb, 'stock_return_requests', { col: 'requested_at', asc: false, limit: 2000 }), // 0080
+      qLetters(sb),                                                         // 0100 — จดหมาย (ไม่มีลายเซ็น)
+      qOptional(sb, 'service_letter_files', { col: 'uploaded_at', asc: false }),
+      qOptional(sb, 'letter_signers', { col: 'sort_order' }),
     ])
 
   const readsByNotif = new Map<string, string[]>()
@@ -608,6 +703,9 @@ export async function loadAll(sb: SupabaseClient): Promise<DB> {
     stdPrices: prices.map(mapStdPrice),
     stdBoms: boms.map(mapStdBom),
     stdBomLines: bomLines.map(mapStdBomLine),
+    serviceLetters: letters.map(mapServiceLetter),
+    serviceLetterFiles: letterFiles.map(mapLetterFile),
+    letterSigners: signers.map(mapLetterSigner),
   }
 }
 
@@ -869,6 +967,28 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_add_closeout_file', { p_job_id: p.jobId, p_file: closeoutFileParam(p) }),
     deleteCloseoutFile: (p: { fileId: string }) =>
       rpc(sb, 'rpc_delete_closeout_file', { p_file_id: p.fileId }),
+    // 0100 — Service Letter (createServiceLetter ต่อใน StoreContext เพราะต้องคืนเลขที่)
+    //   ลบจดหมาย/ไฟล์: RPC คืน path → ลบไฟล์ใน bucket ต่อ (หลังแถวหายแล้ว · storage policy ให้ลบเฉพาะไฟล์ที่ไม่มีแถวอ้างถึง)
+    deleteServiceLetter: async (p: { letterId: string }) => {
+      const { data, error } = await sb.rpc('rpc_delete_service_letter', { p_id: p.letterId })
+      if (error) throw new Error(error.message)
+      await removeLetterDocs(sb, (data as string[] | null) ?? [])
+    },
+    upsertLetterSigner: (p: { id?: string; fullName: string; position: string; sortOrder?: number; isActive?: boolean }) =>
+      rpc(sb, 'rpc_upsert_letter_signer', {
+        p_id: p.id ?? null, p_full_name: p.fullName, p_position: p.position,
+        p_sort_order: p.sortOrder ?? null, p_is_active: p.isActive ?? true,
+      }),
+    addLetterFile: (p: { letterId: string; fileName: string; filePath: string; mimeType: string; sizeBytes: number }) =>
+      rpc(sb, 'rpc_add_service_letter_file', {
+        p_letter_id: p.letterId, p_file_path: p.filePath, p_file_name: p.fileName,
+        p_mime_type: p.mimeType, p_size_bytes: p.sizeBytes,
+      }),
+    deleteLetterFile: async (p: { fileId: string }) => {
+      const { data, error } = await sb.rpc('rpc_delete_service_letter_file', { p_id: p.fileId })
+      if (error) throw new Error(error.message)
+      if (data) await removeLetterDocs(sb, [String(data)])
+    },
     // ทีมช่าง + มอบหมายงาน (0036)
     createTeamMember: (p: { firstName: string; lastName: string; phone: string; position: string; userId?: string }) =>
       rpc(sb, 'rpc_create_team_member', { p_first_name: p.firstName, p_last_name: p.lastName, p_phone: p.phone, p_position: p.position, p_user_id: p.userId ?? null }),

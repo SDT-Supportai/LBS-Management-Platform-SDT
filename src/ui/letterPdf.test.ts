@@ -78,3 +78,18 @@ describe('buildLetterHtml — ความปลอดภัย (แท็บพ
     expect(h2).not.toContain('javascript:')
   })
 })
+
+describe('[ผูกระบบ 2026-11-25] Official Letter (GENERAL) รองรับลายเซ็น 2 แบบเหมือน SM/WARRANTY', () => {
+  it('มีลายเซ็นอิเล็กทรอนิกส์ = วางรูปเหนือชื่อ · ไม่มี = เว้นที่ให้เซ็นมือ', () => {
+    const signed = buildLetterHtml(lt({ sigImage: PNG, signerName: 'นาย ก' }))
+    expect(signed).toContain(`<img class="sig" src="${PNG}"`)
+    expect(signed).not.toContain('class="sig-space"')
+    const hand = buildLetterHtml(lt({ signerName: 'นาย ก' }))
+    expect(hand).toContain('class="sig-space"')
+    expect(hand).not.toContain('class="sig"')
+  })
+  it('🔴 ลายเซ็นปลอมใน GENERAL ก็ไม่ถูกวาง', () => {
+    const h = buildLetterHtml(lt({ sigImage: 'x" onerror="alert(1)' }))
+    expect(h).not.toContain('onerror')
+  })
+})

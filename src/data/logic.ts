@@ -8,6 +8,10 @@ import type {
   AcceptanceType, CloseoutFileKind, JobWarranty, StockReturnKind, StockReturnRequest, StockMovement,
 } from '../types'
 import { userEditBlock } from './admin'
+import {
+  createLetterDemo, deleteLetterDemo, upsertSignerDemo, canLetter, isAllowedLetterFile, LETTER_FILE_MAX_BYTES,
+  type LetterInput,
+} from './letters'
 
 // ---------------------------------------------------------------
 // Business logic ทั้งหมดเป็น pure function: รับ DB เดิม คืน DB ใหม่
@@ -5428,4 +5432,76 @@ export function parseSheetDate(v: unknown): { value: string; error?: string } {
   if (t.getUTCFullYear() !== y || t.getUTCMonth() !== m - 1 || t.getUTCDate() !== d)
     return { value: '', error: `วันที่ "${s}" ไม่มีอยู่จริง` }
   return { value: `${y}-${pad(m)}-${pad(d)}` }
+}
+
+// =============================================================================
+// 0100 — Service Letter (2026-11-25) · โหมดเดโม (sync supabase/migrations/0100_service_letters.sql)
+//   ตรวจค่า/เลขที่/ผู้ลงนาม อยู่ใน letters.ts (ใช้ร่วมกับ remote.ts) · ที่นี่เพิ่ม Audit + กระดิ่ง + ไฟล์แนบ
+//   ข้อความ Audit ตรงกับ RPC ฝั่ง DB — ค้นใน Audit Log ได้แบบเดียวกันทั้ง 2 โหมด
+// =============================================================================
+
+/** ออกจดหมาย — อ้าง Job = กระดิ่งถึง Project (letter_issued ไม่อยู่ใน LINE_PUSH_TYPES ⇒ ไม่ส่ง LINE) */
+export function createServiceLetter(db: DB, actor: User, p: LetterInput): DB {
+  if (p.jobId && !db.jobs.some(j => j.id === p.jobId)) throw new Error('ไม่พบ Job ที่อ้างถึง')
+  // เลขที่เคยออก (รวมฉบับที่ถูกลบ) จาก Audit — demo ไม่มีตารางตัวนับแบบ letter_no_counters
+  const issued = db.auditLogs.filter(a => a.entityType === 'service_letter' && a.action === 'create_service_letter')
+    .map(a => /PSP-LBS-\d{4}-\d+/.exec(a.detail)?.[0] ?? '')
+  const r = createLetterDemo(db.serviceLetters, actor, p, now(), db.letterSigners, issued)
+  const l = r.letter
+  let next: DB = audit({ ...db, serviceLetters: r.letters }, actor, 'service_letter', l.id, 'create_service_letter',
+    `ออกจดหมาย ${l.letterNo} — ${l.subject} · ผู้ลงนาม ${l.signerName} (${l.sigImage ? 'เซ็นอิเล็กทรอนิกส์' : 'เซ็นมือ'})`)
+  if (r.notify) next = notify(next, { type: r.notify.type, message: r.notify.message, dept: r.notify.dept, jobId: r.notify.jobId })
+  return next
+}
+
+/** ลบจดหมาย (Manage) — ไฟล์แนบหายตาม (ฝั่ง DB: ON DELETE CASCADE · ไฟล์ใน bucket หน้าเว็บลบต่อ) */
+export function deleteServiceLetter(db: DB, actor: User, p: { letterId: string }): DB {
+  const l = db.serviceLetters.find(x => x.id === p.letterId)
+  const letters = deleteLetterDemo(db.serviceLetters, actor, p.letterId)
+  const nFiles = db.serviceLetterFiles.filter(f => f.letterId === p.letterId).length
+  return audit({ ...db, serviceLetters: letters, serviceLetterFiles: db.serviceLetterFiles.filter(f => f.letterId !== p.letterId) },
+    actor, 'service_letter', p.letterId, 'delete_service_letter',
+    `ลบจดหมาย ${l?.letterNo ?? ''} — ${l?.subject ?? ''}${nFiles > 0 ? ` · ไฟล์แนบ ${nFiles} ไฟล์` : ''}`)
+}
+
+/** รายชื่อผู้ลงนาม (Manage) — เพิ่ม (ไม่มี id) / แก้ / ปิดใช้งาน */
+export function upsertLetterSigner(db: DB, actor: User,
+  p: { id?: string; fullName: string; position: string; sortOrder?: number; isActive?: boolean }): DB {
+  const before = p.id ? db.letterSigners.find(s => s.id === p.id) : undefined
+  const signers = upsertSignerDemo(db.letterSigners, actor, p)
+  const s = p.id ? signers.find(x => x.id === p.id)! : signers[signers.length - 1]
+  const detail = before
+    ? `แก้ผู้ลงนาม ${before.fullName} → ${s.fullName}${before.isActive !== s.isActive ? (s.isActive ? ' · เปิดใช้งาน' : ' · ปิดใช้งาน') : ''}`
+    : `เพิ่มผู้ลงนาม ${s.fullName}`
+  return audit({ ...db, letterSigners: signers }, actor, 'letter_signer', s.id, before ? 'update_letter_signer' : 'create_letter_signer', detail)
+}
+
+/** แนบไฟล์ — demo: filePath = data URL · LIVE: path ใน bucket letter-docs (letters/<letterId>/…) */
+export function addLetterFile(db: DB, actor: User,
+  p: { letterId: string; fileName: string; filePath: string; mimeType: string; sizeBytes: number }): DB {
+  if (!canLetter(actor, 'manage')) throw new Error('แผนกของคุณไม่มีสิทธิ์แนบไฟล์จดหมาย')
+  const l = db.serviceLetters.find(x => x.id === p.letterId)
+  if (!l) throw new Error('ไม่พบจดหมายนี้')
+  const name = p.fileName.trim()
+  if (!name) throw new Error('ไม่มีชื่อไฟล์')
+  if (!p.filePath.trim()) throw new Error(`${name}: อัปโหลดไม่สำเร็จ — ไม่ได้ที่อยู่ไฟล์กลับมา`)
+  if (!isAllowedLetterFile(p.mimeType)) throw new Error('ชนิดไฟล์ไม่รองรับ — แนบได้เฉพาะ PDF / Word / Excel / รูปภาพ')
+  if (p.sizeBytes <= 0 || p.sizeBytes > LETTER_FILE_MAX_BYTES) throw new Error('ไฟล์ต้องไม่เกิน 10 MB')
+  const next: DB = {
+    ...db,
+    serviceLetterFiles: [...db.serviceLetterFiles, {
+      id: uid(), letterId: l.id, filePath: p.filePath, fileName: name.slice(0, 255),
+      mimeType: p.mimeType, sizeBytes: p.sizeBytes, uploadedBy: actor.id, uploadedAt: now(),
+    }],
+  }
+  return audit(next, actor, 'service_letter', l.id, 'add_service_letter_file', `แนบไฟล์ ${name.slice(0, 255)} ในจดหมาย ${l.letterNo}`)
+}
+
+export function deleteLetterFile(db: DB, actor: User, p: { fileId: string }): DB {
+  if (!canLetter(actor, 'manage')) throw new Error('แผนกของคุณไม่มีสิทธิ์ลบไฟล์จดหมาย')
+  const f = db.serviceLetterFiles.find(x => x.id === p.fileId)
+  if (!f) throw new Error('ไม่พบไฟล์นี้')
+  const l = db.serviceLetters.find(x => x.id === f.letterId)
+  return audit({ ...db, serviceLetterFiles: db.serviceLetterFiles.filter(x => x.id !== p.fileId) },
+    actor, 'service_letter', f.letterId, 'delete_service_letter_file', `ลบไฟล์แนบ ${f.fileName} จากจดหมาย ${l?.letterNo ?? '-'}`)
 }
