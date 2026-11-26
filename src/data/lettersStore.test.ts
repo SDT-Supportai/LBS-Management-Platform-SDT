@@ -31,13 +31,13 @@ const user = (department: User['department'], id = `u-${department}`): User =>
 const JOB_ID = '11111111-2222-4333-8444-555555555555'
 const db0 = (): DB => ({
   ...EMPTY,
-  jobs: [{ id: JOB_ID, jobNo: 'JOB-2026-0009', customerName: 'กฟภ. เขต 1' } as DB['jobs'][number]],
+  jobs: [{ id: JOB_ID, jobNo: '102LB10J3076', customerName: 'กฟภ. เขต 1' } as DB['jobs'][number]],
   letterSigners: [
     { id: 's1', fullName: 'ผู้ลงนาม ตัวอย่าง', position: 'ผู้จัดการแผนกบริการ', sortOrder: 1, isActive: true },
     { id: 's2', fullName: 'ผู้ลงนาม ปิดแล้ว', position: 'อดีต', sortOrder: 2, isActive: false },
   ],
 })
-const input = { recipient: 'ผู้จัดการ', subject: 'แจ้งแผนเข้าดำเนินการ', body: 'เนื้อความ', signerId: 's1' }
+const input = { recipient: 'ผู้จัดการ', subject: 'แจ้งแผนเข้าดำเนินการ', body: 'เนื้อความ', signerId: 's1', jobId: JOB_ID }
 
 describe('สิทธิ์จดหมาย — ย้ายเข้า permissions.ts (คำตอบผู้ใช้ข้อ 1 + 4)', () => {
   it('letter.manage = Service + Project + Manage · letter.delete / letter.signers = Manage', () => {
@@ -56,11 +56,11 @@ describe('สิทธิ์จดหมาย — ย้ายเข้า perm
 })
 
 describe('createServiceLetter — ออกจดหมาย (demo · sync rpc_create_service_letter)', () => {
-  it('อ้าง Job = เลข PSP-LBS + Audit + กระดิ่งถึง Project (ไม่ส่ง LINE)', () => {
-    const d = createServiceLetter(db0(), user('service'), { ...input, jobId: JOB_ID })
+  it('[Flow] เลข PSP-LBSJXXXX-ปี-001 ตาม Job + Audit + กระดิ่งถึง Project (ไม่ส่ง LINE)', () => {
+    const d = createServiceLetter(db0(), user('service'), input)
     expect(d.serviceLetters).toHaveLength(1)
     const l = d.serviceLetters[0]
-    expect(l.letterNo).toMatch(/^PSP-LBS-\d{4}-001$/)
+    expect(l.letterNo).toMatch(/^PSP-LBSJ3076-\d{4}-001$/)
     expect(l.signerName).toBe('ผู้ลงนาม ตัวอย่าง')
     expect(l.createdBy).toBe('u-service')
     expect(d.auditLogs[0]).toMatchObject({ entityType: 'service_letter', entityId: l.id, action: 'create_service_letter' })
@@ -69,10 +69,8 @@ describe('createServiceLetter — ออกจดหมาย (demo · sync rpc_
     const n = d.notifications[d.notifications.length - 1]
     expect(n).toMatchObject({ type: 'letter_issued', dept: 'project', jobId: JOB_ID, lineStatus: 'off' })
   })
-  it('ไม่อ้าง Job = ไม่แจ้งเตือน (มี Audit)', () => {
-    const d = createServiceLetter(db0(), user('project'), input)
-    expect(d.notifications).toHaveLength(0)
-    expect(d.auditLogs).toHaveLength(1)
+  it('[Flow] ไม่เลือก Job = ปัดตก (ต้องเลือก Job No. ก่อนเป็นอันดับแรก)', () => {
+    expect(() => createServiceLetter(db0(), user('project'), { ...input, jobId: undefined })).toThrow('Job No.')
   })
   it('อ้าง Job ที่ไม่มีในระบบ = ปัดตก', () => {
     expect(() => createServiceLetter(db0(), user('admin'), { ...input, jobId: '99999999-2222-4333-8444-555555555555' }))
@@ -213,5 +211,17 @@ describe('remote — แปลง camelCase ↔ snake_case ตรงกับ 01
       .toEqual({ id: 's1', fullName: 'n', position: 'p', sortOrder: 2, isActive: false })
     expect(mapLetterFile({ id: 'f1', letter_id: 'l1', file_path: 'letters/l1/x.pdf', file_name: 'x.pdf', mime_type: 'application/pdf', size_bytes: '12', uploaded_by: 'u1', uploaded_at: T }))
       .toMatchObject({ letterId: 'l1', filePath: 'letters/l1/x.pdf', sizeBytes: 12 })
+  })
+})
+
+describe('[0101] Contract No. ฝั่ง LIVE', () => {
+  it('letterRpcPayload ส่ง contract_no · mapServiceLetter อ่าน contract_no', () => {
+    expect(letterRpcPayload({ ...input, contractNo: 'CT-2026-0103' })).toMatchObject({ contract_no: 'CT-2026-0103' })
+    expect(mapServiceLetter({ id: 'l1', letter_no: 'n', letter_date: '2026-11-25', category: 'GENERAL', letter_type: 'EXTERNAL',
+      status: 'ISSUED', recipient: 'r', subject: 's', body: 'b', contract_no: 'CT-1', created_by: 'u', created_at: T }).contractNo).toBe('CT-1')
+  })
+  it('ก่อนรัน 0101 (ไม่มีคอลัมน์) = contractNo ว่าง ไม่ error', () => {
+    expect(mapServiceLetter({ id: 'l1', letter_no: 'n', letter_date: '2026-11-25', category: 'GENERAL', letter_type: 'EXTERNAL',
+      status: 'ISSUED', recipient: 'r', subject: 's', body: 'b', created_by: 'u', created_at: T }).contractNo).toBeUndefined()
   })
 })

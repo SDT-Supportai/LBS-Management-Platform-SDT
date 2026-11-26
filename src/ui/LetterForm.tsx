@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useStore } from '../data/StoreContext'
-import { activeSigners, cleanLetterInput, LETTER_PREFIX, type LetterCategory, type LetterInput, type ServiceLetter } from '../data/letters'
+import { activeSigners, cleanLetterInput, contractNosOfJob, letterPrefixFor, type LetterCategory, type LetterInput, type ServiceLetter } from '../data/letters'
 import { Modal, useTryAction } from './components'
 import { SignaturePad } from './SignaturePad'
 import { buildLetterHtml, lbsLetterOrg, openPrintWindow, writePrintWindow } from './letterPdf'
@@ -9,7 +9,7 @@ import { buildLetterHtml, lbsLetterOrg, openPrintWindow, writePrintWindow } from
 // ฟอร์มออกจดหมาย (0100) — ใช้ทั้งหน้า /letters และปุ่ม "ออก Warranty Letter" ในหน้า Service (Warranty)
 //   Official Letter (GENERAL) · Service Official Letter (SM) · Warranty Letter (WARRANTY)
 //   ผู้ลงนาม = dropdown จากรายชื่อที่ Manage ตั้ง · ลายเซ็น = เซ็นอิเล็กทรอนิกส์ หรือเว้นที่ให้เซ็นมือ
-//   เลขที่ PSP-LBS-YYYY-NNN ระบบออกให้ตอนบันทึก
+//   [Flow 2026-11-25] ① เลือก Job No. ก่อน (บังคับ) · เลขที่ PSP-LBSJXXXX-YYYY-nnn รันตาม Job ระบบออกให้ตอนบันทึก
 // =============================================================================
 export const LETTER_CATEGORY_LABEL: Record<LetterCategory, string> = {
   GENERAL: 'Official Letter',
@@ -44,6 +44,13 @@ export function LetterFormModal({ initial, onClose, onSaved }: {
   const signers = activeSigners(db.letterSigners)
   const jobs = [...db.jobs].sort((a, b) => b.jobNo.localeCompare(a.jobNo))
   const cat = (f.category ?? 'GENERAL') as LetterCategory
+  // Contract No. ที่มีในระบบ (รายเครื่อง 0087) — ตัวเลือกใน datalist · พิมพ์เองได้
+  const contractOptions = [...new Set(db.lbsUnits.map(u => u.contractNo?.trim()).filter((c): c is string => !!c))].sort()
+  const selectedJob = db.jobs.find(j => j.id === f.jobId)
+  /** เลือก Job → เติม Contract No. ของเครื่องในงานนั้น (เปลี่ยน Job = เติมใหม่ · ภายในไม่ใช้ Contract No.) */
+  const pickJob = (jobId: string | undefined) =>
+    setF(prev => ({ ...prev, jobId,
+      contractNo: cat === 'GENERAL' && prev.letterType === 'INTERNAL' ? undefined : contractNosOfJob(db.lbsUnits, jobId) || undefined }))
   const input = (): LetterInput => {
     const { sigMode, ...rest } = f
     return { ...rest, sigImage: sigMode === 'esign' ? f.sigImage : undefined }
@@ -57,7 +64,8 @@ export function LetterFormModal({ initial, onClose, onSaved }: {
     const w = openPrintWindow()              // เปิดแท็บตอนคลิก (ก่อน await) กัน popup blocker
     const signer = db.letterSigners.find(s => s.id === check.value.signerId)
     const lt: ServiceLetter = {
-      ...check.value, id: 'preview', letterNo: `${LETTER_PREFIX}-… (ตัวอย่าง — ยังไม่ออกเลข)`,
+      ...check.value, id: 'preview',
+      letterNo: `${letterPrefixFor(selectedJob?.jobNo ?? '', check.value.letterDate || todayBkk())}-… (ตัวอย่าง — ยังไม่ออกเลข)`,
       letterDate: check.value.letterDate || todayBkk(),
       signerName: signer?.fullName, signerPosition: signer?.position,
       createdBy: '', createdAt: new Date().toISOString(),
@@ -81,6 +89,18 @@ export function LetterFormModal({ initial, onClose, onSaved }: {
         <button disabled={saving || !check.ok} onClick={preview} title="เปิดตัวอย่างเอกสารในแท็บใหม่ (ยังไม่บันทึก)">👁️ ดูตัวอย่าง</button>
         <button className="primary" disabled={saving || !!missing} onClick={save}>{saving ? 'กำลังออกเลข…' : '✉️ ออกจดหมาย'}</button>
       </>}>
+      {/* [Flow 2026-11-25] ① เลือก Job No. ก่อนเป็นอันดับแรก — เลขจดหมายรันตาม Job (PSP-LBSJXXXX-YYYY-nnn) */}
+      <div className="panel" style={{ marginBottom: 12 }}><div className="panel-body">
+        <label className="field" style={{ marginBottom: 6 }}><span>① Job No. * (เลือกก่อน — เลขจดหมายรันตาม Job)</span>
+          <JobSelect jobs={jobs} value={f.jobId} disabled={saving} onChange={pickJob} placeholder="— เลือก Job No. —" />
+        </label>
+        <div className="muted" style={{ fontSize: 12 }}>
+          {selectedJob
+            ? <>เลขที่จะออก: <span className="mono"><b>{letterPrefixFor(selectedJob.jobNo, f.letterDate || todayBkk())}-nnn</b></span> (ระบบรันต่อจากฉบับล่าสุดของ Job นี้ตอนบันทึก)</>
+            : <>รูปแบบเลขที่: <span className="mono">PSP-LBSJXXXX-ปี-nnn</span> · XXXX = ตัวเลขหลัง J ของ Job No.</>}
+        </div>
+      </div></div>
+
       <div className="subtabs seg" role="tablist">
         {(Object.keys(LETTER_CATEGORY_LABEL) as LetterCategory[]).map(c => (
           <button key={c} type="button" className={cat === c ? 'on' : ''} disabled={saving} onClick={() => set({ category: c })}>
@@ -91,15 +111,27 @@ export function LetterFormModal({ initial, onClose, onSaved }: {
 
       <div className="row">
         <label className="field"><span>วันที่</span><input type="date" {...txt('letterDate')} /></label>
-        {cat === 'GENERAL'
-          ? <label className="field"><span>ชนิดหนังสือ</span>
-              <select value={f.letterType ?? 'EXTERNAL'} disabled={saving} onChange={e => set({ letterType: e.target.value as Form['letterType'] })}>
-                <option value="EXTERNAL">หนังสือภายนอก / Official Letter</option>
-                <option value="INTERNAL">หนังสือภายใน / Internal Memo</option>
-              </select>
-            </label>
-          : <label className="field"><span>อ้างอิงโครงการ (Job)</span><JobSelect jobs={jobs} value={f.jobId} disabled={saving} onChange={jobId => set({ jobId })} /></label>}
+        {cat === 'GENERAL' && (
+          <label className="field"><span>ชนิดหนังสือ</span>
+            {/* ภายนอกอ้างอิง Contract No. · ภายในอ้างอิง Job No. (Job เลือกไว้ด้านบนแล้ว) · สลับเป็นภายในแล้วล้าง Contract No. */}
+            <select value={f.letterType ?? 'EXTERNAL'} disabled={saving}
+              onChange={e => set(e.target.value === 'INTERNAL'
+                ? { letterType: 'INTERNAL', contractNo: undefined }
+                : { letterType: 'EXTERNAL', contractNo: f.contractNo || contractNosOfJob(db.lbsUnits, f.jobId) || undefined })}>
+              <option value="EXTERNAL">หนังสือภายนอก / Official Letter</option>
+              <option value="INTERNAL">หนังสือภายใน / Internal Memo</option>
+            </select>
+          </label>
+        )}
       </div>
+
+      {/* การอ้างอิง (ผู้ใช้กำหนด 2026-11-25): ภายนอก = Contract No. · ภายใน = Job No. (จาก ①) · SM/Warranty = Contract No. + Job No. (จาก ①) */}
+      {(cat !== 'GENERAL' || f.letterType !== 'INTERNAL') && (
+        <label className="field"><span>อ้างอิง Contract No. (เติมจากเครื่องใน Job ให้ · แก้ได้)</span>
+          <input list="letter-contract-nos" {...txt('contractNo')} placeholder="CT-2026-…" />
+          <datalist id="letter-contract-nos">{contractOptions.map(c => <option key={c} value={c} />)}</datalist>
+        </label>
+      )}
 
       {cat === 'GENERAL' ? (<>
         <div className="row">
@@ -111,7 +143,6 @@ export function LetterFormModal({ initial, onClose, onSaved }: {
           <label className="field"><span>อ้างถึง</span><input {...txt('reference')} /></label>
           <label className="field"><span>สิ่งที่ส่งมาด้วย</span><input {...txt('enclosure')} /></label>
         </div>
-        <label className="field"><span>อ้างอิงโครงการ (Job)</span><JobSelect jobs={jobs} value={f.jobId} disabled={saving} onChange={jobId => set({ jobId })} /></label>
         <label className="field"><span>เนื้อความ *</span><textarea rows={7} {...txt('body')} /></label>
         <label className="field"><span>สำเนาเรียน</span><input {...txt('cc')} /></label>
       </>) : (<>
@@ -161,15 +192,16 @@ export function LetterFormModal({ initial, onClose, onSaved }: {
   )
 }
 
-function JobSelect({ jobs, value, onChange, disabled }: {
+export function JobSelect({ jobs, value, onChange, disabled, placeholder = '— เลือก Job No. —' }: {
   jobs: { id: string; jobNo: string; customerName: string }[]
   value?: string
   onChange: (id: string | undefined) => void
   disabled?: boolean
+  placeholder?: string
 }) {
   return (
     <select value={value ?? ''} disabled={disabled} onChange={e => onChange(e.target.value || undefined)}>
-      <option value="">— ไม่อ้างอิง Job —</option>
+      <option value="">{placeholder}</option>
       {jobs.map(j => <option key={j.id} value={j.id}>{j.jobNo} · {j.customerName}</option>)}
     </select>
   )

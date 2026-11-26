@@ -3,8 +3,8 @@
 //   (เซ็นอิเล็กทรอนิกส์ หรือเว้นที่เซ็นมือ) · แจ้งกระดิ่งไม่ส่ง LINE · ปุ่ม Warranty Letter เติมข้อมูลประกันให้
 import { describe, it, expect } from 'vitest'
 import {
-  LETTER_PREFIX, nextLetterNo, safeSigImage, cleanLetterInput, parseTechList,
-  canLetter, createLetterDemo, deleteLetterDemo, upsertSignerDemo, activeSigners, warrantyLetterPrefill,
+  LETTER_PREFIX, nextLetterNo, jobLetterCode, thaiDateFull, safeSigImage, cleanLetterInput, parseTechList,
+  canLetter, createLetterDemo, deleteLetterDemo, upsertSignerDemo, activeSigners, warrantyLetterPrefill, contractNosOfJob,
   type ServiceLetter, type LetterSigner,
 } from './letters'
 import type { Job, JobWarranty, User } from '../types'
@@ -16,18 +16,43 @@ const SIGNERS: LetterSigner[] = [
   { id: 's1', fullName: 'นาย ก ผู้จัดการ', position: 'ผู้จัดการแผนกบริการ', sortOrder: 1, isActive: true },
   { id: 's2', fullName: 'นาย ข เกษียณแล้ว', position: 'อดีตผู้จัดการ', sortOrder: 2, isActive: false },
 ]
-const base = { recipient: 'กฟภ. เขต 1', subject: 'ขอแจ้งแผนเข้าดำเนินการ', body: 'เนื้อความ', signerId: 's1' }
+// [Flow 2026-11-25] ออกจดหมายต้องเลือก Job ก่อน — id Job จริงเป็น UUID (L.createJob → uid())
+const JOB = '3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90'
+const JOB2 = '4a1b2c3d-5b7d-4e8a-9c21-7d4e5f6a8b91'
+const JOBS = [{ id: JOB, jobNo: '102LB10J3076' }, { id: JOB2, jobNo: '102LB20J3189' }]
+const base = { recipient: 'กฟภ. เขต 1', subject: 'ขอแจ้งแผนเข้าดำเนินการ', body: 'เนื้อความ', signerId: 's1', jobId: JOB }
 const now = '2026-11-25T09:00:00.000Z'
+const mk = (letters: ServiceLetter[], u: User, input: Parameters<typeof createLetterDemo>[2], at = now) =>
+  createLetterDemo(letters, u, input, at, SIGNERS, [], JOBS)
 
-describe('nextLetterNo — PSP-LBS-YYYY-NNN แยกจาก ServiceMS · รันร่วมทุกประเภท ต่อปี', () => {
-  it('prefix = PSP-LBS', () => expect(LETTER_PREFIX).toBe('PSP-LBS'))
-  it('ปีนี้ยังไม่มี = 001 · มีแล้ว = max+1 · ปีอื่น/prefix อื่น (เลข ServiceMS) ไม่นับ', () => {
-    expect(nextLetterNo([], '2026-11-25')).toBe('PSP-LBS-2026-001')
-    expect(nextLetterNo(['PSP-LBS-2026-007', 'PSP Service-2026-015', 'PSP-LBS-2025-099'], '2026-11-25'))
-      .toBe('PSP-LBS-2026-008')
+describe('[Flow 2026-11-25] เลขที่ PSP-LBSJXXXX-YYYY-nnn — รันตาม Job No. เท่านั้น', () => {
+  it('prefix ระบบ = PSP-LBS', () => expect(LETTER_PREFIX).toBe('PSP-LBS'))
+  it('jobLetterCode: ตัวเลขหลัง J ของ Job No. (102LB10J3076 → 3076) · ไม่มี J = ตัวเลขท้าย · เติม 0 ให้ครบ 4 หลัก (ไม่ตัด)', () => {
+    expect(jobLetterCode('102LB10J3076')).toBe('3076')
+    expect(jobLetterCode('102LB20J3189')).toBe('3189')
+    expect(jobLetterCode('JOB-2026-0004')).toBe('0004')
+    expect(jobLetterCode('J12')).toBe('0012')
+    expect(jobLetterCode('102LB10J30761')).toBe('30761')
+    expect(jobLetterCode(' 102lb10j3076 ')).toBe('3076')
+  })
+  it('แต่ละ Job รันแยกกัน · ปีใหม่เริ่ม 001 · เลขแบบเก่า PSP-LBS-YYYY-nnn ไม่นับ', () => {
+    expect(nextLetterNo([], '102LB10J3076', '2026-11-25')).toBe('PSP-LBSJ3076-2026-001')
+    expect(nextLetterNo(['PSP-LBSJ3076-2026-004', 'PSP-LBSJ3189-2026-009', 'PSP-LBS-2026-007', 'PSP-LBSJ3076-2025-020'],
+      '102LB10J3076', '2026-11-25')).toBe('PSP-LBSJ3076-2026-005')
+    expect(nextLetterNo(['PSP-LBSJ3076-2026-004'], '102LB20J3189', '2026-11-25')).toBe('PSP-LBSJ3189-2026-001')
   })
   it('เกิน 999 ยังต่อได้ (ไม่ตัดหลัก)', () => {
-    expect(nextLetterNo(['PSP-LBS-2026-999'], '2026-01-02')).toBe('PSP-LBS-2026-1000')
+    expect(nextLetterNo(['PSP-LBSJ3076-2026-999'], '102LB10J3076', '2026-01-02')).toBe('PSP-LBSJ3076-2026-1000')
+  })
+})
+
+describe('[Flow 2026-11-25] วันที่ในจดหมาย = เดือนชื่อเต็ม (พ.ศ.)', () => {
+  it('thaiDateFull', () => {
+    expect(thaiDateFull('2026-11-25')).toBe('25 พฤศจิกายน 2569')
+    expect(thaiDateFull('2026-01-01')).toBe('1 มกราคม 2569')
+    expect(thaiDateFull('2027-07-09')).toBe('9 กรกฎาคม 2570')
+    expect(thaiDateFull('')).toBe('-')
+    expect(thaiDateFull('xx')).toBe('-')
   })
 })
 
@@ -56,8 +81,13 @@ describe('cleanLetterInput — รับเฉพาะคอลัมน์ท�
     expect(r.value.category).toBe('GENERAL')
     expect(r.value.letterType).toBe('EXTERNAL')
   })
-  it('ขาด ผู้รับ/เรื่อง/เนื้อความ/ผู้ลงนาม = error ภาษาไทย', () => {
-    for (const k of ['recipient', 'subject', 'body', 'signerId'] as const) {
+  it('[Flow] ไม่เลือก Job = error ก่อนช่องอื่น (Job มาก่อนเป็นอันดับแรก)', () => {
+    const r = cleanLetterInput({ subject: '' })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toMatch(/Job No\./)
+  })
+  it('ขาด Job/ผู้รับ/เรื่อง/เนื้อความ/ผู้ลงนาม = error ภาษาไทย', () => {
+    for (const k of ['jobId', 'recipient', 'subject', 'body', 'signerId'] as const) {
       const r = cleanLetterInput({ ...base, [k]: '  ' })
       expect(r.ok, k).toBe(false)
       if (!r.ok) expect(r.error).toMatch(/กรุณา/)
@@ -139,36 +169,37 @@ describe('รายชื่อผู้ลงนาม (Manage ตั้ง)', 
 describe('โหมดเดโม — createLetterDemo / deleteLetterDemo', () => {
   it('ออกเลขถัดไป · ชื่อ/ตำแหน่งผู้ลงนามมาจากรายชื่อ (snapshot) · created_by = ผู้ใช้จริง · ไม่แก้ array เดิม', () => {
     const before: ServiceLetter[] = []
-    const r1 = createLetterDemo(before, user('service'), { ...base, category: 'SM', sigImage: PNG }, now, SIGNERS)
+    const r1 = mk(before, user('service'), { ...base, category: 'SM', sigImage: PNG })
     expect(before).toHaveLength(0)
-    expect(r1.letter.letterNo).toBe('PSP-LBS-2026-001')
+    expect(r1.letter.letterNo).toBe('PSP-LBSJ3076-2026-001')
     expect(r1.letter.createdBy).toBe('u1')
     expect(r1.letter.signerName).toBe('นาย ก ผู้จัดการ')
     expect(r1.letter.signerPosition).toBe('ผู้จัดการแผนกบริการ')
     expect(r1.letter.sigImage).toBe(PNG)
-    const r2 = createLetterDemo(r1.letters, user('project', 'u2'), base, now, SIGNERS)
-    expect(r2.letter.letterNo).toBe('PSP-LBS-2026-002')
+    const r2 = mk(r1.letters, user('project', 'u2'), base)
+    expect(r2.letter.letterNo).toBe('PSP-LBSJ3076-2026-002')
     expect(r2.letters).toHaveLength(2)
+    // Job อื่นเริ่ม 001 ของตัวเอง
+    expect(mk(r2.letters, user('project'), { ...base, jobId: JOB2 }).letter.letterNo).toBe('PSP-LBSJ3189-2026-001')
   })
-  it('ผู้ลงนามที่ไม่ใช้งาน/ไม่มีในรายชื่อ = throw', () => {
-    expect(() => createLetterDemo([], user('service'), { ...base, signerId: 's2' }, now, SIGNERS)).toThrow(/ผู้ลงนาม/)
-    expect(() => createLetterDemo([], user('service'), { ...base, signerId: 'nope' }, now, SIGNERS)).toThrow(/ผู้ลงนาม/)
+  it('ผู้ลงนามที่ไม่ใช้งาน/ไม่มีในรายชื่อ = throw · Job ไม่มีในระบบ = throw', () => {
+    expect(() => mk([], user('service'), { ...base, signerId: 's2' })).toThrow(/ผู้ลงนาม/)
+    expect(() => mk([], user('service'), { ...base, signerId: 'nope' })).toThrow(/ผู้ลงนาม/)
+    expect(() => mk([], user('service'), { ...base, jobId: '9f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90' })).toThrow(/ไม่พบ Job/)
   })
-  it('แจ้งกระดิ่ง (ไม่ส่ง LINE): อ้าง Job = แจ้ง Project พร้อม job · ไม่อ้าง Job = ไม่แจ้ง', () => {
-    const JOB = '3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90'   // id Job จริงเป็น UUID (L.createJob → uid())
-    const withJob = createLetterDemo([], user('service'), { ...base, jobId: JOB }, now, SIGNERS)
-    expect(withJob.notify).toEqual({ type: 'letter_issued', dept: 'project', jobId: JOB, message: expect.stringContaining('PSP-LBS-2026-001') })
-    expect(createLetterDemo([], user('service'), base, now, SIGNERS).notify).toBeUndefined()
+  it('แจ้งกระดิ่ง (ไม่ส่ง LINE) ถึง Project ของ Job ทุกฉบับ', () => {
+    expect(mk([], user('service'), base).notify)
+      .toEqual({ type: 'letter_issued', dept: 'project', jobId: JOB, message: expect.stringContaining('PSP-LBSJ3076-2026-001') })
   })
   it('ปีตามเวลาไทย: 31 ธ.ค. 17:30 UTC = 1 ม.ค. ไทย → เลขปีใหม่', () => {
-    expect(createLetterDemo([], user('service'), base, '2026-12-31T17:30:00.000Z', SIGNERS).letter.letterNo).toBe('PSP-LBS-2027-001')
+    expect(mk([], user('service'), base, '2026-12-31T17:30:00.000Z').letter.letterNo).toBe('PSP-LBSJ3076-2027-001')
   })
   it('แผนกไม่มีสิทธิ์ = throw · ข้อมูลไม่ครบ = throw', () => {
-    expect(() => createLetterDemo([], user('sales'), base, now, SIGNERS)).toThrow(/สิทธิ์/)
-    expect(() => createLetterDemo([], user('service'), { ...base, subject: '' }, now, SIGNERS)).toThrow(/กรุณา/)
+    expect(() => mk([], user('sales'), base)).toThrow(/สิทธิ์/)
+    expect(() => mk([], user('service'), { ...base, subject: '' })).toThrow(/กรุณา/)
   })
   it('ลบ: Manage เท่านั้น · ไม่พบ = throw', () => {
-    const { letters, letter } = createLetterDemo([], user('service'), base, now, SIGNERS)
+    const { letters, letter } = mk([], user('service'), base)
     expect(() => deleteLetterDemo(letters, user('service'), letter.id)).toThrow(/สิทธิ์/)
     expect(deleteLetterDemo(letters, user('admin'), letter.id)).toHaveLength(0)
     expect(() => deleteLetterDemo(letters, user('admin'), 'nope')).toThrow(/ไม่พบ/)
@@ -194,10 +225,11 @@ describe('warrantyLetterPrefill — ปุ่ม "ออก Warranty Letter" ใ
     expect(p.recipient).toBe('บริษัท เลม่อน โกลด์ ฟาร์ม จำกัด')
     expect(p.site).toBe('จ.อุดรธานี')
     expect(p.subject).toContain('102LB10J3076')
-    expect(p.reference).toBe('PAC เลขที่ PAC-001 ลงวันที่ 20-09-2026')
+    // [Flow 2026-11-25] วันที่ในข้อความ = เดือนชื่อเต็ม พ.ศ.
+    expect(p.reference).toBe('PAC เลขที่ PAC-001 ลงวันที่ 20 กันยายน 2569')
     expect(p.warrantyStart).toBe('2026-09-20')
     expect(p.warrantyEnd).toBe('2027-09-19')
-    expect(p.warrantyDetail).toContain('ตัวเครื่อง LBS 2 เครื่อง: 20-09-2026 ถึง 19-09-2028')
+    expect(p.warrantyDetail).toContain('ตัวเครื่อง LBS 2 เครื่อง: 20 กันยายน 2569 ถึง 19 กันยายน 2571')
   })
   it('ไม่มีประกันงานติดตั้ง → ใช้ช่วงกว้างสุดของตัวเครื่อง · ไม่มีเอกสารรับมอบ → ไม่มีบรรทัดอ้างถึง', () => {
     const p = warrantyLetterPrefill({ ...job, acceptanceType: undefined } as Job, [
@@ -207,5 +239,25 @@ describe('warrantyLetterPrefill — ปุ่ม "ออก Warranty Letter" ใ
     expect(p.warrantyStart).toBe('2026-09-01')
     expect(p.warrantyEnd).toBe('2028-09-30')
     expect(p.reference).toBeUndefined()
+  })
+})
+
+describe('[ปรับ 2026-11-25] Contract No. — อ้างอิงสัญญาของงาน (ภายนอก / SM / Warranty)', () => {
+  it('cleanLetterInput รับ contractNo', () => {
+    const r = cleanLetterInput({ ...base, contractNo: ' CT-2026-0104 ' })
+    expect(r.ok && r.value.contractNo).toBe('CT-2026-0104')
+  })
+  it('contractNosOfJob: เลขสัญญาของเครื่องใน Job (ไม่ซ้ำ เรียง) · ไม่มี = ว่าง', () => {
+    const units = [
+      { jobId: 'j1', contractNo: 'CT-B' }, { jobId: 'j1', contractNo: 'CT-A' }, { jobId: 'j1', contractNo: 'CT-B' },
+      { jobId: 'j1' }, { jobId: 'j2', contractNo: 'CT-Z' },
+    ]
+    expect(contractNosOfJob(units, 'j1')).toBe('CT-A, CT-B')
+    expect(contractNosOfJob(units, 'j3')).toBe('')
+  })
+  it('warrantyLetterPrefill เติม Contract No. จากเครื่องของงาน', () => {
+    const job = { id: 'j1', jobNo: 'J-1', customerName: 'ลูกค้า' } as unknown as Job
+    expect(warrantyLetterPrefill(job, [], [{ jobId: 'j1', contractNo: 'CT-2026-0104' }]).contractNo).toBe('CT-2026-0104')
+    expect(warrantyLetterPrefill(job, []).contractNo).toBeUndefined()
   })
 })

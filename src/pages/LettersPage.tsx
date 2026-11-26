@@ -1,11 +1,14 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore } from '../data/StoreContext'
-import { canLetter, isAllowedLetterFile, LETTER_FILE_MAX_BYTES, type LetterCategory, type ServiceLetter } from '../data/letters'
+import {
+  canLetter, contractNosOfJob, isAllowedLetterFile, LETTER_FILE_MAX_BYTES, thaiDateFull,
+  type LetterCategory, type LetterInput, type ServiceLetter,
+} from '../data/letters'
 import { Modal, readAsDataUrl, useConfirm, useToast, useTryAction } from '../ui/components'
-import { LetterFormModal, LETTER_CATEGORY_LABEL } from '../ui/LetterForm'
+import { LetterFormModal, LETTER_CATEGORY_LABEL, JobSelect } from '../ui/LetterForm'
 import { buildLetterHtml, lbsLetterOrg, openPrintWindow, writePrintWindow } from '../ui/letterPdf'
-import { fmtDate, fmtDateTime } from '../ui/format'
+import { fmtDateTime } from '../ui/format'
 import { supabase } from '../lib/supabase'
 import { uploadLetterDoc, signedLetterDocUrl, removeLetterDocs, fetchLetterSigImage } from '../data/remote'
 
@@ -28,17 +31,23 @@ export default function LettersPage() {
 
   const [q, setQ] = useState('')
   const [cat, setCat] = useState<LetterCategory | ''>('')
-  const [creating, setCreating] = useState(false)
+  // [Flow 2026-11-25] แยกตาม Job No. ก่อนเป็นอันดับแรก — เลือก Job แล้วเห็นเฉพาะจดหมายของงานนั้น · ออกจดหมายใหม่ได้ Job นี้ติดมา
+  const [jobFilter, setJobFilter] = useState<string | undefined>(undefined)
+  const [creating, setCreating] = useState<LetterInput | null>(null)   // ค่าเริ่มของฟอร์ม (Job ที่กรองอยู่ติดมา)
   const [filesId, setFilesId] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
 
   const jobNo = (id?: string) => (id ? db.jobs.find(j => j.id === id)?.jobNo : undefined)
   const userName = (id: string) => db.users.find(u => u.id === id)?.fullName ?? '-'
+  const jobsSorted = [...db.jobs].sort((a, b) => b.jobNo.localeCompare(a.jobNo))
   const text = q.trim().toLowerCase()
   const shown = db.serviceLetters
+    .filter(l => !jobFilter || l.jobId === jobFilter)
     .filter(l => !cat || l.category === cat)
-    .filter(l => !text || [l.letterNo, l.subject, l.recipient, l.recipientOrg, l.signerName, jobNo(l.jobId)]
+    .filter(l => !text || [l.letterNo, l.subject, l.recipient, l.recipientOrg, l.signerName, jobNo(l.jobId), l.contractNo]
       .some(s => s?.toLowerCase().includes(text)))
+    // เรียงตาม Job No. แล้วเลขที่ใหม่ → เก่าในแต่ละ Job (จดหมายของงานเดียวกันอยู่ติดกัน)
+    .sort((a, b) => (jobNo(a.jobId) ?? '~').localeCompare(jobNo(b.jobId) ?? '~') || b.letterNo.localeCompare(a.letterNo))
   const filesOf = (letterId: string) => db.serviceLetterFiles.filter(f => f.letterId === letterId)
   const filesLetter = db.serviceLetters.find(l => l.id === filesId)
 
@@ -91,21 +100,26 @@ export default function LettersPage() {
     <>
       <div className="page-title">Letters</div>
       <div className="page-sub">
-        ทะเบียนจดหมายออก <span className="mono">PSP-LBS-YYYY-NNN</span> — Official Letter · Service Official Letter · Warranty Letter
+        ทะเบียนจดหมายออก แยกตาม Job — เลขที่ <span className="mono">PSP-LBSJXXXX-ปี-nnn</span> รันตาม Job No. · Official Letter · Service Official Letter · Warranty Letter
         {!canManage && <> · <span className="muted">ออกจดหมายได้เฉพาะ Service / Project / Manage</span></>}
       </div>
 
       <div className="panel"><div className="panel-body" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        {/* [Flow 2026-11-25] ① Job No. ก่อนเป็นอันดับแรก */}
+        <div style={{ minWidth: 260 }}>
+          <JobSelect jobs={jobsSorted} value={jobFilter} onChange={setJobFilter} placeholder="① ทุก Job (เลือก Job No.)" />
+        </div>
         {(Object.keys(LETTER_CATEGORY_LABEL) as LetterCategory[]).map(c => (
-          <span key={c} className={`badge ${CAT_TONE[c]}`}>{LETTER_CATEGORY_LABEL[c]} {db.serviceLetters.filter(l => l.category === c).length}</span>
+          <span key={c} className={`badge ${CAT_TONE[c]}`}>{LETTER_CATEGORY_LABEL[c]} {db.serviceLetters.filter(l => l.category === c && (!jobFilter || l.jobId === jobFilter)).length}</span>
         ))}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <input className="search-input" placeholder="ค้นหา เลขที่ / เรื่อง / ผู้รับ / Job" value={q} onChange={e => setQ(e.target.value)} style={{ width: 260 }} />
+          <input className="search-input" placeholder="ค้นหา เลขที่ / เรื่อง / ผู้รับ / Job / Contract" value={q} onChange={e => setQ(e.target.value)} style={{ width: 260 }} />
           <select value={cat} style={{ width: 'auto' }} onChange={e => setCat(e.target.value as LetterCategory | '')}>
             <option value="">ทุกประเภท</option>
             {(Object.keys(LETTER_CATEGORY_LABEL) as LetterCategory[]).map(c => <option key={c} value={c}>{LETTER_CATEGORY_LABEL[c]}</option>)}
           </select>
-          {canManage && <button className="primary" onClick={() => setCreating(true)}>+ ออกจดหมาย</button>}
+          {canManage && <button className="primary" onClick={() => setCreating(jobFilter
+            ? { jobId: jobFilter, contractNo: contractNosOfJob(db.lbsUnits, jobFilter) || undefined } : {})}>+ ออกจดหมาย</button>}
         </div>
       </div></div>
 
@@ -113,7 +127,7 @@ export default function LettersPage() {
         <div className="table-scroll">
           <table>
             <thead><tr>
-              <th>เลขที่</th><th>วันที่</th><th>ประเภท</th><th>เรื่อง / ผู้รับ</th><th>Job</th><th>ผู้ลงนาม</th><th>ออกโดย</th><th></th>
+              <th>Job / Contract</th><th>เลขที่</th><th>วันที่</th><th>ประเภท</th><th>เรื่อง / ผู้รับ</th><th>ผู้ลงนาม</th><th>ออกโดย</th><th></th>
             </tr></thead>
             <tbody>
               {shown.length === 0 && (
@@ -123,15 +137,17 @@ export default function LettersPage() {
               )}
               {shown.map(l => (
                 <tr key={l.id}>
+                  <td style={{ whiteSpace: 'nowrap' }}>{l.jobId ? <Link to={`/jobs/${l.jobId}`}><b>{jobNo(l.jobId) ?? '-'}</b></Link> : <span className="muted">-</span>}
+                    {l.contractNo && <div className="mono muted" style={{ fontSize: 12 }} title="Contract No.">{l.contractNo}</div>}
+                  </td>
                   <td className="mono" style={{ whiteSpace: 'nowrap' }}><b>{l.letterNo}</b></td>
-                  <td style={{ whiteSpace: 'nowrap' }}>{fmtDate(l.letterDate)}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{thaiDateFull(l.letterDate)}</td>
                   <td><span className={`badge ${CAT_TONE[l.category]}`}>{LETTER_CATEGORY_LABEL[l.category]}</span>
                     {l.category === 'GENERAL' && <div className="muted" style={{ fontSize: 11 }}>{l.letterType === 'INTERNAL' ? 'ภายใน' : 'ภายนอก'}</div>}
                   </td>
                   <td style={{ minWidth: 220 }}>{l.subject}
                     <div className="muted" style={{ fontSize: 12 }}>{l.recipient.split('\n')[0]}{l.recipientOrg ? ` · ${l.recipientOrg}` : ''}</div>
                   </td>
-                  <td style={{ whiteSpace: 'nowrap' }}>{l.jobId ? <Link to={`/jobs/${l.jobId}`}>{jobNo(l.jobId) ?? '-'}</Link> : <span className="muted">-</span>}</td>
                   <td style={{ minWidth: 140 }}>{l.signerName}<div className="muted" style={{ fontSize: 12 }}>{l.signerPosition}</div></td>
                   <td style={{ minWidth: 120 }}>{userName(l.createdBy)}<div className="muted" style={{ fontSize: 12 }}>{fmtDateTime(l.createdAt)}</div></td>
                   <td style={{ whiteSpace: 'nowrap' }}>
@@ -154,7 +170,7 @@ export default function LettersPage() {
       </div>
 
       {creating && (
-        <LetterFormModal initial={{}} onClose={() => setCreating(false)}
+        <LetterFormModal initial={creating} onClose={() => setCreating(null)}
           onSaved={r => show(`ออกจดหมาย ${r.letterNo} แล้ว — กด 📄 เพื่อพิมพ์ / 📎 เพื่อแนบไฟล์`)} />
       )}
 

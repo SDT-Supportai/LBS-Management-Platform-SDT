@@ -5440,17 +5440,17 @@ export function parseSheetDate(v: unknown): { value: string; error?: string } {
 //   ข้อความ Audit ตรงกับ RPC ฝั่ง DB — ค้นใน Audit Log ได้แบบเดียวกันทั้ง 2 โหมด
 // =============================================================================
 
-/** ออกจดหมาย — อ้าง Job = กระดิ่งถึง Project (letter_issued ไม่อยู่ใน LINE_PUSH_TYPES ⇒ ไม่ส่ง LINE) */
+/** ออกจดหมาย — [Flow 2026-11-25] ต้องเลือก Job ก่อน · เลข PSP-LBSJXXXX-YYYY-nnn ตาม Job
+ *  กระดิ่งถึง Project ของงานทุกฉบับ (letter_issued ไม่อยู่ใน LINE_PUSH_TYPES ⇒ ไม่ส่ง LINE) */
 export function createServiceLetter(db: DB, actor: User, p: LetterInput): DB {
-  if (p.jobId && !db.jobs.some(j => j.id === p.jobId)) throw new Error('ไม่พบ Job ที่อ้างถึง')
-  // เลขที่เคยออก (รวมฉบับที่ถูกลบ) จาก Audit — demo ไม่มีตารางตัวนับแบบ letter_no_counters
+  // เลขที่เคยออก (รวมฉบับที่ถูกลบ) จาก Audit — demo ไม่มีตารางตัวนับแบบ letter_no_seq
   const issued = db.auditLogs.filter(a => a.entityType === 'service_letter' && a.action === 'create_service_letter')
-    .map(a => /PSP-LBS-\d{4}-\d+/.exec(a.detail)?.[0] ?? '')
-  const r = createLetterDemo(db.serviceLetters, actor, p, now(), db.letterSigners, issued)
+    .map(a => /PSP-LBS\S*-\d{4}-\d+/.exec(a.detail)?.[0] ?? '')
+  const r = createLetterDemo(db.serviceLetters, actor, p, now(), db.letterSigners, issued, db.jobs)
   const l = r.letter
   let next: DB = audit({ ...db, serviceLetters: r.letters }, actor, 'service_letter', l.id, 'create_service_letter',
     `ออกจดหมาย ${l.letterNo} — ${l.subject} · ผู้ลงนาม ${l.signerName} (${l.sigImage ? 'เซ็นอิเล็กทรอนิกส์' : 'เซ็นมือ'})`)
-  if (r.notify) next = notify(next, { type: r.notify.type, message: r.notify.message, dept: r.notify.dept, jobId: r.notify.jobId })
+  next = notify(next, { type: r.notify.type, message: r.notify.message, dept: r.notify.dept, jobId: r.notify.jobId })
   return next
 }
 

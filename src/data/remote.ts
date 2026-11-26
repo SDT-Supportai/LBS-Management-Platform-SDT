@@ -537,7 +537,7 @@ export function mapServiceLetter(r: Row): ServiceLetter {
     recipient: r.recipient, recipientOrg: optStr(r.recipient_org), subject: r.subject,
     reference: optStr(r.reference), enclosure: optStr(r.enclosure), body: r.body, body2: optStr(r.body2),
     attention: optStr(r.attention), site: optStr(r.site), techList: optStr(r.tech_list),
-    jobId: optStr(r.job_id), cc: optStr(r.cc),
+    jobId: optStr(r.job_id), contractNo: optStr(r.contract_no), cc: optStr(r.cc),
     signerId: optStr(r.signer_id), signerName: optStr(r.signer_name), signerPosition: optStr(r.signer_position),
     sigImage: optStr(r.sig_image),
     warrantyType: optStr(r.warranty_type), warrantyStart: optDate(r.warranty_start), warrantyEnd: optDate(r.warranty_end),
@@ -596,8 +596,10 @@ const LETTER_LIST_COLS = [
   'created_by', 'created_at',
 ].join(',')   // ไม่มี sig_image (ดู fetchLetterSigImage)
 async function qLetters(sb: SupabaseClient): Promise<Row[]> {
-  const { data, error } = await sb.from('service_letters').select(LETTER_LIST_COLS)
-    .order('created_at', { ascending: false }).limit(2000)
+  const sel = (cols: string) => sb.from('service_letters').select(cols).order('created_at', { ascending: false }).limit(2000)
+  // [0101] contract_no — ถ้ายังไม่รัน 0101 คอลัมน์ไม่มี ⇒ โหลดแบบเดิม (ไม่งั้นรายการจดหมายหายทั้งหน้า)
+  let { data, error } = await sel(`${LETTER_LIST_COLS},contract_no`)
+  if (error && /contract_no/.test(error.message)) ({ data, error } = await sel(LETTER_LIST_COLS))
   if (error) {
     if (/does not exist|schema cache|PGRST205/i.test(error.message)) return []   // ยังไม่รัน 0100
     throw new Error(`โหลด service_letters ไม่สำเร็จ: ${error.message}`)

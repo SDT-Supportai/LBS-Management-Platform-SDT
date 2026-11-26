@@ -1,25 +1,30 @@
 // =============================================================================
 // เอกสารพิมพ์ Service Letter — ยกแม่แบบจาก ServiceMS (smLetter / warrantyLetter / Official Letter ใน buildPdf)
 //   LBS ไม่มี Edge Function ⇒ สร้าง HTML ฝั่งเบราว์เซอร์ แล้วเปิดแท็บพิมพ์ (ผู้ใช้กด "บันทึกเป็น PDF")
-//   ⚠️ ยังไม่ผูกเข้าเมนู — ดู docs/service-letter-integration.md · เทสต์: letterPdf.test.ts
+//   หน้าเรียก: pages/LettersPage.tsx (📄) · ui/LetterForm.tsx (👁️ ดูตัวอย่าง) · เทสต์: letterPdf.test.ts
+//
+//   [ปรับ 2026-11-25 ตามไฟล์แนบของผู้ใช้]
+//   • หัว/ท้ายกระดาษเดียวกันทั้ง 3 แบบ: โลโก้ PRECISE ซ้าย + ที่อยู่บริษัทขวา · ท้าย = ชื่อแผนก/อีเมล + แถบสี
+//     (รูปจาก ServiceMS deploy-new-org/public/assets → public/letter-logo.png · letter-banner.png)
+//   • ฟอนต์ TH SarabunPSK ขนาด 16 (ต้องมีฟอนต์ในเครื่องที่พิมพ์ — ไม่มีจะใช้ TH Sarabun New / Sarabun แทน)
+//   • การอ้างอิง: Official ภายนอก = Contract No. · Official ภายใน = Job No. · SM / Warranty = 1. Contract No. 2. โครงการ Job No.
 //
 //   ความปลอดภัย: แท็บพิมพ์เปิดด้วย window.open('') = origin เดียวกับแอป (อ่าน session ของแอปได้)
 //   ⇒ ข้อความผู้ใช้ escape ทุกช่อง (รวม " ') · รูป (ลายเซ็น/โลโก้) รับเฉพาะ data URL รูป หรือ https ที่ไม่มีอักขระพิเศษ
 // =============================================================================
-import { safeSigImage, parseTechList, type ServiceLetter } from '../data/letters'
+import { safeSigImage, parseTechList, thaiDateFull, type ServiceLetter } from '../data/letters'
 
 export interface LetterOrg {
-  name: string                  // ชื่อบริษัท (หัวกระดาษ)
-  addressLines: string[]        // ที่อยู่ขวาบน (SM / WARRANTY)
-  tagline: string               // บรรทัดใต้ชื่อ (Official Letter)
+  name: string                  // ชื่อบริษัท (หัวกระดาษขวาบน + ท้ายกระดาษ)
+  addressLines: string[]        // ที่อยู่ขวาบน
+  tagline: string               // (ไม่ได้ใช้แล้วในหัวกระดาษ — คงไว้ให้ค่าเดิมเข้ากันได้)
   section: string               // ท้ายกระดาษ: ชื่อแผนก
   email: string
   logoUrl?: string              // โลโก้ (data URL / https) — ว่าง = ไม่วาด
-  bannerUrl?: string            // แถบสีท้ายกระดาษ (SM / WARRANTY) — ว่าง = ไม่วาด
+  bannerUrl?: string            // แถบสีท้ายกระดาษ — ว่าง = ไม่วาด
   // ไม่มีลายเซ็นเริ่มต้น (คำตอบผู้ใช้ข้อ 4) — เซ็นอิเล็กทรอนิกส์ต่อฉบับ หรือเว้นที่เซ็นมือ
 }
 
-// ⚠️ template: ค่าหัว/ท้ายกระดาษจากชุดต้นแบบ ServiceMS — ยืนยันกับผู้ใช้ก่อนเปิดใช้จริง
 export const LETTER_ORG_DEFAULT: LetterOrg = {
   name: 'Precise System and Project Co., Ltd.',
   addressLines: ['1/333 Moo 9, Chaengwattana Road', 'Bangpood, Pakkred', 'Nonthaburi 1120 Thailand',
@@ -32,10 +37,6 @@ export const LETTER_ORG_DEFAULT: LetterOrg = {
 const esc = (s: unknown) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 const escBr = (s: unknown) => esc(s).replace(/\n/g, '<br>')
-const dmy = (s?: string, sep = '/') => {
-  const m = String(s ?? '').match(/^(\d{4})-(\d{2})-(\d{2})/)
-  return m ? `${m[3]}${sep}${m[2]}${sep}${m[1]}` : esc(s || '—')
-}
 /** รูปที่วางใน src ได้: data URL รูป หรือ http(s) ที่ไม่มีอักขระที่หลุด attribute ได้ (http = dev localhost) */
 function safeImgUrl(u?: string): string {
   const v = String(u ?? '')
@@ -45,74 +46,78 @@ function safeImgUrl(u?: string): string {
 }
 
 /**
- * หัวกระดาษของ LBS — คำตอบผู้ใช้ข้อ 3: ข้อมูลตามแม่แบบ + โลโก้ LBS เดิม (public/logo.jpg)
- *   ต้องเป็น URL เต็ม: แท็บพิมพ์ (about:blank) ใช้ path แบบ /logo.jpg ไม่ได้ทุกเบราว์เซอร์
+ * หัว/ท้ายกระดาษของ LBS — [ปรับ 2026-11-25] โลโก้ PRECISE + แถบสีตามไฟล์แนบ (public/letter-logo.png · letter-banner.png)
+ *   ต้องเป็น URL เต็ม: แท็บพิมพ์ (about:blank) ใช้ path แบบ /letter-logo.png ไม่ได้ทุกเบราว์เซอร์
  *   หน้าเรียกด้วย lbsLetterOrg(window.location.origin)
  */
 export function lbsLetterOrg(origin: string): LetterOrg {
-  return { ...LETTER_ORG_DEFAULT, logoUrl: `${origin.replace(/\/+$/, '')}/logo.jpg` }
+  const o = origin.replace(/\/+$/, '')
+  return { ...LETTER_ORG_DEFAULT, logoUrl: `${o}/letter-logo.png`, bannerUrl: `${o}/letter-banner.png` }
 }
 
-const PRINT_PAGE = (head: string, foot: string) => `
+// A4 ขอบ 0 · หัว/ท้ายกระดาษ fixed ซ้ำทุกหน้า · thead/tfoot เว้นที่ให้เนื้อหาไม่ทับ
+const PRINT_PAGE = `
   @media print{
     @page{size:A4;margin:0}
     body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
     .ph{position:fixed;top:0}
     .pf{position:fixed;bottom:0}
-    thead .hsp{height:${head}}
-    tfoot .fsp{height:${foot}}
+    thead .hsp{height:44mm}
+    tfoot .fsp{height:24mm}
     tr,td{break-inside:avoid}
   }`
 
+// [ปรับ 2026-11-25] TH SarabunPSK ขนาด 16 (ผู้ใช้กำหนด) — หัว/ท้ายกระดาษตัวเล็กกว่าเนื้อความตามแบบ
 const BASE_CSS = `
   *{margin:0;padding:0;box-sizing:border-box}
   html,body{margin:0;background:#fff}
-  body{font-family:'Sarabun','TH Sarabun New','IBM Plex Sans Thai','Segoe UI',sans-serif;color:#1a2026;font-size:15.5px;line-height:1.85}
+  body{font-family:'TH SarabunPSK','TH Sarabun New','Sarabun',sans-serif;color:#1a2026;font-size:16pt;line-height:1.35}
   .ph,.pf{left:0;right:0;background:#fff}
   .sheet{width:100%;border-collapse:collapse}
-  .hsp{height:0}.fsp{height:0}`
+  .hsp{height:0}.fsp{height:0}
+  .ph{padding:9mm 15mm 3mm}
+  .ph .top{display:flex;justify-content:space-between;align-items:flex-start;gap:20px}
+  .ph img.logo{height:15mm;max-width:75mm;object-fit:contain;margin-top:3mm}
+  .addr{text-align:right;font-size:12pt;line-height:1.3;color:#1a2026}
+  .addr b{font-size:13pt;color:#16233f}
+  .pf .contact{text-align:center;font-size:12pt;color:#16233f;padding:2mm 15mm 1.5mm;line-height:1.2}
+  .pf .contact .en{font-weight:700}
+  .pf .banner{display:block;width:100%;height:8mm;object-fit:cover}
+  .sheet>tbody>tr>td{padding:0 15mm}
+  .norow{display:flex;justify-content:space-between;align-items:baseline;margin-top:4mm}
+  .ltype{font-size:12pt;letter-spacing:.5px;margin-top:1mm}
+  .recip{margin-top:5mm}
+  .frow{display:flex;gap:4mm;margin-top:3mm}
+  .frow .k{font-weight:700;min-width:25mm;flex:0 0 auto}
+  .frow .v{flex:1}
+  .para{margin-top:5mm;text-indent:15mm;text-align:justify;white-space:pre-wrap}
+  .ack{margin-top:6mm;text-indent:15mm}
+  .close{margin-top:6mm;text-align:center}
+  .close img.sig{height:20mm;object-fit:contain;display:block;margin:2mm auto}
+  .close .sig-space{height:20mm;width:60mm;margin:2mm auto;border-bottom:1px dotted #94a3b8}
+  .close .signer{font-weight:700}
+  .cc{margin-top:8mm;font-size:14pt;border-top:1px dashed #cbd5e1;padding-top:2mm}`
 
-/** หัว/ท้าย + ส่วนลงนาม ร่วมกันของ SM และ WARRANTY (ต้นฉบับซ้ำโค้ดกัน 2 ชุด) */
-function serviceShell(lt: ServiceLetter, org: LetterOrg, accent: string, middle: string, extraCss: string): string {
+const ACCENT = { GENERAL: '#1a4d8f', SM: '#c0392b', WARRANTY: '#1a4d8f' } as const
+
+const frow = (k: string, vHtml: string) => `<div class="frow"><div class="k">${k}</div><div class="v">${vHtml}</div></div>`
+
+/** หน้ากระดาษร่วมทั้ง 3 แบบ: หัว (โลโก้ + ที่อยู่) · เลขที่/วันที่ · เนื้อหา · ลงนาม · ท้าย (แผนก/อีเมล + แถบสี) */
+function pageShell(lt: ServiceLetter, org: LetterOrg, inner: string, extraCss = '', after = ''): string {
   const sig = safeSigImage(lt.sigImage)
   const logo = safeImgUrl(org.logoUrl)
   const banner = safeImgUrl(org.bannerUrl)
+  const accent = ACCENT[lt.category] ?? ACCENT.GENERAL
   return `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><title>${esc(lt.letterNo)}</title>
 <style>${BASE_CSS}
-  .ph{padding:18px 54px 8px}
-  .ph .top{display:flex;justify-content:space-between;align-items:flex-start;gap:20px}
-  .ph img.logo{height:52px;object-fit:contain}
-  .addr{text-align:right;font-size:11.5px;line-height:1.5}
-  .addr b{font-size:12.5px;color:#16233f}
-  .pf .contact{text-align:center;font-size:12px;color:#16233f;padding:8px 40px 4px;line-height:1.45}
-  .pf .contact .en{font-weight:700}
-  .pf .banner{display:block;width:100%;height:7mm;object-fit:cover}
-  .sheet>tbody>tr>td{padding:0 54px}
-  .norow{display:flex;justify-content:space-between;align-items:baseline;margin-top:6px;font-weight:700;color:${accent};font-size:16px}
-  .recip{margin-top:14px;line-height:1.7}
-  .frow{display:flex;gap:10px;margin-top:6px}
-  .frow .k{font-weight:700;min-width:62px;flex:0 0 auto}
-  .frow .v{flex:1}
-  .para{margin-top:14px;text-indent:48px;text-align:justify}
-  .ack{margin-top:16px;text-indent:48px}
-  .close{margin-top:14px;text-align:center}
-  .close .ty{margin-bottom:2px}
-  .close img.sig{height:66px;object-fit:contain;display:block;margin:2px auto}
-  .close .sig-space{height:66px;width:220px;margin:2px auto;border-bottom:1px dotted #94a3b8}
-  .close .signer{font-weight:700}${extraCss}${PRINT_PAGE('34mm', '20mm')}
+  .norow{color:${accent}}${extraCss}${PRINT_PAGE}
 </style></head><body>
   <div class="ph"><div class="top">${logo ? `<img class="logo" src="${logo}" alt="">` : '<span></span>'}<div class="addr"><b>${esc(org.name)}</b><br>${org.addressLines.map(esc).join('<br>')}</div></div></div>
   <table class="sheet">
     <thead><tr><td><div class="hsp"></div></td></tr></thead>
     <tbody><tr><td>
-      <div class="norow"><span class="no">No. ${esc(lt.letterNo)}</span><span class="dt">${dmy(lt.letterDate, '-')}</span></div>
-      <div class="recip">${escBr(lt.recipient)}</div>
-      <div class="frow"><div class="k">เรื่อง</div><div class="v">${esc(lt.subject)}${lt.site ? '<br>' + esc(lt.site) : ''}</div></div>
-      <div class="frow"><div class="k">เรียน</div><div class="v">${esc(lt.attention || '—')}</div></div>
-      ${lt.reference ? `<div class="frow"><div class="k">อ้างถึง</div><div class="v">${esc(lt.reference)}</div></div>` : ''}
-      <div class="para">${esc(lt.body)}</div>
-      ${lt.body2 ? `<div class="para">${esc(lt.body2)}</div>` : ''}
-      ${middle}
+      <div class="norow"><span class="no">No. ${esc(lt.letterNo)}</span><span class="dt">${esc(thaiDateFull(lt.letterDate))}</span></div>
+      ${inner}
       <div class="ack">จึงเรียนมาเพื่อโปรดทราบ</div>
       <div class="close">
         <div class="ty">ขอแสดงความนับถือ</div>
@@ -120,6 +125,7 @@ function serviceShell(lt: ServiceLetter, org: LetterOrg, accent: string, middle:
         <div class="signer">( ${esc(lt.signerName || '—')} )</div>
         <div class="dept">${esc(lt.signerPosition || '')}</div>
       </div>
+      ${after}
     </td></tr></tbody>
     <tfoot><tr><td><div class="fsp"></div></td></tr></tfoot>
   </table>
@@ -127,93 +133,70 @@ function serviceShell(lt: ServiceLetter, org: LetterOrg, accent: string, middle:
 </body></html>`
 }
 
-function smLetter(lt: ServiceLetter, org: LetterOrg): string {
-  const techs = parseTechList(lt.techList).map((t, i) =>
-    `<div class="tech"><div class="nm">${i + 1}. ${esc(t.name)}</div><div class="tph">${t.phone ? 'เบอร์ ' + esc(t.phone) : ''}</div></div>`).join('')
-  return serviceShell(lt, org, '#c0392b', `<div class="techs">${techs}</div>`, `
-  .techs{margin-top:8px}
-  .tech{display:flex;gap:14px;margin:2px 0 2px 48px}
-  .tech .nm{min-width:320px}`)
+/** SM / Warranty: อ้างอิง 1. Contract No. 2. โครงการ Job No. (ไม่มีทั้งคู่ = ไม่แสดง) */
+function serviceRefs(lt: ServiceLetter, jobNo?: string): string {
+  if (!lt.contractNo && !jobNo) return ''
+  return frow('อ้างอิง', `1. Contract No. ${esc(lt.contractNo || '-')}<br>2. โครงการ Job No. ${esc(jobNo || '-')}`)
 }
 
-function warrantyLetter(lt: ServiceLetter, org: LetterOrg): string {
+/** ส่วนบนของ SM / WARRANTY: ผู้รับ · เรื่อง (+สถานที่) · เรียน · อ้างอิง · อ้างถึง · ย่อหน้า */
+function serviceHead(lt: ServiceLetter, jobNo?: string): string {
+  return `<div class="recip">${escBr(lt.recipient)}</div>
+      ${frow('เรื่อง', `${esc(lt.subject)}${lt.site ? '<br>' + esc(lt.site) : ''}`)}
+      ${frow('เรียน', esc(lt.attention || '—'))}
+      ${serviceRefs(lt, jobNo)}
+      ${lt.reference ? frow('อ้างถึง', esc(lt.reference)) : ''}
+      <div class="para">${esc(lt.body)}</div>
+      ${lt.body2 ? `<div class="para">${esc(lt.body2)}</div>` : ''}`
+}
+
+function smLetter(lt: ServiceLetter, org: LetterOrg, jobNo?: string): string {
+  const techs = parseTechList(lt.techList).map((t, i) =>
+    `<div class="tech"><div class="nm">${i + 1}. ${esc(t.name)}</div><div class="tph">${t.phone ? 'เบอร์ ' + esc(t.phone) : ''}</div></div>`).join('')
+  return pageShell(lt, org, `${serviceHead(lt, jobNo)}
+      <div class="techs">${techs}</div>`, `
+  .techs{margin-top:2mm}
+  .tech{display:flex;gap:5mm;margin:1mm 0 1mm 15mm}
+  .tech .nm{min-width:90mm}`)
+}
+
+function warrantyLetter(lt: ServiceLetter, org: LetterOrg, jobNo?: string): string {
   const period = (lt.warrantyStart || lt.warrantyEnd)
-    ? `${lt.warrantyStart ? dmy(lt.warrantyStart, '-') : '-'} ถึง ${lt.warrantyEnd ? dmy(lt.warrantyEnd, '-') : '-'}` : '-'
-  return serviceShell(lt, org, '#1a4d8f', `<div class="wbox">
+    ? `${esc(thaiDateFull(lt.warrantyStart))} ถึง ${esc(thaiDateFull(lt.warrantyEnd))}` : '-'
+  return pageShell(lt, org, `${serviceHead(lt, jobNo)}
+      <div class="wbox">
         <div class="wrow"><span class="wk">ประเภทการรับประกัน</span><span class="wv">${esc(lt.warrantyType || '-')}</span></div>
         <div class="wrow"><span class="wk">ระยะเวลารับประกัน</span><span class="wv">${period}</span></div>
         ${lt.warrantyDetail ? `<div class="wdetail">${escBr(lt.warrantyDetail)}</div>` : ''}
       </div>`, `
-  .wbox{margin-top:16px;border:1px solid #d7e0ea;border-radius:8px;padding:12px 16px;background:#f7fafd}
-  .wrow{display:flex;gap:10px;margin:3px 0}
-  .wrow .wk{font-weight:700;min-width:150px;color:#16233f}
+  .wbox{margin-top:5mm;border:1px solid #d7e0ea;border-radius:2mm;padding:3mm 5mm;background:#f7fafd}
+  .wrow{display:flex;gap:4mm;margin:1mm 0}
+  .wrow .wk{font-weight:700;min-width:45mm;color:#16233f}
   .wrow .wv{flex:1}
-  .wdetail{margin-top:8px;text-align:justify;border-top:1px dashed #cbd5e1;padding-top:8px}`)
+  .wdetail{margin-top:2mm;text-align:justify;border-top:1px dashed #cbd5e1;padding-top:2mm}`)
 }
 
+/** Official Letter — ภายนอกอ้างอิง Contract No. · ภายในอ้างอิง Job No. */
 function officialLetter(lt: ServiceLetter, org: LetterOrg, jobNo?: string): string {
-  const row = (k: string, v?: string) => v ? `<div class="lrow"><div class="lk">${k}</div><div class="lc">:</div><div class="lv">${esc(v)}</div></div>` : ''
-  const typeLabel = lt.letterType === 'INTERNAL' ? 'หนังสือภายใน / Internal Memo' : 'หนังสือภายนอก / Official Letter'
-  const logo = safeImgUrl(org.logoUrl)
-  const sig = safeSigImage(lt.sigImage)
-  return `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><title>Letter ${esc(lt.letterNo)}</title>
-<style>${BASE_CSS}
-  body{color:#16202e;font-size:15px;line-height:1.75}
-  .topbar{height:6px;background:linear-gradient(90deg,#1a4d8f,#16233f)}
-  .lh{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #16233f;margin:0 46px;padding:12px 0}
-  .co{display:flex;gap:13px;align-items:center}
-  .lg{width:54px;height:54px;border-radius:11px;overflow:hidden;background:#fff;border:1px solid #e2e8f0;flex:0 0 auto}
-  .lg img{width:100%;height:100%;object-fit:contain}
-  .cn{font-weight:700;font-size:18px;color:#16233f;letter-spacing:.3px}
-  .ca{font-size:11.5px;color:#64748b;margin-top:2px}
-  .ltype{font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:#1a4d8f;font-weight:700;margin-top:4px}
-  .meta{text-align:right;font-size:13.5px;min-width:185px}
-  .meta .mrow{margin-bottom:3px}
-  .meta b{color:#16233f}
-  .meta .no{font-family:'Courier New',monospace;font-weight:700;font-size:15px;color:#1a4d8f}
-  .pf .foot{text-align:center;font-size:12px;color:#16233f;border-top:1px solid #eef2f7;padding:7px 40px;line-height:1.45}
-  .pf .foot .en{font-weight:700}
-  .sheet>tbody>tr>td{padding:0 46px}
-  .subj{margin:6px 0;font-weight:700;font-size:15.5px}
-  .lrow{display:flex;gap:6px;margin:5px 0}
-  .lk{font-weight:700;min-width:96px}.lc{width:8px}.lv{flex:1}
-  .body{margin:20px 0;white-space:pre-wrap;text-align:justify;text-indent:48px}
-  .close{margin-top:30px;margin-left:auto;width:300px;text-align:center}
-  .close .ty{margin-bottom:4px}
-  .close img.sig{height:62px;object-fit:contain;display:block;margin:0 auto 2px}
-  .close .sig-space{height:62px;width:220px;margin:0 auto 2px;border-bottom:1px dotted #94a3b8}
-  .close .nm{font-weight:700}
-  .close .ps{font-size:13.5px;color:#475569}
-  .cc{margin-top:34px;font-size:13px;color:#475569;border-top:1px dashed #cbd5e1;padding-top:8px}${PRINT_PAGE('28mm', '15mm')}
-</style></head><body>
-  <div class="ph"><div class="topbar"></div><div class="lh"><div class="co">${logo ? `<div class="lg"><img src="${logo}" alt=""></div>` : ''}<div><div class="cn">${esc(org.name)}</div><div class="ca">${esc(org.tagline)}</div><div class="ltype">${typeLabel}</div></div></div><div class="meta"><div class="mrow"><b>เลขที่</b> <span class="no">${esc(lt.letterNo)}</span></div><div class="mrow"><b>วันที่</b> ${dmy(lt.letterDate)}</div></div></div></div>
-  <table class="sheet">
-    <thead><tr><td><div class="hsp"></div></td></tr></thead>
-    <tbody><tr><td>
-      <div class="subj">เรื่อง&nbsp;&nbsp;&nbsp;${esc(lt.subject)}</div>
-      ${row('เรียน', lt.recipient + (lt.recipientOrg ? `  (${lt.recipientOrg})` : ''))}
-      ${row('อ้างถึง', lt.reference)}
-      ${row('สิ่งที่ส่งมาด้วย', lt.enclosure)}
-      ${row('อ้างอิงโครงการ', jobNo)}
-      <div class="body">${esc(lt.body)}</div>
-      <div class="close">
-        <div class="ty">ขอแสดงความนับถือ</div>
-        ${sig ? `<img class="sig" src="${sig}" alt="">` : '<div class="sig-space"></div>'}<!-- [ผูกระบบ] ลายเซ็น 2 แบบเหมือน SM/WARRANTY -->
-        <div class="nm">${esc(lt.signerName || '')}</div>
-        <div class="ps">${esc(lt.signerPosition || '')}</div>
-      </div>
-      ${lt.cc ? `<div class="cc"><b>สำเนาเรียน</b> ${esc(lt.cc)}</div>` : ''}
-    </td></tr></tbody>
-    <tfoot><tr><td><div class="fsp"></div></td></tr></tfoot>
-  </table>
-  <div class="pf"><div class="foot"><span class="en">${esc(org.section)}</span>, ${esc(org.name)}, Email: ${esc(org.email)}</div></div>
-</body></html>`
+  const internal = lt.letterType === 'INTERNAL'
+  const typeLabel = internal ? 'หนังสือภายใน / Internal Memo' : 'หนังสือภายนอก / Official Letter'
+  const ref = internal
+    ? (jobNo ? frow('อ้างอิง', `โครงการ Job No. ${esc(jobNo)}`) : '')
+    : (lt.contractNo ? frow('อ้างอิง', `Contract No. ${esc(lt.contractNo)}`) : '')
+  return pageShell(lt, org, `<div class="ltype" style="color:${ACCENT.GENERAL}">${typeLabel}</div>
+      ${frow('เรื่อง', esc(lt.subject))}
+      ${frow('เรียน', esc(lt.recipient) + (lt.recipientOrg ? ` (${esc(lt.recipientOrg)})` : ''))}
+      ${ref}
+      ${lt.reference ? frow('อ้างถึง', esc(lt.reference)) : ''}
+      ${lt.enclosure ? frow('สิ่งที่ส่งมาด้วย', esc(lt.enclosure)) : ''}
+      <div class="para">${esc(lt.body)}</div>`, '',
+  lt.cc ? `<div class="cc"><b>สำเนาเรียน</b> ${esc(lt.cc)}</div>` : '')
 }
 
 /** HTML เอกสารพร้อมพิมพ์ตามประเภทจดหมาย · jobNo = เลข Job ที่อ้างถึง (หน้าเรียกหาเองจาก lt.jobId) */
 export function buildLetterHtml(lt: ServiceLetter, org: LetterOrg = LETTER_ORG_DEFAULT, jobNo?: string): string {
-  if (lt.category === 'SM') return smLetter(lt, org)
-  if (lt.category === 'WARRANTY') return warrantyLetter(lt, org)
+  if (lt.category === 'SM') return smLetter(lt, org, jobNo)
+  if (lt.category === 'WARRANTY') return warrantyLetter(lt, org, jobNo)
   return officialLetter(lt, org, jobNo)
 }
 

@@ -42,6 +42,7 @@ export interface ServiceLetter {
   site?: string                  // สถานที่ ใต้เรื่อง (SM/WARRANTY)
   techList?: string              // "ชื่อ | เบอร์" บรรทัดละคน (SM)
   jobId?: string                 // อ้างอิง Job ของ LBS (ServiceMS: ref_job เป็นข้อความ)
+  contractNo?: string            // [0101] อ้างอิง Contract No. — ภายนอก / SM / Warranty (snapshot ณ วันออก)
   cc?: string
   signerId?: string              // ผู้ลงนามจากรายชื่อที่ Manage ตั้ง
   signerName?: string            // snapshot ณ วันออก (แก้รายชื่อทีหลังไม่กระทบจดหมายเก่า)
@@ -81,16 +82,43 @@ export const LETTER_PREFIX = 'PSP-LBS'
 export const LETTER_FILES_BUCKET = 'letter-docs'
 export const LETTER_FILE_MAX_BYTES = 10 * 1024 * 1024
 
-/** เลขถัดไปของปี — รันร่วมทุกประเภท · นับเฉพาะเลขของ LBS (prefix นี้) ไม่นับเลข ServiceMS */
-export function nextLetterNo(existing: string[], todayIso: string): string {
-  const yr = todayIso.slice(0, 4)
+/**
+ * [Flow 2026-11-25] รหัส Job ในเลขจดหมาย — ตัวเลขหลัง J ตัวสุดท้ายของ Job No. (102LB10J3076 → 3076)
+ *   ไม่มี J ตามด้วยตัวเลข = ตัวเลขท้าย Job No. (JOB-2026-0004 → 0004) · ไม่มีตัวเลข = ตัวอักษร/ตัวเลขทั้งหมด
+ *   เติม 0 ให้ครบ 4 หลัก (ไม่ตัด) · sync app_letter_job_code (0102)
+ */
+export function jobLetterCode(jobNo: string): string {
+  const s = String(jobNo ?? '').trim().toUpperCase()
+  const m = /J(\d+)$/.exec(s) ?? /(\d+)$/.exec(s)
+  const code = m ? m[1] : s.replace(/[^A-Z0-9]/g, '')
+  return code.padStart(4, '0')
+}
+/** หัวเลขจดหมายของ Job ในปีนั้น: PSP-LBSJ3076-2026 */
+export function letterPrefixFor(jobNo: string, todayIso: string): string {
+  return `${LETTER_PREFIX}J${jobLetterCode(jobNo)}-${todayIso.slice(0, 4)}`
+}
+/**
+ * [Flow 2026-11-25] เลขถัดไป PSP-LBSJXXXX-YYYY-nnn — รันตาม Job No. เท่านั้น (แต่ละ Job มีลำดับของตัวเอง · ปีใหม่เริ่ม 001)
+ *   existing = เลขที่เคยออกทั้งหมด (รวมฉบับที่ลบ — เลขไม่ถูกนำกลับมาใช้) · เลขแบบเก่า PSP-LBS-YYYY-nnn ไม่นับ
+ */
+export function nextLetterNo(existing: string[], jobNo: string, todayIso: string): string {
+  const prefix = letterPrefixFor(jobNo, todayIso)
   let max = 0
   for (const no of existing) {
-    if (!no.startsWith(`${LETTER_PREFIX}-${yr}-`)) continue
-    const m = no.match(/(\d+)$/)
+    if (!no.startsWith(`${prefix}-`)) continue
+    const m = no.slice(prefix.length + 1).match(/^(\d+)$/)
     if (m) max = Math.max(max, parseInt(m[1], 10))
   }
-  return `${LETTER_PREFIX}-${yr}-${String(max + 1).padStart(3, '0')}`
+  return `${prefix}-${String(max + 1).padStart(3, '0')}`
+}
+
+const TH_MONTHS = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
+  'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม']
+/** [Flow 2026-11-25] วันที่ในจดหมาย = เดือนชื่อเต็ม พ.ศ. (2026-11-25 → 25 พฤศจิกายน 2569) · อ่านไม่ออก = "-" */
+export function thaiDateFull(iso?: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso ?? ''))
+  if (!m || +m[2] < 1 || +m[2] > 12) return '-'
+  return `${+m[3]} ${TH_MONTHS[+m[2] - 1]} ${+m[1] + 543}`
 }
 
 // ลายเซ็นถูกวางใน <img src="..."> ของเอกสารพิมพ์ — แท็บพิมพ์เป็น origin เดียวกับแอป
@@ -107,7 +135,7 @@ export type LetterInput = Partial<Omit<ServiceLetter, 'id' | 'letterNo' | 'creat
 
 const TEXT_FIELDS = [
   'letterDate', 'recipient', 'recipientOrg', 'subject', 'reference', 'enclosure', 'body', 'body2', 'attention',
-  'site', 'techList', 'jobId', 'cc', 'signerId',
+  'site', 'techList', 'jobId', 'contractNo', 'cc', 'signerId',
   'warrantyType', 'warrantyStart', 'warrantyEnd', 'warrantyDetail',
 ] as const
 const ONE_OF = {
@@ -137,6 +165,8 @@ export function cleanLetterInput(input: LetterInput): { ok: true; value: CleanLe
     const t = String(v).slice(0, TEXT_MAX).trim()   // ข้อความหลายบรรทัดคงรูป · ตัดช่องว่างหัวท้ายเท่านั้น
     if (t) out[k] = t
   }
+  // [Flow 2026-11-25] ออกจดหมายต้องเลือก Job No. ก่อนเป็นอันดับแรก — เลขจดหมายรันตาม Job (sync 0102)
+  if (!out.jobId) return { ok: false, error: 'กรุณาเลือก Job No. ก่อน — เลขจดหมายรันตาม Job' }
   for (const [k, allowed] of Object.entries(ONE_OF) as [keyof typeof ONE_OF, readonly string[]][]) {
     const v = src[k] == null || src[k] === '' ? allowed[0] : String(src[k])
     if (!allowed.includes(v)) return { ok: false, error: `ค่า ${k} ไม่ถูกต้อง` }
@@ -217,12 +247,16 @@ export interface LetterNotify { type: 'letter_issued'; dept: 'project'; jobId: s
 
 /** โหมดเดโม — ออกจดหมาย (sync กับ rpc_create_service_letter ใน drafts/0100) */
 export function createLetterDemo(letters: ServiceLetter[], actor: User, input: LetterInput, nowIso: string, signers: LetterSigner[],
-  /** เลขที่เคยออกแล้ว (รวมฉบับที่ถูกลบ) — เลขไม่ถูกนำกลับมาใช้ · sync letter_no_counters (0100) */
-  issuedNos: string[] = [])
-  : { letters: ServiceLetter[]; letter: ServiceLetter; notify?: LetterNotify } {
+  /** เลขที่เคยออกแล้ว (รวมฉบับที่ถูกลบ) — เลขไม่ถูกนำกลับมาใช้ · sync letter_no_seq (0102) */
+  issuedNos: string[] = [],
+  /** Job ในระบบ — [Flow 2026-11-25] เลขจดหมายรันตาม Job No. */
+  jobs: { id: string; jobNo: string }[] = [])
+  : { letters: ServiceLetter[]; letter: ServiceLetter; notify: LetterNotify } {
   if (!canLetter(actor, 'manage')) throw new Error('แผนกของคุณไม่มีสิทธิ์ออกจดหมาย')
   const r = cleanLetterInput(input)
   if (!r.ok) throw new Error(r.error)
+  const job = jobs.find(j => j.id === r.value.jobId)
+  if (!job) throw new Error('ไม่พบ Job ที่อ้างถึง')
   const signer = signers.find(s => s.id === r.value.signerId && s.isActive)
   if (!signer) throw new Error('ไม่พบผู้ลงนามในรายชื่อที่ใช้งาน — กรุณาเลือกใหม่')
   const today = bkkDate(nowIso)
@@ -232,13 +266,12 @@ export function createLetterDemo(letters: ServiceLetter[], actor: User, input: L
     signerName: signer.fullName,
     signerPosition: signer.position,
     id: crypto.randomUUID(),
-    letterNo: nextLetterNo([...letters.map(l => l.letterNo), ...issuedNos], today),
+    letterNo: nextLetterNo([...letters.map(l => l.letterNo), ...issuedNos], job.jobNo, today),
     createdBy: actor.id,
     createdAt: nowIso,
   }
-  const notify: LetterNotify | undefined = letter.jobId
-    ? { type: 'letter_issued', dept: 'project', jobId: letter.jobId, message: `✉️ ออกจดหมาย ${letter.letterNo} — ${letter.subject}` }
-    : undefined
+  // ทุกฉบับมี Job แล้ว ⇒ แจ้ง Project ของงานทุกครั้ง (กระดิ่ง · ไม่ส่ง LINE)
+  const notify: LetterNotify = { type: 'letter_issued', dept: 'project', jobId: job.id, message: `✉️ ออกจดหมาย ${letter.letterNo} — ${letter.subject}` }
   return { letters: [letter, ...letters], letter, notify }
 }
 
@@ -249,7 +282,6 @@ export function deleteLetterDemo(letters: ServiceLetter[], actor: User, id: stri
   return letters.filter(l => l.id !== id)
 }
 
-const dmyDash = (s?: string) => { const m = String(s ?? '').match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[3]}-${m[2]}-${m[1]}` : '-' }
 
 /**
  * ปุ่ม "ออก Warranty Letter" ในหน้า Warranty (คำตอบผู้ใช้ข้อ 6) — เติมฟอร์มจากข้อมูลที่ระบบมีอยู่แล้ว
@@ -257,26 +289,36 @@ const dmyDash = (s?: string) => { const m = String(s ?? '').match(/^(\d{4})-(\d{
  *   ประกันตัวเครื่องจัดกลุ่มตามช่วงวันที่ (เครื่องที่ช่วงเดียวกันรวมบรรทัดเดียว)
  *   ผู้ใช้แก้ทุกช่องได้ก่อนบันทึก (ผู้ลงนาม/เรียน ยังต้องเลือก/กรอกเอง)
  */
-export function warrantyLetterPrefill(job: Job, warranties: JobWarranty[]): LetterInput {
+/** [0101] Contract No. ของเครื่อง LBS ใน Job (ไม่ซ้ำ · เรียง · คั่นด้วย ", ") — เติมช่อง Contract No. ให้อัตโนมัติ */
+type UnitRef = { jobId?: string | null; contractNo?: string | null }
+export function contractNosOfJob(units: UnitRef[], jobId?: string): string {
+  if (!jobId) return ''
+  return [...new Set(units.filter(u => u.jobId === jobId && u.contractNo?.trim()).map(u => u.contractNo!.trim()))]
+    .sort().join(', ')
+}
+
+export function warrantyLetterPrefill(job: Job, warranties: JobWarranty[],
+  units: UnitRef[] = []): LetterInput {
   const ws = warranties.filter(w => w.jobId === job.id)
   const inst = ws.find(w => w.kind === 'installation')
   const lbs = ws.filter(w => w.kind === 'lbs')
   const groups = new Map<string, number>()
   for (const w of lbs) { const k = `${w.startDate}|${w.endDate}`; groups.set(k, (groups.get(k) ?? 0) + 1) }
   const lines: string[] = []
-  if (inst) lines.push(`ประกันงานติดตั้ง: ${dmyDash(inst.startDate)} ถึง ${dmyDash(inst.endDate)}`)
-  for (const [k, n] of groups) { const [s, e] = k.split('|'); lines.push(`ประกันตัวเครื่อง LBS ${n} เครื่อง: ${dmyDash(s)} ถึง ${dmyDash(e)}`) }
+  if (inst) lines.push(`ประกันงานติดตั้ง: ${thaiDateFull(inst.startDate)} ถึง ${thaiDateFull(inst.endDate)}`)
+  for (const [k, n] of groups) { const [s, e] = k.split('|'); lines.push(`ประกันตัวเครื่อง LBS ${n} เครื่อง: ${thaiDateFull(s)} ถึง ${thaiDateFull(e)}`) }
   const start = inst?.startDate ?? lbs.map(w => w.startDate).sort()[0]
   const end = inst?.endDate ?? lbs.map(w => w.endDate).sort().slice(-1)[0]
   const site = job.issueLocation || job.installLocation
   return {
     category: 'WARRANTY',
     jobId: job.id,
+    contractNo: contractNosOfJob(units, job.id) || undefined,
     recipient: job.customerName,
     site: site || undefined,
     subject: `แจ้งระยะเวลารับประกัน ${job.jobNo}`,
     reference: job.acceptanceType
-      ? `${job.acceptanceType}${job.acceptanceDocNo ? ` เลขที่ ${job.acceptanceDocNo}` : ''}${job.acceptanceDate ? ` ลงวันที่ ${dmyDash(job.acceptanceDate)}` : ''}`
+      ? `${job.acceptanceType}${job.acceptanceDocNo ? ` เลขที่ ${job.acceptanceDocNo}` : ''}${job.acceptanceDate ? ` ลงวันที่ ${thaiDateFull(job.acceptanceDate)}` : ''}`
       : undefined,
     body: `ตามที่บริษัทฯ ได้ดำเนินการติดตั้ง Load Break Switch ตามงาน ${job.jobNo} แล้วเสร็จ บริษัทฯ ขอแจ้งระยะเวลาการรับประกันตามรายละเอียดด้านล่าง`,
     warrantyType: [inst && 'งานติดตั้ง', lbs.length > 0 && 'ตัวเครื่อง LBS'].filter(Boolean).join(' + ') || undefined,

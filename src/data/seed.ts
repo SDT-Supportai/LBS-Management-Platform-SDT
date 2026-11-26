@@ -249,15 +249,15 @@ export function buildSeedDb(): DB {
 
   // ---- จดหมายตัวอย่าง (0100) — Official Letter ไม่อ้าง Job + Service Official Letter อ้าง JOB-0004 ----
   db = L.createServiceLetter(db, USERS[4], {
-    category: 'GENERAL', letterType: 'EXTERNAL', letterDate: '2026-07-01',
+    category: 'GENERAL', letterType: 'EXTERNAL', letterDate: '2026-07-01', jobId: job3,   // [Flow] ทุกฉบับต้องมี Job
     recipient: 'ผู้จัดการแผนกจัดหา', recipientOrg: 'EGAT บางปะกง',
     subject: 'ขอส่งกำหนดการส่งมอบ 115kV Load Break Switch',
-    reference: 'สัญญาเลขที่ CT-2026-0103', enclosure: 'แผนการส่งมอบ 1 ชุด',
+    contractNo: 'CT-2026-0103', enclosure: 'แผนการส่งมอบ 1 ชุด',
     body: 'บริษัทฯ ขอส่งกำหนดการส่งมอบ 115kV Load Break Switch จำนวน 2 ชุด ตามสัญญาที่อ้างถึง รายละเอียดตามสิ่งที่ส่งมาด้วย',
     signerId: DEMO_LETTER_SIGNERS[0].id,
   })
   db = L.createServiceLetter(db, svcUser, {
-    category: 'SM', letterDate: '2026-07-02', jobId: job4,
+    category: 'SM', letterDate: '2026-07-02', jobId: job4, contractNo: 'CT-2026-0104',
     recipient: 'นิคมอุตสาหกรรมอมตะซิตี้\nฝ่ายวิศวกรรมไฟฟ้า', attention: 'ผู้จัดการฝ่ายวิศวกรรมไฟฟ้า',
     subject: 'ขอแจ้งรายชื่อเจ้าหน้าที่เข้าติดตั้ง 115kV Load Break Switch', site: 'อมตะซิตี้ จ.ระยอง',
     body: 'บริษัทฯ ขอแจ้งรายชื่อเจ้าหน้าที่ที่จะเข้าดำเนินการติดตั้งในวันที่ 5-6 กรกฎาคม 2569 ดังนี้',

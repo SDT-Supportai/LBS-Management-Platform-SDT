@@ -12,17 +12,18 @@ const lt = (o: Partial<ServiceLetter> = {}): ServiceLetter => ({
 })
 
 describe('buildLetterHtml — เลือกแม่แบบตามประเภท', () => {
-  it('GENERAL: หัวกระดาษ + เลขที่ + วันที่ DD/MM/YYYY + ป้ายหนังสือภายนอก/ภายใน', () => {
+  it('GENERAL: หัวกระดาษ + เลขที่ + วันที่เดือนชื่อเต็ม พ.ศ. ([Flow 2026-11-25]) + ป้ายหนังสือภายนอก/ภายใน', () => {
     const h = buildLetterHtml(lt())
     expect(h).toContain('PSP-LBS-2026-016')
-    expect(h).toContain('25/11/2026')
+    expect(h).toContain('25 พฤศจิกายน 2569')
+    expect(h).not.toContain('25-11-2026')
     expect(h).toContain('หนังสือภายนอก')
     expect(buildLetterHtml(lt({ letterType: 'INTERNAL' }))).toContain('หนังสือภายใน')
     expect(h).toContain(LETTER_ORG_DEFAULT.name)
   })
-  it('SM: รายชื่อเจ้าหน้าที่เป็นลำดับ + เบอร์ · วันที่ DD-MM-YYYY · ผู้รับขึ้นบรรทัดใหม่', () => {
+  it('SM: รายชื่อเจ้าหน้าที่เป็นลำดับ + เบอร์ · วันที่เดือนชื่อเต็ม · ผู้รับขึ้นบรรทัดใหม่', () => {
     const h = buildLetterHtml(lt({ category: 'SM', recipient: 'กฟภ.\nฝ่ายปฏิบัติการ', techList: 'สมชาย | 081\nสมศรี' }))
-    expect(h).toContain('25-11-2026')
+    expect(h).toContain('25 พฤศจิกายน 2569')
     expect(h).toContain('1. สมชาย')
     expect(h).toContain('เบอร์ 081')
     expect(h).toContain('2. สมศรี')
@@ -31,7 +32,7 @@ describe('buildLetterHtml — เลือกแม่แบบตามปร�
   it('WARRANTY: กล่องประเภท + ระยะเวลารับประกัน', () => {
     const h = buildLetterHtml(lt({ category: 'WARRANTY', warrantyType: 'LBS', warrantyStart: '2026-01-01', warrantyEnd: '2028-01-01' }))
     expect(h).toContain('ประเภทการรับประกัน')
-    expect(h).toContain('01-01-2026 ถึง 01-01-2028')
+    expect(h).toContain('1 มกราคม 2569 ถึง 1 มกราคม 2571')
   })
 })
 
@@ -63,12 +64,11 @@ describe('buildLetterHtml — ความปลอดภัย (แท็บพ
     }
     expect(buildLetterHtml(lt({ category: 'SM', sigImage: PNG }))).not.toContain('class="sig-space"')
   })
-  it('โลโก้ LBS เดิม (public/logo.jpg) ผ่าน lbsLetterOrg(origin) — dev (http://localhost) ก็ใช้ได้', () => {
+  it('[ปรับ 2026-11-25] โลโก้ PRECISE + แถบสีท้ายกระดาษ (public/letter-logo.png · letter-banner.png) ผ่าน lbsLetterOrg(origin)', () => {
     const org = lbsLetterOrg('http://localhost:5200')
-    expect(org.logoUrl).toBe('http://localhost:5200/logo.jpg')
+    expect(org.logoUrl).toBe('http://localhost:5200/letter-logo.png')
+    expect(org.bannerUrl).toBe('http://localhost:5200/letter-banner.png')
     expect(org.name).toBe(LETTER_ORG_DEFAULT.name)
-    expect(buildLetterHtml(lt({ category: 'SM' }), org)).toContain('<img class="logo" src="http://localhost:5200/logo.jpg"')
-    expect(buildLetterHtml(lt(), org)).toContain('src="http://localhost:5200/logo.jpg"')
   })
   it('โลโก้/แถบท้ายกระดาษ: ไม่ตั้งค่า = ไม่วาด <img> ว่าง · URL ไม่ปลอดภัย = ไม่วาด', () => {
     const h = buildLetterHtml(lt({ category: 'SM' }))
@@ -91,5 +91,58 @@ describe('[ผูกระบบ 2026-11-25] Official Letter (GENERAL) รอง
   it('🔴 ลายเซ็นปลอมใน GENERAL ก็ไม่ถูกวาง', () => {
     const h = buildLetterHtml(lt({ sigImage: 'x" onerror="alert(1)' }))
     expect(h).not.toContain('onerror')
+  })
+})
+
+// =============================================================================
+// ปรับตามไฟล์แนบ (2026-11-25) — หัว/ท้ายกระดาษเดียวกันทุกแบบ · TH SarabunPSK 16 · การอ้างอิง Contract No. / Job No.
+// =============================================================================
+describe('[ปรับ 2026-11-25] หัว/ท้ายกระดาษตามไฟล์แนบ — ทั้ง 3 แบบ', () => {
+  const org = lbsLetterOrg('https://lbs.example.com')
+  for (const category of ['GENERAL', 'SM', 'WARRANTY'] as const) {
+    it(`${category}: โลโก้ PRECISE ซ้าย · ที่อยู่บริษัทขวา · ท้ายกระดาษ ชื่อแผนก + อีเมล + แถบสี`, () => {
+      const h = buildLetterHtml(lt({ category }), org)
+      expect(h).toContain('<img class="logo" src="https://lbs.example.com/letter-logo.png"')
+      expect(h).toContain('1/333 Moo 9, Chaengwattana Road')
+      expect(h).toContain('T : +66(0)2 584 2367')
+      expect(h).toContain('Service &amp; Maintenance Section')
+      expect(h).toContain('psp102.service@precise.co.th')
+      expect(h).toContain('<img class="banner" src="https://lbs.example.com/letter-banner.png"')
+    })
+    it(`${category}: ฟอนต์ TH SarabunPSK ขนาด 16`, () => {
+      const h = buildLetterHtml(lt({ category }), org)
+      expect(h).toMatch(/body\{font-family:'TH SarabunPSK'/)
+      expect(h).toContain('font-size:16pt')
+    })
+  }
+})
+
+describe('[ปรับ 2026-11-25] การอ้างอิงตามประเภทหนังสือ', () => {
+  it('Official Letter ภายนอก → อ้างอิง Contract No. (ไม่แสดง Job No.)', () => {
+    const h = buildLetterHtml(lt({ letterType: 'EXTERNAL', contractNo: 'CT-2026-0103' }), LETTER_ORG_DEFAULT, 'JOB-2026-0003')
+    expect(h).toContain('Contract No. CT-2026-0103')
+    expect(h).not.toContain('JOB-2026-0003')
+  })
+  it('Official Letter ภายใน → อ้างอิง Job No. (ไม่แสดง Contract No.)', () => {
+    const h = buildLetterHtml(lt({ letterType: 'INTERNAL', contractNo: 'CT-2026-0103' }), LETTER_ORG_DEFAULT, 'JOB-2026-0003')
+    expect(h).toContain('Job No. JOB-2026-0003')
+    expect(h).not.toContain('CT-2026-0103')
+  })
+  for (const category of ['SM', 'WARRANTY'] as const) {
+    it(`${category} → อ้างอิง 1. Contract No. 2. โครงการ Job No.`, () => {
+      const h = buildLetterHtml(lt({ category, contractNo: 'CT-2026-0104' }), LETTER_ORG_DEFAULT, 'JOB-2026-0004')
+      expect(h).toContain('1. Contract No. CT-2026-0104')
+      expect(h).toContain('2. โครงการ Job No. JOB-2026-0004')
+    })
+  }
+  it('ไม่มีทั้ง Contract No. และ Job = ไม่มีบล็อกอ้างอิง · มีอย่างเดียว = อีกบรรทัดเป็น "-"', () => {
+    expect(buildLetterHtml(lt({ category: 'SM' }))).not.toContain('Contract No.')
+    const h = buildLetterHtml(lt({ category: 'SM' }), LETTER_ORG_DEFAULT, 'JOB-2026-0004')
+    expect(h).toContain('1. Contract No. -')
+    expect(h).toContain('2. โครงการ Job No. JOB-2026-0004')
+  })
+  it('🔴 Contract No. ถูก escape', () => {
+    const h = buildLetterHtml(lt({ contractNo: '<b>x</b>' }))
+    expect(h).not.toContain('<b>x</b>')
   })
 })

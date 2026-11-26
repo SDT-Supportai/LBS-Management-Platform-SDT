@@ -83,7 +83,10 @@ for (const d of ['admin', 'service', 'project', 'sales', 'purchasing', 'vip', 'o
 const [{ id: JOB }] = await one(`INSERT INTO jobs (job_no) VALUES ('JOB-T-1') RETURNING id`)
 
 // ---------- รันร่าง (2 รอบ = idempotent) ----------
-const draft = readFileSync(DRAFT, 'utf8')
+// [0101] ส่งได้หลายไฟล์ตามลำดับ: node test_0100_pglite.mjs <migrations> <0100.sql> [<0101.sql>]
+const EXTRA = process.argv.slice(4)
+const HAS_0101 = EXTRA.some(f => /0101_/.test(f))
+const draft = [DRAFT, ...EXTRA].map(f => readFileSync(f, 'utf8')).join('\n;\n')
 const results = []
 const ok = (name, cond, extra = '') => { results.push({ name, pass: !!cond }); console.log(cond ? 'PASS' : 'FAIL', name, extra) }
 for (const round of [1, 2]) {
@@ -215,6 +218,14 @@ const L4 = r.rows?.[0]?.r?.id
 await as('admin', `SELECT rpc_delete_service_letter($1) AS p`, [L4])
 r = await create('service', { ...base, signer_id: S1 })
 ok('ลบฉบับล่าสุดแล้ว เลขไม่ถูกนำกลับมาใช้ (ได้ 005 ไม่ใช่ 004)', r.rows?.[0]?.r?.letter_no === `PSP-LBS-${yr}-005`, JSON.stringify(r.rows?.[0]?.r ?? r.error))
+if (HAS_0101) {
+  r = await create('project', { ...base, signer_id: S1, job_id: JOB, category: 'WARRANTY', contract_no: ' CT-2026-0104 ' })
+  const cid = r.rows?.[0]?.r?.id
+  const row = cid ? (await one(`SELECT contract_no, job_id FROM service_letters WHERE id = $1`, [cid]))[0] : null
+  ok('[0101] บันทึก Contract No. (ตัดช่องว่าง) คู่กับ Job', row?.contract_no === 'CT-2026-0104' && row?.job_id === JOB, JSON.stringify(row ?? r.error))
+  r = await create('service', { ...base, signer_id: S1, contract_no: 'x'.repeat(20001) })
+  ok('[0101] Contract No. ยาวผิดปกติ = error ไทย', r.error && thai(r.error), r.error)
+}
 r = await as('admin', `SELECT * FROM letter_no_counters`)
 ok('ตารางตัวนับเลขอ่านตรงไม่ได้ (ภายในระบบ)', /permission denied/i.test(r.error ?? ''), r.error ?? JSON.stringify(r.rows))
 

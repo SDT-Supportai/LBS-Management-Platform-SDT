@@ -233,7 +233,7 @@ export default function WarrantyPage() {
                         {/* 0100 — คำตอบผู้ใช้ข้อ 6: เติมข้อมูลประกันให้ · แก้ได้ทุกช่องก่อนออกเลข */}
                         {canLetterIssue && (
                           <button className="small" style={{ marginLeft: 6 }} title="เปิดฟอร์ม Warranty Letter ที่เติมข้อมูลประกันของงานนี้แล้ว"
-                            onClick={() => setLetterInit(warrantyLetterPrefill(job, db.jobWarranties))}>✉️ ออก Warranty Letter</button>
+                            onClick={() => setLetterInit(warrantyLetterPrefill(job, db.jobWarranties, db.lbsUnits))}>✉️ ออก Warranty Letter</button>
                         )}
                       </td>
                     </tr>
