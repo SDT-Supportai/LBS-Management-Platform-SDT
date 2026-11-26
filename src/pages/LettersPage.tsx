@@ -10,7 +10,8 @@ import { LetterFormModal, LETTER_CATEGORY_LABEL, JobSelect } from '../ui/LetterF
 import { buildLetterHtml, lbsLetterOrg, openPrintWindow, writePrintWindow } from '../ui/letterPdf'
 import { fmtDateTime } from '../ui/format'
 import { supabase } from '../lib/supabase'
-import { uploadLetterDoc, signedLetterDocUrl, removeLetterDocs, fetchLetterSigImage } from '../data/remote'
+import { uploadLetterDoc, signedLetterDocUrl, removeLetterDocs, fetchLetterSigImage, signedLetterImageUrls } from '../data/remote'
+import { bodyToHtml, letterImagePaths, imgStoragePath, richToPlainText } from '../data/letterRich'
 
 // =============================================================================
 // Letters (0100 · 2026-11-25) — ทะเบียนจดหมาย PSP-LBS-YYYY-NNN ยกจาก ServiceMS Service Letter
@@ -35,6 +36,7 @@ export default function LettersPage() {
   const [jobFilter, setJobFilter] = useState<string | undefined>(undefined)
   const [creating, setCreating] = useState<LetterInput | null>(null)   // ค่าเริ่มของฟอร์ม (Job ที่กรองอยู่ติดมา)
   const [filesId, setFilesId] = useState<string | null>(null)
+  const [editing, setEditing] = useState<ServiceLetter | null>(null)   // [Word 2026-11-26] แก้จดหมายที่ออกแล้ว
   const [uploading, setUploading] = useState(false)
 
   const jobNo = (id?: string) => (id ? db.jobs.find(j => j.id === id)?.jobNo : undefined)
@@ -44,7 +46,7 @@ export default function LettersPage() {
   const shown = db.serviceLetters
     .filter(l => !jobFilter || l.jobId === jobFilter)
     .filter(l => !cat || l.category === cat)
-    .filter(l => !text || [l.letterNo, l.subject, l.recipient, l.recipientOrg, l.signerName, jobNo(l.jobId), l.contractNo]
+    .filter(l => !text || [l.letterNo, l.subject, l.recipient, l.recipientOrg, l.signerName, jobNo(l.jobId), l.contractNo, richToPlainText(l.body)]
       .some(s => s?.toLowerCase().includes(text)))
     // เรียงตาม Job No. แล้วเลขที่ใหม่ → เก่าในแต่ละ Job (จดหมายของงานเดียวกันอยู่ติดกัน)
     .sort((a, b) => (jobNo(a.jobId) ?? '~').localeCompare(jobNo(b.jobId) ?? '~') || b.letterNo.localeCompare(a.letterNo))
@@ -57,7 +59,10 @@ export default function LettersPage() {
     try {
       // LIVE: ลายเซ็นไม่ได้โหลดมากับรายการ (remote.ts fetchLetterSigImage)
       const sigImage = supabase ? await fetchLetterSigImage(supabase, l.id) : l.sigImage
-      writePrintWindow(w, buildLetterHtml({ ...l, sigImage }, lbsLetterOrg(window.location.origin), jobNo(l.jobId)))
+      // [Word 2026-11-26] รูปในเนื้อความ (LIVE) = ขอ signed URL ตอนพิมพ์ · เดโมเป็น data URL อยู่แล้ว
+      const tokens = letterImagePaths(bodyToHtml(l.body))
+      const imgUrls = supabase && tokens.length ? await signedLetterImageUrls(supabase, tokens) : {}
+      writePrintWindow(w, buildLetterHtml({ ...l, sigImage }, lbsLetterOrg(window.location.origin), jobNo(l.jobId), imgUrls))
     } catch (e) {
       w.close()
       show(e instanceof Error ? e.message : String(e), true)
@@ -151,6 +156,7 @@ export default function LettersPage() {
                   <td style={{ minWidth: 140 }}>{l.signerName}<div className="muted" style={{ fontSize: 12 }}>{l.signerPosition}</div></td>
                   <td style={{ minWidth: 120 }}>{userName(l.createdBy)}<div className="muted" style={{ fontSize: 12 }}>{fmtDateTime(l.createdAt)}</div></td>
                   <td style={{ whiteSpace: 'nowrap' }}>
+                    {canManage && <button className="small" style={{ marginRight: 6 }} title="แก้ไขจดหมาย (เลขที่/Job คงเดิม)" onClick={() => setEditing(l)}>✏️</button>}
                     <button className="small" title="ไฟล์แนบ" onClick={() => setFilesId(l.id)}>📎 {filesOf(l.id).length}</button>
                     <button className="small" style={{ marginLeft: 6 }} title="เปิดเอกสารพร้อมพิมพ์ / บันทึก PDF" onClick={() => printLetter(l)}>📄 PDF</button>
                     {canDelete && (
@@ -158,7 +164,10 @@ export default function LettersPage() {
                         onClick={async () => {
                           const n = filesOf(l.id).length
                           if (!await ask({ title: `ลบจดหมาย ${l.letterNo}`, description: `ลบแล้วกู้คืนไม่ได้${n ? ` · ไฟล์แนบ ${n} ไฟล์ถูกลบด้วย` : ''} · เลขที่นี้จะไม่ถูกนำกลับมาใช้ · บันทึกใน Audit Log`, confirmLabel: 'ลบจดหมาย' })) return
-                          await tryAction(() => act.deleteServiceLetter({ letterId: l.id }), `ลบจดหมาย ${l.letterNo} แล้ว`)
+                          const imgs = letterImagePaths(bodyToHtml(l.body))
+                          const ok = await tryAction(() => act.deleteServiceLetter({ letterId: l.id }), `ลบจดหมาย ${l.letterNo} แล้ว`)
+                          // รูปในเนื้อความไม่อยู่ในตารางไฟล์แนบ ⇒ ลบไฟล์ใน bucket ต่อเอง (หลังแถวหายแล้ว)
+                          if (ok && supabase && imgs.length) await removeLetterDocs(supabase, imgs.map(imgStoragePath))
                         }}>🗑</button>
                     )}
                   </td>
@@ -169,6 +178,10 @@ export default function LettersPage() {
         </div>
       </div>
 
+      {editing && (
+        <LetterFormModal editLetter={editing} onClose={() => setEditing(null)}
+          onSaved={r => show(`บันทึกการแก้ไข ${r.letterNo} แล้ว`)} />
+      )}
       {creating && (
         <LetterFormModal initial={creating} onClose={() => setCreating(null)}
           onSaved={r => show(`ออกจดหมาย ${r.letterNo} แล้ว — กด 📄 เพื่อพิมพ์ / 📎 เพื่อแนบไฟล์`)} />

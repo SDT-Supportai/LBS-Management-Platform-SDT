@@ -146,3 +146,30 @@ describe('[ปรับ 2026-11-25] การอ้างอิงตามป�
     expect(h).not.toContain('<b>x</b>')
   })
 })
+
+describe('[Word 2026-11-26] เนื้อความ HTML ในเอกสารพิมพ์', () => {
+  const IMG = 'lbsimg:letter-img/3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90.jpg'
+  for (const category of ['GENERAL', 'SM', 'WARRANTY'] as const) {
+    it(`${category}: คงรูปแบบ (หนา/ตาราง/จัดกลาง) · 🔴 ตัดโค้ดอันตราย`, () => {
+      const h = buildLetterHtml(lt({ category, body: '<p style="text-align:center"><b>หนา</b></p><table><tbody><tr><td>ช่อง</td></tr></tbody></table><script>alert(1)</script><p onclick="x">ท้าย</p>' }))
+      expect(h).toContain('<p style="text-align:center"><b>หนา</b></p>')
+      expect(h).toContain('<table><tbody><tr><td>ช่อง</td></tr></tbody></table>')
+      expect(h).not.toContain('alert(1)')
+      expect(h).not.toContain('onclick')
+    })
+  }
+  it('รูปของระบบ → signed URL ที่ส่งมา · ไม่มี URL = ไม่วาดรูป', () => {
+    const url = 'https://x.supabase.co/storage/v1/object/sign/letter-docs/letter-img/a.jpg?token=t'
+    expect(buildLetterHtml(lt({ body: `<p>ก</p><img src="${IMG}">` }), LETTER_ORG_DEFAULT, undefined, { [IMG]: url })).toContain(`<img src="${url}"`)
+    expect(buildLetterHtml(lt({ body: `<p>ก</p><img src="${IMG}">` }))).not.toContain('lbsimg:')
+  })
+  it('จดหมายเก่า (ข้อความล้วน) แสดงเป็นย่อหน้าละบรรทัด และ escape เหมือนเดิม', () => {
+    const h = buildLetterHtml(lt({ body: 'บรรทัด 1\n<b>ไม่ใช่แท็ก</b>' }))
+    expect(h).toContain('<p>บรรทัด 1</p><p>&lt;b&gt;ไม่ใช่แท็ก&lt;/b&gt;</p>')
+  })
+  it('ตารางมีเส้นขอบ · รูปไม่ล้นหน้ากระดาษ', () => {
+    const h = buildLetterHtml(lt())
+    expect(h).toMatch(/\.rich table\{[^}]*border-collapse:collapse/)
+    expect(h).toMatch(/\.rich img\{[^}]*max-width:100%/)
+  })
+})

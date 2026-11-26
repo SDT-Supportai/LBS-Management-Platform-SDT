@@ -13,6 +13,7 @@
 //   ⇒ ข้อความผู้ใช้ escape ทุกช่อง (รวม " ') · รูป (ลายเซ็น/โลโก้) รับเฉพาะ data URL รูป หรือ https ที่ไม่มีอักขระพิเศษ
 // =============================================================================
 import { safeSigImage, parseTechList, thaiDateFull, type ServiceLetter } from '../data/letters'
+import { bodyToHtml, resolveLetterImages } from '../data/letterRich'
 
 export interface LetterOrg {
   name: string                  // ชื่อบริษัท (หัวกระดาษขวาบน + ท้ายกระดาษ)
@@ -55,6 +56,21 @@ export function lbsLetterOrg(origin: string): LetterOrg {
   return { ...LETTER_ORG_DEFAULT, logoUrl: `${o}/letter-logo.png`, bannerUrl: `${o}/letter-banner.png` }
 }
 
+/**
+ * [Word 2026-11-26] รูปแบบเนื้อความ HTML — ใช้ร่วมกันทั้งแท็บพิมพ์และหน้ากระดาษในตัวแก้ไข (เห็นเหมือนกัน)
+ *   ย่อหน้าบรรทัดแรก 15 มม. · ชิดขอบสองด้าน · ตารางมีเส้น · รูปไม่ล้นหน้ากระดาษ
+ */
+export const LETTER_RICH_CSS = `
+  .rich{margin-top:5mm;text-align:justify}
+  .rich p{margin:0 0 2mm;text-indent:15mm}
+  .rich li p,.rich td p,.rich th p{text-indent:0;margin:0}
+  .rich ul,.rich ol{margin:0 0 2mm 15mm;padding-left:6mm}
+  .rich blockquote{margin:0 0 2mm 15mm}
+  .rich table{border-collapse:collapse;width:100%;margin:2mm 0 3mm}
+  .rich td,.rich th{border:1px solid #475569;padding:1mm 2mm;vertical-align:top;text-indent:0;text-align:left}
+  .rich th{background:#f1f5f9;font-weight:700}
+  .rich img{max-width:100%;height:auto}`
+
 // A4 ขอบ 0 · หัว/ท้ายกระดาษ fixed ซ้ำทุกหน้า · thead/tfoot เว้นที่ให้เนื้อหาไม่ทับ
 const PRINT_PAGE = `
   @media print{
@@ -91,6 +107,7 @@ const BASE_CSS = `
   .frow .k{font-weight:700;min-width:25mm;flex:0 0 auto}
   .frow .v{flex:1}
   .para{margin-top:5mm;text-indent:15mm;text-align:justify;white-space:pre-wrap}
+  ${LETTER_RICH_CSS}
   .ack{margin-top:6mm;text-indent:15mm}
   .close{margin-top:6mm;text-align:center}
   .close img.sig{height:20mm;object-fit:contain;display:block;margin:2mm auto}
@@ -140,30 +157,30 @@ function serviceRefs(lt: ServiceLetter, jobNo?: string): string {
 }
 
 /** ส่วนบนของ SM / WARRANTY: ผู้รับ · เรื่อง (+สถานที่) · เรียน · อ้างอิง · อ้างถึง · ย่อหน้า */
-function serviceHead(lt: ServiceLetter, jobNo?: string): string {
+function serviceHead(lt: ServiceLetter, rich: string, jobNo?: string): string {
   return `<div class="recip">${escBr(lt.recipient)}</div>
       ${frow('เรื่อง', `${esc(lt.subject)}${lt.site ? '<br>' + esc(lt.site) : ''}`)}
       ${frow('เรียน', esc(lt.attention || '—'))}
       ${serviceRefs(lt, jobNo)}
       ${lt.reference ? frow('อ้างถึง', esc(lt.reference)) : ''}
-      <div class="para">${esc(lt.body)}</div>
+      <div class="rich">${rich}</div>
       ${lt.body2 ? `<div class="para">${esc(lt.body2)}</div>` : ''}`
 }
 
-function smLetter(lt: ServiceLetter, org: LetterOrg, jobNo?: string): string {
+function smLetter(lt: ServiceLetter, org: LetterOrg, rich: string, jobNo?: string): string {
   const techs = parseTechList(lt.techList).map((t, i) =>
     `<div class="tech"><div class="nm">${i + 1}. ${esc(t.name)}</div><div class="tph">${t.phone ? 'เบอร์ ' + esc(t.phone) : ''}</div></div>`).join('')
-  return pageShell(lt, org, `${serviceHead(lt, jobNo)}
+  return pageShell(lt, org, `${serviceHead(lt, rich, jobNo)}
       <div class="techs">${techs}</div>`, `
   .techs{margin-top:2mm}
   .tech{display:flex;gap:5mm;margin:1mm 0 1mm 15mm}
   .tech .nm{min-width:90mm}`)
 }
 
-function warrantyLetter(lt: ServiceLetter, org: LetterOrg, jobNo?: string): string {
+function warrantyLetter(lt: ServiceLetter, org: LetterOrg, rich: string, jobNo?: string): string {
   const period = (lt.warrantyStart || lt.warrantyEnd)
     ? `${esc(thaiDateFull(lt.warrantyStart))} ถึง ${esc(thaiDateFull(lt.warrantyEnd))}` : '-'
-  return pageShell(lt, org, `${serviceHead(lt, jobNo)}
+  return pageShell(lt, org, `${serviceHead(lt, rich, jobNo)}
       <div class="wbox">
         <div class="wrow"><span class="wk">ประเภทการรับประกัน</span><span class="wv">${esc(lt.warrantyType || '-')}</span></div>
         <div class="wrow"><span class="wk">ระยะเวลารับประกัน</span><span class="wv">${period}</span></div>
@@ -177,7 +194,7 @@ function warrantyLetter(lt: ServiceLetter, org: LetterOrg, jobNo?: string): stri
 }
 
 /** Official Letter — ภายนอกอ้างอิง Contract No. · ภายในอ้างอิง Job No. */
-function officialLetter(lt: ServiceLetter, org: LetterOrg, jobNo?: string): string {
+function officialLetter(lt: ServiceLetter, org: LetterOrg, rich: string, jobNo?: string): string {
   const internal = lt.letterType === 'INTERNAL'
   const typeLabel = internal ? 'หนังสือภายใน / Internal Memo' : 'หนังสือภายนอก / Official Letter'
   const ref = internal
@@ -189,15 +206,19 @@ function officialLetter(lt: ServiceLetter, org: LetterOrg, jobNo?: string): stri
       ${ref}
       ${lt.reference ? frow('อ้างถึง', esc(lt.reference)) : ''}
       ${lt.enclosure ? frow('สิ่งที่ส่งมาด้วย', esc(lt.enclosure)) : ''}
-      <div class="para">${esc(lt.body)}</div>`, '',
+      <div class="rich">${rich}</div>`, '',
   lt.cc ? `<div class="cc"><b>สำเนาเรียน</b> ${esc(lt.cc)}</div>` : '')
 }
 
 /** HTML เอกสารพร้อมพิมพ์ตามประเภทจดหมาย · jobNo = เลข Job ที่อ้างถึง (หน้าเรียกหาเองจาก lt.jobId) */
-export function buildLetterHtml(lt: ServiceLetter, org: LetterOrg = LETTER_ORG_DEFAULT, jobNo?: string): string {
-  if (lt.category === 'SM') return smLetter(lt, org, jobNo)
-  if (lt.category === 'WARRANTY') return warrantyLetter(lt, org, jobNo)
-  return officialLetter(lt, org, jobNo)
+export function buildLetterHtml(lt: ServiceLetter, org: LetterOrg = LETTER_ORG_DEFAULT, jobNo?: string,
+  /** [Word 2026-11-26] token รูป → signed URL (LIVE) · ไม่ส่ง = รูปของระบบไม่ถูกวาด (data URL เดโมวาดได้เลย) */
+  imgUrls: Record<string, string> = {}): string {
+  // เนื้อความ: HTML ผ่าน sanitizer ทุกครั้ง (แท็บพิมพ์ = origin เดียวกับแอป) · จดหมายเก่าที่เป็นข้อความล้วน = ย่อหน้าละบรรทัด
+  const rich = resolveLetterImages(bodyToHtml(lt.body), imgUrls)
+  if (lt.category === 'SM') return smLetter(lt, org, rich, jobNo)
+  if (lt.category === 'WARRANTY') return warrantyLetter(lt, org, rich, jobNo)
+  return officialLetter(lt, org, rich, jobNo)
 }
 
 // ---------- เปิดแท็บพิมพ์ (ยกจาก ServiceMS openPrintWindow / writePrintWindow) ----------

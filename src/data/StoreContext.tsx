@@ -254,6 +254,7 @@ export interface StoreActions {
   updateUser: (p: Parameters<typeof L.updateUser>[2]) => MaybePromise
   // 0100 — Service Letter · ออกจดหมายคืน id + เลขที่ (เลข LIVE ออกที่ server) ให้หน้าเว็บขึ้นข้อความ/แนบไฟล์ต่อได้ทันที
   createServiceLetter: (p: Parameters<typeof L.createServiceLetter>[2]) => Promise<{ id: string; letterNo: string }> | { id: string; letterNo: string }
+  updateServiceLetter: (p: Parameters<typeof L.updateServiceLetter>[2]) => MaybePromise   // [Word 2026-11-26]
   deleteServiceLetter: (p: Parameters<typeof L.deleteServiceLetter>[2]) => MaybePromise
   upsertLetterSigner: (p: Parameters<typeof L.upsertLetterSigner>[2]) => MaybePromise
   addLetterFile: (p: Parameters<typeof L.addLetterFile>[2]) => MaybePromise
@@ -508,6 +509,7 @@ function DemoProvider({ children }: { children: ReactNode }) {
           const l = next.serviceLetters[0]                 // ฉบับใหม่อยู่หน้าสุด (createLetterDemo)
           return { id: l.id, letterNo: l.letterNo }
         },
+        updateServiceLetter: run('letter.manage', L.updateServiceLetter),   // [Word 2026-11-26] แก้จดหมายที่ออกแล้ว
         deleteServiceLetter: run('letter.delete', L.deleteServiceLetter),
         upsertLetterSigner: run('letter.signers', L.upsertLetterSigner),
         addLetterFile: run('letter.manage', L.addLetterFile),

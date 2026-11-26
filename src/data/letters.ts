@@ -19,6 +19,7 @@
 // =============================================================================
 import type { User, Job, JobWarranty } from '../types'
 import { can } from './permissions'
+import { isRichBody, sanitizeLetterHtml, richToPlainText } from './letterRich'
 
 export type LetterCategory = 'GENERAL' | 'SM' | 'WARRANTY'
 export type LetterType = 'EXTERNAL' | 'INTERNAL'
@@ -54,6 +55,8 @@ export interface ServiceLetter {
   warrantyDetail?: string
   createdBy: string              // user id
   createdAt: string              // ISO timestamp
+  updatedBy?: string             // [0103] ผู้แก้ไขล่าสุด (แก้จดหมายที่ออกแล้ว)
+  updatedAt?: string
 }
 
 /** ผู้ลงนาม — Manage ตั้งรายชื่อ · ปิดใช้งานแทนการลบ (จดหมายเก่ายังอ้างถึง) */
@@ -112,6 +115,11 @@ export function nextLetterNo(existing: string[], jobNo: string, todayIso: string
   return `${prefix}-${String(max + 1).padStart(3, '0')}`
 }
 
+/** [Word 2026-11-26] เลขที่จาก nnn ที่ผู้ใช้กำหนด (เติม 0 ครบ 3 หลัก) */
+export function letterNoWithSeq(jobNo: string, todayIso: string, seq: number): string {
+  return `${letterPrefixFor(jobNo, todayIso)}-${String(seq).padStart(3, '0')}`
+}
+
 const TH_MONTHS = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
   'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม']
 /** [Flow 2026-11-25] วันที่ในจดหมาย = เดือนชื่อเต็ม พ.ศ. (2026-11-25 → 25 พฤศจิกายน 2569) · อ่านไม่ออก = "-" */
@@ -130,8 +138,9 @@ export function safeSigImage(s: unknown): string {
   return v.length <= SIG_MAX && SIG_RE.test(v) ? v : ''
 }
 
-/** ข้อมูลที่ฟอร์มส่งมา — ไม่มี id / letterNo / createdBy / createdAt / ชื่อผู้ลงนาม (ระบบกำหนดเองจาก signerId) */
-export type LetterInput = Partial<Omit<ServiceLetter, 'id' | 'letterNo' | 'createdBy' | 'createdAt' | 'signerName' | 'signerPosition'>>
+/** ข้อมูลที่ฟอร์มส่งมา — ไม่มี id / letterNo / createdBy / createdAt / ชื่อผู้ลงนาม (ระบบกำหนดเองจาก signerId)
+ *  seqNo = [Word 2026-11-26] nnn ที่ผู้ใช้กำหนดเองตอนออก (ไม่ส่ง = รันอัตโนมัติ) */
+export type LetterInput = Partial<Omit<ServiceLetter, 'id' | 'letterNo' | 'createdBy' | 'createdAt' | 'signerName' | 'signerPosition' | 'updatedBy' | 'updatedAt'>> & { seqNo?: number }
 
 const TEXT_FIELDS = [
   'letterDate', 'recipient', 'recipientOrg', 'subject', 'reference', 'enclosure', 'body', 'body2', 'attention',
@@ -144,6 +153,9 @@ const ONE_OF = {
   status: ['ISSUED', 'DRAFT'],
 } as const
 const TEXT_MAX = 20_000
+// [Word 2026-11-26] เนื้อความเป็น HTML (ตาราง/รูปเป็น path สั้น ๆ) — sync 0103
+export const BODY_MAX = 1_000_000
+export const SEQ_MAX = 99_999
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 /** YYYY-MM-DD ที่เป็นวันจริงในปฏิทิน (กัน 2026-02-30 / 2026-13-45) */
@@ -153,17 +165,25 @@ function isIsoDate(s: string): boolean {
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s
 }
 
-export type CleanLetter =Omit<ServiceLetter, 'id' | 'letterNo' | 'createdBy' | 'createdAt' | 'letterDate'> & { letterDate?: string }
+export type CleanLetter = Omit<ServiceLetter, 'id' | 'letterNo' | 'createdBy' | 'createdAt' | 'letterDate'> & { letterDate?: string; seqNo?: number }
 
 /** รับเฉพาะคอลัมน์ที่อนุญาต + ตรวจค่า — คืน error ภาษาไทยแทนการ throw (ให้ฟอร์มแสดงได้) */
 export function cleanLetterInput(input: LetterInput): { ok: true; value: CleanLetter } | { ok: false; error: string } {
   const src = input as Record<string, unknown>
   const out: Record<string, unknown> = {}
+  // เนื้อความยาวเกิน = แจ้ง (ไม่ตัดเงียบ ๆ — ตัด HTML กลางแท็กแล้วเนื้อหาท้ายหาย)
+  if (String(src.body ?? '').length > BODY_MAX) return { ok: false, error: 'เนื้อความยาวเกินไป — แบ่งเป็นหลายฉบับ หรือลดขนาดตาราง/ข้อความ' }
   for (const k of TEXT_FIELDS) {
     const v = src[k]
     if (v == null) continue
-    const t = String(v).slice(0, TEXT_MAX).trim()   // ข้อความหลายบรรทัดคงรูป · ตัดช่องว่างหัวท้ายเท่านั้น
+    const t = String(v).slice(0, k === 'body' ? BODY_MAX : TEXT_MAX).trim()   // ข้อความหลายบรรทัดคงรูป · ตัดช่องว่างหัวท้ายเท่านั้น
     if (t) out[k] = t
+  }
+  // [Word 2026-11-26] เนื้อความ HTML: สร้างใหม่จากรายการที่อนุญาต · ไม่มีข้อความ/รูปจริง = ว่าง
+  if (out.body && isRichBody(String(out.body))) {
+    const html = sanitizeLetterHtml(String(out.body))
+    if (!richToPlainText(html).trim() && !/<img\b/.test(html)) delete out.body
+    else out.body = html
   }
   // [Flow 2026-11-25] ออกจดหมายต้องเลือก Job No. ก่อนเป็นอันดับแรก — เลขจดหมายรันตาม Job (sync 0102)
   if (!out.jobId) return { ok: false, error: 'กรุณาเลือก Job No. ก่อน — เลขจดหมายรันตาม Job' }
@@ -188,6 +208,11 @@ export function cleanLetterInput(input: LetterInput): { ok: true; value: CleanLe
   if (!out.signerId) return { ok: false, error: 'กรุณาเลือกผู้ลงนาม' }
   if (out.warrantyStart && out.warrantyEnd && String(out.warrantyStart) > String(out.warrantyEnd))
     return { ok: false, error: 'วันเริ่มรับประกันต้องไม่หลังวันสิ้นสุด' }
+  if (src.seqNo != null && src.seqNo !== '') {
+    const n = Number(src.seqNo)
+    if (!Number.isInteger(n) || n < 1 || n > SEQ_MAX) return { ok: false, error: `เลขลำดับ (nnn) ต้องเป็นจำนวนเต็ม 1–${SEQ_MAX}` }
+    out.seqNo = n
+  }
   return { ok: true, value: out as unknown as CleanLetter }
 }
 
@@ -260,19 +285,54 @@ export function createLetterDemo(letters: ServiceLetter[], actor: User, input: L
   const signer = signers.find(s => s.id === r.value.signerId && s.isActive)
   if (!signer) throw new Error('ไม่พบผู้ลงนามในรายชื่อที่ใช้งาน — กรุณาเลือกใหม่')
   const today = bkkDate(nowIso)
+  const { seqNo, ...fields } = r.value
+  // [Word 2026-11-26] nnn กำหนดเองได้ตอนออก — ห้ามซ้ำกับฉบับที่มีอยู่ · ไม่ระบุ = รันอัตโนมัติ (sync 0103)
+  const letterNo = seqNo != null ? letterNoWithSeq(job.jobNo, today, seqNo)
+    : nextLetterNo([...letters.map(l => l.letterNo), ...issuedNos], job.jobNo, today)
+  if (letters.some(l => l.letterNo === letterNo)) throw new Error(`เลขที่ ${letterNo} มีอยู่แล้ว — กรุณาใช้เลขอื่น`)
   const letter: ServiceLetter = {
-    ...r.value,
-    letterDate: r.value.letterDate || today,
+    ...fields,
+    letterDate: fields.letterDate || today,
     signerName: signer.fullName,
     signerPosition: signer.position,
     id: crypto.randomUUID(),
-    letterNo: nextLetterNo([...letters.map(l => l.letterNo), ...issuedNos], job.jobNo, today),
+    letterNo,
     createdBy: actor.id,
     createdAt: nowIso,
   }
   // ทุกฉบับมี Job แล้ว ⇒ แจ้ง Project ของงานทุกครั้ง (กระดิ่ง · ไม่ส่ง LINE)
   const notify: LetterNotify = { type: 'letter_issued', dept: 'project', jobId: job.id, message: `✉️ ออกจดหมาย ${letter.letterNo} — ${letter.subject}` }
   return { letters: [letter, ...letters], letter, notify }
+}
+
+/**
+ * [Word 2026-11-26] โหมดเดโม — แก้ไขจดหมายที่ออกแล้ว (Service + Project + Manage · sync rpc_update_service_letter 0103)
+ *   แก้ได้ทุกช่องยกเว้น Job (เลขที่ผูกกับ Job) และเลขที่ (คำตอบผู้ใช้: แก้ nnn ได้ตอนออกเท่านั้น)
+ *   ผู้ลงนามเปลี่ยนได้ = snapshot ชื่อ/ตำแหน่งใหม่ · ผู้ออก/วันที่ออกคงเดิม · บันทึกผู้แก้ล่าสุด
+ */
+export function updateLetterDemo(letters: ServiceLetter[], actor: User, id: string, input: LetterInput, nowIso: string, signers: LetterSigner[])
+  : { letters: ServiceLetter[]; letter: ServiceLetter; before: ServiceLetter } {
+  if (!canLetter(actor, 'manage')) throw new Error('แผนกของคุณไม่มีสิทธิ์แก้ไขจดหมาย')
+  const before = letters.find(l => l.id === id)
+  if (!before) throw new Error('ไม่พบจดหมายนี้')
+  if (input.jobId && input.jobId !== before.jobId) throw new Error('เปลี่ยน Job ของจดหมายที่ออกแล้วไม่ได้ (เลขที่ผูกกับ Job)')
+  const r = cleanLetterInput({ ...input, jobId: before.jobId, seqNo: undefined })
+  if (!r.ok) throw new Error(r.error)
+  const signer = signers.find(s => s.id === r.value.signerId && (s.isActive || s.id === before.signerId))
+  if (!signer) throw new Error('ไม่พบผู้ลงนามในรายชื่อที่ใช้งาน — กรุณาเลือกใหม่')
+  const fields = { ...r.value }
+  delete fields.seqNo
+  const letter: ServiceLetter = {
+    ...fields,
+    letterDate: fields.letterDate || before.letterDate,
+    // เปลี่ยนผู้ลงนาม = ชื่อ/ตำแหน่งตามรายชื่อปัจจุบัน · คนเดิม = คง snapshot เดิม
+    signerName: signer.id === before.signerId ? before.signerName : signer.fullName,
+    signerPosition: signer.id === before.signerId ? before.signerPosition : signer.position,
+    id: before.id, letterNo: before.letterNo, jobId: before.jobId,
+    createdBy: before.createdBy, createdAt: before.createdAt,
+    updatedBy: actor.id, updatedAt: nowIso,
+  }
+  return { letters: letters.map(l => l.id === id ? letter : l), letter, before }
 }
 
 /** โหมดเดโม — ลบจดหมาย (Manage) · ไฟล์แนบต้องลบตามที่ชั้นผูกระบบ */

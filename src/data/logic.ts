@@ -9,8 +9,8 @@ import type {
 } from '../types'
 import { userEditBlock } from './admin'
 import {
-  createLetterDemo, deleteLetterDemo, upsertSignerDemo, canLetter, isAllowedLetterFile, LETTER_FILE_MAX_BYTES,
-  type LetterInput,
+  createLetterDemo, deleteLetterDemo, upsertSignerDemo, updateLetterDemo, nextLetterNo, canLetter, isAllowedLetterFile,
+  LETTER_FILE_MAX_BYTES, type LetterInput,
 } from './letters'
 
 // ---------------------------------------------------------------
@@ -5443,15 +5443,34 @@ export function parseSheetDate(v: unknown): { value: string; error?: string } {
 /** ออกจดหมาย — [Flow 2026-11-25] ต้องเลือก Job ก่อน · เลข PSP-LBSJXXXX-YYYY-nnn ตาม Job
  *  กระดิ่งถึง Project ของงานทุกฉบับ (letter_issued ไม่อยู่ใน LINE_PUSH_TYPES ⇒ ไม่ส่ง LINE) */
 export function createServiceLetter(db: DB, actor: User, p: LetterInput): DB {
-  // เลขที่เคยออก (รวมฉบับที่ถูกลบ) จาก Audit — demo ไม่มีตารางตัวนับแบบ letter_no_seq
-  const issued = db.auditLogs.filter(a => a.entityType === 'service_letter' && a.action === 'create_service_letter')
-    .map(a => /PSP-LBS\S*-\d{4}-\d+/.exec(a.detail)?.[0] ?? '')
-  const r = createLetterDemo(db.serviceLetters, actor, p, now(), db.letterSigners, issued, db.jobs)
+  const r = createLetterDemo(db.serviceLetters, actor, p, now(), db.letterSigners, issuedLetterNos(db), db.jobs)
   const l = r.letter
   let next: DB = audit({ ...db, serviceLetters: r.letters }, actor, 'service_letter', l.id, 'create_service_letter',
-    `ออกจดหมาย ${l.letterNo} — ${l.subject} · ผู้ลงนาม ${l.signerName} (${l.sigImage ? 'เซ็นอิเล็กทรอนิกส์' : 'เซ็นมือ'})`)
+    `ออกจดหมาย ${l.letterNo}${p.seqNo != null ? ' (กำหนดเลขเอง)' : ''} — ${l.subject} · ผู้ลงนาม ${l.signerName} (${l.sigImage ? 'เซ็นอิเล็กทรอนิกส์' : 'เซ็นมือ'})`)
   next = notify(next, { type: r.notify.type, message: r.notify.message, dept: r.notify.dept, jobId: r.notify.jobId })
   return next
+}
+
+/** เลขที่เคยออก (รวมฉบับที่ถูกลบ) จาก Audit — demo ไม่มีตารางตัวนับแบบ letter_no_seq */
+function issuedLetterNos(db: DB): string[] {
+  return db.auditLogs.filter(a => a.entityType === 'service_letter' && a.action === 'create_service_letter')
+    .map(a => /PSP-LBS\S*-\d{4}-\d+/.exec(a.detail)?.[0] ?? '')
+}
+
+/** [Word 2026-11-26] เลขถัดไปที่จะออกให้ Job (แสดงในช่อง nnn ของฟอร์ม) · ไม่มี Job = '' · sync rpc_next_letter_no (0103) */
+export function suggestLetterNo(db: DB, jobId: string | undefined, nowIso = now()): string {
+  const job = jobId ? db.jobs.find(j => j.id === jobId) : undefined
+  if (!job) return ''
+  const today = new Date(Date.parse(nowIso) + 7 * 3600_000).toISOString().slice(0, 10)
+  return nextLetterNo([...db.serviceLetters.map(l => l.letterNo), ...issuedLetterNos(db)], job.jobNo, today)
+}
+
+/** [Word 2026-11-26] แก้ไขจดหมายที่ออกแล้ว — Audit อย่างเดียว (ไม่แจ้งกระดิ่งซ้ำ) · เลขที่/Job คงเดิม */
+export function updateServiceLetter(db: DB, actor: User, p: { letterId: string } & LetterInput): DB {
+  const { letterId, ...input } = p
+  const r = updateLetterDemo(db.serviceLetters, actor, letterId, input, now(), db.letterSigners)
+  return audit({ ...db, serviceLetters: r.letters }, actor, 'service_letter', letterId, 'update_service_letter',
+    `แก้ไขจดหมาย ${r.letter.letterNo} — ${r.letter.subject}${r.before.signerId !== r.letter.signerId ? ` · เปลี่ยนผู้ลงนามเป็น ${r.letter.signerName}` : ''}`)
 }
 
 /** ลบจดหมาย (Manage) — ไฟล์แนบหายตาม (ฝั่ง DB: ON DELETE CASCADE · ไฟล์ใน bucket หน้าเว็บลบต่อ) */

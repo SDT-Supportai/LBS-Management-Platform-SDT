@@ -543,6 +543,7 @@ export function mapServiceLetter(r: Row): ServiceLetter {
     warrantyType: optStr(r.warranty_type), warrantyStart: optDate(r.warranty_start), warrantyEnd: optDate(r.warranty_end),
     warrantyDetail: optStr(r.warranty_detail),
     createdBy: r.created_by, createdAt: r.created_at,
+    updatedBy: optStr(r.updated_by), updatedAt: optStr(r.updated_at),
   }
 }
 export function mapLetterSigner(r: Row): LetterSigner {
@@ -579,6 +580,31 @@ export async function createServiceLetterRemote(sb: SupabaseClient, input: Lette
   return { id: d.id, letterNo: d.letter_no }
 }
 
+/** [Word 2026-11-26] เลขถัดไปที่จะออกให้ Job (ช่อง nnn ของฟอร์ม) — นับฉบับที่ลบแล้วจากตัวนับฝั่ง server (0103) */
+export async function fetchNextLetterNo(sb: SupabaseClient, jobId: string): Promise<string> {
+  const { data, error } = await sb.rpc('rpc_next_letter_no', { p_job_id: jobId })
+  if (error) throw new Error(error.message)
+  return String(data ?? '')
+}
+
+/** [Word 2026-11-26] รูปในเนื้อจดหมาย — bucket letter-docs (private) path letter-img/<uuid>.<ext> */
+export async function uploadLetterImage(sb: SupabaseClient, blob: Blob, ext: 'jpg' | 'png' | 'webp'): Promise<string> {
+  const path = `letter-img/${crypto.randomUUID()}.${ext}`
+  const { error } = await sb.storage.from(LETTER_DOCS_BUCKET).upload(path, blob, { upsert: false, contentType: blob.type || undefined })
+  if (error) throw new Error(`อัปโหลดรูปไม่สำเร็จ: ${error.message}`)
+  return `lbsimg:${path}`
+}
+/** token รูป → signed URL (ใช้ตอนแสดงในตัวแก้ไข / แท็บพิมพ์) · รูปที่เปิดไม่ได้ไม่อยู่ในผลลัพธ์ */
+export async function signedLetterImageUrls(sb: SupabaseClient, tokens: string[]): Promise<Record<string, string>> {
+  if (tokens.length === 0) return {}
+  const paths = tokens.map(t => t.replace(/^lbsimg:/, ''))
+  const { data, error } = await sb.storage.from(LETTER_DOCS_BUCKET).createSignedUrls(paths, 600)
+  if (error) throw new Error(`เปิดรูปในจดหมายไม่ได้: ${error.message}`)
+  const out: Record<string, string> = {}
+  for (const d of data ?? []) if (d.signedUrl && d.path) out[`lbsimg:${d.path}`] = d.signedUrl
+  return out
+}
+
 /**
  * ลายเซ็นอิเล็กทรอนิกส์ของจดหมาย 1 ฉบับ — ไม่โหลดมากับรายการ (รูปฉบับละหลายสิบ KB × ทุกฉบับ ทุกครั้งที่ realtime reload)
  * เรียกตอนกดพิมพ์เท่านั้น · ไม่มี = เว้นที่ให้เซ็นมือ
@@ -594,11 +620,13 @@ const LETTER_LIST_COLS = [
   'reference', 'enclosure', 'body', 'body2', 'attention', 'site', 'tech_list', 'job_id', 'cc',
   'signer_id', 'signer_name', 'signer_position', 'warranty_type', 'warranty_start', 'warranty_end', 'warranty_detail',
   'created_by', 'created_at',
-].join(',')   // ไม่มี sig_image (ดู fetchLetterSigImage)
+].join(',')   // ไม่มี sig_image (ดู fetchLetterSigImage) · contract_no (0101) / updated_* (0103) ต่อท้ายใน qLetters
 async function qLetters(sb: SupabaseClient): Promise<Row[]> {
   const sel = (cols: string) => sb.from('service_letters').select(cols).order('created_at', { ascending: false }).limit(2000)
   // [0101] contract_no — ถ้ายังไม่รัน 0101 คอลัมน์ไม่มี ⇒ โหลดแบบเดิม (ไม่งั้นรายการจดหมายหายทั้งหน้า)
-  let { data, error } = await sel(`${LETTER_LIST_COLS},contract_no`)
+  let { data, error } = await sel(`${LETTER_LIST_COLS},contract_no,updated_by,updated_at`)
+  // [0103] updated_* — ยังไม่รัน 0103 ⇒ ถอยไปโหลดแบบเดิม
+  if (error && /updated_/.test(error.message)) ({ data, error } = await sel(`${LETTER_LIST_COLS},contract_no`))
   if (error && /contract_no/.test(error.message)) ({ data, error } = await sel(LETTER_LIST_COLS))
   if (error) {
     if (/does not exist|schema cache|PGRST205/i.test(error.message)) return []   // ยังไม่รัน 0100
@@ -971,6 +999,11 @@ export function remoteActions(sb: SupabaseClient) {
       rpc(sb, 'rpc_delete_closeout_file', { p_file_id: p.fileId }),
     // 0100 — Service Letter (createServiceLetter ต่อใน StoreContext เพราะต้องคืนเลขที่)
     //   ลบจดหมาย/ไฟล์: RPC คืน path → ลบไฟล์ใน bucket ต่อ (หลังแถวหายแล้ว · storage policy ให้ลบเฉพาะไฟล์ที่ไม่มีแถวอ้างถึง)
+    // [Word 2026-11-26] แก้จดหมายที่ออกแล้ว — เลขที่/Job ฝั่ง server ไม่รับเปลี่ยน (0103)
+    updateServiceLetter: (p: { letterId: string } & LetterInput) => {
+      const { letterId, ...input } = p
+      return rpc(sb, 'rpc_update_service_letter', { p_id: letterId, p: letterRpcPayload({ ...input, seqNo: undefined }) })
+    },
     deleteServiceLetter: async (p: { letterId: string }) => {
       const { data, error } = await sb.rpc('rpc_delete_service_letter', { p_id: p.letterId })
       if (error) throw new Error(error.message)

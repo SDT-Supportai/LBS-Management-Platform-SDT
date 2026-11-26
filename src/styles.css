@@ -1415,3 +1415,70 @@ a.kpi-tile:hover { background: #fff; }
 .sig-pad canvas { display: block; width: 100%; max-width: 520px; aspect-ratio: 520 / 170; background: #fff;
   border: 1px dashed var(--border); border-radius: 8px; touch-action: none; cursor: crosshair; }
 .sig-pad-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; max-width: 520px; margin-top: 6px; font-size: 12px; }
+
+/* ===== Letters แบบ Word (2026-11-26) — ส่วนหัวจดหมาย + หน้ากระดาษ A4 + แถบเครื่องมือ ===== */
+.letter-compose { display: flex; flex-direction: column; gap: 14px; }
+.letter-meta { margin-bottom: 0; }
+.letter-meta-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 12px; }
+.letter-meta-grid .span-2 { grid-column: span 2; }
+@media (max-width: 900px) { .letter-meta-grid { grid-template-columns: 1fr; } .letter-meta-grid .span-2 { grid-column: auto; } }
+.letter-no-input { display: flex; align-items: center; gap: 4px; }
+.letter-no-input > span { white-space: nowrap; font-size: 13px; }
+.letter-no-input input { width: 90px; }
+/* หน้ากระดาษ: กว้าง 210 มม. จริง · ฟอนต์/ระยะเดียวกับเอกสารพิมพ์ (letterPdf.ts BASE_CSS) */
+.letter-paper-wrap { overflow-x: auto; padding: 14px; background: #e2e8f0; border-radius: 10px; }
+.letter-paper { width: 210mm; min-height: 297mm; margin: 0 auto; background: #fff; color: #1a2026;
+  box-shadow: 0 4px 18px rgba(15, 23, 42, .18); display: flex; flex-direction: column;
+  font-family: 'TH SarabunPSK', 'TH Sarabun New', 'Sarabun', sans-serif; font-size: 16pt; line-height: 1.35; }
+.letter-paper .lp-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; padding: 9mm 15mm 3mm; }
+.letter-paper .lp-logo { height: 15mm; max-width: 75mm; object-fit: contain; margin-top: 3mm; }
+.letter-paper .lp-addr { text-align: right; font-size: 12pt; line-height: 1.3; }
+.letter-paper .lp-addr b { font-size: 13pt; color: #16233f; }
+.letter-paper .lp-body { flex: 1; padding: 0 15mm; }
+.letter-paper .lp-norow { display: flex; justify-content: space-between; margin-top: 4mm; color: #1a4d8f; }
+.letter-paper.cat-SM .lp-norow { color: #c0392b; }
+.letter-paper .lp-ltype { font-size: 12pt; color: #1a4d8f; margin-top: 1mm; }
+.letter-paper .lp-recip { margin-top: 5mm; }
+.letter-paper .lp-row { display: flex; gap: 4mm; margin-top: 3mm; }
+.letter-paper .lp-k { font-weight: 700; min-width: 25mm; flex: 0 0 auto; }
+.letter-paper .lp-v { flex: 1; }
+.letter-paper .lp-ph { color: #94a3b8; }
+.letter-paper .lp-para { margin: 5mm 0 0; text-indent: 15mm; white-space: pre-wrap; }
+.letter-paper .lp-techs > div { display: flex; gap: 5mm; margin: 1mm 0 1mm 15mm; }
+.letter-paper .lp-techs span:first-child { min-width: 90mm; }
+.letter-paper .lp-wbox { margin-top: 5mm; border: 1px solid #d7e0ea; border-radius: 2mm; padding: 3mm 5mm; background: #f7fafd; }
+.letter-paper .lp-wdetail { margin-top: 2mm; border-top: 1px dashed #cbd5e1; padding-top: 2mm; }
+.letter-paper .lp-close { margin-top: 6mm; text-align: center; }
+.letter-paper .lp-sig { height: 20mm; object-fit: contain; display: block; margin: 2mm auto; }
+.letter-paper .lp-sig-space { height: 20mm; width: 60mm; margin: 2mm auto; border-bottom: 1px dotted #94a3b8; }
+.letter-paper .lp-cc { margin-top: 8mm; font-size: 14pt; border-top: 1px dashed #cbd5e1; padding-top: 2mm; }
+.letter-paper .lp-foot { margin-top: 8mm; }
+.letter-paper .lp-contact { text-align: center; font-size: 12pt; color: #16233f; padding: 2mm 15mm 1.5mm; line-height: 1.2; }
+.letter-paper .lp-banner { display: block; width: 100%; height: 8mm; object-fit: cover; }
+/* ตัวแก้ไขเนื้อความ (อยู่บนกระดาษ) */
+.letter-paper .rte { margin-top: 4mm; }
+.letter-paper .rte-area { min-height: 60mm; outline: 1px dashed #cbd5e1; outline-offset: 2mm; padding: 1mm 0; }
+.letter-paper .rte-area:focus { outline: 2px solid #60a5fa; }
+.rte-bar { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 6px;
+  background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; font-family: inherit; font-size: 13px; line-height: 1.2; }
+.rte-btn { padding: 4px 8px; min-width: 30px; border: 1px solid #e2e8f0; border-radius: 6px; background: #fff; color: #1e293b; font-size: 13px; cursor: pointer; }
+.rte-btn:hover:not(:disabled) { background: #eff6ff; border-color: #93c5fd; }
+.rte-btn.on { background: #dbeafe; border-color: #60a5fa; }
+.rte-size { width: auto; padding: 3px 6px; font-size: 13px; }
+.rte-sep { width: 1px; height: 22px; background: #e2e8f0; margin: 0 2px; }
+.rte-pop { position: relative; }
+.rte-pop-body { position: absolute; top: 110%; left: 0; z-index: 3; display: flex; gap: 6px; align-items: center; padding: 8px;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; box-shadow: 0 6px 18px rgba(15, 23, 42, .15); white-space: nowrap; }
+.rte-pop-body input { width: 56px; padding: 3px 6px; }
+.rte-warn { color: #b91c1c; font-weight: 700; }
+.rte-auto { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: #475569; margin-left: 4px; }
+.rte-spell { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 6px 8px; margin-top: 6px;
+  background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; font-family: inherit; font-size: 13px; line-height: 1.3; }
+.rte-spell-item { display: inline-flex; align-items: center; gap: 6px; }
+::highlight(lbs-misspell) { text-decoration: underline wavy #dc2626; text-decoration-thickness: 1.5px; }
+/* ตารางบนหน้ากระดาษ: ไม่รับสไตล์ตารางของแอป (ตัวเล็ก 13.5px · แถบเว้นแถบ · ช่องห่าง) — ต้องเหมือนเอกสารพิมพ์ */
+.letter-paper .rich table { font-size: inherit; }
+.letter-paper .rich th, .letter-paper .rich td { font-size: inherit; letter-spacing: normal; white-space: normal; color: inherit;
+  border: 1px solid #475569; padding: 1mm 2mm; }
+.letter-paper .rich tbody tr:nth-child(even) { background: transparent; }
+.letter-paper .rich tr:last-child td { border-bottom: 1px solid #475569; }

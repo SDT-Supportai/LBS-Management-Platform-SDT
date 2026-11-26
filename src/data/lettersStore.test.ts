@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest'
 import type { DB, User } from '../types'
 import {
   createServiceLetter, deleteServiceLetter, upsertLetterSigner, addLetterFile, deleteLetterFile,
+  updateServiceLetter, suggestLetterNo,
 } from './logic'
 import { PERMISSIONS, can } from './permissions'
 import { PERM_LABEL } from './admin'
@@ -223,5 +224,36 @@ describe('[0101] Contract No. ฝั่ง LIVE', () => {
   it('ก่อนรัน 0101 (ไม่มีคอลัมน์) = contractNo ว่าง ไม่ error', () => {
     expect(mapServiceLetter({ id: 'l1', letter_no: 'n', letter_date: '2026-11-25', category: 'GENERAL', letter_type: 'EXTERNAL',
       status: 'ISSUED', recipient: 'r', subject: 's', body: 'b', created_by: 'u', created_at: T }).contractNo).toBeUndefined()
+  })
+})
+
+describe('[Word 2026-11-26] แก้จดหมายที่ออกแล้ว + แนะนำเลขถัดไป (demo)', () => {
+  it('updateServiceLetter: Audit update_service_letter · ไม่แจ้งกระดิ่งซ้ำ', () => {
+    let d = createServiceLetter(db0(), user('service'), input)
+    const id = d.serviceLetters[0].id
+    const nBefore = d.notifications.length
+    d = updateServiceLetter(d, user('project'), { letterId: id, ...input, subject: 'แก้แล้ว' })
+    expect(d.serviceLetters[0].subject).toBe('แก้แล้ว')
+    expect(d.auditLogs[0]).toMatchObject({ entityType: 'service_letter', entityId: id, action: 'update_service_letter' })
+    expect(d.auditLogs[0].detail).toContain(d.serviceLetters[0].letterNo)
+    expect(d.notifications).toHaveLength(nBefore)
+  })
+  it('suggestLetterNo: เลขถัดไปของ Job (นับฉบับที่ลบแล้วด้วย) · ไม่มี Job = ว่าง', () => {
+    let d = createServiceLetter(db0(), user('admin'), input)
+    d = createServiceLetter(d, user('admin'), input)
+    d = deleteServiceLetter(d, user('admin'), { letterId: d.serviceLetters[0].id })
+    expect(suggestLetterNo(d, JOB_ID).slice(-3)).toBe('003')
+    expect(suggestLetterNo(d, undefined)).toBe('')
+  })
+  it('ออกด้วยเลขที่กำหนดเอง → Audit บอกว่ากำหนดเอง', () => {
+    const d = createServiceLetter(db0(), user('service'), { ...input, seqNo: 12 })
+    expect(d.serviceLetters[0].letterNo.slice(-3)).toBe('012')
+    expect(d.auditLogs[0].detail).toContain('กำหนดเลขเอง')
+  })
+})
+
+describe('[Word 2026-11-26] remote — แก้จดหมาย / เลขที่กำหนดเอง', () => {
+  it('letterRpcPayload ส่ง seq_no เป็นตัวเลข', () => {
+    expect(letterRpcPayload({ ...input, seqNo: 12 })).toMatchObject({ seq_no: '12' })
   })
 })

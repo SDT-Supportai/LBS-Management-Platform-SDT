@@ -5,6 +5,7 @@ import { describe, it, expect } from 'vitest'
 import {
   LETTER_PREFIX, nextLetterNo, jobLetterCode, thaiDateFull, safeSigImage, cleanLetterInput, parseTechList,
   canLetter, createLetterDemo, deleteLetterDemo, upsertSignerDemo, activeSigners, warrantyLetterPrefill, contractNosOfJob,
+  updateLetterDemo,
   type ServiceLetter, type LetterSigner,
 } from './letters'
 import type { Job, JobWarranty, User } from '../types'
@@ -259,5 +260,51 @@ describe('[ปรับ 2026-11-25] Contract No. — อ้างอิงสั
     const job = { id: 'j1', jobNo: 'J-1', customerName: 'ลูกค้า' } as unknown as Job
     expect(warrantyLetterPrefill(job, [], [{ jobId: 'j1', contractNo: 'CT-2026-0104' }]).contractNo).toBe('CT-2026-0104')
     expect(warrantyLetterPrefill(job, []).contractNo).toBeUndefined()
+  })
+})
+
+describe('[Word 2026-11-26] แก้ nnn เองได้ตอนออก (ค่าเริ่ม = รันอัตโนมัติ) · ห้ามซ้ำ', () => {
+  it('ไม่ระบุ = อัตโนมัติ · ระบุ = ใช้เลขนั้น (เติม 0 ครบ 3 หลัก)', () => {
+    expect(mk([], user('service'), base).letter.letterNo).toBe('PSP-LBSJ3076-2026-001')
+    expect(mk([], user('service'), { ...base, seqNo: 7 }).letter.letterNo).toBe('PSP-LBSJ3076-2026-007')
+  })
+  it('เลขที่มีอยู่แล้ว = error ไทย · ฉบับถัดไปแบบอัตโนมัติรันต่อจากเลขสูงสุด', () => {
+    const r = mk([], user('service'), { ...base, seqNo: 7 })
+    expect(() => mk(r.letters, user('service'), { ...base, seqNo: 7 })).toThrow(/PSP-LBSJ3076-2026-007 มีอยู่แล้ว/)
+    expect(mk(r.letters, user('service'), base).letter.letterNo).toBe('PSP-LBSJ3076-2026-008')
+  })
+  it('ค่าไม่ถูกต้อง (0 / ติดลบ / ทศนิยม / เกิน 99999) = error', () => {
+    for (const seqNo of [0, -1, 1.5, 100000]) {
+      const c = cleanLetterInput({ ...base, seqNo })
+      expect(c.ok, String(seqNo)).toBe(false)
+      if (!c.ok) expect(c.error).toMatch(/เลขลำดับ/)
+    }
+  })
+})
+
+describe('[Word 2026-11-26] เนื้อความ HTML', () => {
+  it('cleanLetterInput: sanitize เนื้อความ HTML · ยาวได้ถึง 1,000,000 ตัวอักษร (รูปเป็น path สั้น ๆ)', () => {
+    const r = cleanLetterInput({ ...base, body: '<p onclick="x">ก<script>y</script></p>' + '<p>ข</p>'.repeat(5000) })
+    expect(r.ok).toBe(true)
+    if (r.ok) { expect(r.value.body.startsWith('<p>ก</p>')).toBe(true); expect(r.value.body).not.toContain('script') }
+  })
+  it('HTML ที่ไม่มีข้อความจริง = ถือว่าว่าง', () => {
+    const r = cleanLetterInput({ ...base, body: '<p><br></p>' })
+    expect(r.ok).toBe(false)
+  })
+})
+
+describe('[Word 2026-11-26] แก้ไขจดหมายที่ออกแล้ว — updateLetterDemo', () => {
+  it('แก้เนื้อหา/ผู้ลงนามได้ · เลขที่ Job ผู้ออก วันที่ออก คงเดิม · บันทึกผู้แก้', () => {
+    const r = mk([], user('service'), base)
+    const u = updateLetterDemo(r.letters, user('project', 'u2'), r.letter.id, { ...base, subject: 'เรื่องใหม่', body: '<p>ใหม่</p>' }, '2026-11-27T01:00:00.000Z', SIGNERS)
+    expect(u.letter).toMatchObject({ letterNo: r.letter.letterNo, jobId: JOB, createdBy: 'u1', subject: 'เรื่องใหม่', body: '<p>ใหม่</p>', updatedBy: 'u2', updatedAt: '2026-11-27T01:00:00.000Z' })
+    expect(u.letters).toHaveLength(1)
+  })
+  it('เปลี่ยน Job ไม่ได้ (เลขที่ผูกกับ Job) · แผนกอื่น/ไม่พบ = error', () => {
+    const r = mk([], user('service'), base)
+    expect(() => updateLetterDemo(r.letters, user('service'), r.letter.id, { ...base, jobId: JOB2 }, now, SIGNERS)).toThrow(/Job/)
+    expect(() => updateLetterDemo(r.letters, user('sales'), r.letter.id, base, now, SIGNERS)).toThrow(/สิทธิ์/)
+    expect(() => updateLetterDemo(r.letters, user('service'), 'nope', base, now, SIGNERS)).toThrow(/ไม่พบ/)
   })
 })
